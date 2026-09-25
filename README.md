@@ -33,6 +33,8 @@ The checkout must be dedicated to this worker. Do not edit it concurrently by ha
 
 The configuration includes project identity and paths; Git branch prefixes and integration choices; GitHub labels; Codex model (optional), reasoning effort and timeout; sequential validation commands and their timeout; Telegram enablement; poll interval; and Git/GitHub CLI timeouts. Defaults are shown in the example. Validation commands are generic shell commands; no language or build system is assumed. Configuration is trusted input and commands run with the worker user's permissions.
 
+Codex should run useful local checks while developing when possible, but those self-checks are best effort. If sandbox, network, restore, or environment restrictions prevent an optional check, Codex should report what could not run and why, while returning success if the implementation is complete. The worker's configured `validation.commands` remain the authoritative gate before commit or integration; any configured command failure prevents integration.
+
 Unknown YAML properties and duplicate keys are rejected. Secrets do not belong in project YAML. `.gitignore` excludes common local, private, secret, environment, and log files while retaining `*.example.yml` files.
 
 The worker expects these five distinct labels to exist in the repository (or their configured equivalents):

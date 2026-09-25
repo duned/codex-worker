@@ -31,15 +31,23 @@ public static class CodexResultParser
 
 public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
 {
-    private const string OutputSchema = """
+    internal const string OutputSchema = """
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["status", "summary", "testsOrValidationPerformed", "needsHumanInput", "question"],
           "properties": {
-            "status": { "type": "string", "enum": ["success", "blocked", "failed"] },
+            "status": {
+              "type": "string",
+              "enum": ["success", "blocked", "failed"],
+              "description": "Use success when implementation is complete, even if optional local checks could not run because of sandbox, network, or environment restrictions. Use failed only when the implementation itself cannot be completed. Use blocked only when human input or a decision is required."
+            },
             "summary": { "type": "string", "minLength": 1 },
-            "testsOrValidationPerformed": { "type": "array", "items": { "type": "string" } },
+            "testsOrValidationPerformed": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Report checks performed. If an optional check could not run, include the command/check and the reason. The worker's configured validation commands are authoritative and run separately after Codex."
+            },
             "needsHumanInput": { "type": "boolean" },
             "question": { "type": ["string", "null"] }
           }
@@ -90,9 +98,11 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
         return args;
     }
 
-    private static string BuildPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue) => $"""
+    internal static string BuildPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue) => $"""
         # Generic worker task instructions
-        Implement the requested change in the current project checkout. Inspect relevant code, make a focused change, and run appropriate local checks. Return a final response matching the supplied JSON schema. Use status `success` only when the requested work is implemented and your own reasonable local checks pass. Use `blocked` when specific human input is required and state that requirement in `question`. Use `failed` when the task cannot be completed for a technical reason. Summarize your work and the checks you personally performed in `testsOrValidationPerformed`.
+        Implement the requested change in the current project checkout. Inspect relevant code, make a focused change, and perform useful local validation while developing whenever possible. Local self-validation is best effort: if a check cannot run because of sandbox, network, missing-tool, package-restore, or other environment restrictions, do not treat that alone as implementation failure. If the implementation is complete, return `success` and identify the check and reason it could not run in `testsOrValidationPerformed`. The worker will run the configured validation commands separately after Codex; those commands are the authoritative validation gate before commit and integration. Do not claim those worker checks have passed.
+
+        Use `success` when the requested implementation is complete, even if an optional Codex-run check was unavailable. Use `failed` only when you could not complete the implementation for a technical reason. Use `blocked` only when a requirement is missing or a human decision/input is needed, and state it in `question`; environment restrictions on optional self-validation alone are not a reason to use `blocked`. Summarize implementation and checks attempted, completed, or unavailable (including reasons) in `testsOrValidationPerformed`.
 
         The worker owns all Git and GitHub lifecycle. Do not create, switch, merge, commit, push, or delete Git branches; do not commit; do not run GitHub CLI commands; do not manipulate Issue labels, comments, or state. Focus only on implementing and locally validating the requested change. The worker will review, validate, commit, and integrate your changes.
 
