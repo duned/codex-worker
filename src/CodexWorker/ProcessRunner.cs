@@ -10,7 +10,7 @@ public sealed class ProcessRunner
     private const int CaptureLimit = 160_000;
 
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory,
-        TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+        TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -21,6 +21,9 @@ public sealed class ProcessRunner
             CreateNoWindow = true
         };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        if (environment is not null)
+            foreach (var (key, value) in environment)
+                if (value is null) start.Environment.Remove(key); else start.Environment[key] = value;
 
         using var process = new Process { StartInfo = start };
         try
@@ -40,8 +43,10 @@ public sealed class ProcessRunner
         {
             try { process.Kill(entireProcessTree: true); } catch { /* process may have exited */ }
             await process.WaitForExitAsync(CancellationToken.None);
+            var output = await stdout;
+            var error = await stderr;
             if (!cancellationToken.IsCancellationRequested && timeoutCts?.IsCancellationRequested == true)
-                throw new TimeoutException($"'{executable}' exceeded timeout {timeout}.");
+                throw new ProcessTimeoutException(executable, timeout!.Value, output, error);
             throw;
         }
         return new ProcessResult(process.ExitCode, await stdout, await stderr);
@@ -64,7 +69,17 @@ public sealed class ProcessRunner
     }
 }
 
-public sealed class CommandFailedException(string message, ProcessResult result) : Exception(message)
+public sealed class ProcessTimeoutException(string executable, TimeSpan timeout, string standardOutput, string standardError)
+    : TimeoutException($"'{executable}' exceeded timeout {timeout}.{Diagnostic(standardOutput, standardError)}")
 {
-    public ProcessResult Result { get; } = result;
+    public string Executable { get; } = executable;
+    public TimeSpan Timeout { get; } = timeout;
+    public string StandardOutput { get; } = standardOutput;
+    public string StandardError { get; } = standardError;
+    private static string Diagnostic(string stdout, string stderr) =>
+        $"\nstdout: {Tail(stdout)}\nstderr: {Tail(stderr)}";
+    private static string Tail(string value) => value.Length <= 3000 ? value : value[^3000..];
 }
+
+public class WorkerInfrastructureException(string message, Exception? inner = null) : Exception(message, inner);
+public sealed class TaskFailureException(string message, Exception? inner = null) : Exception(message, inner);

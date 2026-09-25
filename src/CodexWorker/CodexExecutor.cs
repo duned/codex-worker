@@ -19,8 +19,12 @@ public static class CodexResultParser
         var needsHumanInput = root.GetProperty("needsHumanInput").GetBoolean();
         var questionElement = root.GetProperty("question");
         var question = questionElement.ValueKind == JsonValueKind.Null ? null : questionElement.GetString();
-        if (status == "blocked" && !needsHumanInput && string.IsNullOrWhiteSpace(question))
-            throw new InvalidDataException("A blocked Codex result must explain the human input it needs.");
+        if (status == "success" && (needsHumanInput || !string.IsNullOrWhiteSpace(question)))
+            throw new InvalidDataException("A success Codex result cannot request unresolved human input.");
+        if (status == "blocked" && (!needsHumanInput || string.IsNullOrWhiteSpace(question)))
+            throw new InvalidDataException("A blocked Codex result must require human input and provide a non-empty question.");
+        if (status == "failed" && (needsHumanInput || !string.IsNullOrWhiteSpace(question)))
+            throw new InvalidDataException("A failed Codex result cannot request unresolved human input; use blocked for that outcome.");
         return new CodexOutcome(status, summary, checks, needsHumanInput, question);
     }
 }
@@ -55,14 +59,23 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
             var args = new List<string> { "exec", "--sandbox", "workspace-write", "--approve-for-me", "--output-schema", schemaPath,
                 "--output-last-message", outputPath };
             if (!string.IsNullOrWhiteSpace(settings.Model)) { args.Add("--model"); args.Add(settings.Model); }
-            args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort}\"");
+            args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort.ToLowerInvariant()}\"");
             args.Add(prompt);
-            var result = await runner.RunAsync("codex", args, projectDirectory,
-                TimeSpan.FromMinutes(settings.TimeoutMinutes), ct);
+            var environment = CodexEnvironment.Create();
+            ProcessResult result;
+            try
+            {
+                result = await runner.RunAsync("codex", args, projectDirectory,
+                    TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables);
+            }
+            catch (ProcessTimeoutException ex) { throw new TaskFailureException($"Codex task timed out: {ex.Message}", ex); }
+            finally { environment.Dispose(); }
             if (result.ExitCode != 0)
-                throw new CommandFailedException($"Codex exited with code {result.ExitCode}. {Tail(result.StandardError)}", result);
+                throw new TaskFailureException($"Codex exited with code {result.ExitCode}. {Tail(result.StandardError)}");
             if (!File.Exists(outputPath)) throw new InvalidDataException("Codex did not produce its structured final response.");
-            return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct));
+            try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            { throw new TaskFailureException($"Codex did not return a valid structured task result: {ex.Message}", ex); }
         }
         finally
         {
@@ -91,7 +104,49 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
     private static string Tail(string value) => value.Length <= 1400 ? value : value[^1400..];
 }
 
-public sealed class ValidationRunner(ProcessRunner runner)
+internal sealed class CodexEnvironment : IDisposable
+{
+    private readonly string _directory;
+    public IReadOnlyDictionary<string, string?> Variables { get; }
+
+    private CodexEnvironment(string directory, Dictionary<string, string?> variables)
+    { _directory = directory; Variables = variables; }
+
+    public static CodexEnvironment Create()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"codex-worker-child-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(directory, "gh"));
+        var gitConfig = Path.Combine(directory, "gitconfig");
+        File.WriteAllText(gitConfig, "");
+        var variables = new Dictionary<string, string?>();
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            var key = (string)entry.Key;
+            if (key.StartsWith("GH_", StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith("ACTIONS_ID_TOKEN_", StringComparison.OrdinalIgnoreCase)) variables[key] = null;
+        }
+        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        if (string.IsNullOrWhiteSpace(codexHome)) codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        variables["HOME"] = directory;
+        variables["USERPROFILE"] = directory;
+        variables["GH_CONFIG_DIR"] = Path.Combine(directory, "gh");
+        variables["GIT_CONFIG_GLOBAL"] = gitConfig;
+        variables["GIT_CONFIG_NOSYSTEM"] = "1";
+        variables["GIT_CONFIG_COUNT"] = "1";
+        variables["GIT_CONFIG_KEY_0"] = "credential.helper";
+        variables["GIT_CONFIG_VALUE_0"] = "";
+        variables["GIT_TERMINAL_PROMPT"] = "0";
+        variables["GIT_ASKPASS"] = null;
+        variables["SSH_ASKPASS"] = null;
+        variables["CODEX_HOME"] = codexHome;
+        return new CodexEnvironment(directory, variables);
+    }
+
+    public void Dispose() { try { Directory.Delete(_directory, recursive: true); } catch { /* best effort temp cleanup */ } }
+}
+
+public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds)
 {
     public async Task RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
     {
@@ -101,11 +156,13 @@ public sealed class ValidationRunner(ProcessRunner runner)
             index++;
             var shell = OperatingSystem.IsWindows() ? "powershell" : "/bin/sh";
             var args = OperatingSystem.IsWindows() ? new[] { "-NoProfile", "-Command", command } : new[] { "-c", command };
-            var result = await runner.RunAsync(shell, args, directory, cancellationToken: ct);
+            ProcessResult result;
+            try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct); }
+            catch (ProcessTimeoutException ex) { throw new TaskFailureException($"Validation command {index} timed out: {command}. {ex.Message}", ex); }
             if (result.ExitCode != 0)
             {
                 var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
-                throw new CommandFailedException($"Validation command {index} failed (exit {result.ExitCode}): {command}\n{Tail(detail)}", result);
+                throw new TaskFailureException($"Validation command {index} failed (exit {result.ExitCode}): {command}\n{Tail(detail)}");
             }
         }
     }

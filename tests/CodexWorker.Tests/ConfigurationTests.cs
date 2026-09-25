@@ -41,6 +41,9 @@ public sealed class ConfigurationTests
                   enabled: false
                 worker:
                   pollingSeconds: 9
+                  gitTimeoutSeconds: 80
+                  githubTimeoutSeconds: 40
+                # nested validation timeout is optional
                 """);
 
             var config = WorkerConfiguration.Load(path);
@@ -49,7 +52,25 @@ public sealed class ConfigurationTests
             Assert.Equal(Path.Combine(folder, "checkout", "AGENTS.md"), config.Codex.InstructionsFile);
             Assert.Equal("./check.sh", Assert.Single(config.Validation.Commands));
             Assert.Equal(9, config.Worker.PollingSeconds);
+            Assert.Equal(80, config.Worker.GitTimeoutSeconds);
+            Assert.Equal(900, config.Validation.TimeoutSeconds);
             Assert.False(config.Git.AutoMerge);
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
+    public void RejectsUnknownAndDuplicateYamlKeys()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"worker-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "project.yml");
+            File.WriteAllText(path, "worker:\n  pollingSeconds: 10\n  pollSeconds: 3\n");
+            Assert.Throws<InvalidDataException>(() => WorkerConfiguration.Load(path));
+            File.WriteAllText(path, "worker:\n  pollingSeconds: 10\n  pollingSeconds: 3\n");
+            Assert.Throws<InvalidDataException>(() => WorkerConfiguration.Load(path));
         }
         finally { Directory.Delete(folder, recursive: true); }
     }

@@ -27,6 +27,7 @@ codex:
 
 validation:
   # Commands are run sequentially from the project directory.
+  timeoutSeconds: 900
   commands:
     - ./scripts/validate.sh
 
@@ -35,3 +36,5 @@ telegram:
 
 worker:
   pollingSeconds: 60
+  gitTimeoutSeconds: 120
+  githubTimeoutSeconds: 60

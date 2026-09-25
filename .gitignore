@@ -8,10 +8,27 @@ TestResults/
 .env
 .env.*
 !*.example
-project.local.yml
-project.private.yml
-*.log
+*.yml
+*.yaml
+!*.example.yml
+!*.example.yaml
+*.local.*
+*.private.*
+*.secret.*
+*.secrets.*
+*.local.json
+*.private.json
+*.secret.json
+*.secrets.json
+secrets/
+.secrets/
 logs/
+*.log
+!config/project.example.yml
+worker.yml
+worker.yaml
+worker-*.yml
+worker-*.yaml
 codex-worker.log
 
 # Editor/OS files

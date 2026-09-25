@@ -31,6 +31,9 @@ public sealed class TelegramNotifier : IDisposable
     public Task StartingAsync(string project, int number, string title, CancellationToken ct) =>
         SendAsync($"▶️ {project}: starting Issue #{number}: {title}", ct);
 
+    public Task CriticalAsync(string project, string details, CancellationToken ct) =>
+        SendAsync($"🚨 {project}: worker stopped because of an infrastructure failure. Manual review is required. {details}", ct);
+
     private async Task SendAsync(string text, CancellationToken ct)
     {
         if (!_enabled || string.IsNullOrWhiteSpace(_token) || string.IsNullOrWhiteSpace(_chatId)) return;

@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt);
 
-public sealed class GitHubClient(ProcessRunner runner, string repository)
+public sealed class GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds)
 {
     public async Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
     {
@@ -30,10 +30,16 @@ public sealed class GitHubClient(ProcessRunner runner, string repository)
 
     private async Task<ProcessResult> RunGhAsync(IEnumerable<string> args, CancellationToken ct)
     {
-        var result = await runner.RunAsync("gh", args, Environment.CurrentDirectory, cancellationToken: ct);
-        if (result.ExitCode != 0)
-            throw new CommandFailedException($"gh command failed (exit {result.ExitCode}). {Tail(result.StandardError)}", result);
-        return result;
+        try
+        {
+            var result = await runner.RunAsync("gh", args, Environment.CurrentDirectory, TimeSpan.FromSeconds(timeoutSeconds), ct);
+            if (result.ExitCode != 0)
+                throw new WorkerInfrastructureException($"GitHub CLI command failed (exit {result.ExitCode}); Issue state may require manual reconciliation. {Tail(result.StandardError)}");
+            return result;
+        }
+        catch (OperationCanceledException ex) { throw new WorkerInfrastructureException("GitHub operation was cancelled; remote Issue state may be uncertain.", ex); }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"GitHub CLI operation failed or timed out; GitHub state may require manual reconciliation: {ex.Message}", ex); }
     }
 
     private static string Tail(string value) => value.Length <= 1000 ? value : value[^1000..];
