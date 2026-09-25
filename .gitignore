@@ -1,0 +1,20 @@
+# Build outputs
+**/bin/
+**/obj/
+.vs/
+TestResults/
+
+# Local settings, credentials, and runtime output
+.env
+.env.*
+!*.example
+project.local.yml
+project.private.yml
+*.log
+logs/
+codex-worker.log
+
+# Editor/OS files
+.idea/
+.vscode/
+.DS_Store

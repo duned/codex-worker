@@ -1,0 +1,37 @@
+# Copy this file to a private location and edit it for your project.
+project:
+  name: Example Project
+  repository: owner/repository
+  directory: ../your-project-checkout
+
+git:
+  baseBranch: main
+  featurePrefix: feature/
+  completedPrefix: completed/
+  autoMerge: true
+  pushCompletedBranch: true
+  deleteLocalFeatureBranch: true
+
+github:
+  readyLabel: codex-ready
+  workingLabel: codex-working
+  blockedLabel: codex-blocked
+  failedLabel: codex-failed
+  doneLabel: codex-done
+
+codex:
+  instructionsFile: AGENTS.md
+  # model: gpt-5.6-sol
+  reasoningEffort: medium
+  timeoutMinutes: 90
+
+validation:
+  # Commands are run sequentially from the project directory.
+  commands:
+    - ./scripts/validate.sh
+
+telegram:
+  enabled: false
+
+worker:
+  pollingSeconds: 60
