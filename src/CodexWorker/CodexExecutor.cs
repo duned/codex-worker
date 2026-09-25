@@ -56,11 +56,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
         await File.WriteAllTextAsync(schemaPath, OutputSchema, ct);
         try
         {
-            var args = new List<string> { "exec", "--sandbox", "workspace-write", "--approve-for-me", "--output-schema", schemaPath,
-                "--output-last-message", outputPath };
-            if (!string.IsNullOrWhiteSpace(settings.Model)) { args.Add("--model"); args.Add(settings.Model); }
-            args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort.ToLowerInvariant()}\"");
-            args.Add(prompt);
+            var args = BuildArguments(settings, schemaPath, outputPath, prompt);
             var environment = CodexEnvironment.Create();
             ProcessResult result;
             try
@@ -82,6 +78,16 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
             TryDelete(schemaPath);
             TryDelete(outputPath);
         }
+    }
+
+    public static IReadOnlyList<string> BuildArguments(CodexSettings settings, string schemaPath, string outputPath, string prompt)
+    {
+        var args = new List<string> { "exec", "--approve-for-me", "--output-schema", schemaPath,
+            "--output-last-message", outputPath };
+        if (!string.IsNullOrWhiteSpace(settings.Model)) { args.Add("--model"); args.Add(settings.Model); }
+        args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort.ToLowerInvariant()}\"");
+        args.Add(prompt);
+        return args;
     }
 
     private static string BuildPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue) => $"""
