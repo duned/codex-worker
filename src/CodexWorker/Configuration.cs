@@ -11,6 +11,7 @@ public sealed class WorkerConfiguration
     public GitHubSettings GitHub { get; set; } = new();
     public CodexSettings Codex { get; set; } = new();
     public ValidationSettings Validation { get; set; } = new();
+    public ProjectEnvironmentSettings Environment { get; set; } = new();
     public WorkerSettings Worker { get; set; } = new();
 
     public static WorkerConfiguration Load(string path)
@@ -63,6 +64,11 @@ public sealed class WorkerConfiguration
     {
         var configDirectory = Path.GetDirectoryName(configPath)!;
         if (!string.IsNullOrWhiteSpace(Project.Directory)) Project.Directory = Path.GetFullPath(Project.Directory, configDirectory);
+        if (!string.IsNullOrWhiteSpace(Environment.File))
+        {
+            Environment.File = Path.GetFullPath(Environment.File, configDirectory);
+            Environment.Variables = ProjectEnvironmentFile.Load(Environment.File);
+        }
         if (!string.IsNullOrWhiteSpace(Codex.InstructionsFile) && !Path.IsPathRooted(Codex.InstructionsFile) && !string.IsNullOrWhiteSpace(Project.Directory))
             Codex.InstructionsFile = Path.GetFullPath(Codex.InstructionsFile, Project.Directory);
     }
@@ -174,6 +180,12 @@ public sealed class ProjectScheduler(int projectCount)
 }
 
 public sealed class ProjectSettings { public string Name { get; set; } = ""; public string Repository { get; set; } = ""; public string Directory { get; set; } = ""; }
+public sealed class ProjectEnvironmentSettings
+{
+    public string? File { get; set; }
+    [YamlIgnore]
+    public IReadOnlyDictionary<string, string> Variables { get; set; } = new Dictionary<string, string>();
+}
 public sealed class GitSettings
 {
     public string BaseBranch { get; set; } = "main";

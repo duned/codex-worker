@@ -29,7 +29,8 @@ public static class CodexResultParser
     }
 }
 
-public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings) : ICodexExecutor
+public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
+    IReadOnlyDictionary<string, string>? projectEnvironment = null) : ICodexExecutor
 {
     internal const string OutputSchema = """
         {
@@ -114,7 +115,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings) 
         try
         {
             var args = BuildArguments(settings, schemaPath, outputPath, prompt);
-            var environment = CodexEnvironment.Create();
+            var environment = CodexEnvironment.Create(projectEnvironment);
             ProcessResult result;
             try
             {
@@ -224,7 +225,7 @@ internal sealed class CodexEnvironment : IDisposable
     private CodexEnvironment(string directory, Dictionary<string, string?> variables)
     { _directory = directory; Variables = variables; }
 
-    public static CodexEnvironment Create()
+    public static CodexEnvironment Create(IReadOnlyDictionary<string, string>? projectEnvironment = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"codex-worker-child-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(directory, "gh"));
@@ -252,8 +253,26 @@ internal sealed class CodexEnvironment : IDisposable
         variables["GIT_ASKPASS"] = null;
         variables["SSH_ASKPASS"] = null;
         variables["CODEX_HOME"] = codexHome;
+        if (projectEnvironment is not null)
+        {
+            foreach (var (key, value) in projectEnvironment)
+                if (!IsProtected(key)) variables[key] = value;
+        }
         return new CodexEnvironment(directory, variables);
     }
+
+    private static bool IsProtected(string key) =>
+        key.StartsWith("GH_", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("ACTIONS_ID_TOKEN_", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("HOME", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("USERPROFILE", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("GH_CONFIG_DIR", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("GIT_CONFIG_", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("GIT_TERMINAL_PROMPT", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("GIT_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("SSH_ASKPASS", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("CODEX_HOME", StringComparison.OrdinalIgnoreCase);
 
     public void Dispose() { try { Directory.Delete(_directory, recursive: true); } catch { /* best effort temp cleanup */ } }
 }
@@ -289,10 +308,12 @@ public sealed record ValidationResult(ValidationFailure? Failure)
     public static ValidationResult Success { get; } = new((ValidationFailure?)null);
 }
 
-public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds) : IValidationRunner
+public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds,
+    IReadOnlyDictionary<string, string>? projectEnvironment = null) : IValidationRunner
 {
     public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
     {
+        IReadOnlyDictionary<string, string?>? environment = projectEnvironment?.ToDictionary(pair => pair.Key, pair => (string?)pair.Value);
         var index = 0;
         foreach (var command in commands)
         {
@@ -300,7 +321,7 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds) :
             var shell = OperatingSystem.IsWindows() ? "powershell" : "/bin/sh";
             var args = OperatingSystem.IsWindows() ? new[] { "-NoProfile", "-Command", command } : new[] { "-c", command };
             ProcessResult result;
-            try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct); }
+            try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct, environment); }
             catch (ProcessTimeoutException ex)
             {
                 return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true));

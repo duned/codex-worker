@@ -3,6 +3,11 @@ project:
   repository: owner/repository
   directory: /home/worker/projects/repository
 
+# Optional dotenv file. Relative paths resolve from this project YAML file.
+# For a Finance project, this could be:
+# environment:
+#   file: /home/worker/.config/finance/test.env
+
 git:
   baseBranch: main
   featurePrefix: feature/
@@ -29,5 +34,7 @@ validation:
   maxFixAttempts: 2
   commands:
     - dotnet test
+
+# Protect environment files with restrictive permissions, for example: chmod 600 /path/to/test.env
 
 # gitTimeoutSeconds and githubTimeoutSeconds default to 120 and 60.
