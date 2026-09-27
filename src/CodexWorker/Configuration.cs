@@ -190,6 +190,15 @@ public sealed class GitHubSettings
     public string BlockedLabel { get; set; } = "";
     public string FailedLabel { get; set; } = "";
     public string DoneLabel { get; set; } = "";
+
+    public IReadOnlyList<RequiredGitHubLabel> RequiredLabels =>
+    [
+        new(ReadyLabel, "1D76DB", "Issues ready for Codex Worker"),
+        new(WorkingLabel, "FBCA04", "Issue currently being processed by Codex Worker"),
+        new(BlockedLabel, "D93F0B", "Issue is blocked and needs human input"),
+        new(FailedLabel, "B60205", "Codex Worker could not complete the Issue"),
+        new(DoneLabel, "0E8A16", "Issue completed by Codex Worker")
+    ];
 }
 public sealed class CodexSettings
 {

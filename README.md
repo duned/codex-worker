@@ -1,10 +1,10 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. It runs one Issue at a time globally, asks Codex to implement it in that project's dedicated checkout, runs that project's authoritative validation, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.2.1. The startup header reads its version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in that project's dedicated checkout, runs that project's authoritative validation, and owns the Git and GitHub lifecycle.
 
 ## V0.2 architecture
 
-At startup the worker loads one global YAML file, discovers every project YAML file in the configured directory in deterministic filename order, validates the complete set, inspects every checkout without changing it, initializes each checkout, and runs one global Codex CLI/authentication preflight. It starts no queue processing unless all startup checks and preflight succeed.
+At startup the worker loads one global YAML file, discovers every project YAML file in the configured directory in deterministic filename order, validates the complete set, and inspects every checkout without changing it. Only after all projects pass those read-only checks does it query repository labels and create missing configured labels. Existing labels are left unchanged; custom names from each project's `github` section are supported. A validation, label query, or label creation failure stops startup before Issue queue access. The worker then initializes each checkout and runs one global Codex CLI/authentication preflight.
 
 The scheduler scans projects in round-robin order and stops at the first ready Issue. After processing an Issue, its next scan starts with the following project. Empty queues are skipped. When all queues are empty, the worker waits for the global polling interval before scanning again. There is never more than one active Issue or Codex execution across the process.
 

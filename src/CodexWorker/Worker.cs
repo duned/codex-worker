@@ -82,7 +82,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
-            await _output.StopWaitingAsync();
+            await _output.StopWaitingAsync(finalizeLine: true);
             if (safelyIdle)
             {
                 _output.Shutdown("Worker stopped.");

@@ -12,7 +12,7 @@ public sealed class OperabilityTests
         var writer = new StringWriter();
         new WorkerConsole(writer, interactive: true).Startup("Example", "owner/repository");
         Assert.StartsWith("\u001b[2J\u001b[H", writer.ToString());
-        Assert.Contains("CODEX WORKER · Example", writer.ToString());
+        Assert.Contains($"CODEX WORKER v{ApplicationVersion.Display} · Example", writer.ToString());
     }
 
     [Fact]
@@ -21,6 +21,48 @@ public sealed class OperabilityTests
         var writer = new StringWriter();
         new WorkerConsole(writer, interactive: false).Startup("Example", "owner/repository");
         Assert.DoesNotContain("\u001b[", writer.ToString());
+    }
+
+    [Fact]
+    public void MultiProjectStartupHeaderUsesAssemblyVersion()
+    {
+        var writer = new StringWriter();
+        new WorkerConsole(writer, interactive: false).Startup(2);
+        Assert.Contains($"CODEX WORKER v{ApplicationVersion.Display}", writer.ToString());
+        var assemblyVersion = typeof(WorkerConsole).Assembly.GetName().Version!;
+        Assert.Equal($"{assemblyVersion.Major}.{assemblyVersion.Minor}.{assemblyVersion.Build}", ApplicationVersion.Display);
+    }
+
+    [Fact]
+    public async Task GracefulIdleFinalizationKeepsInteractiveLineAndPlacesShutdownBelowIt()
+    {
+        var writer = new StringWriter();
+        var console = new WorkerConsole(writer, interactive: true);
+        console.Waiting();
+        await Task.Delay(30);
+        await console.StopWaitingAsync(finalizeLine: true);
+        console.Shutdown();
+
+        var output = writer.ToString();
+        var idleLine = output.LastIndexOf("Waiting for work...", StringComparison.Ordinal);
+        var stopped = output.IndexOf("■ Worker stopped.", idleLine, StringComparison.Ordinal);
+        Assert.True(idleLine >= 0 && stopped > idleLine, output);
+        Assert.Contains("\n■ Worker stopped.", output[idleLine..]);
+        Assert.DoesNotContain("\r\u001b[2K", output[idleLine..stopped]);
+    }
+
+    [Fact]
+    public async Task RedirectedIdleFinalizationRemainsPlainLineBasedOutput()
+    {
+        var writer = new StringWriter();
+        var console = new WorkerConsole(writer, interactive: false);
+        console.Waiting();
+        await console.StopWaitingAsync(finalizeLine: true);
+        console.Shutdown();
+        var output = writer.ToString();
+        Assert.Equal("○ Waiting for work..." + Environment.NewLine + "■ Worker stopped." + Environment.NewLine, output);
+        Assert.DoesNotContain('\u001b', output);
+        Assert.DoesNotContain('\r', output);
     }
 
     [Fact]

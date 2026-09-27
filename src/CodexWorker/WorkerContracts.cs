@@ -8,6 +8,12 @@ public interface IGitHubClient
     Task CloseAsync(int issueNumber, CancellationToken ct);
 }
 
+public interface IGitHubLabelClient
+{
+    Task<IReadOnlyList<RequiredGitHubLabel>> FindMissingLabelsAsync(IReadOnlyList<RequiredGitHubLabel> required, CancellationToken ct);
+    Task CreateLabelAsync(RequiredGitHubLabel label, CancellationToken ct);
+}
+
 public interface IGitRepository
 {
     Task InitializeAsync(CancellationToken ct);

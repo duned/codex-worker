@@ -3,8 +3,9 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt);
+public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
-public sealed class GitHubClient : IGitHubClient
+public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 {
     private readonly string repository;
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
@@ -43,6 +44,30 @@ public sealed class GitHubClient : IGitHubClient
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
         RunGhAsync(["issue", "close", issueNumber.ToString(), "--repo", repository], ct);
 
+    public async Task<IReadOnlyList<RequiredGitHubLabel>> FindMissingLabelsAsync(IReadOnlyList<RequiredGitHubLabel> required, CancellationToken ct)
+    {
+        var result = await RunLabelGhAsync(["label", "list", "--repo", repository, "--limit", "1000", "--json", "name"],
+            "query", null, ct, readOnly: true);
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var existing = document.RootElement.EnumerateArray()
+                .Select(e => e.GetProperty("name").GetString() ?? "")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return required.Where(label => !existing.Contains(label.Name)).ToArray();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            throw new WorkerInfrastructureException($"Could not parse GitHub labels for repository '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    public async Task CreateLabelAsync(RequiredGitHubLabel label, CancellationToken ct)
+    {
+        await RunLabelGhAsync(["label", "create", label.Name, "--repo", repository, "--color", label.Color, "--description", label.Description],
+            "create", label.Name, ct, readOnly: false);
+    }
+
     private async Task<ProcessResult> RunGhAsync(IEnumerable<string> args, CancellationToken ct, bool allowGracefulCancellation = false)
     {
         try
@@ -56,6 +81,33 @@ public sealed class GitHubClient : IGitHubClient
         catch (OperationCanceledException ex) { throw new WorkerInfrastructureException("GitHub operation was cancelled; remote Issue state may be uncertain.", ex); }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"GitHub CLI operation failed or timed out; GitHub state may require manual reconciliation: {ex.Message}", ex); }
+    }
+
+    private async Task<ProcessResult> RunLabelGhAsync(IEnumerable<string> args, string action, string? label, CancellationToken ct, bool readOnly)
+    {
+        try
+        {
+            var result = await runCommand(args, ct);
+            if (result.ExitCode != 0)
+            {
+                var target = label is null ? "configured GitHub labels" : $"GitHub label '{label}'";
+                var uncertainty = action == "create" ? " Remote label state may be uncertain." : "";
+                throw new WorkerInfrastructureException($"Could not {action} {target} for repository '{repository}' (exit {result.ExitCode}).{uncertainty} {Tail(result.StandardError)}");
+            }
+            return result;
+        }
+        catch (OperationCanceledException) when (readOnly && ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException ex)
+        {
+            var target = label is null ? "configured GitHub labels" : $"GitHub label '{label}'";
+            throw new WorkerInfrastructureException($"Cancellation interrupted {action} of {target} for repository '{repository}'; remote state may be uncertain.", ex);
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex)
+        {
+            var target = label is null ? "configured GitHub labels" : $"GitHub label '{label}'";
+            throw new WorkerInfrastructureException($"Could not {action} {target} for repository '{repository}': {ex.Message}", ex);
+        }
     }
 
     private static string Tail(string value) => value.Length <= 1000 ? value : value[^1000..];

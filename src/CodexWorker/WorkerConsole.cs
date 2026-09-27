@@ -12,6 +12,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     private Stopwatch? _idleTimer;
     private CancellationTokenSource? _idleCancellation;
     private Task? _idleSpinner;
+    private bool _idleLineDrawn;
 
     public void Startup(string project, string repository)
     {
@@ -21,7 +22,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         }
         _waiting = false;
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
-        WriteLine("CODEX WORKER · " + project, ConsoleColor.Cyan);
+        WriteLine($"CODEX WORKER v{ApplicationVersion.Display} · {project}", ConsoleColor.Cyan);
         WriteLine(repository, null);
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
     }
@@ -31,12 +32,14 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         if (_interactive) { lock (_writer) { _writer.Write("\u001b[2J\u001b[H"); _writer.Flush(); } }
         _waiting = false;
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
-        WriteLine("CODEX WORKER", ConsoleColor.Cyan);
+        WriteLine($"CODEX WORKER v{ApplicationVersion.Display}", ConsoleColor.Cyan);
         WriteLine($"{projectCount} project{(projectCount == 1 ? "" : "s")}", null);
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
     }
 
     public void ProjectLoaded(string name) => WriteLine($"Loaded · {name}", ConsoleColor.Green, "✓");
+    public void GitHubLabelsReady(int projectCount, int createdCount) =>
+        WriteLine($"GitHub labels ready · {projectCount} project{(projectCount == 1 ? "" : "s")}{(createdCount == 0 ? "" : $" · {createdCount} created")}", ConsoleColor.Green, "✓");
     public void GlobalPreflight() => WriteLine("Global Codex preflight", ConsoleColor.Cyan, "▶");
 
     public void Started() => WriteLine("Worker started.", ConsoleColor.Green, "✓");
@@ -57,7 +60,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         else WriteLine("Waiting for work...", null, "○");
     }
 
-    public async Task StopWaitingAsync()
+    public async Task StopWaitingAsync(bool finalizeLine = false)
     {
         if (!_waiting) return;
         _waiting = false;
@@ -67,10 +70,15 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
             try { await _idleSpinner; } catch (OperationCanceledException) { }
         }
         _idleTimer?.Stop();
-        if (_interactive)
+        if (_interactive && finalizeLine)
+        {
+            if (_idleLineDrawn) { lock (_writer) { _writer.WriteLine(); _writer.Flush(); } }
+        }
+        else if (_interactive)
         {
             lock (_writer) { _writer.Write("\r\u001b[2K"); _writer.Flush(); }
         }
+        _idleLineDrawn = false;
         _idleCancellation?.Dispose();
         _idleCancellation = null;
         _idleSpinner = null;
@@ -154,7 +162,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         {
             ct.ThrowIfCancellationRequested();
             var text = $"{frames[index++ % frames.Length]} {label}... {FormatElapsedClock(timer.Elapsed)}";
-            lock (_writer) { _writer.Write('\r'); _writer.Write(text); _writer.Flush(); }
+            lock (_writer) { _writer.Write('\r'); _writer.Write(text); _writer.Flush(); _idleLineDrawn = true; }
             await Task.Delay(120, ct);
         }
     }

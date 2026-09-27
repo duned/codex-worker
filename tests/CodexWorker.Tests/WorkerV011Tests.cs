@@ -177,9 +177,10 @@ public sealed class WorkerV011Tests
         var output = h.Output.ToString();
         var completed = output.IndexOf("#17 completed", StringComparison.Ordinal);
         var idle = output.IndexOf("Waiting for work...", completed, StringComparison.Ordinal);
-        var erased = output.IndexOf("\u001b[2K", idle, StringComparison.Ordinal);
         var stopped = output.IndexOf("■ Worker stopped.", StringComparison.Ordinal);
-        Assert.True(completed >= 0 && idle > completed && erased > idle && stopped > erased, output);
+        Assert.True(completed >= 0 && idle > completed && stopped > idle, output);
+        Assert.Contains("\n■ Worker stopped.", output[idle..]);
+        Assert.DoesNotContain("\r\u001b[2K", output[idle..stopped]);
     }
 
     private static async Task WaitForOutputAsync(StringWriter output, string value)

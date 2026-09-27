@@ -34,23 +34,27 @@ public sealed class WorkerHost
                 var codex = new CodexExecutor(_runner, config.Codex);
                 var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds);
                 runtimes.Add(new ProjectRuntime(path, config, git,
-                    new Worker(config, github, git, codex, validation, telegram, _output), codex));
+                    new Worker(config, github, git, codex, validation, telegram, _output), codex, github));
             }
 
-            // Complete every non-mutating project check before initialization, preflight, or queue access.
-            foreach (var project in runtimes)
-            {
-                activeProject = project.Configuration.Project.Name;
-                try { await project.Git.ValidateStartupReadOnlyAsync(ct); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch (Exception ex) { throw new WorkerInfrastructureException($"Project configuration '{project.Path}' failed checkout validation: {ex.Message}", ex); }
-            }
-            foreach (var project in runtimes)
-            {
-                activeProject = project.Configuration.Project.Name;
-                try { await project.Worker.PrepareForHostAsync(ct); }
-                catch (Exception ex) { throw new WorkerInfrastructureException($"Project configuration '{project.Path}' failed startup initialization: {ex.Message}", ex); }
-            }
+            var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
+                project.Path,
+                project.Configuration.Project.Name,
+                async token => { activeProject = project.Configuration.Project.Name; await project.Git.ValidateStartupReadOnlyAsync(token); },
+                async token =>
+                {
+                    activeProject = project.Configuration.Project.Name;
+                    return await project.GitHub.FindMissingLabelsAsync(project.Configuration.GitHub.RequiredLabels, token);
+                },
+                async (label, token) =>
+                {
+                    activeProject = project.Configuration.Project.Name;
+                    await project.GitHub.CreateLabelAsync(label, token);
+                },
+                async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
+            )).ToArray();
+            var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
+            _output.GitHubLabelsReady(runtimes.Count, createdLabels);
 
             _output.GlobalPreflight();
             activeProject = null;
@@ -88,13 +92,13 @@ public sealed class WorkerHost
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 }
             }
-            await _output.StopWaitingAsync();
+            await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown();
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested && safeToStop)
         {
-            await _output.StopWaitingAsync();
+            await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown("Worker stopped.");
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
@@ -114,5 +118,6 @@ public sealed class WorkerHost
         }
     }
 
-    private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker, CodexExecutor Codex);
+    private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
+        CodexExecutor Codex, GitHubClient GitHub);
 }
