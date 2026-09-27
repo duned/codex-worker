@@ -3,7 +3,10 @@ using System.Diagnostics;
 namespace CodexWorker;
 
 public enum IssueOutcomeKind { Succeeded, Blocked, Failed }
-public sealed record IssueProcessingResult(IssueOutcomeKind Kind, string Summary, TimeSpan Duration = default);
+public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecutionReport Report)
+{
+    public string Summary => Report.ToMarkdown(Kind);
+}
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null)
@@ -35,7 +38,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             var timer = Stopwatch.StartNew();
             var result = await ProcessClaimedIssueAsync(issue, ct);
             timer.Stop();
-            await ReportResultAsync(issue, result with { Duration = timer.Elapsed }, ct);
+            await ReportResultAsync(issue, result with { Report = result.Report with { Duration = timer.Elapsed } }, ct);
             return true;
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
@@ -74,7 +77,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 var issueTimer = Stopwatch.StartNew();
                 var result = await ProcessClaimedIssueAsync(issue, ct);
                 issueTimer.Stop();
-                await ReportResultAsync(issue, result with { Duration = issueTimer.Elapsed }, ct);
+                await ReportResultAsync(issue, result with { Report = result.Report with { Duration = issueTimer.Elapsed } }, ct);
                 safelyIdle = true;
             }
             await _output.StopWaitingAsync();
@@ -120,8 +123,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             completion: x => x.Status, succeeded: x => x.Status == "success",
             warning: x => x.Status == "blocked", ct: ct);
         await git.VerifyCodexStateAsync(ct);
-        if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
-        if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
+        var implementationSummary = outcome.Summary;
+        var repairs = new List<ValidationRepairRecord>();
+        if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked,
+            new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
+        if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed,
+            new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary), ct);
 
         var repairAttempts = 0;
         while (true)
@@ -135,7 +142,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await git.VerifyCodexStateAsync(ct);
             var failure = validationResult.Failure!;
             if (repairAttempts >= config.Validation.MaxFixAttempts)
-                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, failure.ToSummary(), ct);
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed,
+                    new IssueExecutionReport(implementationSummary, repairs, FinalValidationFailure: failure.Command,
+                        Failure: $"Validation failed after {repairAttempts} repair attempt(s)."), ct);
 
             repairAttempts++;
             outcome = await _output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
@@ -144,22 +153,37 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
             await git.VerifyCodexStateAsync(ct);
-            if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
-            if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
+            if (outcome.Status == "blocked")
+            {
+                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                    outcome.Summary, false));
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked,
+                    new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
+            }
+            if (outcome.Status == "failed")
+            {
+                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                    outcome.Summary, false));
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed,
+                    new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary), ct);
+            }
+            // The next validation result determines whether this repair passed. Store its independent summary now.
+            repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                outcome.Summary, false));
         }
 
         await git.VerifyCodexStateAsync(ct);
         var integration = await _output.RunProgressAsync("Integrating", () => git.CommitAndIntegrateAsync(issue, ct),
             completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
-        var summary = integration.Summary;
-        if (integration.HasChanges) summary += $"\n\nCodex summary: {outcome.Summary}";
-        return new IssueProcessingResult(IssueOutcomeKind.Succeeded, summary);
+        if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
+        return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
+            new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
     }
 
-    private async Task<IssueProcessingResult> CleanupOutcomeAsync(GitHubIssue issue, IssueOutcomeKind kind, string summary, CancellationToken ct)
+    private async Task<IssueProcessingResult> CleanupOutcomeAsync(GitHubIssue issue, IssueOutcomeKind kind, IssueExecutionReport report, CancellationToken ct)
     {
         await git.DiscardUncommittedIssueChangesAsync(ct);
-        return new IssueProcessingResult(kind, summary);
+        return new IssueProcessingResult(kind, report);
     }
 
     private async Task ReportResultAsync(GitHubIssue issue, IssueProcessingResult result, CancellationToken ct)
@@ -171,21 +195,21 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
-                await telegram.SuccessAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
-                _output.IssueCompleted(config.Project.Name, issue, result.Duration, ShortCompletion(result.Summary));
+                await telegram.SuccessAsync(config.Project.Name, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
+                _output.IssueCompleted(config.Project.Name, issue, result.Report.Duration, ShortCompletion(result.Summary));
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
-                await github.CommentAsync(issue.Number, $"Human input is required to continue: {result.Summary}", ct);
-                await telegram.BlockedAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
-                _output.IssueBlocked(config.Project.Name, issue, result.Duration, result.Summary);
+                await github.CommentAsync(issue.Number, result.Summary, ct);
+                await telegram.BlockedAsync(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
+                _output.IssueBlocked(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.");
                 break;
             case IssueOutcomeKind.Failed:
-                var message = Limit(result.Summary, 1400);
+                var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
-                await github.CommentAsync(issue.Number, $"Worker could not complete this Issue: {message}", ct);
-                await telegram.FailedAsync(config.Project.Name, issue, result.Duration, message, ct);
-                _output.IssueFailed(config.Project.Name, issue, result.Duration, FirstLine(message));
+                await github.CommentAsync(issue.Number, message, ct);
+                await telegram.FailedAsync(config.Project.Name, issue, result.Report.Duration, Limit(message, 1400), ct);
+                _output.IssueFailed(config.Project.Name, issue, result.Report.Duration, FirstLine(message));
                 break;
         }
     }
@@ -200,6 +224,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private static string ShortCompletion(string summary)
     {
         return FirstLine(summary);
+    }
+    private static string TelegramCompletion(IssueExecutionReport report)
+    {
+        var details = new List<string>();
+        if (report.Integration is not null) details.Add(report.Integration.Summary);
+        if (!string.IsNullOrWhiteSpace(report.ImplementationSummary)) details.Add($"Codex summary: {report.ImplementationSummary}");
+        return string.Join("\n\n", details);
     }
     private static string FirstLine(string value) => value.Split('\n', 2)[0];
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..(length - 20)] + " … [truncated]";

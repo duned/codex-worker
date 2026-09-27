@@ -17,6 +17,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
         Assert.Equal("preflight", h.Events[0]);
         Assert.Equal("find", h.Events[1]);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Implementation", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Validation\n\nValidation passed successfully.", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -34,6 +36,12 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
         Assert.Equal(0, h.Git.Cleanups);
         Assert.Contains("working->done", h.GitHub.Labels);
+        var comment = Assert.Single(h.GitHub.Comments);
+        Assert.Contains("implemented", comment);
+        Assert.Contains("fixed restore issue", comment);
+        Assert.Contains("Initial validation failed: `dotnet test`.", comment);
+        Assert.Contains("Validation passed after repair 1/2.", comment);
+        Assert.DoesNotContain("stdout", comment);
     }
 
     [Fact]
@@ -52,6 +60,9 @@ public sealed class WorkerV011Tests
         Assert.Equal(3, h.Validation.Calls);
         Assert.Equal(1, h.Git.Integrations);
         Assert.Equal(0, h.Git.Cleanups);
+        var comment = Assert.Single(h.GitHub.Comments);
+        Assert.True(comment.IndexOf("repair one", StringComparison.Ordinal) < comment.IndexOf("repair two", StringComparison.Ordinal));
+        Assert.Contains("implemented", comment);
     }
 
     [Fact]
@@ -72,6 +83,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->failed", h.GitHub.Labels);
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("authoritative check", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Implementation attempt", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -88,6 +100,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->blocked", h.GitHub.Labels);
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Which API?", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Work performed", StringComparison.Ordinal));
     }
 
     [Fact]
