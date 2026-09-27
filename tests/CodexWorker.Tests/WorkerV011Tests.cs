@@ -122,14 +122,74 @@ public sealed class WorkerV011Tests
     [Fact]
     public async Task CancellationWhileSafelyIdleUsesConciseShutdownPresentation()
     {
-        using var h = new Harness();
+        using var h = new Harness(telegramEnabled: true);
         h.GitHub.ReturnIssueOnFirstQuery = false;
 
         await h.RunAsync();
 
         Assert.Contains("○ Waiting for work...", h.Output.ToString());
         Assert.Contains("■ Worker stopped.", h.Output.ToString());
-        Assert.DoesNotContain("Cancellation interrupted", h.Output.ToString());
+        Assert.DoesNotContain("Infrastructure failure", h.Output.ToString());
+        Assert.Contains(h.TelegramMessages, message => message.Contains("⚫ CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CancellationDuringReadyIssueQueryIsGracefulAndDoesNotThrowInfrastructureFailure()
+    {
+        using var h = new Harness(telegramEnabled: true);
+        h.GitHub.CancelDuringQuery = true;
+
+        var exception = await Record.ExceptionAsync(() => h.RunAsync());
+
+        Assert.Null(exception);
+        Assert.Contains("■ Worker stopped.", h.Output.ToString());
+        Assert.Contains(h.TelegramMessages, message => message.Contains("⚫ CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CancellationDuringIssueClaimRetainsInfrastructureClassification()
+    {
+        using var h = new Harness(telegramEnabled: true);
+        h.GitHub.CancelDuringClaim = true;
+
+        var exception = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.RunAsync());
+
+        Assert.Contains("may be uncertain", exception.Message);
+        Assert.Contains("Infrastructure failure", h.ErrorOutput.ToString());
+        Assert.Contains(h.TelegramMessages, message => message.Contains("🚨 CODEX WORKER · INFRAESTRUCTURA", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CompletingIssueEntersInteractiveIdleAndCancellationCleansSpinner()
+    {
+        using var h = new Harness(interactive: true);
+        h.GitHub.CancelWhenEmpty = false;
+        var workerTask = h.Worker.RunAsync(h.Cancellation.Token);
+
+        await WaitForOutputAsync(h.Output, "#17 completed");
+        await WaitForOutputAsync(h.Output, "Waiting for work... 00:00");
+        h.Cancellation.Cancel();
+        await workerTask;
+
+        var output = h.Output.ToString();
+        var completed = output.IndexOf("#17 completed", StringComparison.Ordinal);
+        var idle = output.IndexOf("Waiting for work...", completed, StringComparison.Ordinal);
+        var erased = output.IndexOf("\u001b[2K", idle, StringComparison.Ordinal);
+        var stopped = output.IndexOf("■ Worker stopped.", StringComparison.Ordinal);
+        Assert.True(completed >= 0 && idle > completed && erased > idle && stopped > erased, output);
+    }
+
+    private static async Task WaitForOutputAsync(StringWriter output, string value)
+    {
+        for (var i = 0; i < 50; i++)
+        {
+            if (output.ToString().Contains(value, StringComparison.Ordinal)) return;
+            await Task.Delay(100);
+        }
+        Assert.Contains(value, output.ToString());
     }
 
     [Fact]
@@ -188,9 +248,12 @@ public sealed class WorkerV011Tests
         public FakeValidation Validation { get; } = new();
         public Worker Worker { get; }
         public StringWriter Output { get; } = new();
-        private readonly TelegramNotifier _telegram = new(false);
+        public StringWriter ErrorOutput { get; } = new();
+        private readonly TelegramNotifier _telegram;
+        private readonly HttpClient? _telegramClient;
+        private readonly StubTelegramHandler? _telegramHandler;
 
-        public Harness()
+        public Harness(bool interactive = false, bool telegramEnabled = false)
         {
             Directory.CreateDirectory(_directory);
             var instructions = Path.Combine(_directory, "AGENTS.md");
@@ -207,8 +270,18 @@ public sealed class WorkerV011Tests
             };
             GitHub = new FakeGitHub(Events, Cancellation);
             Codex = new FakeCodex(Events);
-            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, new WorkerConsole(Output, interactive: false));
+            var output = new WorkerConsole(Output, interactive, ErrorOutput);
+            if (telegramEnabled)
+            {
+                _telegramHandler = new StubTelegramHandler();
+                _telegramClient = new HttpClient(_telegramHandler);
+                _telegram = new TelegramNotifier(true, "fake-token", "fake-chat", _telegramClient, output);
+            }
+            else _telegram = new TelegramNotifier(false, output);
+            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output);
         }
+
+        public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
 
         public async Task RunAsync() => await Worker.RunAsync(Cancellation.Token);
 
@@ -216,7 +289,20 @@ public sealed class WorkerV011Tests
         {
             Cancellation.Dispose();
             _telegram.Dispose();
+            _telegramClient?.Dispose();
             try { Directory.Delete(_directory, recursive: true); } catch { }
+        }
+
+        private sealed class StubTelegramHandler : HttpMessageHandler
+        {
+            public List<string> Messages { get; } = [];
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var document = System.Text.Json.JsonDocument.Parse(body);
+                Messages.Add(document.RootElement.GetProperty("text").GetString()!);
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            }
         }
     }
 
@@ -224,6 +310,9 @@ public sealed class WorkerV011Tests
     {
         private bool _returned;
         public bool ReturnIssueOnFirstQuery { get; set; } = true;
+        public bool CancelWhenEmpty { get; set; } = true;
+        public bool CancelDuringQuery { get; set; }
+        public bool CancelDuringClaim { get; set; }
         public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
@@ -233,14 +322,27 @@ public sealed class WorkerV011Tests
         {
             FindCalls++;
             events.Add("find");
+            if (CancelDuringQuery)
+            {
+                cancellation.Cancel();
+                return Task.FromException<GitHubIssue?>(new OperationCanceledException(cancellation.Token));
+            }
             if (ReturnIssueOnFirstQuery && !_returned) { _returned = true; return Task.FromResult<GitHubIssue?>(Issue); }
             // End the polling loop without waiting; no real GitHub service is involved.
-            cancellation.Cancel();
+            if (CancelWhenEmpty) cancellation.Cancel();
             return Task.FromResult<GitHubIssue?>(null);
         }
 
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
-        { Labels.Add($"{remove}->{add}"); return Task.CompletedTask; }
+        {
+            Labels.Add($"{remove}->{add}");
+            if (CancelDuringClaim && remove == "ready")
+            {
+                cancellation.Cancel();
+                return Task.FromException(new WorkerInfrastructureException("GitHub operation was cancelled; remote Issue state may be uncertain.", new OperationCanceledException(ct)));
+            }
+            return Task.CompletedTask;
+        }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
         { Comments.Add(comment); return Task.CompletedTask; }
         public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;

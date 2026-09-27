@@ -19,18 +19,19 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             if (!File.Exists(config.Codex.InstructionsFile))
                 throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
             await git.InitializeAsync(ct);
+            safelyIdle = true;
             await _output.RunProgressAsync("Codex preflight", async () =>
             {
                 await codex.PreflightAsync(ct);
                 return true;
             }, failureDetail: ex => ex.Message, ct: ct);
-            safelyIdle = true;
             await telegram.StartedAsync(config.Project.Name, ct);
             _output.Started();
             while (!ct.IsCancellationRequested)
             {
+                _output.Waiting();
                 var issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct);
-                if (issue is null) { _output.Waiting(); await DelayAsync(ct); continue; }
+                if (issue is null) { await DelayAsync(ct); continue; }
                 await _output.StopWaitingAsync();
                 safelyIdle = false;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
@@ -45,14 +46,22 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await _output.StopWaitingAsync();
             _output.Shutdown();
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
             await _output.StopWaitingAsync();
-            var message = safelyIdle
-                ? "Worker stopped."
-                : "Cancellation interrupted an operation. Inspect the Issue and checkout state before restarting.";
-            _output.Shutdown(message);
-            await telegram.StoppedAsync(config.Project.Name, CancellationToken.None);
+            if (safelyIdle)
+            {
+                _output.Shutdown("Worker stopped.");
+                await telegram.StoppedAsync(config.Project.Name, CancellationToken.None);
+            }
+            else
+            {
+                var infrastructure = new WorkerInfrastructureException(
+                    "Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
+                _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
+                await telegram.CriticalAsync(config.Project.Name, infrastructure.Message, CancellationToken.None);
+                throw infrastructure;
+            }
         }
         catch (Exception ex)
         {
