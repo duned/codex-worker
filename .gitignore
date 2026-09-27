@@ -7,7 +7,9 @@ TestResults/
 # Local settings, credentials, and runtime output
 .env
 .env.*
+*.env
 !*.example
+!*.example.env
 *.yml
 *.yaml
 !*.example.yml

@@ -31,8 +31,8 @@ public sealed class WorkerHost
             {
                 var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
                 var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
-                var codex = new CodexExecutor(_runner, config.Codex);
-                var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds);
+                var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
+                var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
                 runtimes.Add(new ProjectRuntime(path, config, git,
                     new Worker(config, github, git, codex, validation, telegram, _output), codex, github));
             }

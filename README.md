@@ -1,14 +1,16 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.2.1. The startup header reads its version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in that project's dedicated checkout, runs that project's authoritative validation, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.3.0. The startup header reads its version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in that project's dedicated checkout, runs that project's authoritative validation, and owns the Git and GitHub lifecycle.
 
-## V0.2 architecture
+## V0.3 architecture
 
 At startup the worker loads one global YAML file, discovers every project YAML file in the configured directory in deterministic filename order, validates the complete set, and inspects every checkout without changing it. Only after all projects pass those read-only checks does it query repository labels and create missing configured labels. Existing labels are left unchanged; custom names from each project's `github` section are supported. A validation, label query, or label creation failure stops startup before Issue queue access. The worker then initializes each checkout and runs one global Codex CLI/authentication preflight.
 
 The scheduler scans projects in round-robin order and stops at the first ready Issue. After processing an Issue, its next scan starts with the following project. Empty queues are skipped. When all queues are empty, the worker waits for the global polling interval before scanning again. There is never more than one active Issue or Codex execution across the process.
 
 Each project retains its own repository, checkout, Git branches and lifecycle settings, GitHub labels, Codex instructions/model/reasoning/timeout, and validation commands/timeout/repair limit. There is no mutable current-project configuration. Telegram enablement and polling interval are worker-global.
+
+Each project may configure an `environment.file` dotenv file. Its values are loaded and validated before startup proceeds to GitHub label or Issue queue access, then passed only to that project's Codex and validation child processes. Values are not added to the worker process environment and are not shared with other projects. Codex still filters GitHub authentication and protects its isolated Git credential configuration.
 
 A structured task failure or exhausted validation repair is safely reported and the scheduler continues. Blocked Issues are marked blocked and the scheduler continues. Infrastructure failures—including Codex service/authentication errors and uncertain Git/GitHub operations—stop the entire worker. Queue reads are safe to cancel; cancellation after a claim or during a state-changing operation is treated conservatively.
 
@@ -21,6 +23,22 @@ CodexWorker ~/.codex-worker/worker.yml
 ```
 
 Relative `projects.directory` paths resolve from the global config file. Project `directory` paths resolve from their project YAML file; relative `codex.instructionsFile` paths resolve from the checkout. Only `.yml` and `.yaml` files are discovered, sorted by filename; unrelated files are ignored. Any malformed project file fails startup. At least one project is required. Duplicate project names, GitHub repositories, or checkout paths are rejected. `worker.preflightTimeoutSeconds` applies to the one global preflight and is bounded to 1–300 seconds.
+
+An optional project environment section accepts only a file path:
+
+```yaml
+project:
+  name: Finance
+  repository: duned/finance
+  directory: /home/worker/projects/finance
+
+environment:
+  file: /home/worker/.config/finance/test.env
+```
+
+For example, that file can contain `FINANCE_POSTGRES_TEST_CONNECTION_STRING=Host=localhost;Port=5432;Database=finance_test;Username=finance;Password=placeholder`. Store actual credentials only in the protected environment file.
+
+Absolute paths are supported. Relative `environment.file` paths resolve from the project YAML file. Files use one `KEY=VALUE` entry per line; blank lines and lines beginning with `#` are ignored, and text after the first `=` is preserved as the value. The file is parsed as data and is never sourced by a shell. Keep it outside the repository and restrict access, for example with `chmod 600 /home/worker/.config/finance/test.env`. Do not place real credentials in project YAML or checked-in files. Projects without this section behave as before.
 
 To migrate from V0.1.x, move its project YAML into the new projects directory. Remove `telegram`, `worker.pollingSeconds`, and `codex.preflightTimeoutSeconds` from that project file. Put Telegram enablement, polling interval, and the global preflight timeout in `worker.yml`. Keep per-project `worker.gitTimeoutSeconds` and `worker.githubTimeoutSeconds` if customized. There is one CLI/configuration path; `CodexWorker <project.yml>` is no longer supported.
 
@@ -46,6 +64,6 @@ The application does not daemonize itself. A future systemd service can own this
 
 The worker never force-pushes or automatically resolves merge conflicts. Task cleanup is allowed only after verifying the worker-created branch and starting commit. Infrastructure failures preserve checkout state for manual review. GitHub mutations are separate, so an error after a partial transition can leave state requiring inspection. No speculative recovery or service retry is attempted.
 
-V0.2 assumes exactly one Codex Worker instance manages a given configured repository. The local checkout lock prevents two local processes from owning one checkout, but there are no distributed leases or cross-machine ownership guarantees. Multiple projects are supported; parallel Issue execution, multiple-worker coordination, databases, webhooks, session recovery, and service-manager setup are not.
+V0.3 assumes exactly one Codex Worker instance manages a given configured repository. The local checkout lock prevents two local processes from owning one checkout, but there are no distributed leases or cross-machine ownership guarantees. Multiple projects are supported; parallel Issue execution, multiple-worker coordination, databases, webhooks, session recovery, and service-manager setup are not.
 
 Codex runs with the existing restricted child environment and Git state verification. Treat Codex and repository instructions as trusted, use a least-privileged worker account, and do not put credentials in repository files or Codex-visible content. Validation commands are trusted project YAML and run sequentially with bounded timeouts and repair attempts.
