@@ -1,13 +1,12 @@
-# Copy this file to a private location and edit it for your project.
 project:
   name: Example Project
   repository: owner/repository
-  directory: ../your-project-checkout
+  directory: /home/worker/projects/repository
 
 git:
   baseBranch: main
   featurePrefix: feature/
-  completedPrefix: completed/
+  completedPrefix: done/feature/
   autoMerge: true
   pushCompletedBranch: true
   deleteLocalFeatureBranch: true
@@ -21,23 +20,14 @@ github:
 
 codex:
   instructionsFile: AGENTS.md
-  # model: gpt-5.6-sol
-  reasoningEffort: medium
+  model: gpt-6-luna
+  reasoningEffort: high
   timeoutMinutes: 90
-  preflightTimeoutSeconds: 60
 
 validation:
-  # Commands are run sequentially from the project directory.
   timeoutSeconds: 900
   maxFixAttempts: 2
   commands:
-    - ./scripts/validate.sh
+    - dotnet test
 
-telegram:
-  # When enabled, provide TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the worker environment.
-  enabled: false
-
-worker:
-  pollingSeconds: 60
-  gitTimeoutSeconds: 120
-  githubTimeoutSeconds: 60
+# gitTimeoutSeconds and githubTimeoutSeconds default to 120 and 60.

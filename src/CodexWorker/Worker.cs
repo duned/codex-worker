@@ -10,6 +10,40 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
 
+    public WorkerConfiguration Configuration => config;
+
+    public async Task PrepareForHostAsync(CancellationToken ct)
+    {
+        if (!File.Exists(config.Codex.InstructionsFile))
+            throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
+        await git.InitializeAsync(ct);
+    }
+
+    /// <summary>Checks this project's queue once and processes at most one claimed Issue.</summary>
+    public async Task<bool> ProcessOneAsync(CancellationToken ct)
+    {
+        GitHubIssue? issue;
+        try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
+        if (issue is null) return false;
+        try
+        {
+            await _output.StopWaitingAsync();
+            await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+            _output.IssueStarted(config.Project.Name, issue);
+            await telegram.StartingAsync(config.Project.Name, issue, ct);
+            var timer = Stopwatch.StartNew();
+            var result = await ProcessClaimedIssueAsync(issue, ct);
+            timer.Stop();
+            await ReportResultAsync(issue, result with { Duration = timer.Elapsed }, ct);
+            return true;
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
+        }
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         _output.Startup(config.Project.Name, config.Project.Repository);
@@ -138,27 +172,28 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.CommentAsync(issue.Number, result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
                 await telegram.SuccessAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
-                _output.IssueCompleted(issue, result.Duration, ShortCompletion(result.Summary));
+                _output.IssueCompleted(config.Project.Name, issue, result.Duration, ShortCompletion(result.Summary));
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, $"Human input is required to continue: {result.Summary}", ct);
                 await telegram.BlockedAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
-                _output.IssueBlocked(issue, result.Duration, result.Summary);
+                _output.IssueBlocked(config.Project.Name, issue, result.Duration, result.Summary);
                 break;
             case IssueOutcomeKind.Failed:
                 var message = Limit(result.Summary, 1400);
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, $"Worker could not complete this Issue: {message}", ct);
                 await telegram.FailedAsync(config.Project.Name, issue, result.Duration, message, ct);
-                _output.IssueFailed(issue, result.Duration, FirstLine(message));
+                _output.IssueFailed(config.Project.Name, issue, result.Duration, FirstLine(message));
                 break;
         }
     }
 
     private async Task DelayAsync(CancellationToken ct)
     {
-        try { await Task.Delay(TimeSpan.FromSeconds(config.Worker.PollingSeconds), ct); }
+        // Compatibility loop remains available to existing workflow tests; production polling is owned by WorkerHost.
+        try { await Task.Delay(TimeSpan.FromSeconds(60), ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     }
 

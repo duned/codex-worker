@@ -43,17 +43,20 @@ public sealed class TelegramNotifier : IDisposable
     public Task StartedAsync(string project, CancellationToken ct) =>
         SendAsync(Format($"🟢 CODEX WORKER · INICIADO\n{project}"), ct);
 
+    public Task StartedAsync(int projectCount, CancellationToken ct) =>
+        SendAsync(Format($"🟢 CODEX WORKER · INICIADO\n{projectCount} proyectos cargados"), ct);
+
     public Task StoppedAsync(string project, CancellationToken ct) =>
         SendAsync(Format($"⚫ CODEX WORKER · DETENIDO\n{project}"), ct);
 
     public Task StartingAsync(string project, GitHubIssue issue, CancellationToken ct) =>
-        SendAsync(Format($"▶️ TAREA INICIADA · #{issue.Number}\n{Clean(issue.Title)}\n{project}"), ct);
+        SendAsync(Format($"▶️ TAREA INICIADA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}"), ct);
 
     public Task SuccessAsync(string project, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
     {
         var lines = new List<string>
         {
-            $"✅ TAREA COMPLETADA · #{issue.Number}", Clean(issue.Title), "",
+            $"✅ TAREA COMPLETADA · {project.ToUpperInvariant()} · #{issue.Number}", Clean(issue.Title), "",
             $"Duración: {WorkerConsole.FormatDuration(duration)}"
         };
         var commit = Regex.Match(summary, @"Committed as `([^`]+)`");
@@ -71,13 +74,16 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     public Task BlockedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format($"🟡 TAREA BLOQUEADA · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}"), ct);
+        SendAsync(Format($"🟡 TAREA BLOQUEADA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}"), ct);
 
     public Task FailedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format($"❌ TAREA FALLIDA · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}\nDuración: {WorkerConsole.FormatDuration(duration)}"), ct);
+        SendAsync(Format($"❌ TAREA FALLIDA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}\nDuración: {WorkerConsole.FormatDuration(duration)}"), ct);
 
-    public Task CriticalAsync(string project, string details, CancellationToken ct) =>
-        SendAsync(Format($"🚨 CODEX WORKER · INFRAESTRUCTURA\n{project}\n\nWorker detenido\n{Clean(details)}"), ct);
+    public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
+        SendAsync(Format($"🚨 CODEX WORKER · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
+
+    public Task StoppedAsync(int projectCount, CancellationToken ct) =>
+        SendAsync(Format("⚫ CODEX WORKER · DETENIDO"), ct);
 
     public static string Format(string message) => string.Join("\n", message.Split('\n').Select(line =>
         string.IsNullOrWhiteSpace(line) ? "" : Clean(line)));

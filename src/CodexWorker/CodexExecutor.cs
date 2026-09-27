@@ -68,7 +68,9 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings) 
         return await RunStructuredAsync(projectDirectory, prompt, ct);
     }
 
-    public async Task PreflightAsync(CancellationToken ct)
+    public Task PreflightAsync(CancellationToken ct) => PreflightAsync(ct, 60);
+
+    public async Task PreflightAsync(CancellationToken ct, int timeoutSeconds)
     {
         var tempDirectory = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-{Guid.NewGuid():N}");
         var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-output-{Guid.NewGuid():N}.txt");
@@ -81,7 +83,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings) 
             try
             {
                 result = await runner.RunAsync("codex", args, tempDirectory,
-                    TimeSpan.FromSeconds(settings.PreflightTimeoutSeconds), ct, environment.Variables);
+                    TimeSpan.FromSeconds(timeoutSeconds), ct, environment.Variables);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)

@@ -265,8 +265,7 @@ public sealed class WorkerV011Tests
                 GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
                 Codex = new CodexSettings { InstructionsFile = instructions },
                 Validation = new ValidationSettings { Commands = ["authoritative-check"], MaxFixAttempts = 2 },
-                Telegram = new TelegramSettings { Enabled = false },
-                Worker = new WorkerSettings { PollingSeconds = 1 }
+                Worker = new WorkerSettings()
             };
             GitHub = new FakeGitHub(Events, Cancellation);
             Codex = new FakeCodex(Events);

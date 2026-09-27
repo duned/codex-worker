@@ -11,7 +11,7 @@ This repository contains the generic .NET 10 Codex worker. Keep it project-agnos
 - Run the Codex availability preflight before querying the Issue queue. Validation repair attempts are bounded by configuration; do not add service retries.
 - The configured checkout is dedicated to one worker and must not be edited concurrently. Never add cleanup that discards changes without checking the worker branch and starting commit; preserve state on infrastructure failures.
 - Secrets are read from environment variables. Never add credentials to YAML examples, tests, or source control.
-- Keep the V0.1.1 single-project, single-worker polling model. Avoid adding database, webhooks, concurrency, Codex service retries, worktrees, or recovery machinery without an explicit versioned requirement.
+- Keep the V0.2 single-process, multi-project polling model globally sequential, with at most one active Issue. Avoid adding database, webhooks, parallel Codex execution, distributed ownership, Codex service retries, worktrees, or recovery machinery without an explicit versioned requirement.
 
 ## Implementation practices
 

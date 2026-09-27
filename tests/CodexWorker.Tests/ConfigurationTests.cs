@@ -37,10 +37,7 @@ public sealed class ConfigurationTests
                 validation:
                   commands:
                     - ./check.sh
-                telegram:
-                  enabled: false
                 worker:
-                  pollingSeconds: 9
                   gitTimeoutSeconds: 80
                   githubTimeoutSeconds: 40
                 # nested validation timeout is optional
@@ -51,11 +48,9 @@ public sealed class ConfigurationTests
             Assert.Equal(Path.Combine(folder, "checkout"), config.Project.Directory);
             Assert.Equal(Path.Combine(folder, "checkout", "AGENTS.md"), config.Codex.InstructionsFile);
             Assert.Equal("./check.sh", Assert.Single(config.Validation.Commands));
-            Assert.Equal(9, config.Worker.PollingSeconds);
             Assert.Equal(80, config.Worker.GitTimeoutSeconds);
             Assert.Equal(900, config.Validation.TimeoutSeconds);
             Assert.Equal(2, config.Validation.MaxFixAttempts);
-            Assert.Equal(60, config.Codex.PreflightTimeoutSeconds);
             Assert.False(config.Git.AutoMerge);
         }
         finally { Directory.Delete(folder, recursive: true); }
@@ -77,6 +72,22 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Fact]
+    public void RejectsWorkerGlobalSettingsInsideProjectFile()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"worker-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "project.yml");
+            File.WriteAllText(path, "worker:\n  pollingSeconds: 10\n");
+            Assert.Throws<InvalidDataException>(() => WorkerConfiguration.Load(path));
+            File.WriteAllText(path, "telegram:\n  enabled: false\n");
+            Assert.Throws<InvalidDataException>(() => WorkerConfiguration.Load(path));
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
     [Theory]
     [InlineData("owner/repo", true)]
     [InlineData("owner", false)]
@@ -90,14 +101,14 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
-    public void RejectsDuplicateGitHubLabelsAndInvalidPollingInterval()
+    public void RejectsDuplicateGitHubLabelsAndInvalidGitTimeout()
     {
         var config = ValidConfig();
         config.GitHub.FailedLabel = config.GitHub.ReadyLabel;
-        config.Worker.PollingSeconds = 0;
+        config.Worker.GitTimeoutSeconds = 0;
         var error = Assert.Throws<InvalidDataException>(config.Validate);
         Assert.Contains("labels must be distinct", error.Message);
-        Assert.Contains("pollingSeconds", error.Message);
+        Assert.Contains("gitTimeoutSeconds", error.Message);
     }
 
     [Theory]
@@ -124,7 +135,6 @@ public sealed class ConfigurationTests
         GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
         Codex = new CodexSettings { InstructionsFile = "/tmp/project/AGENTS.md" },
         Validation = new ValidationSettings(),
-        Telegram = new TelegramSettings(),
         Worker = new WorkerSettings()
     };
 }

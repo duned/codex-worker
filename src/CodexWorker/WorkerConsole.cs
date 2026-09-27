@@ -26,6 +26,19 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
     }
 
+    public void Startup(int projectCount)
+    {
+        if (_interactive) { lock (_writer) { _writer.Write("\u001b[2J\u001b[H"); _writer.Flush(); } }
+        _waiting = false;
+        WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
+        WriteLine("CODEX WORKER", ConsoleColor.Cyan);
+        WriteLine($"{projectCount} project{(projectCount == 1 ? "" : "s")}", null);
+        WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
+    }
+
+    public void ProjectLoaded(string name) => WriteLine($"Loaded · {name}", ConsoleColor.Green, "✓");
+    public void GlobalPreflight() => WriteLine("Global Codex preflight", ConsoleColor.Cyan, "▶");
+
     public void Started() => WriteLine("Worker started.", ConsoleColor.Green, "✓");
     public void Shutdown(string message = "Worker stopped.") { _waiting = false; WriteLine(message, null, "■"); }
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
@@ -70,12 +83,25 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"#{issue.Number} · {issue.Title}", ConsoleColor.Cyan, "▶");
     }
 
+    public void IssueStarted(string project, GitHubIssue issue)
+    {
+        _waiting = false;
+        WriteLine($"{project.ToUpperInvariant()} · #{issue.Number} · {issue.Title}", ConsoleColor.Cyan, "▶");
+    }
+
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) =>
         WriteLine($"#{issue.Number} completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) =>
         WriteLine($"#{issue.Number} blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
         WriteLine($"#{issue.Number} failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
+
+    public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
+        WriteLine($"{project} · #{issue.Number} completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
+    public void IssueBlocked(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
+        WriteLine($"{project} · #{issue.Number} blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
+    public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
+        WriteLine($"{project} · #{issue.Number} failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
 
     public async Task<T> RunProgressAsync<T>(string label, Func<Task<T>> operation, Func<T, string>? completion = null,
         Func<T, bool>? succeeded = null, Func<T, bool>? warning = null,

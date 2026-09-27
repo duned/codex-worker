@@ -1,0 +1,10 @@
+worker:
+  pollingSeconds: 60
+  preflightTimeoutSeconds: 60
+  preflightTimeoutSeconds: 60
+
+projects:
+  directory: ./projects
+
+telegram:
+  enabled: false

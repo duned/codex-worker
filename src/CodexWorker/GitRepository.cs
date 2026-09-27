@@ -13,6 +13,28 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
 
     public void Dispose() => _workerLock?.Dispose();
 
+    /// <summary>Read-only safety inspection used across every configured project before any queue is queried.</summary>
+    public async Task ValidateStartupReadOnlyAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (!Directory.Exists(directory)) throw new WorkerInfrastructureException($"Dedicated project checkout does not exist: {directory}");
+            var top = Path.GetFullPath((await GitAsync(["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
+            if (!Path.GetFullPath(directory).Equals(top, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new WorkerInfrastructureException($"Configured directory must be the Git checkout root. Git root: {top}");
+            await EnsureOriginAsync(ct);
+            await EnsureCleanAsync("before worker startup", ct);
+            await ValidateBranchRefAsync(settings.BaseBranch, ct);
+            await ValidateBranchRefAsync($"{settings.FeaturePrefix}1-sample", ct);
+            await ValidateBranchRefAsync($"{settings.CompletedPrefix}1-sample", ct);
+            var branch = await GetCurrentBranchAsync(ct);
+            if (branch != settings.BaseBranch)
+                throw new WorkerInfrastructureException($"Checkout is on '{branch}' at startup, not configured base branch '{settings.BaseBranch}'.");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Could not validate configured checkout without mutation: {ex.Message}", ex); }
+    }
+
     public static string SanitizeTitle(string title)
     {
         var value = title.ToLowerInvariant();

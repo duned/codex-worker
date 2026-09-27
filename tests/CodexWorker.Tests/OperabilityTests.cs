@@ -157,12 +157,12 @@ public sealed class OperabilityTests
         await telegram.CriticalAsync("Codex Worker Test", "Git integration state is uncertain", CancellationToken.None);
 
         Assert.StartsWith("🟢 CODEX WORKER · INICIADO\nCodex Worker Test", MessageAt(0));
-        Assert.StartsWith("▶️ TAREA INICIADA · #5\nAdd application uptime endpoint\nCodex Worker Test", MessageAt(1));
-        Assert.StartsWith("🟡 TAREA BLOQUEADA · #5\nAdd application uptime endpoint", MessageAt(2));
+        Assert.StartsWith("▶️ TAREA INICIADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(1));
+        Assert.StartsWith("🟡 TAREA BLOQUEADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
-        Assert.StartsWith("❌ TAREA FALLIDA · #5\nAdd application uptime endpoint", MessageAt(3));
+        Assert.StartsWith("❌ TAREA FALLIDA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
-        Assert.StartsWith("🚨 CODEX WORKER · INFRAESTRUCTURA\nCodex Worker Test\n\nWorker detenido", MessageAt(4));
+        Assert.StartsWith("🚨 CODEX WORKER · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
         Assert.All(handler.Bodies, body =>
         {
             Assert.DoesNotContain("════════════", body);
@@ -186,7 +186,7 @@ public sealed class OperabilityTests
         Assert.Contains("Commit: abcdef123456", message);
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
-        Assert.StartsWith("✅ TAREA COMPLETADA · #3\nAdd config", message);
+        Assert.StartsWith("✅ TAREA COMPLETADA · EXAMPLE · #3\nAdd config", message);
         Assert.DoesNotContain("════════════", message);
     }
 
@@ -201,6 +201,20 @@ public sealed class OperabilityTests
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.StartsWith("⚫ CODEX WORKER · DETENIDO\nExample", message);
         Assert.DoesNotContain("Cancellation received", message);
+    }
+
+    [Fact]
+    public async Task GlobalLifecycleNotificationsUseProjectCountAndNoProjectIdentity()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
+        await telegram.StartedAsync(2, CancellationToken.None);
+        await telegram.StoppedAsync(2, CancellationToken.None);
+        using var start = JsonDocument.Parse(handler.Bodies[0]);
+        using var stop = JsonDocument.Parse(handler.Bodies[1]);
+        Assert.Equal("🟢 CODEX WORKER · INICIADO\n2 proyectos cargados", start.RootElement.GetProperty("text").GetString());
+        Assert.Equal("⚫ CODEX WORKER · DETENIDO", stop.RootElement.GetProperty("text").GetString());
     }
 
     private sealed class RecordingHandler(HttpStatusCode status) : HttpMessageHandler

@@ -11,7 +11,6 @@ public sealed class WorkerConfiguration
     public GitHubSettings GitHub { get; set; } = new();
     public CodexSettings Codex { get; set; } = new();
     public ValidationSettings Validation { get; set; } = new();
-    public TelegramSettings Telegram { get; set; } = new();
     public WorkerSettings Worker { get; set; } = new();
 
     public static WorkerConfiguration Load(string path)
@@ -49,11 +48,8 @@ public sealed class WorkerConfiguration
             errors.Add("github labels must be distinct.");
         Required(Codex.InstructionsFile, "codex.instructionsFile", errors);
         if (Codex.TimeoutMinutes <= 0) errors.Add("codex.timeoutMinutes must be greater than zero.");
-        if (Codex.PreflightTimeoutSeconds <= 0 || Codex.PreflightTimeoutSeconds > 300)
-            errors.Add("codex.preflightTimeoutSeconds must be between 1 and 300.");
         if (!new[] { "low", "medium", "high", "xhigh" }.Contains(Codex.ReasoningEffort, StringComparer.OrdinalIgnoreCase))
             errors.Add("codex.reasoningEffort must be low, medium, high, or xhigh.");
-        if (Worker.PollingSeconds <= 0) errors.Add("worker.pollingSeconds must be greater than zero.");
         if (Worker.GitTimeoutSeconds <= 0) errors.Add("worker.gitTimeoutSeconds must be greater than zero.");
         if (Worker.GitHubTimeoutSeconds <= 0) errors.Add("worker.githubTimeoutSeconds must be greater than zero.");
         if (Validation.TimeoutSeconds <= 0) errors.Add("validation.timeoutSeconds must be greater than zero.");
@@ -74,6 +70,106 @@ public sealed class WorkerConfiguration
     private static void Required(string? value, string name, ICollection<string> errors)
     {
         if (string.IsNullOrWhiteSpace(value)) errors.Add($"{name} is required.");
+    }
+}
+
+/// <summary>Global settings shared by the single sequential worker process.</summary>
+public sealed class GlobalWorkerConfiguration
+{
+    public GlobalWorkerSettings Worker { get; set; } = new();
+    public ProjectsSettings Projects { get; set; } = new();
+    public TelegramSettings Telegram { get; set; } = new();
+
+    public static GlobalWorkerConfiguration Load(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        try
+        {
+            var value = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
+                .WithDuplicateKeyChecking().Build().Deserialize<GlobalWorkerConfiguration>(File.ReadAllText(fullPath))
+                ?? throw new InvalidDataException("Configuration YAML is empty.");
+            if (string.IsNullOrWhiteSpace(value.Projects.Directory)) throw new InvalidDataException("projects.directory is required.");
+            if (!Path.IsPathRooted(value.Projects.Directory)) value.Projects.Directory = Path.GetFullPath(value.Projects.Directory, Path.GetDirectoryName(fullPath)!);
+            if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
+            if (value.Worker.PreflightTimeoutSeconds <= 0 || value.Worker.PreflightTimeoutSeconds > 300)
+                throw new InvalidDataException("worker.preflightTimeoutSeconds must be between 1 and 300.");
+            return value;
+        }
+        catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid global worker configuration '{fullPath}': {ex.Message}", ex); }
+    }
+}
+
+public sealed class GlobalWorkerSettings
+{
+    public int PollingSeconds { get; set; } = 60;
+    public int PreflightTimeoutSeconds { get; set; } = 60;
+}
+public sealed class ProjectsSettings { public string Directory { get; set; } = "./projects"; }
+
+public static class ProjectConfigurationDiscovery
+{
+    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory)
+    {
+        if (!Directory.Exists(directory)) throw new InvalidDataException($"Projects directory does not exist: {directory}");
+        var files = Directory.EnumerateFiles(directory).Where(x =>
+            Path.GetExtension(x).Equals(".yml", StringComparison.OrdinalIgnoreCase) ||
+            Path.GetExtension(x).Equals(".yaml", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ThenBy(x => x, StringComparer.Ordinal).ToArray();
+        if (files.Length == 0) throw new InvalidDataException($"No project YAML files found in {directory}.");
+        var projects = new List<(string, WorkerConfiguration)>();
+        foreach (var file in files)
+        {
+            try { projects.Add((Path.GetFullPath(file), WorkerConfiguration.Load(file))); }
+            catch (Exception ex) { throw new InvalidDataException($"Project configuration '{file}' is invalid: {ex.Message}", ex); }
+        }
+        ValidateSet(projects);
+        return projects;
+    }
+
+    public static void ValidateSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)
+    {
+        Duplicate(projects, p => p.Configuration.Project.Name, "project name");
+        Duplicate(projects, p => p.Configuration.Project.Repository, "GitHub repository");
+        Duplicate(projects, p => Path.GetFullPath(p.Configuration.Project.Directory), "checkout directory");
+        foreach (var (path, config) in projects)
+        {
+            if (!Directory.Exists(config.Project.Directory)) throw new InvalidDataException($"Project configuration '{path}': checkout directory does not exist: {config.Project.Directory}");
+            if (!File.Exists(config.Codex.InstructionsFile)) throw new InvalidDataException($"Project configuration '{path}': configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
+        }
+    }
+
+    private static void Duplicate(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> items,
+        Func<(string Path, WorkerConfiguration Configuration), string> key, string description)
+    {
+        var duplicate = items.GroupBy(key, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null) throw new InvalidDataException($"Duplicate {description} '{duplicate.Key}' in project configuration files: {string.Join(", ", duplicate.Select(x => x.Path))}");
+    }
+}
+
+/// <summary>Pure round-robin cursor. A found project advances the next scan to its successor.</summary>
+public sealed class ProjectScheduler(int projectCount)
+{
+    private int _next;
+    public int ProjectCount { get; } = projectCount > 0 ? projectCount : throw new ArgumentOutOfRangeException(nameof(projectCount));
+    public int NextIndex => _next;
+    public IEnumerable<int> ScanOrder()
+    {
+        for (var i = 0; i < ProjectCount; i++) yield return (_next + i) % ProjectCount;
+    }
+    public void Selected(int index)
+    {
+        if ((uint)index >= (uint)ProjectCount) throw new ArgumentOutOfRangeException(nameof(index));
+        _next = (index + 1) % ProjectCount;
+    }
+    public async Task<int?> ScanAsync(Func<int, Task<bool>> processOne)
+    {
+        foreach (var index in ScanOrder())
+        {
+            if (!await processOne(index)) continue;
+            Selected(index);
+            return index;
+        }
+        return null;
     }
 }
 
@@ -101,7 +197,6 @@ public sealed class CodexSettings
     public string? Model { get; set; }
     public string ReasoningEffort { get; set; } = "medium";
     public int TimeoutMinutes { get; set; } = 60;
-    public int PreflightTimeoutSeconds { get; set; } = 60;
 }
 public sealed class ValidationSettings
 {
@@ -112,7 +207,6 @@ public sealed class ValidationSettings
 public sealed class TelegramSettings { public bool Enabled { get; set; } }
 public sealed class WorkerSettings
 {
-    public int PollingSeconds { get; set; } = 60;
     public int GitTimeoutSeconds { get; set; } = 120;
     [YamlMember(Alias = "githubTimeoutSeconds")]
     public int GitHubTimeoutSeconds { get; set; } = 60;
