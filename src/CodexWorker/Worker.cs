@@ -1,41 +1,62 @@
+using System.Diagnostics;
+
 namespace CodexWorker;
 
 public enum IssueOutcomeKind { Succeeded, Blocked, Failed }
-public sealed record IssueProcessingResult(IssueOutcomeKind Kind, string Summary);
+public sealed record IssueProcessingResult(IssueOutcomeKind Kind, string Summary, TimeSpan Duration = default);
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
-    IValidationRunner validation, TelegramNotifier telegram)
+    IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null)
 {
+    private readonly WorkerConsole _output = output ?? new WorkerConsole();
+
     public async Task RunAsync(CancellationToken ct)
     {
-        Console.WriteLine($"Worker started for {config.Project.Name} ({config.Project.Repository}).");
+        _output.Startup(config.Project.Name, config.Project.Repository);
         try
         {
             if (!File.Exists(config.Codex.InstructionsFile))
                 throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
             await git.InitializeAsync(ct);
-            await codex.PreflightAsync(ct);
+            _output.PreflightStarted();
+            var preflight = Stopwatch.StartNew();
+            try { await codex.PreflightAsync(ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                preflight.Stop();
+                var diagnostic = ex is WorkerInfrastructureException ? ex.Message : $"Codex startup preflight failed: {ex.Message}";
+                _output.PreflightFailed(diagnostic, preflight.Elapsed);
+                throw;
+            }
+            preflight.Stop();
+            _output.PreflightSucceeded(preflight.Elapsed);
+            await telegram.StartedAsync(config.Project.Name, ct);
+            _output.Started();
             while (!ct.IsCancellationRequested)
             {
                 var issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct);
-                if (issue is null) { await DelayAsync(ct); continue; }
+                if (issue is null) { _output.Waiting(); await DelayAsync(ct); continue; }
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
-                await telegram.StartingAsync(config.Project.Name, issue.Number, issue.Title, ct);
-                Console.WriteLine($"Starting Issue #{issue.Number}: {issue.Title}");
+                _output.IssueStarted(issue);
+                await telegram.StartingAsync(config.Project.Name, issue, ct);
+                var issueTimer = Stopwatch.StartNew();
                 var result = await ProcessClaimedIssueAsync(issue, ct);
-                await ReportResultAsync(issue, result, ct);
+                issueTimer.Stop();
+                await ReportResultAsync(issue, result with { Duration = issueTimer.Elapsed }, ct);
             }
-            Console.WriteLine("Worker stopped.");
+            _output.Shutdown();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            Console.WriteLine("Cancellation received; stopping without speculative checkout cleanup.");
+            const string message = "Cancellation received; stopping without speculative checkout cleanup.";
+            _output.Shutdown(message);
+            await telegram.StoppedAsync(config.Project.Name, message, CancellationToken.None);
         }
         catch (Exception ex)
         {
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Unexpected worker failure; queue processing stopped: {ex.Message}", ex);
-            Console.Error.WriteLine($"CRITICAL: {infrastructure.Message}");
+            _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
             await telegram.CriticalAsync(config.Project.Name, infrastructure.Message, CancellationToken.None);
             throw infrastructure;
         }
@@ -44,7 +65,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(GitHubIssue issue, CancellationToken ct)
     {
         await git.StartIssueAsync(issue, ct);
-        var outcome = await codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct);
+        var outcome = await _output.RunProgressAsync("Codex working", () =>
+            codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct),
+            completion: x => x.Status, succeeded: x => x.Status == "success",
+            warning: x => x.Status == "blocked", ct: ct);
         await git.VerifyCodexStateAsync(ct);
         if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
         if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
@@ -52,7 +76,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var repairAttempts = 0;
         while (true)
         {
-            var validationResult = await validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct);
+            var validationResult = await _output.RunProgressAsync("Validation", () =>
+                validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct),
+                x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
+                x => x.Succeeded, ct: ct);
             if (validationResult.Succeeded) break;
 
             await git.VerifyCodexStateAsync(ct);
@@ -61,19 +88,21 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, failure.ToSummary(), ct);
 
             repairAttempts++;
-            outcome = await codex.RepairAsync(config.Project.Directory, config.Codex.InstructionsFile, issue,
-                failure, repairAttempts, config.Validation.MaxFixAttempts, ct);
+            outcome = await _output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
+                codex.RepairAsync(config.Project.Directory, config.Codex.InstructionsFile, issue,
+                    failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
+                completion: x => x.Status, succeeded: x => x.Status == "success",
+                warning: x => x.Status == "blocked", ct: ct);
             await git.VerifyCodexStateAsync(ct);
-            if (outcome.Status == "blocked")
-                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
-            if (outcome.Status == "failed")
-                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
+            if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
+            if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
         }
 
         await git.VerifyCodexStateAsync(ct);
-        var completion = await git.CommitAndIntegrateAsync(issue, ct);
-        var summary = completion.Summary;
-        if (completion.HasChanges) summary += $"\n\nCodex summary: {outcome.Summary}";
+        var integration = await _output.RunProgressAsync("Integrating", () => git.CommitAndIntegrateAsync(issue, ct),
+            completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
+        var summary = integration.Summary;
+        if (integration.HasChanges) summary += $"\n\nCodex summary: {outcome.Summary}";
         return new IssueProcessingResult(IssueOutcomeKind.Succeeded, summary);
     }
 
@@ -92,21 +121,21 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
-                await telegram.SuccessAsync(config.Project.Name, issue.Number, result.Summary, ct);
-                Console.WriteLine($"Issue #{issue.Number} completed. {result.Summary}");
+                await telegram.SuccessAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
+                _output.IssueCompleted(issue, result.Duration, ShortCompletion(result.Summary));
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, $"Human input is required to continue: {result.Summary}", ct);
-                await telegram.BlockedAsync(config.Project.Name, issue.Number, result.Summary, ct);
-                Console.WriteLine($"Issue #{issue.Number} blocked: {result.Summary}");
+                await telegram.BlockedAsync(config.Project.Name, issue, result.Duration, result.Summary, ct);
+                _output.IssueBlocked(issue, result.Duration, result.Summary);
                 break;
             case IssueOutcomeKind.Failed:
                 var message = Limit(result.Summary, 1400);
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, $"Worker could not complete this Issue: {message}", ct);
-                await telegram.FailedAsync(config.Project.Name, issue.Number, message, ct);
-                Console.Error.WriteLine($"Issue #{issue.Number} failed: {message}");
+                await telegram.FailedAsync(config.Project.Name, issue, result.Duration, message, ct);
+                _output.IssueFailed(issue, result.Duration, FirstLine(message));
                 break;
         }
     }
@@ -117,5 +146,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     }
 
+    private static string ShortCompletion(string summary)
+    {
+        return FirstLine(summary);
+    }
+    private static string FirstLine(string value) => value.Split('\n', 2)[0];
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..(length - 20)] + " … [truncated]";
 }

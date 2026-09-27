@@ -34,6 +34,7 @@ validation:
     - ./scripts/validate.sh
 
 telegram:
+  # When enabled, provide TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the worker environment.
   enabled: false
 
 worker:

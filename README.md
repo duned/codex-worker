@@ -2,7 +2,7 @@
 
 `codex-worker` is a .NET 10 polling worker for one configured GitHub repository. It claims ready Issues sequentially, asks the Codex CLI to implement each request in a dedicated checkout, runs configured validation commands, and owns the Git and GitHub lifecycle.
 
-## V0.1.1 architecture and workflow
+## V0.1.2 architecture and workflow
 
 1. Load and validate YAML configuration with YamlDotNet.
 2. Validate the dedicated checkout, its `origin`, clean state, and configured/generated Git refs. Acquire a local exclusive worker lock.
@@ -11,7 +11,7 @@
 5. Update the base branch with fast-forward-only pull, create a feature branch, and run `codex exec` in `workspace-write` with structured JSON output and the configured task timeout.
 6. Verify that Codex did not change the current branch or commit. Run configured validation commands sequentially, each with a timeout. If a command fails, give Codex up to `validation.maxFixAttempts` bounded repair attempts in the same working tree, rerunning authoritative validation after each repair.
 7. After validation passes, commit and optionally merge/push changes. A successful no-op is completed without an empty commit, merge, or push. If repairs are exhausted or Codex reports a task failure/blocked result, clean up safely and report that Issue without stopping later work.
-8. Update the Issue, comment, and close it on success. With no ready Issue, wait for `worker.pollingSeconds` and poll again.
+8. Update the Issue, comment, and close it on success. With no ready Issue, wait for `worker.pollingSeconds` and poll again. The console reports lifecycle states and elapsed times; optional Telegram messages report worker and Issue outcomes.
 
 GitHub operations remain in the worker. Codex receives project instructions and Issue content only as task context; its final status is parsed from the required output schema, not inferred from prose.
 
@@ -33,6 +33,10 @@ The checkout must be dedicated to this worker. Do not edit it concurrently by ha
 
 The configuration includes project identity and paths; Git branch prefixes and integration choices; GitHub labels; Codex model (optional), reasoning effort, task timeout, and bounded preflight timeout; sequential validation commands, their timeout, and maximum repair attempts; Telegram enablement; poll interval; and Git/GitHub CLI timeouts. `validation.maxFixAttempts` defaults to 2 and is limited to 0–5; zero disables repairs. The Codex preflight timeout defaults to 60 seconds and is limited to 1–300 seconds. Defaults are shown in the example. Validation commands are generic shell commands; no language or build system is assumed. Configuration is trusted input and commands run with the worker user's permissions.
 
+### Console output and timing
+
+The console uses compact semantic states for startup, Codex preflight, waiting, Issue start, Codex work, validation, repair attempts, integration, success, task failure, blocked Issues, infrastructure failure, and shutdown. Interactive stdout gets restrained ANSI colors and an in-place spinner with elapsed time during long operations. Redirected or piped stdout gets line-based status updates with no ANSI or animation. Repeated idle polling is represented by one waiting line until work starts. Preflight duration, Codex run and repair durations, each validation duration, integration duration, and total Issue duration are shown. Successful validation output is kept quiet; a failed command and final task failure include a concise diagnostic.
+
 Codex should run useful local checks while developing when possible, but those self-checks are best effort. If sandbox, network, restore, or environment restrictions prevent an optional check, Codex should report what could not run and why, while returning success if the implementation is complete. The worker's configured `validation.commands` remain the authoritative gate before commit or integration; any configured command failure prevents integration.
 
 Unknown YAML properties and duplicate keys are rejected. Secrets do not belong in project YAML. `.gitignore` excludes common local, private, secret, environment, and log files while retaining `*.example.yml` files.
@@ -45,12 +49,12 @@ The worker expects these five distinct labels to exist in the repository (or the
 - `codex-failed`
 - `codex-done`
 
-When `telegram.enabled` is true, set credentials in the worker environment:
+When `telegram.enabled` is true, set both credentials in the worker environment before startup:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Telegram supports starting, success, blocked, failed, and critical infrastructure-stop notifications. Delivery errors are logged and never change a development task's outcome.
+Telegram sends notifications when the worker starts, an Issue starts, an Issue completes, an Issue is blocked, an Issue fails after a task-level failure or exhausted repairs, and the worker stops through cancellation or an infrastructure failure. It does not send polling, validation, or repair-attempt messages. Credentials are never shown in logs or notifications. Missing credentials cause a clear startup/configuration failure before the checkout is initialized or any Issue is queried. Telegram API/network delivery errors produce a warning and do not prevent startup or change an Issue outcome. V0.1.2 notification labels are centralized in the notifier and currently use concise Spanish status labels.
 
 ## Build and run
 
