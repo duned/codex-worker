@@ -176,6 +176,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         # Generic worker task instructions
         Implement the requested change in the current project checkout. Inspect relevant code, make a focused change, and perform useful local validation while developing whenever possible. Local self-validation is best effort: if a check cannot run because of sandbox, network, missing-tool, package-restore, or other environment restrictions, do not treat that alone as implementation failure. If the implementation is complete, return `success` and identify the check and reason it could not run in `testsOrValidationPerformed`. The worker will run the configured validation commands separately after Codex; those commands are the authoritative validation gate before commit and integration. Do not claim those worker checks have passed.
 
+        In `summary`, provide a concise, self-contained explanation of what was implemented, the important behavior or design decisions, the main application layers affected, and important tests added or changed. Explain the task outcome rather than listing modified files.
+
         Use `success` when the requested implementation is complete, even if an optional Codex-run check was unavailable. Use `failed` only when you could not complete the implementation for a technical reason. Use `blocked` only when a requirement is missing or a human decision/input is needed, and state it in `question`; environment restrictions on optional self-validation alone are not a reason to use `blocked`. Summarize implementation and checks attempted, completed, or unavailable (including reasons) in `testsOrValidationPerformed`.
 
         The worker owns all Git and GitHub lifecycle. Do not create, switch, merge, commit, push, or delete Git branches; do not commit; do not run GitHub CLI commands; do not manipulate Issue labels, comments, or state. Focus only on implementing and locally validating the requested change. The worker will review, validate, commit, and integrate your changes.
@@ -194,6 +196,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         ValidationFailure failure, int attempt, int maximumAttempts) => $"""
         # Generic worker repair instructions
         This is repair attempt {attempt} of {maximumAttempts}, not a new implementation task. Inspect the existing implementation and fix the cause of the authoritative validation failure below while preserving the functionality requested in the original Issue. Make focused changes in-place. You may perform useful local checks, but the worker's configured validation commands remain authoritative and will be run again after this repair. A `success` response means you completed the repair; it does not mean authoritative validation has passed. Return a final response matching the supplied JSON schema. Use `blocked` only when human input or a decision is required, `failed` when you cannot complete the repair for a technical reason, and `success` when the repair changes are ready for the worker validation retry.
+
+        In `summary`, describe only what this repair attempt corrected. Keep it concise and never restate or replace the original implementation summary.
 
         The worker owns the entire Git and GitHub lifecycle. Do not create, switch, merge, commit, push, or delete branches; do not commit; do not run GitHub CLI commands; do not change Issue state, labels, comments, or the queue.
 
