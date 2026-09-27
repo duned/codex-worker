@@ -2,7 +2,7 @@
 
 `codex-worker` is a .NET 10 polling worker for one configured GitHub repository. It claims ready Issues sequentially, asks the Codex CLI to implement each request in a dedicated checkout, runs configured validation commands, and owns the Git and GitHub lifecycle.
 
-## V0.1.2 architecture and workflow
+## V0.1.3 architecture and workflow
 
 1. Load and validate YAML configuration with YamlDotNet.
 2. Validate the dedicated checkout, its `origin`, clean state, and configured/generated Git refs. Acquire a local exclusive worker lock.
@@ -35,7 +35,7 @@ The configuration includes project identity and paths; Git branch prefixes and i
 
 ### Console output and timing
 
-The console uses compact semantic states for startup, Codex preflight, waiting, Issue start, Codex work, validation, repair attempts, integration, success, task failure, blocked Issues, infrastructure failure, and shutdown. Interactive stdout gets restrained ANSI colors and an in-place spinner with elapsed time during long operations. Redirected or piped stdout gets line-based status updates with no ANSI or animation. Repeated idle polling is represented by one waiting line until work starts. Preflight duration, Codex run and repair durations, each validation duration, integration duration, and total Issue duration are shown. Successful validation output is kept quiet; a failed command and final task failure include a concise diagnostic.
+The console uses compact semantic states for startup, Codex preflight, waiting, Issue start, Codex work, validation, repair attempts, integration, success, task failure, blocked Issues, infrastructure failure, and shutdown. Interactive terminals are cleared before the header and get restrained ANSI colors plus in-place spinners with elapsed time during preflight, long operations, and idle polling. Redirected or piped stdout gets line-based status updates with no clear-screen, ANSI, or animation sequences. Repeated idle polling is represented by one waiting line until work starts. Preflight duration, Codex run and repair durations, each validation duration, integration duration, and total Issue duration are shown. Successful validation output is kept quiet; a failed command and final task failure include a concise diagnostic. Ctrl+C while safely idle displays a short stopped message; cancellation during an operation warns that Issue and checkout state need inspection.
 
 Codex should run useful local checks while developing when possible, but those self-checks are best effort. If sandbox, network, restore, or environment restrictions prevent an optional check, Codex should report what could not run and why, while returning success if the implementation is complete. The worker's configured `validation.commands` remain the authoritative gate before commit or integration; any configured command failure prevents integration.
 
@@ -54,7 +54,7 @@ When `telegram.enabled` is true, set both credentials in the worker environment 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Telegram sends notifications when the worker starts, an Issue starts, an Issue completes, an Issue is blocked, an Issue fails after a task-level failure or exhausted repairs, and the worker stops through cancellation or an infrastructure failure. It does not send polling, validation, or repair-attempt messages. Credentials are never shown in logs or notifications. Missing credentials cause a clear startup/configuration failure before the checkout is initialized or any Issue is queried. Telegram API/network delivery errors produce a warning and do not prevent startup or change an Issue outcome. V0.1.2 notification labels are centralized in the notifier and currently use concise Spanish status labels.
+Telegram sends notifications when the worker starts, an Issue starts, an Issue completes, an Issue is blocked, an Issue fails after a task-level failure or exhausted repairs, and the worker stops through cancellation or an infrastructure failure. Messages use a concise semantic icon and event headline, followed by the project or Issue details. Successful completion messages retain the concise Codex summary with duration, commit, and integration branch when available. Telegram does not send polling, validation, or repair-attempt messages. Credentials are never shown in logs or notifications. Missing credentials cause a clear startup/configuration failure before the checkout is initialized or any Issue is queried. Telegram API/network delivery errors produce a warning and do not prevent startup or change an Issue outcome.
 
 ## Build and run
 

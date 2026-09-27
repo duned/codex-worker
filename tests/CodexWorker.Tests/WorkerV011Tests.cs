@@ -115,6 +115,21 @@ public sealed class WorkerV011Tests
         Assert.Equal("preflight", h.Events[0]);
         Assert.Equal("find", h.Events[1]);
         Assert.Contains("ready->working", h.GitHub.Labels);
+        Assert.Contains("Codex preflight...", h.Output.ToString());
+        Assert.Contains("Codex preflight OK ·", h.Output.ToString());
+    }
+
+    [Fact]
+    public async Task CancellationWhileSafelyIdleUsesConciseShutdownPresentation()
+    {
+        using var h = new Harness();
+        h.GitHub.ReturnIssueOnFirstQuery = false;
+
+        await h.RunAsync();
+
+        Assert.Contains("○ Waiting for work...", h.Output.ToString());
+        Assert.Contains("■ Worker stopped.", h.Output.ToString());
+        Assert.DoesNotContain("Cancellation interrupted", h.Output.ToString());
     }
 
     [Fact]
@@ -172,6 +187,7 @@ public sealed class WorkerV011Tests
         public FakeCodex Codex { get; }
         public FakeValidation Validation { get; } = new();
         public Worker Worker { get; }
+        public StringWriter Output { get; } = new();
         private readonly TelegramNotifier _telegram = new(false);
 
         public Harness()
@@ -191,7 +207,7 @@ public sealed class WorkerV011Tests
             };
             GitHub = new FakeGitHub(Events, Cancellation);
             Codex = new FakeCodex(Events);
-            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram);
+            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, new WorkerConsole(Output, interactive: false));
         }
 
         public async Task RunAsync() => await Worker.RunAsync(Cancellation.Token);
@@ -207,6 +223,7 @@ public sealed class WorkerV011Tests
     private sealed class FakeGitHub(List<string> events, CancellationTokenSource cancellation) : IGitHubClient
     {
         private bool _returned;
+        public bool ReturnIssueOnFirstQuery { get; set; } = true;
         public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
@@ -216,7 +233,7 @@ public sealed class WorkerV011Tests
         {
             FindCalls++;
             events.Add("find");
-            if (!_returned) { _returned = true; return Task.FromResult<GitHubIssue?>(Issue); }
+            if (ReturnIssueOnFirstQuery && !_returned) { _returned = true; return Task.FromResult<GitHubIssue?>(Issue); }
             // End the polling loop without waiting; no real GitHub service is involved.
             cancellation.Cancel();
             return Task.FromResult<GitHubIssue?>(null);

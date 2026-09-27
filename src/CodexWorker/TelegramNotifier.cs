@@ -40,40 +40,47 @@ public sealed class TelegramNotifier : IDisposable
         if (missing.Count > 0) throw new InvalidDataException("Telegram is enabled but required environment variable(s) are missing: " + string.Join(", ", missing));
     }
 
-    public Task StartedAsync(string project, CancellationToken ct) => SendAsync(Format(project, "INICIADO", ["Worker iniciado"]), ct);
+    public Task StartedAsync(string project, CancellationToken ct) =>
+        SendAsync(Format($"🟢 CODEX WORKER · INICIADO\n{project}"), ct);
 
-    public Task StoppedAsync(string project, string details, CancellationToken ct) =>
-        SendAsync(Format(project, "DETENIDO", ["Worker detenido", Clean(details)]), ct);
+    public Task StoppedAsync(string project, CancellationToken ct) =>
+        SendAsync(Format($"⚫ CODEX WORKER · DETENIDO\n{project}"), ct);
 
     public Task StartingAsync(string project, GitHubIssue issue, CancellationToken ct) =>
-        SendAsync(Format(project, "INICIADA", [$"#{issue.Number} · {issue.Title}"]), ct);
+        SendAsync(Format($"▶️ TAREA INICIADA · #{issue.Number}\n{Clean(issue.Title)}\n{project}"), ct);
 
     public Task SuccessAsync(string project, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
     {
-        var lines = new List<string> { $"#{issue.Number} · {issue.Title}", $"Duración: {WorkerConsole.FormatDuration(duration)}" };
+        var lines = new List<string>
+        {
+            $"✅ TAREA COMPLETADA · #{issue.Number}", Clean(issue.Title), "",
+            $"Duración: {WorkerConsole.FormatDuration(duration)}"
+        };
         var commit = Regex.Match(summary, @"Committed as `([^`]+)`");
         if (commit.Success) lines.Add($"Commit: {commit.Groups[1].Value}");
         var branch = Regex.Match(summary, @"Merged into `([^`]+)`");
         if (branch.Success) lines.Add($"Integrada en: {branch.Groups[1].Value}");
         else if (summary.Contains("No code changes", StringComparison.OrdinalIgnoreCase)) lines.Add("Completada sin cambios de código");
-        return SendAsync(Format(project, "COMPLETADA", lines), ct);
+        var codexSummary = Regex.Match(summary, @"(?:^|\n\n)Codex summary:\s*(.*)$", RegexOptions.Singleline);
+        if (codexSummary.Success && !string.IsNullOrWhiteSpace(codexSummary.Groups[1].Value))
+        {
+            lines.Add("");
+            lines.Add(Clean(codexSummary.Groups[1].Value));
+        }
+        return SendAsync(Format(string.Join("\n", lines)), ct);
     }
 
     public Task BlockedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format(project, "BLOQUEADA", [$"#{issue.Number} · {issue.Title}", Clean(details), $"Duración: {WorkerConsole.FormatDuration(duration)}"]), ct);
+        SendAsync(Format($"🟡 TAREA BLOQUEADA · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}"), ct);
 
     public Task FailedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format(project, "ERROR", [$"#{issue.Number} · {issue.Title}", Clean(details), $"Duración: {WorkerConsole.FormatDuration(duration)}"]), ct);
+        SendAsync(Format($"❌ TAREA FALLIDA · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}\nDuración: {WorkerConsole.FormatDuration(duration)}"), ct);
 
     public Task CriticalAsync(string project, string details, CancellationToken ct) =>
-        SendAsync(Format(project, "INFRAESTRUCTURA", ["Worker detenido", Clean(details)]), ct);
+        SendAsync(Format($"🚨 CODEX WORKER · INFRAESTRUCTURA\n{project}\n\nWorker detenido\n{Clean(details)}"), ct);
 
-    public static string Format(string project, string status, IEnumerable<string> content)
-    {
-        var name = project.Trim().ToUpperInvariant();
-        return $"📥 CODEX WORKER · {name}\n════════════\n>> {status}\n" +
-            string.Join("\n", content.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => "│ " + Clean(x)));
-    }
+    public static string Format(string message) => string.Join("\n", message.Split('\n').Select(line =>
+        string.IsNullOrWhiteSpace(line) ? "" : Clean(line)));
 
     private async Task SendAsync(string text, CancellationToken ct)
     {

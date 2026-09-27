@@ -9,9 +9,16 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     private readonly TextWriter _errorWriter = errorWriter ?? Console.Error;
     private readonly bool _interactive = interactive ?? !Console.IsOutputRedirected;
     private bool _waiting;
+    private Stopwatch? _idleTimer;
+    private CancellationTokenSource? _idleCancellation;
+    private Task? _idleSpinner;
 
     public void Startup(string project, string repository)
     {
+        if (_interactive)
+        {
+            lock (_writer) { _writer.Write("\u001b[2J\u001b[H"); _writer.Flush(); }
+        }
         _waiting = false;
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
         WriteLine("CODEX WORKER · " + project, ConsoleColor.Cyan);
@@ -19,10 +26,6 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
     }
 
-    public void PreflightStarted() => WriteLine("Codex preflight starting...", ConsoleColor.Cyan, "▶");
-    public void PreflightSucceeded(TimeSpan elapsed) => WriteLine($"Codex preflight OK · {FormatDuration(elapsed)}", ConsoleColor.Green, "✓");
-    public void PreflightFailed(string reason, TimeSpan elapsed) =>
-        WriteLine($"Codex preflight failed · {FormatDuration(elapsed)}: {Compact(reason)}", ConsoleColor.Red, "✗");
     public void Started() => WriteLine("Worker started.", ConsoleColor.Green, "✓");
     public void Shutdown(string message = "Worker stopped.") { _waiting = false; WriteLine(message, null, "■"); }
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
@@ -32,7 +35,33 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     {
         if (_waiting) return;
         _waiting = true;
-        WriteLine("Waiting for work...", null, "○");
+        _idleTimer = Stopwatch.StartNew();
+        if (_interactive)
+        {
+            _idleCancellation = new CancellationTokenSource();
+            _idleSpinner = SpinAsync("Waiting for work", _idleTimer, _idleCancellation.Token);
+        }
+        else WriteLine("Waiting for work...", null, "○");
+    }
+
+    public async Task StopWaitingAsync()
+    {
+        if (!_waiting) return;
+        _waiting = false;
+        _idleCancellation?.Cancel();
+        if (_idleSpinner is not null)
+        {
+            try { await _idleSpinner; } catch (OperationCanceledException) { }
+        }
+        _idleTimer?.Stop();
+        if (_interactive)
+        {
+            lock (_writer) { _writer.Write("\r\u001b[2K"); _writer.Flush(); }
+        }
+        _idleCancellation?.Dispose();
+        _idleCancellation = null;
+        _idleSpinner = null;
+        _idleTimer = null;
     }
 
     public void IssueStarted(GitHubIssue issue)
@@ -49,7 +78,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"#{issue.Number} failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
 
     public async Task<T> RunProgressAsync<T>(string label, Func<Task<T>> operation, Func<T, string>? completion = null,
-        Func<T, bool>? succeeded = null, Func<T, bool>? warning = null, CancellationToken ct = default)
+        Func<T, bool>? succeeded = null, Func<T, bool>? warning = null,
+        Func<Exception, string>? failureDetail = null, CancellationToken ct = default)
     {
         var timer = Stopwatch.StartNew();
         using var spinnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -65,11 +95,11 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
             FinishProgress(label, timer.Elapsed, ok, warning?.Invoke(result) ?? false, completion?.Invoke(result));
             return result;
         }
-        catch
+        catch (Exception ex)
         {
             timer.Stop();
             await StopSpinnerAsync();
-            FinishProgress(label, timer.Elapsed, false, false, "interrupted");
+            FinishProgress(label, timer.Elapsed, false, false, failureDetail?.Invoke(ex) ?? "interrupted");
             throw;
         }
 
@@ -97,7 +127,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var text = $"{frames[index++ % frames.Length]} {label}... {FormatDuration(timer.Elapsed)}";
+            var text = $"{frames[index++ % frames.Length]} {label}... {FormatElapsedClock(timer.Elapsed)}";
             lock (_writer) { _writer.Write('\r'); _writer.Write(text); _writer.Flush(); }
             await Task.Delay(120, ct);
         }
@@ -112,7 +142,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
             lock (_writer) { _writer.Write("\r\u001b[2K"); _writer.Flush(); }
         }
         var result = warning ? "blocked" : success ? "OK" : "failed";
-        WriteLine($"{label} {result} · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(detail) ? "" : " · " + detail)}", state, symbol);
+        WriteLine($"{label} {result} · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(detail) ? "" : " · " + Compact(detail))}", state, symbol);
     }
 
     private void WriteLine(string message, ConsoleColor? color, string? symbol = null, TextWriter? writer = null)
@@ -142,4 +172,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         var oneLine = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return oneLine.Length <= 500 ? oneLine : oneLine[..480] + " … [truncated]";
     }
+
+    private static string FormatElapsedClock(TimeSpan elapsed) => elapsed.TotalHours >= 1
+        ? $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+        : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 }
