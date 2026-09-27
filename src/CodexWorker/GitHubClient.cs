@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt);
 
-public sealed class GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds)
+public sealed class GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds) : IGitHubClient
 {
     public async Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
     {

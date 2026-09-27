@@ -29,7 +29,7 @@ public static class CodexResultParser
     }
 }
 
-public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
+public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings) : ICodexExecutor
 {
     internal const string OutputSchema = """
         {
@@ -56,9 +56,56 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
 
     public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
     {
-        if (!File.Exists(instructionsFile)) throw new FileNotFoundException("Configured project instructions file was not found.", instructionsFile);
-        var instructions = await File.ReadAllTextAsync(instructionsFile, ct);
-        var prompt = BuildPrompt(instructions, instructionsFile, issue);
+        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        return await RunStructuredAsync(projectDirectory, BuildPrompt(instructions, instructionsFile, issue), ct);
+    }
+
+    public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct)
+    {
+        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        var prompt = BuildRepairPrompt(instructions, instructionsFile, issue, failure, attempt, maximumAttempts);
+        return await RunStructuredAsync(projectDirectory, prompt, ct);
+    }
+
+    public async Task PreflightAsync(CancellationToken ct)
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-{Guid.NewGuid():N}");
+        var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-output-{Guid.NewGuid():N}.txt");
+        Directory.CreateDirectory(tempDirectory);
+        try
+        {
+            var args = BuildPreflightArguments(settings, outputPath);
+            using var environment = CodexEnvironment.Create();
+            ProcessResult result;
+            try
+            {
+                result = await runner.RunAsync("codex", args, tempDirectory,
+                    TimeSpan.FromSeconds(settings.PreflightTimeoutSeconds), ct, environment.Variables);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                throw new WorkerInfrastructureException($"Codex startup preflight could not execute: {ex.Message}", ex);
+            }
+            if (result.ExitCode != 0)
+                throw new WorkerInfrastructureException($"Codex startup preflight exited with code {result.ExitCode}.{Diagnostics(result.StandardOutput, result.StandardError)}");
+            var response = File.Exists(outputPath) ? (await File.ReadAllTextAsync(outputPath, ct)).Trim() : "";
+            if (!response.Equals("OK", StringComparison.Ordinal))
+                throw new WorkerInfrastructureException($"Codex startup preflight returned an unexpected response; expected exactly 'OK'. Received: {Tail(response, 1000)}");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Codex startup preflight failed: {ex.Message}", ex); }
+        finally
+        {
+            TryDelete(outputPath);
+            try { Directory.Delete(tempDirectory, recursive: true); } catch { /* best effort temp cleanup */ }
+        }
+    }
+
+    private async Task<CodexOutcome> RunStructuredAsync(string projectDirectory, string prompt, CancellationToken ct)
+    {
         var schemaPath = Path.Combine(Path.GetTempPath(), $"codex-worker-schema-{Guid.NewGuid():N}.json");
         var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-output-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(schemaPath, OutputSchema, ct);
@@ -72,14 +119,15 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
                 result = await runner.RunAsync("codex", args, projectDirectory,
                     TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables);
             }
-            catch (ProcessTimeoutException ex) { throw new TaskFailureException($"Codex task timed out: {ex.Message}", ex); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { throw new WorkerInfrastructureException($"Codex execution could not complete reliably: {ex.Message}", ex); }
             finally { environment.Dispose(); }
             if (result.ExitCode != 0)
-                throw new TaskFailureException($"Codex exited with code {result.ExitCode}. {Tail(result.StandardError)}");
-            if (!File.Exists(outputPath)) throw new InvalidDataException("Codex did not produce its structured final response.");
+                throw new WorkerInfrastructureException($"Codex execution exited with code {result.ExitCode}; service/authentication/CLI failure is possible.{Diagnostics(result.StandardOutput, result.StandardError)}");
+            if (!File.Exists(outputPath)) throw new WorkerInfrastructureException("Codex execution produced no structured final response.");
             try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
             catch (Exception ex) when (ex is not OperationCanceledException)
-            { throw new TaskFailureException($"Codex did not return a valid structured task result: {ex.Message}", ex); }
+            { throw new WorkerInfrastructureException($"Codex execution did not return a valid structured task result: {ex.Message}", ex); }
         }
         finally
         {
@@ -96,6 +144,29 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
         args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort.ToLowerInvariant()}\"");
         args.Add(prompt);
         return args;
+    }
+
+    internal static IReadOnlyList<string> BuildPreflightArguments(CodexSettings settings, string outputPath)
+    {
+        var args = new List<string> { "exec", "--approve-for-me", "--skip-git-repo-check", "--ephemeral", "--output-last-message", outputPath };
+        AddModelAndReasoning(args, settings);
+        args.Add("Reply only with OK. Do not inspect or modify project files.");
+        return args;
+    }
+
+    private static void AddModelAndReasoning(List<string> args, CodexSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.Model)) { args.Add("--model"); args.Add(settings.Model); }
+        args.Add("-c"); args.Add($"model_reasoning_effort=\"{settings.ReasoningEffort.ToLowerInvariant()}\"");
+    }
+
+    private static async Task<string> ReadInstructionsAsync(string instructionsFile, CancellationToken ct)
+    {
+        if (!File.Exists(instructionsFile))
+            throw new WorkerInfrastructureException($"Configured Codex instructions file was not found: {instructionsFile}");
+        try { return await File.ReadAllTextAsync(instructionsFile, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Could not read configured Codex instructions: {ex.Message}", ex); }
     }
 
     internal static string BuildPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue) => $"""
@@ -116,8 +187,31 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings)
         {issue.Body}
         """;
 
+    internal static string BuildRepairPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue,
+        ValidationFailure failure, int attempt, int maximumAttempts) => $"""
+        # Generic worker repair instructions
+        This is repair attempt {attempt} of {maximumAttempts}, not a new implementation task. Inspect the existing implementation and fix the cause of the authoritative validation failure below while preserving the functionality requested in the original Issue. Make focused changes in-place. You may perform useful local checks, but the worker's configured validation commands remain authoritative and will be run again after this repair. A `success` response means you completed the repair; it does not mean authoritative validation has passed. Return a final response matching the supplied JSON schema. Use `blocked` only when human input or a decision is required, `failed` when you cannot complete the repair for a technical reason, and `success` when the repair changes are ready for the worker validation retry.
+
+        The worker owns the entire Git and GitHub lifecycle. Do not create, switch, merge, commit, push, or delete branches; do not commit; do not run GitHub CLI commands; do not change Issue state, labels, comments, or the queue.
+
+        # Project instructions from {instructionsFile}
+        {projectInstructions}
+
+        # Original GitHub Issue
+        Number: {issue.Number}
+        Title: {issue.Title}
+        Body:
+        {issue.Body}
+
+        # Authoritative validation failure
+        {failure.ToRepairDiagnostics()}
+        """;
+
     private static void TryDelete(string path) { try { File.Delete(path); } catch { /* temp cleanup is best effort */ } }
     private static string Tail(string value) => value.Length <= 1400 ? value : value[^1400..];
+    private static string Tail(string value, int length) => value.Length <= length ? value : value[^length..];
+    private static string Diagnostics(string stdout, string stderr) =>
+        $"\nstdout: {Tail(stdout, 2500)}\nstderr: {Tail(stderr, 2500)}";
 }
 
 internal sealed class CodexEnvironment : IDisposable
@@ -162,9 +256,40 @@ internal sealed class CodexEnvironment : IDisposable
     public void Dispose() { try { Directory.Delete(_directory, recursive: true); } catch { /* best effort temp cleanup */ } }
 }
 
-public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds)
+public sealed record ValidationFailure(int CommandNumber, string Command, int? ExitCode, string StandardOutput,
+    string StandardError, bool TimedOut)
 {
-    public async Task RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+    public string ToRepairDiagnostics(int maximumCharacters = 6000)
+    {
+        var header = $"Command {CommandNumber}: {Command}\nExit code: {ExitCode?.ToString() ?? "unavailable (timeout)"}\nTimed out: {TimedOut}\n";
+        maximumCharacters = Math.Max(1, maximumCharacters);
+        if (header.Length >= maximumCharacters) return header[..maximumCharacters];
+        var output = $"stdout:\n{StandardOutput}\n\nstderr:\n{StandardError}";
+        if (header.Length + output.Length <= maximumCharacters) return header + output;
+
+        const string prefix = "[diagnostics truncated; showing tails]\nstdout tail:\n";
+        const string separator = "\nstderr tail:\n";
+        var available = Math.Max(0, maximumCharacters - header.Length - prefix.Length - separator.Length);
+        var stdoutLength = Math.Min(StandardOutput.Length, available / 2);
+        var stderrLength = Math.Min(StandardError.Length, available - stdoutLength);
+        stdoutLength = Math.Min(StandardOutput.Length, available - stderrLength);
+        return header + prefix + Tail(StandardOutput, stdoutLength) + separator + Tail(StandardError, stderrLength);
+    }
+
+    public string ToSummary() => $"Validation command {CommandNumber} failed (exit {ExitCode?.ToString() ?? "timeout"}): {Command}\n{ToRepairDiagnostics(1200)}";
+
+    private static string Tail(string value, int length) => length <= 0 ? "" : value.Length <= length ? value : value[^length..];
+}
+
+public sealed record ValidationResult(ValidationFailure? Failure)
+{
+    public bool Succeeded => Failure is null;
+    public static ValidationResult Success { get; } = new((ValidationFailure?)null);
+}
+
+public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds) : IValidationRunner
+{
+    public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
     {
         var index = 0;
         foreach (var command in commands)
@@ -174,14 +299,13 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds)
             var args = OperatingSystem.IsWindows() ? new[] { "-NoProfile", "-Command", command } : new[] { "-c", command };
             ProcessResult result;
             try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct); }
-            catch (ProcessTimeoutException ex) { throw new TaskFailureException($"Validation command {index} timed out: {command}. {ex.Message}", ex); }
-            if (result.ExitCode != 0)
+            catch (ProcessTimeoutException ex)
             {
-                var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
-                throw new TaskFailureException($"Validation command {index} failed (exit {result.ExitCode}): {command}\n{Tail(detail)}");
+                return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true));
             }
+            if (result.ExitCode != 0)
+                return new ValidationResult(new ValidationFailure(index, command, result.ExitCode, result.StandardOutput, result.StandardError, false));
         }
+        return ValidationResult.Success;
     }
-
-    private static string Tail(string value) => value.Length <= 1800 ? value : value[^1800..];
 }

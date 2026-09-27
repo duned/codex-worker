@@ -6,11 +6,12 @@ This repository contains the generic .NET 10 Codex worker. Keep it project-agnos
 
 - GitHub queue and Issue state changes belong to `GitHubClient` and the worker orchestration. Codex must not receive GitHub lifecycle work.
 - Git branch creation, commit, integration, and push belong to `GitRepository`.
-- Keep task failures (`TaskFailureException` and explicit blocked outcomes) separate from infrastructure failures (`WorkerInfrastructureException`). Only a safe task failure may advance the queue; uncertain Git/GitHub state must stop it.
+- Keep structured Codex task outcomes and exhausted authoritative validation repairs separate from infrastructure failures (`WorkerInfrastructureException`). Only a safe task failure may advance the queue; Codex execution/authentication failures and uncertain Git/GitHub state must stop it.
 - Validation commands come only from project YAML and must run sequentially.
+- Run the Codex availability preflight before querying the Issue queue. Validation repair attempts are bounded by configuration; do not add service retries.
 - The configured checkout is dedicated to one worker and must not be edited concurrently. Never add cleanup that discards changes without checking the worker branch and starting commit; preserve state on infrastructure failures.
 - Secrets are read from environment variables. Never add credentials to YAML examples, tests, or source control.
-- Keep the V0.1 single-project, single-worker polling model. Avoid adding database, webhooks, concurrency, retries, worktrees, or recovery machinery without an explicit versioned requirement.
+- Keep the V0.1.1 single-project, single-worker polling model. Avoid adding database, webhooks, concurrency, Codex service retries, worktrees, or recovery machinery without an explicit versioned requirement.
 
 ## Implementation practices
 

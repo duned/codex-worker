@@ -31,4 +31,21 @@ public sealed class CodexExecutorArgumentsTests
         Assert.Contains("--approve-for-me", args);
         Assert.DoesNotContain("--sandbox", args);
     }
+
+    [Fact]
+    public void PreflightUsesConfiguredModelAndRunsEphemerallyOutsideGit()
+    {
+        var settings = new CodexSettings { Model = "chosen-model", ReasoningEffort = "high" };
+
+        var args = CodexExecutor.BuildPreflightArguments(settings, "/tmp/preflight.txt");
+
+        Assert.Equal("exec", args[0]);
+        Assert.Contains("--approve-for-me", args);
+        Assert.DoesNotContain("--sandbox", args);
+        Assert.Contains("--skip-git-repo-check", args);
+        Assert.Contains("--ephemeral", args);
+        Assert.Contains("--model", args);
+        Assert.Contains("chosen-model", args);
+        Assert.Contains("Reply only with OK. Do not inspect or modify project files.", args);
+    }
 }

@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary);
 
-public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts) : IDisposable
+public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts) : IGitRepository, IDisposable
 {
     private string? _featureBranch;
     private string? _completedBranch;

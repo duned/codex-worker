@@ -24,10 +24,12 @@ codex:
   # model: gpt-5.6-sol
   reasoningEffort: medium
   timeoutMinutes: 90
+  preflightTimeoutSeconds: 60
 
 validation:
   # Commands are run sequentially from the project directory.
   timeoutSeconds: 900
+  maxFixAttempts: 2
   commands:
     - ./scripts/validate.sh
 

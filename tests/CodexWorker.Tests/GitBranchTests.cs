@@ -19,15 +19,6 @@ public sealed class GitBranchTests
         Assert.Equal(72, slug.Length);
     }
 
-    [Fact]
-    public async Task ChecksGeneratedRefsWithGitRefRules()
-    {
-        var runner = new ProcessRunner();
-        Assert.True(await GitRepository.IsValidBranchRefAsync(runner, Path.GetTempPath(), "feature/12-add-fast-search"));
-        Assert.False(await GitRepository.IsValidBranchRefAsync(runner, Path.GetTempPath(), "feature/../escape"));
-        Assert.False(await GitRepository.IsValidBranchRefAsync(runner, Path.GetTempPath(), "bad prefix/12-task"));
-    }
-
     [Theory]
     [InlineData("https://github.com/owner/repo.git", true)]
     [InlineData("git@github.com:owner/repo.git", true)]

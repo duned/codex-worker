@@ -3,8 +3,8 @@ namespace CodexWorker;
 public enum IssueOutcomeKind { Succeeded, Blocked, Failed }
 public sealed record IssueProcessingResult(IssueOutcomeKind Kind, string Summary);
 
-public sealed class Worker(WorkerConfiguration config, GitHubClient github, GitRepository git, CodexExecutor codex,
-    ValidationRunner validation, TelegramNotifier telegram)
+public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
+    IValidationRunner validation, TelegramNotifier telegram)
 {
     public async Task RunAsync(CancellationToken ct)
     {
@@ -14,6 +14,7 @@ public sealed class Worker(WorkerConfiguration config, GitHubClient github, GitR
             if (!File.Exists(config.Codex.InstructionsFile))
                 throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
             await git.InitializeAsync(ct);
+            await codex.PreflightAsync(ct);
             while (!ct.IsCancellationRequested)
             {
                 var issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct);
@@ -43,38 +44,43 @@ public sealed class Worker(WorkerConfiguration config, GitHubClient github, GitR
     private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(GitHubIssue issue, CancellationToken ct)
     {
         await git.StartIssueAsync(issue, ct);
-        CodexOutcome outcome;
-        try { outcome = await codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct); }
-        catch (TaskFailureException ex)
-        {
-            await git.VerifyCodexStateAsync(ct);
-            await git.DiscardUncommittedIssueChangesAsync(ct);
-            return new IssueProcessingResult(IssueOutcomeKind.Failed, Concise(ex));
-        }
+        var outcome = await codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct);
         await git.VerifyCodexStateAsync(ct);
-        if (outcome.Status == "blocked")
+        if (outcome.Status == "blocked") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
+        if (outcome.Status == "failed") return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
+
+        var repairAttempts = 0;
+        while (true)
         {
-            await git.DiscardUncommittedIssueChangesAsync(ct);
-            return new IssueProcessingResult(IssueOutcomeKind.Blocked, outcome.Question!);
-        }
-        if (outcome.Status == "failed")
-        {
-            await git.DiscardUncommittedIssueChangesAsync(ct);
-            return new IssueProcessingResult(IssueOutcomeKind.Failed, outcome.Summary);
+            var validationResult = await validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct);
+            if (validationResult.Succeeded) break;
+
+            await git.VerifyCodexStateAsync(ct);
+            var failure = validationResult.Failure!;
+            if (repairAttempts >= config.Validation.MaxFixAttempts)
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, failure.ToSummary(), ct);
+
+            repairAttempts++;
+            outcome = await codex.RepairAsync(config.Project.Directory, config.Codex.InstructionsFile, issue,
+                failure, repairAttempts, config.Validation.MaxFixAttempts, ct);
+            await git.VerifyCodexStateAsync(ct);
+            if (outcome.Status == "blocked")
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Blocked, outcome.Question!, ct);
+            if (outcome.Status == "failed")
+                return await CleanupOutcomeAsync(issue, IssueOutcomeKind.Failed, outcome.Summary, ct);
         }
 
-        try { await validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct); }
-        catch (TaskFailureException ex)
-        {
-            await git.VerifyCodexStateAsync(ct);
-            await git.DiscardUncommittedIssueChangesAsync(ct);
-            return new IssueProcessingResult(IssueOutcomeKind.Failed, Concise(ex));
-        }
         await git.VerifyCodexStateAsync(ct);
         var completion = await git.CommitAndIntegrateAsync(issue, ct);
         var summary = completion.Summary;
         if (completion.HasChanges) summary += $"\n\nCodex summary: {outcome.Summary}";
         return new IssueProcessingResult(IssueOutcomeKind.Succeeded, summary);
+    }
+
+    private async Task<IssueProcessingResult> CleanupOutcomeAsync(GitHubIssue issue, IssueOutcomeKind kind, string summary, CancellationToken ct)
+    {
+        await git.DiscardUncommittedIssueChangesAsync(ct);
+        return new IssueProcessingResult(kind, summary);
     }
 
     private async Task ReportResultAsync(GitHubIssue issue, IssueProcessingResult result, CancellationToken ct)
@@ -111,6 +117,5 @@ public sealed class Worker(WorkerConfiguration config, GitHubClient github, GitR
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     }
 
-    private static string Concise(Exception exception) => Limit(exception.Message, 1400);
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..(length - 20)] + " … [truncated]";
 }

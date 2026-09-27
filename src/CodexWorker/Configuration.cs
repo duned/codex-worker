@@ -49,12 +49,16 @@ public sealed class WorkerConfiguration
             errors.Add("github labels must be distinct.");
         Required(Codex.InstructionsFile, "codex.instructionsFile", errors);
         if (Codex.TimeoutMinutes <= 0) errors.Add("codex.timeoutMinutes must be greater than zero.");
+        if (Codex.PreflightTimeoutSeconds <= 0 || Codex.PreflightTimeoutSeconds > 300)
+            errors.Add("codex.preflightTimeoutSeconds must be between 1 and 300.");
         if (!new[] { "low", "medium", "high", "xhigh" }.Contains(Codex.ReasoningEffort, StringComparer.OrdinalIgnoreCase))
             errors.Add("codex.reasoningEffort must be low, medium, high, or xhigh.");
         if (Worker.PollingSeconds <= 0) errors.Add("worker.pollingSeconds must be greater than zero.");
         if (Worker.GitTimeoutSeconds <= 0) errors.Add("worker.gitTimeoutSeconds must be greater than zero.");
         if (Worker.GitHubTimeoutSeconds <= 0) errors.Add("worker.githubTimeoutSeconds must be greater than zero.");
         if (Validation.TimeoutSeconds <= 0) errors.Add("validation.timeoutSeconds must be greater than zero.");
+        if (Validation.MaxFixAttempts < 0 || Validation.MaxFixAttempts > 5)
+            errors.Add("validation.maxFixAttempts must be between 0 and 5.");
         if (Validation.Commands.Any(string.IsNullOrWhiteSpace)) errors.Add("validation.commands cannot contain empty commands.");
         if (errors.Count > 0) throw new InvalidDataException("Invalid configuration:\n- " + string.Join("\n- ", errors));
     }
@@ -97,8 +101,14 @@ public sealed class CodexSettings
     public string? Model { get; set; }
     public string ReasoningEffort { get; set; } = "medium";
     public int TimeoutMinutes { get; set; } = 60;
+    public int PreflightTimeoutSeconds { get; set; } = 60;
 }
-public sealed class ValidationSettings { public List<string> Commands { get; set; } = []; public int TimeoutSeconds { get; set; } = 900; }
+public sealed class ValidationSettings
+{
+    public List<string> Commands { get; set; } = [];
+    public int TimeoutSeconds { get; set; } = 900;
+    public int MaxFixAttempts { get; set; } = 2;
+}
 public sealed class TelegramSettings { public bool Enabled { get; set; } }
 public sealed class WorkerSettings
 {

@@ -2,16 +2,16 @@
 
 `codex-worker` is a .NET 10 polling worker for one configured GitHub repository. It claims ready Issues sequentially, asks the Codex CLI to implement each request in a dedicated checkout, runs configured validation commands, and owns the Git and GitHub lifecycle.
 
-## V0.1 architecture and workflow
+## V0.1.1 architecture and workflow
 
 1. Load and validate YAML configuration with YamlDotNet.
 2. Validate the dedicated checkout, its `origin`, clean state, and configured/generated Git refs. Acquire a local exclusive worker lock.
-3. Find the oldest open Issue with the configured ready label and claim it by replacing that label with the working label.
-4. Update the base branch with fast-forward-only pull, create a feature branch, and run `codex exec` in `workspace-write` with structured JSON output and the configured task timeout.
-5. Verify that Codex did not change the current branch or commit. Run configured validation commands sequentially, each with a timeout.
-6. Commit and optionally merge/push changes. A successful no-op is completed without an empty commit, merge, or push.
-7. Update the Issue, comment, and close it on success. Blocked and task-failed Issues receive their respective label and a comment; the worker then checks the next ready Issue.
-8. With no ready Issue, wait for `worker.pollingSeconds` and poll again.
+3. Run a bounded Codex availability preflight from a temporary directory, using the same authentication/environment isolation and optional configured model as task runs. Require successful execution and the exact response `OK` before querying the Issue queue.
+4. Find the oldest open Issue with the configured ready label and claim it by replacing that label with the working label.
+5. Update the base branch with fast-forward-only pull, create a feature branch, and run `codex exec` in `workspace-write` with structured JSON output and the configured task timeout.
+6. Verify that Codex did not change the current branch or commit. Run configured validation commands sequentially, each with a timeout. If a command fails, give Codex up to `validation.maxFixAttempts` bounded repair attempts in the same working tree, rerunning authoritative validation after each repair.
+7. After validation passes, commit and optionally merge/push changes. A successful no-op is completed without an empty commit, merge, or push. If repairs are exhausted or Codex reports a task failure/blocked result, clean up safely and report that Issue without stopping later work.
+8. Update the Issue, comment, and close it on success. With no ready Issue, wait for `worker.pollingSeconds` and poll again.
 
 GitHub operations remain in the worker. Codex receives project instructions and Issue content only as task context; its final status is parsed from the required output schema, not inferred from prose.
 
@@ -31,7 +31,7 @@ Copy [`config/project.example.yml`](config/project.example.yml) to a private YAM
 
 The checkout must be dedicated to this worker. Do not edit it concurrently by hand or point another worker at it. A local lock prevents two codex-worker processes from owning the same Git directory at once; it cannot prevent a human or unrelated process from changing files concurrently. Concurrent edits are unsupported. The worker checks for a clean starting state and verifies the branch/commit after Codex and validation.
 
-The configuration includes project identity and paths; Git branch prefixes and integration choices; GitHub labels; Codex model (optional), reasoning effort and timeout; sequential validation commands and their timeout; Telegram enablement; poll interval; and Git/GitHub CLI timeouts. Defaults are shown in the example. Validation commands are generic shell commands; no language or build system is assumed. Configuration is trusted input and commands run with the worker user's permissions.
+The configuration includes project identity and paths; Git branch prefixes and integration choices; GitHub labels; Codex model (optional), reasoning effort, task timeout, and bounded preflight timeout; sequential validation commands, their timeout, and maximum repair attempts; Telegram enablement; poll interval; and Git/GitHub CLI timeouts. `validation.maxFixAttempts` defaults to 2 and is limited to 0–5; zero disables repairs. The Codex preflight timeout defaults to 60 seconds and is limited to 1–300 seconds. Defaults are shown in the example. Validation commands are generic shell commands; no language or build system is assumed. Configuration is trusted input and commands run with the worker user's permissions.
 
 Codex should run useful local checks while developing when possible, but those self-checks are best effort. If sandbox, network, restore, or environment restrictions prevent an optional check, Codex should report what could not run and why, while returning success if the implementation is complete. The worker's configured `validation.commands` remain the authoritative gate before commit or integration; any configured command failure prevents integration.
 
@@ -65,7 +65,9 @@ Use Ctrl+C for graceful cancellation. An Issue claimed at cancellation stays wor
 
 ## Failure handling and safety
 
-The worker distinguishes task outcomes from infrastructure failures. Codex `blocked`, Codex `failed`/unable to implement, and configured validation failure are task-level outcomes: the worker safely cleans the worker-created feature branch, updates that Issue, and continues. If cleanup or the GitHub update cannot be completed reliably, the failure becomes infrastructure-level and the queue stops.
+The worker distinguishes three outcomes. A structured Codex `failed` means the service evaluated the task but implementation could not be completed; a structured `blocked` means human input is required. Both are task-level outcomes and the Issue is safely cleaned up and reported before the queue continues. A configured validation failure is also task-level: the worker passes the failed command, exit status, and bounded stdout/stderr diagnostics to Codex for up to the configured number of repair attempts. Each repair acts on the existing working tree, and every `success` repair is followed by the authoritative configured validation again. Only a passing authoritative validation permits commit/integration. If validation still fails after the attempts are exhausted, the Issue is marked failed and later Issues continue.
+
+Codex process/authentication/service/transport failures, timeouts, invalid CLI execution, or missing/invalid structured results are infrastructure failures, not task failures. Startup preflight catches these before the first Issue is queried or claimed. If Codex becomes unavailable after preflight, the worker stops immediately and leaves the Issue in its current working state for manual review; it does not blame the Issue or try service retries. Infrastructure failures in Git or GitHub likewise stop queue processing.
 
 Dirty checkout, wrong origin, invalid refs, unsafe base-branch preparation, any Git/merge/push failure or timeout, and any GitHub query/claim/transition failure stop the worker immediately. GitHub calls are separate operations, so a failure after an earlier label/comment/close succeeded can leave partial state. The worker does not issue a contradictory follow-up transition; inspect the Issue and checkout and reconcile them manually. Integration timeouts are treated as uncertain even if a remote push may have completed. No speculative recovery is attempted.
 
@@ -79,6 +81,6 @@ Codex still needs the existing Codex authentication location through `CODEX_HOME
 
 ## V0.1 limitations
 
-One worker handles one project sequentially. There is no distributed lock, worktree isolation, concurrent edit protection, retry policy, session recovery, sophisticated crash recovery, webhook, database, web UI, service manager setup, or auto-scaling. A crash or partial GitHub transition can leave an Issue working/done while checkout or remote state needs manual inspection. Review the Issue, local branch/status, base branch, and origin refs before re-queueing or starting after an infrastructure stop.
+One worker handles one project sequentially. There is no distributed lock, worktree isolation, concurrent edit protection, Codex service retry policy, session recovery, sophisticated crash recovery, webhook, database, web UI, service manager setup, or auto-scaling. Validation repair attempts are bounded and are not service retries. A crash or partial GitHub transition can leave an Issue working/done while checkout or remote state needs manual inspection. Review the Issue, local branch/status, base branch, and origin refs before re-queueing or starting after an infrastructure stop.
 
 See [`AGENTS.md`](AGENTS.md) for development boundaries.

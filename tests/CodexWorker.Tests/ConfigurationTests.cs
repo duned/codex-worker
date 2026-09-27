@@ -54,6 +54,8 @@ public sealed class ConfigurationTests
             Assert.Equal(9, config.Worker.PollingSeconds);
             Assert.Equal(80, config.Worker.GitTimeoutSeconds);
             Assert.Equal(900, config.Validation.TimeoutSeconds);
+            Assert.Equal(2, config.Validation.MaxFixAttempts);
+            Assert.Equal(60, config.Codex.PreflightTimeoutSeconds);
             Assert.False(config.Git.AutoMerge);
         }
         finally { Directory.Delete(folder, recursive: true); }
@@ -96,6 +98,23 @@ public sealed class ConfigurationTests
         var error = Assert.Throws<InvalidDataException>(config.Validate);
         Assert.Contains("labels must be distinct", error.Message);
         Assert.Contains("pollingSeconds", error.Message);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(6)]
+    public void RejectsInvalidValidationRepairAttemptCount(int attempts)
+    {
+        var config = ValidConfig();
+        config.Validation.MaxFixAttempts = attempts;
+        var error = Assert.Throws<InvalidDataException>(config.Validate);
+        Assert.Contains("validation.maxFixAttempts", error.Message);
+    }
+
+    [Fact]
+    public void DefaultsValidationRepairAttemptsToTwo()
+    {
+        Assert.Equal(2, new ValidationSettings().MaxFixAttempts);
     }
 
     private static WorkerConfiguration ValidConfig() => new()

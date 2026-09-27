@@ -82,4 +82,3 @@ public sealed class ProcessTimeoutException(string executable, TimeSpan timeout,
 }
 
 public class WorkerInfrastructureException(string message, Exception? inner = null) : Exception(message, inner);
-public sealed class TaskFailureException(string message, Exception? inner = null) : Exception(message, inner);
