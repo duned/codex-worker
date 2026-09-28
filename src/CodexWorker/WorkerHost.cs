@@ -1,6 +1,6 @@
 namespace CodexWorker;
 
-/// <summary>Global, single-threaded host for independently configured project workers.</summary>
+/// <summary>Global host with bounded execution concurrency across independently configured projects.</summary>
 public sealed class WorkerHost
 {
     private readonly GlobalWorkerConfiguration _global;
@@ -26,18 +26,23 @@ public sealed class WorkerHost
         string? activeProject = null;
         var safeToStop = true;
         var operational = false;
+        var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
+        CancellationTokenSource? executionCancellation = null;
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             history = new ExecutionHistoryStore();
+            var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, config) in _projects)
             {
                 var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
                 var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
                 var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
                 var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
+                if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
+                    repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
                 runtimes.Add(new ProjectRuntime(path, config, git,
-                    new Worker(config, github, git, codex, validation, telegram, _output, history), codex, github));
+                    new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate), codex, github, repositoryGate));
             }
 
             var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
@@ -75,35 +80,64 @@ public sealed class WorkerHost
             _output.Started();
             operational = true;
 
+            executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var executionToken = executionCancellation.Token;
             var scheduler = new ProjectScheduler(runtimes.Count);
             while (!ct.IsCancellationRequested)
             {
-                _output.Waiting();
-                var selected = await scheduler.ScanAsync(async index =>
+                foreach (var completed in active.Keys.Where(task => task.IsCompleted).ToArray())
                 {
-                    var project = runtimes[index];
+                    var project = active[completed];
                     activeProject = project.Configuration.Project.Name;
-                    safeToStop = true; // only a read-only queue lookup is initially in flight
-                    var task = project.Worker.ProcessOneAsync(ct);
-                    // A safe queue cancellation returns no result. Once a claim begins, cancellation is treated conservatively.
-                    safeToStop = false;
-                    var result = await task;
-                    safeToStop = true;
-                    // A terminal blocked/task-failed result is still completed work; infrastructure exceptions escape and stop scheduling.
-                    return result is not null;
-                });
-                if (selected is null && !ct.IsCancellationRequested)
+                    await completed;
+                    active.Remove(completed);
+                }
+
+                var foundWork = false;
+                while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
-                    safeToStop = true;
+                    var selected = false;
+                    foreach (var index in scheduler.ScanOrder())
+                    {
+                        var project = runtimes[index];
+                        activeProject = project.Configuration.Project.Name;
+                        safeToStop = true; // no Issue has been claimed while queue lookup is in progress
+                        var execution = await project.Worker.ClaimNextAsync(executionToken);
+                        safeToStop = true;
+                        if (execution is null) continue;
+                        active.Add(execution, project);
+                        scheduler.Selected(index);
+                        selected = true;
+                        foundWork = true;
+                        safeToStop = false;
+                        break;
+                    }
+                    if (!selected) break;
+                }
+
+                if (ct.IsCancellationRequested) break;
+                if (active.Count > 0)
+                {
+                    safeToStop = false;
+                    await Task.WhenAny(active.Keys);
+                    // Observe on the next pass so all task exceptions follow the common infrastructure path.
+                    continue;
+                }
+                safeToStop = true;
+                _output.Waiting();
+                if (!foundWork)
+                {
                     try { await Task.Delay(TimeSpan.FromSeconds(_global.Worker.PollingSeconds), ct); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 }
             }
+            // Cancellation has already reached active executions. Await them so no child process is orphaned.
+            if (active.Count > 0) await Task.WhenAll(active.Keys);
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown();
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested && safeToStop)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && safeToStop && active.Count == 0)
         {
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown("Worker stopped.");
@@ -111,6 +145,12 @@ public sealed class WorkerHost
         }
         catch (Exception ex)
         {
+            executionCancellation?.Cancel();
+            if (active.Count > 0)
+            {
+                try { await Task.WhenAll(active.Keys); }
+                catch { /* Preserve the first infrastructure failure after all child processes have stopped. */ }
+            }
             await _output.StopWaitingAsync();
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Worker startup or project processing failed: {ex.Message}", ex);
@@ -124,10 +164,12 @@ public sealed class WorkerHost
         {
             await _output.StopWaitingAsync();
             foreach (var project in runtimes) project.Git.Dispose();
+            foreach (var gate in runtimes.Select(project => project.RepositoryGate).Distinct()) gate.Dispose();
             history?.Dispose();
+            executionCancellation?.Dispose();
         }
     }
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
-        CodexExecutor Codex, GitHubClient GitHub);
+        CodexExecutor Codex, GitHubClient GitHub, SemaphoreSlim RepositoryGate);
 }

@@ -9,9 +9,11 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 }
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
-    IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null)
+    IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
+    SemaphoreSlim? repositoryGate = null)
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
+    private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
 
     public WorkerConfiguration Configuration => config;
 
@@ -24,6 +26,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
 
     /// <summary>Checks this project's queue once and processes at most one claimed Issue.</summary>
     public async Task<IssueProcessingResult?> ProcessOneAsync(CancellationToken ct)
+    {
+        var execution = await ClaimNextAsync(ct);
+        return execution is null ? null : await execution;
+    }
+
+    /// <summary>Claims the next eligible Issue and returns its independent execution task, if one was claimed.</summary>
+    public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
         GitHubIssue? issue;
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
@@ -43,19 +52,38 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             _output.IssueStarted(config.Project.Name, issue);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, ct);
+            return ProcessClaimedAsync(execution, issue, ct);
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, "Cancellation interrupted execution.");
+            throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
+        }
+        catch (Exception ex)
+        {
+            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
+            throw;
+        }
+    }
+
+    private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, CancellationToken ct)
+    {
+        try
+        {
             var timer = Stopwatch.StartNew();
             var result = await RunExecutionAsync(new ExecutionContext(execution, issue), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
-            await ReportResultAsync(issue, result with { Report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId } }, ct);
-            await CompleteHistoryAsync(execution, result.Report with { Duration = timer.Elapsed }, result.Kind switch
+            var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId };
+            await ReportResultAsync(issue, result with { Report = report }, ct);
+            await CompleteHistoryAsync(execution, report, result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
                 IssueOutcomeKind.Blocked => ExecutionState.Blocked,
                 IssueOutcomeKind.Failed => ExecutionState.Failed,
                 _ => throw new ArgumentOutOfRangeException()
             }, CancellationToken.None);
-            return result with { Report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId } };
+            return result with { Report = report };
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -136,7 +164,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
-        var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history);
+        var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate);
         return runner.RunAsync(context, ct);
     }
 
