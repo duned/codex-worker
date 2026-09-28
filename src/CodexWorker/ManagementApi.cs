@@ -1,0 +1,189 @@
+namespace CodexWorker;
+
+using System.Runtime.InteropServices;
+using System.Threading.Channels;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+public sealed record RuntimeEvent(long Id, DateTimeOffset TimestampUtc, string Type, string Message, string? Project = null);
+public sealed record WorkerCapability(string Name, string Kind, string? Version = null, IReadOnlyDictionary<string, string>? Attributes = null);
+public sealed record WorkerStatus(string Version, string State, long UptimeSeconds, int MaxParallelTasks,
+    int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount);
+public sealed record ProjectRuntimeInfo(string Name, string Repository, bool Enabled, string State,
+    int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount);
+public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool PassedAfterRepair);
+public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, string Repository, int IssueNumber,
+    string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
+    long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
+    string? Result);
+
+/// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
+public sealed class RuntimeEventLog
+{
+    private readonly object _lock = new();
+    private readonly Queue<RuntimeEvent> _history = new();
+    private readonly HashSet<Channel<RuntimeEvent>> _subscribers = [];
+    private readonly int _limit;
+    private long _nextId;
+
+    public RuntimeEventLog(int limit = 500)
+    {
+        if (limit < 1 || limit > 10000) throw new ArgumentOutOfRangeException(nameof(limit));
+        _limit = limit;
+    }
+
+    public RuntimeEvent Publish(string type, string message, string? project = null)
+    {
+        lock (_lock)
+        {
+            var item = new RuntimeEvent(++_nextId, DateTimeOffset.UtcNow, type, message, project);
+            _history.Enqueue(item);
+            while (_history.Count > _limit) _history.Dequeue();
+            foreach (var channel in _subscribers) channel.Writer.TryWrite(item);
+            return item;
+        }
+    }
+
+    public IReadOnlyList<RuntimeEvent> ReadRecent(int? limit = null)
+    {
+        lock (_lock)
+        {
+            var count = Math.Clamp(limit ?? _limit, 1, _limit);
+            return _history.TakeLast(count).ToArray();
+        }
+    }
+
+    public IAsyncEnumerable<RuntimeEvent> Subscribe(CancellationToken ct)
+    {
+        var channel = Channel.CreateBounded<RuntimeEvent>(new BoundedChannelOptions(_limit)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
+        lock (_lock) _subscribers.Add(channel);
+        return ReadSubscription(channel, ct);
+    }
+
+    private async IAsyncEnumerable<RuntimeEvent> ReadSubscription(Channel<RuntimeEvent> channel,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var item in channel.Reader.ReadAllAsync(ct)) yield return item;
+        }
+        finally
+        {
+            lock (_lock) _subscribers.Remove(channel);
+            channel.Writer.TryComplete();
+        }
+    }
+}
+
+/// <summary>Safe application-level read model shared by the management API and future telemetry consumers.</summary>
+public sealed class WorkerRuntimeReadModel
+{
+    private readonly GlobalWorkerConfiguration _global;
+    private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
+    private readonly ExecutionHistoryStore _history;
+    private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
+    private volatile string _state = "starting";
+
+    public WorkerRuntimeReadModel(GlobalWorkerConfiguration global,
+        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history)
+    {
+        _global = global;
+        _projects = projects;
+        _history = history;
+        Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
+    }
+
+    public RuntimeEventLog Events { get; }
+    public string State { get => _state; set => _state = value; }
+
+    public async Task<WorkerStatus> StatusAsync(CancellationToken ct)
+    {
+        var active = (await _history.ReadActiveAsync(ct)).Count;
+        return new WorkerStatus(ApplicationVersion.Display, State,
+            Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
+            _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
+            _projects.Count, _projects.Count);
+    }
+
+    public IReadOnlyList<WorkerCapability> Capabilities =>
+    [
+        new("codex-cli", "executor", Attributes: new Dictionary<string, string> { ["managedBy"] = "worker" }),
+        new("git", "source-control", Attributes: new Dictionary<string, string> { ["platform"] = RuntimeInformation.OSDescription }),
+        new("validation-commands", "validation", Attributes: new Dictionary<string, string> { ["sequential"] = "true" }),
+        new("platform", "runtime", RuntimeInformation.ProcessArchitecture.ToString(),
+            new Dictionary<string, string> { ["os"] = RuntimeInformation.OSDescription })
+    ];
+
+    public async Task<IReadOnlyList<ProjectRuntimeInfo>> ProjectsAsync(CancellationToken ct)
+    {
+        var entries = await _history.ReadActiveAsync(ct);
+        return _projects.Select(item =>
+            {
+                var config = item.Configuration;
+                var active = entries.Count(e => string.Equals(e.Project, config.Project.Name, StringComparison.OrdinalIgnoreCase));
+                return new ProjectRuntimeInfo(config.Project.Name, config.Project.Repository, true, State,
+                    config.Worker.MaxParallelTasks, active, Math.Max(0, config.Worker.MaxParallelTasks - active), null);
+            }).ToArray();
+    }
+
+    public async Task<IReadOnlyList<ExecutionRuntimeInfo>> ExecutionsAsync(int limit, CancellationToken ct)
+    {
+        var entries = await _history.ReadAllAsync(ct);
+        return entries.OrderByDescending(e => e.StartedAtUtc).Take(Math.Clamp(limit, 1, 500)).Select(e =>
+            new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
+                e.StartedAtUtc, e.CompletedAtUtc, e.DurationMilliseconds, e.ValidationOutcome, e.RepairCount,
+                e.Repairs.Select(repair => new ExecutionRepairInfo(repair.Attempt, repair.MaximumAttempts, repair.PassedAfterRepair)).ToArray(),
+                Outcome(e.State))).ToArray();
+    }
+
+    private static string? Outcome(string state) => state switch
+    {
+        "Completed" => "succeeded", "Blocked" => "blocked", "Failed" => "failed",
+        "InfrastructureFailure" => "infrastructure-failure", "Cancelled" => "cancelled", _ => null
+    };
+}
+
+public static class ManagementApi
+{
+    public static async Task<WebApplication?> StartAsync(WorkerRuntimeReadModel runtime, ManagementApiSettings settings,
+        CancellationToken ct)
+    {
+        if (!settings.Enabled) return null;
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseUrls(settings.ListenUrl);
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(runtime);
+        var app = builder.Build();
+        app.MapGet("/api/status", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.StatusAsync(context.RequestAborted)));
+        app.MapGet("/api/capabilities", (WorkerRuntimeReadModel model) => Results.Ok(model.Capabilities));
+        app.MapGet("/api/projects", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.ProjectsAsync(context.RequestAborted)));
+        app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
+            Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
+        app.MapGet("/api/events", (int? limit, WorkerRuntimeReadModel model) => Results.Ok(model.Events.ReadRecent(limit)));
+        app.MapGet("/api/events/stream", async (HttpContext context, WorkerRuntimeReadModel model) =>
+        {
+            // Register before committing the response so the first event cannot race the connection setup.
+            var subscription = model.Events.Subscribe(context.RequestAborted);
+            context.Response.ContentType = "text/event-stream";
+            context.Response.Headers.CacheControl = "no-cache";
+            await context.Response.StartAsync(context.RequestAborted);
+            await context.Response.Body.FlushAsync(context.RequestAborted);
+            await foreach (var item in subscription)
+            {
+                await context.Response.WriteAsync($"id: {item.Id}\nevent: {item.Type}\ndata: {System.Text.Json.JsonSerializer.Serialize(item)}\n\n", context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
+            }
+        });
+        await app.StartAsync(ct);
+        return app;
+    }
+}
