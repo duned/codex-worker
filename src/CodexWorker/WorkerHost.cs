@@ -14,7 +14,6 @@ public sealed class WorkerHost
         _global = global;
         _projects = projects;
         _output = output ?? new WorkerConsole();
-        if (projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -25,8 +24,10 @@ public sealed class WorkerHost
         var runtimes = new List<ProjectRuntime>();
         string? activeProject = null;
         var safeToStop = true;
+        var operational = false;
         try
         {
+            if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             foreach (var (path, config) in _projects)
             {
                 var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
@@ -70,6 +71,7 @@ public sealed class WorkerHost
             }, ct: ct);
             await telegram.StartedAsync(runtimes.Count, ct);
             _output.Started();
+            operational = true;
 
             var scheduler = new ProjectScheduler(runtimes.Count);
             while (!ct.IsCancellationRequested)
@@ -113,6 +115,8 @@ public sealed class WorkerHost
                 new WorkerInfrastructureException($"Worker startup or project processing failed: {ex.Message}", ex);
             _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
             await telegram.CriticalAsync(activeProject, infrastructure.Message, CancellationToken.None);
+            if (!operational)
+                throw new WorkerStartupException(infrastructure.Message, infrastructure);
             throw infrastructure;
         }
         finally

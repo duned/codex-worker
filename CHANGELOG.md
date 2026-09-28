@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Use the GitHub CLI 2.45-compatible `gh api --paginate` invocation for Issue dependencies and parse every returned page without requiring `--slurp`.
+- Return a dedicated startup/preflight failure exit code so systemd can avoid restarting deterministic configuration and capability failures.
+- Document the V0.4.1 production invocation failure and the recommended systemd `RestartPreventExitStatus=2` setting.
+
 ## 0.4.1
 
 - Fix V0.4.0 startup and scheduling compatibility with GitHub CLI 2.45.0 by reading Issue dependencies through GitHub's paginated REST API instead of the `blockedBy` JSON field.

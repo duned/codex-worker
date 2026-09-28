@@ -56,15 +56,35 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         ProcessResult result;
         try
         {
-            result = await RunGhAsync(["api", "--paginate", "--slurp", $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by"], ct,
+            result = await RunGhAsync(DependencyApiArguments(repository, issueNumber), ct,
                 allowGracefulCancellation: true);
         }
         catch (WorkerInfrastructureException ex)
         {
             throw new WorkerInfrastructureException($"GitHub Issue Dependencies API unavailable for '{repository}' Issue #{issueNumber}: {ex.Message}", ex);
         }
-        try { return JsonDocument.Parse(result.StandardOutput); }
+        try { return JsonDocument.Parse(ParseDependencyPages(result.StandardOutput)); }
         catch (JsonException ex) { throw new WorkerInfrastructureException($"Could not parse GitHub Issue dependencies for #{issueNumber} in '{repository}': {ex.Message}", ex); }
+    }
+
+    internal static string[] DependencyApiArguments(string repository, int issueNumber) =>
+        ["api", "--paginate", $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by"];
+
+    private static string ParseDependencyPages(string output)
+    {
+        // gh api --paginate writes each response page as a separate top-level
+        // JSON value. --slurp is unnecessary and is not supported by all deployed
+        // versions, so accept multiple values directly and combine the pages.
+        var reader = new Utf8JsonReader(System.Text.Encoding.UTF8.GetBytes(output),
+            new JsonReaderOptions { AllowMultipleValues = true });
+        var pages = new List<JsonElement>();
+        while (reader.Read())
+        {
+            using var page = JsonDocument.ParseValue(ref reader);
+            pages.Add(page.RootElement.Clone());
+        }
+        if (pages.Count == 0) throw new JsonException("GitHub dependency API returned no JSON pages.");
+        return JsonSerializer.Serialize(pages);
     }
 
     private static bool DependenciesAreClosed(JsonDocument pages)
@@ -73,8 +93,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         if (root.ValueKind != JsonValueKind.Array)
             throw new JsonException("GitHub dependency API did not return paginated JSON arrays.");
 
-        // gh api --paginate --slurp wraps each page in an array. Inspect every page
-        // so a later unresolved dependency can never be hidden by the first page.
+        // Inspect every page so a later unresolved dependency can never be hidden by the first.
         foreach (var page in root.EnumerateArray())
         {
             if (page.ValueKind != JsonValueKind.Array)

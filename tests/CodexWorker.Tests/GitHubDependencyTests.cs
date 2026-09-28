@@ -15,8 +15,9 @@ public sealed class GitHubDependencyTests
         Assert.Equal(1, issue?.Number);
         Assert.Contains(fixture.Commands[0], arg => arg == "number,title,body,createdAt");
         Assert.DoesNotContain(fixture.Commands.SelectMany(args => args), arg => arg.Contains("blockedBy", StringComparison.Ordinal));
-        Assert.Contains(fixture.Commands, args => args.Contains("api") && args.Contains("--paginate") &&
-            args.Any(arg => arg.Contains("/dependencies/blocked_by", StringComparison.Ordinal)));
+        Assert.Contains(fixture.Commands, args => args.SequenceEqual([
+            "api", "--paginate", "repos/owner/repo/issues/1/dependencies/blocked_by"]));
+        Assert.DoesNotContain(fixture.Commands.SelectMany(args => args), arg => arg is "--slurp" or "view");
         Assert.DoesNotContain(fixture.Commands.SelectMany(args => args), arg => arg is "--add-label" or "--remove-label");
     }
 
@@ -69,7 +70,7 @@ public sealed class GitHubDependencyTests
             commands.Add(command);
             var output = command.Contains("--version") ? "gh version 2.45.0" :
                 command.Contains("number") ? "[{\"number\":7}]" :
-                command.Any(arg => arg.Contains("/dependencies/blocked_by", StringComparison.Ordinal)) ? "[[]]" : "{}";
+                command.Any(arg => arg.Contains("/dependencies/blocked_by", StringComparison.Ordinal)) ? "[]" : "{}";
             return Task.FromResult(new ProcessResult(0, output, ""));
         });
 
@@ -159,7 +160,7 @@ public sealed class GitHubDependencyTests
                     var issueNumber = int.Parse(command.Single(arg => arg.Contains("/dependencies/blocked_by", StringComparison.Ordinal)).Split('/')[4]);
                     var dependencyStates = pages ?? [issuesByNumber[issueNumber]["states"].EnumerateArray().Select(state => state.GetString()!).ToArray()];
                     return Task.FromResult(dependencyExit == 0
-                        ? new ProcessResult(0, JsonSerializer.Serialize(dependencyStates.Select(page => page.Select(state => new { state }).ToArray())), "")
+                        ? new ProcessResult(0, string.Join("\n", dependencyStates.Select(page => JsonSerializer.Serialize(page.Select(state => new { state }).ToArray()))), "")
                         : new ProcessResult(dependencyExit, "", "permission denied"));
                 }
                 return Task.FromResult(new ProcessResult(0, output, ""));
