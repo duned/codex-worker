@@ -38,6 +38,32 @@ public sealed class MultiProjectConfigurationTests
     }
 
     [Fact]
+    public void ProjectParallelismDefaultsToOneAndCanBeConfigured()
+    {
+        using var fixture = new Fixture();
+        fixture.AddProject("default.yml", "Default", "owner/default", "default");
+        fixture.AddProject("parallel.yml", "Parallel", "owner/parallel", "parallel", maxParallelTasks: 2);
+
+        var projects = ProjectConfigurationDiscovery.Load(fixture.Projects);
+
+        Assert.Equal(1, projects.Single(x => x.Configuration.Project.Name == "Default").Configuration.Worker.MaxParallelTasks);
+        Assert.Equal(2, projects.Single(x => x.Configuration.Project.Name == "Parallel").Configuration.Worker.MaxParallelTasks);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void RejectsUnsupportedProjectParallelism(int parallelism)
+    {
+        using var fixture = new Fixture();
+        fixture.AddProject("invalid.yml", "Invalid", "owner/invalid", "invalid", maxParallelTasks: parallelism);
+
+        var error = Assert.Throws<InvalidDataException>(() => ProjectConfigurationDiscovery.Load(fixture.Projects));
+
+        Assert.Contains("worker.maxParallelTasks", error.Message);
+    }
+
+    [Fact]
     public void DiscoversYamlDeterministicallyAndIgnoresOtherFiles()
     {
         using var fixture = new Fixture();
@@ -88,6 +114,49 @@ public sealed class MultiProjectConfigurationTests
     }
 
     [Fact]
+    public void RoundRobinSkipsProjectsAtCapacityAndUsesAvailableProjectCapacityFairly()
+    {
+        var scheduler = new ProjectScheduler(3);
+        var limits = new[] { 1, 1, 2 };
+        var active = new[] { 1, 0, 0 };
+        const int globalLimit = 4;
+
+        var first = scheduler.ScanOrder().First(index => active.Sum() < globalLimit && active[index] < limits[index]);
+        scheduler.Selected(first);
+        active[first]++;
+        var second = scheduler.ScanOrder().First(index => active.Sum() < globalLimit && active[index] < limits[index]);
+        scheduler.Selected(second);
+        active[second]++;
+        var third = scheduler.ScanOrder().First(index => active.Sum() < globalLimit && active[index] < limits[index]);
+        scheduler.Selected(third);
+        active[third]++;
+
+        Assert.Equal(1, first);
+        Assert.Equal(2, second);
+        Assert.Equal(2, third);
+        Assert.Equal(2, active[2]);
+        Assert.Equal(globalLimit, active.Sum());
+        Assert.All(active.Zip(limits), pair => Assert.True(pair.First <= pair.Second));
+    }
+
+    [Fact]
+    public void CompletingOrFailingExecutionRestoresItsProjectCapacity()
+    {
+        var scheduler = new ProjectScheduler(2);
+        var limits = new[] { 1, 2 };
+        var active = new[] { 1, 2 };
+
+        Assert.DoesNotContain(scheduler.ScanOrder(), index => active[index] < limits[index]);
+
+        // Any terminal execution (success or safe task failure) leaves the active set.
+        active[0]--;
+        Assert.Contains(scheduler.ScanOrder(), index => active[index] < limits[index]);
+        scheduler.Selected(0);
+        active[1]--;
+        Assert.Contains(scheduler.ScanOrder(), index => active[index] < limits[index]);
+    }
+
+    [Fact]
     public async Task ScanSkipsEmptyQueuesAndAdvancesAfterOneSequentialSelection()
     {
         var scheduler = new ProjectScheduler(3);
@@ -128,7 +197,7 @@ public sealed class MultiProjectConfigurationTests
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "codex-worker-multi-" + Guid.NewGuid().ToString("N"));
         public string Projects { get; }
         public Fixture() { Projects = Path.Combine(Root, "projects"); Directory.CreateDirectory(Projects); }
-        public void AddProject(string file, string name, string repo, string directory)
+        public void AddProject(string file, string name, string repo, string directory, int? maxParallelTasks = null)
         {
             var checkout = Path.Combine(Root, directory);
             Directory.CreateDirectory(checkout);
@@ -155,6 +224,7 @@ public sealed class MultiProjectConfigurationTests
                 validation:
                   commands:
                     - dotnet test
+                {(maxParallelTasks is null ? "" : $"worker:\n  maxParallelTasks: {maxParallelTasks}\n")}
                 """);
         }
         public void Dispose() => Directory.Delete(Root, recursive: true);
