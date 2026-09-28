@@ -1,6 +1,6 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.4.2. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in that project's dedicated checkout, runs that project's authoritative validation, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.4.2. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
 ## V0.4 architecture
 
@@ -72,6 +72,8 @@ To migrate from V0.1.x, move its project YAML into the new projects directory. R
 
 The configured checkout must be dedicated to this worker and initially clean on its configured base branch. Startup verifies the Git origin, checkout root, branch, cleanliness, and generated branch refs for every project before queue access. The worker then acquires local checkout locks and updates configured base branches. Do not edit a checkout concurrently or configure the same repository in multiple project files.
 
+Codex implementation and validation run in a managed worktree outside the source checkout at `~/.codex-worker/worktrees/<project>/<execution-id>`. The execution ID in the directory name identifies its owner if an infrastructure failure leaves the worktree for inspection. Successful integration and safe task failure remove the worktree; uncertain Git state is preserved. The canonical checkout coordinates base branch updates and integration and does not receive task file edits.
+
 ## Telegram and console
 
 When global `telegram.enabled` is true, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the worker environment. Global start/stop and infrastructure messages describe the worker and include its assembly-derived version (for example, `CW 0.4.2 · INFRAESTRUCTURA`); task messages include the project name, Issue, duration, and completion details when available. Telegram delivery failures are warnings and never change task outcomes. Secrets are not stored in YAML.
@@ -98,7 +100,7 @@ V0.4.1 production startup exposed an invalid `gh api` argument construction desp
 
 ## Safety and limitations
 
-The worker never force-pushes or automatically resolves merge conflicts. Task cleanup is allowed only after verifying the worker-created branch and starting commit. Infrastructure failures preserve checkout state for manual review. GitHub mutations are separate, so an error after a partial transition can leave state requiring inspection. No speculative recovery or service retry is attempted.
+The worker never force-pushes or automatically resolves merge conflicts. Task cleanup is allowed only after verifying the worker-created branch, registered worktree, and starting commit. Infrastructure failures preserve execution worktree state for manual review. GitHub mutations are separate, so an error after a partial transition can leave state requiring inspection. No speculative recovery or service retry is attempted.
 
 V0.3 assumes exactly one Codex Worker instance manages a given configured repository. The local checkout lock prevents two local processes from owning one checkout, but there are no distributed leases or cross-machine ownership guarantees. Multiple projects are supported; parallel Issue execution, multiple-worker coordination, databases, webhooks, session recovery, and service-manager setup are not.
 

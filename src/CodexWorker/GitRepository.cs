@@ -4,14 +4,19 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary);
 
-public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts) : IGitRepository, IDisposable
+public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
+    string? executionWorktreeRoot = null) : IGitRepository, IDisposable
 {
+    private readonly string worktreeRoot = executionWorktreeRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".codex-worker", "worktrees", Regex.Replace(Path.GetFileName(Path.TrimEndingDirectorySeparator(directory)), "[^A-Za-z0-9._-]", "-"));
+    private string? _executionDirectory;
     private string? _featureBranch;
     private string? _completedBranch;
     private string? _startingCommit;
     private FileStream? _workerLock;
 
     public void Dispose() => _workerLock?.Dispose();
+    public string ExecutionDirectory => _executionDirectory ?? directory;
 
     /// <summary>Read-only safety inspection used across every configured project before any queue is queried.</summary>
     public async Task ValidateStartupReadOnlyAsync(CancellationToken ct)
@@ -111,7 +116,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely initialize the configured checkout: {ex.Message}", ex); }
     }
 
-    public async Task StartIssueAsync(GitHubIssue issue, CancellationToken ct)
+    public async Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct)
     {
         try
         {
@@ -124,7 +129,14 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             _featureBranch = FeatureBranchName(settings, issue);
             _completedBranch = CompletedBranchName(settings, issue);
-            await GitAsync(["switch", "-c", _featureBranch], ct);
+            var root = Path.GetFullPath(worktreeRoot);
+            if (IsWithin(Path.GetFullPath(directory), root))
+                throw new WorkerInfrastructureException("Managed execution worktree root must be outside the configured project checkout.");
+            _executionDirectory = Path.Combine(root, executionId.ToString("N"));
+            Directory.CreateDirectory(root);
+            if (Directory.Exists(_executionDirectory) || File.Exists(_executionDirectory))
+                throw new WorkerInfrastructureException($"Execution worktree path already exists; preserving it: {_executionDirectory}");
+            await GitAsync(["worktree", "add", "-b", _featureBranch, _executionDirectory, _startingCommit], ct);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not prepare Git checkout for Issue #{issue.Number}: {ex.Message}", ex); }
@@ -134,10 +146,11 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         try
         {
-            await EnsureBranchAsync(_featureBranch, ct);
-            var commit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (commit != _startingCommit) throw new WorkerInfrastructureException("Codex changed Git history; refusing to continue.");
             await EnsureOriginAsync(ct);
+            await EnsureWorktreeOwnedAsync(ct);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not verify checkout state after Codex: {ex.Message}", ex); }
@@ -148,15 +161,17 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         try
         {
             if (_featureBranch is null || _startingCommit is null) throw new WorkerInfrastructureException("No worker-owned feature branch is available for safe cleanup.");
-            await EnsureBranchAsync(_featureBranch, ct);
-            var currentCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
+            var currentCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (currentCommit != _startingCommit) throw new WorkerInfrastructureException("Refusing cleanup because Git history changed during the Issue.");
             // Safe only under the documented dedicated-checkout model and with the worker's branch/HEAD invariants intact.
-            await GitAsync(["reset", "--hard", _startingCommit], ct);
-            await GitAsync(["clean", "-fd"], ct);
-            await GitAsync(["switch", "--", settings.BaseBranch], ct);
+            await GitAtAsync(ExecutionDirectory, ["reset", "--hard", _startingCommit], ct);
+            await GitAtAsync(ExecutionDirectory, ["clean", "-fd"], ct);
+            await RemoveExecutionWorktreeAsync(ct);
             await GitAsync(["branch", "-d", "--", _featureBranch], ct);
             _featureBranch = null;
+            _executionDirectory = null;
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely clean the task branch: {ex.Message}", ex); }
@@ -166,23 +181,25 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         try
         {
-            await EnsureBranchAsync(_featureBranch, ct);
-            var currentCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
+            var currentCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (currentCommit != _startingCommit) throw new WorkerInfrastructureException("Codex changed Git history; worker requires the original feature branch history.");
-            await GitAsync(["add", "--all"], ct);
-            var staged = await GitAsync(["diff", "--cached", "--quiet"], ct, [0, 1]);
+            await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
+            var staged = await GitAtAsync(ExecutionDirectory, ["diff", "--cached", "--quiet"], ct, [0, 1]);
             if (staged.ExitCode == 0)
             {
-                var status = (await GitAsync(["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+                var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
                 if (!string.IsNullOrWhiteSpace(status)) throw new WorkerInfrastructureException("Unexpected unstaged or untracked changes remain after staging; preserving checkout.");
-                await GitAsync(["switch", "--", settings.BaseBranch], ct);
+                await RemoveExecutionWorktreeAsync(ct);
                 await GitAsync(["branch", "-d", "--", _featureBranch!], ct);
                 _featureBranch = null;
+                _executionDirectory = null;
                 return new GitIntegrationResult(false, "No code changes were required; the Issue was completed without a commit or integration.");
             }
 
-            await GitAsync(["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
-            var commit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
+            var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (settings.AutoMerge)
             {
                 await GitAsync(["switch", "--", settings.BaseBranch], ct);
@@ -194,9 +211,16 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             }
             if (settings.DeleteLocalFeatureBranch && settings.AutoMerge)
             {
+                await RemoveExecutionWorktreeAsync(ct);
+                _executionDirectory = null;
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
                 await GitAsync(["branch", "-d", "--", _featureBranch!], ct);
+            }
+            else
+            {
+                await RemoveExecutionWorktreeAsync(ct);
+                _executionDirectory = null;
             }
             var summary = $"Committed as `{commit[..Math.Min(commit.Length, 12)]}`.";
             if (settings.AutoMerge) summary += $" Merged into `{settings.BaseBranch}`.";
@@ -210,7 +234,9 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
 
     private async Task EnsureOriginAsync(CancellationToken ct)
     {
-        var origin = (await GitAsync(["remote", "get-url", "origin"], ct)).StandardOutput.Trim();
+        // Read the configured URL before Git's insteadOf rewriting so the repository identity check
+        // validates the operator-configured origin rather than its transport rewrite.
+        var origin = (await GitAsync(["config", "--get", "remote.origin.url"], ct)).StandardOutput.Trim();
         if (!OriginMatchesRepository(origin, repository))
             throw new WorkerInfrastructureException($"Git origin '{origin}' does not match configured repository '{repository}'.");
     }
@@ -231,17 +257,58 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private async Task<string> GetCurrentBranchAsync(CancellationToken ct) =>
         (await GitAsync(["branch", "--show-current"], ct)).StandardOutput.Trim();
 
-    private async Task EnsureBranchAsync(string? branch, CancellationToken ct)
+    private async Task EnsureBranchAsync(string? branch, CancellationToken ct, string? workingDirectory = null)
     {
-        if (branch is null || await GetCurrentBranchAsync(ct) != branch)
+        if (branch is null || (await GitAtAsync(workingDirectory ?? directory, ["branch", "--show-current"], ct)).StandardOutput.Trim() != branch)
             throw new WorkerInfrastructureException("Unexpected Git branch detected; refusing to continue.");
     }
 
+    private async Task EnsureWorktreeOwnedAsync(CancellationToken ct)
+    {
+        if (_executionDirectory is null || _featureBranch is null)
+            throw new WorkerInfrastructureException("No execution worktree is registered for this Issue.");
+        if (!Directory.Exists(_executionDirectory))
+            throw new WorkerInfrastructureException($"Execution worktree is missing; preserving Git state for inspection: {_executionDirectory}");
+        var top = Path.GetFullPath((await GitAtAsync(_executionDirectory, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
+        if (!PathEquals(top, Path.GetFullPath(_executionDirectory)))
+            throw new WorkerInfrastructureException("Execution directory is not the expected Git worktree; refusing cleanup or integration.");
+        var branch = (await GitAtAsync(_executionDirectory, ["branch", "--show-current"], ct)).StandardOutput.Trim();
+        if (branch != _featureBranch)
+            throw new WorkerInfrastructureException("Execution worktree branch changed unexpectedly; preserving state for inspection.");
+        var list = (await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput;
+        var expected = Path.GetFullPath(_executionDirectory);
+        var registered = list.Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
+            .Any(entry => entry.Split('\n').Any(line => line.StartsWith("worktree ", StringComparison.Ordinal) &&
+                PathEquals(Path.GetFullPath(line[9..]), expected)) && entry.Split('\n').Any(line => line == $"branch refs/heads/{_featureBranch}"));
+        if (!registered)
+            throw new WorkerInfrastructureException("Execution worktree ownership could not be verified; preserving it for inspection.");
+    }
+
+    private async Task RemoveExecutionWorktreeAsync(CancellationToken ct)
+    {
+        await EnsureWorktreeOwnedAsync(ct);
+        await GitAsync(["worktree", "remove", _executionDirectory!], ct);
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        left.Equals(right, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool IsWithin(string parent, string candidate)
+    {
+        var relative = Path.GetRelativePath(parent, candidate);
+        return relative == "." || (!Path.IsPathRooted(relative) && relative != ".." &&
+            !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+            !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal));
+    }
+
     private async Task<ProcessResult> GitAsync(IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null)
+        => await GitAtAsync(directory, args, ct, allowExitCodes);
+
+    private async Task<ProcessResult> GitAtAsync(string workingDirectory, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null)
     {
         try
         {
-            var result = await runner.RunAsync("git", args, directory, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct);
+            var result = await runner.RunAsync("git", args, workingDirectory, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct);
             if (result.ExitCode != 0 && !(allowExitCodes?.Contains(result.ExitCode) ?? false))
             {
                 var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
