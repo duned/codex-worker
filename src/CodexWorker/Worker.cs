@@ -42,7 +42,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             _output.IssueStarted(config.Project.Name, issue);
-            await telegram.StartingAsync(config.Project.Name, issue, ct);
+            await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, ct);
             var timer = Stopwatch.StartNew();
             var result = await RunExecutionAsync(new ExecutionContext(execution, issue), ct);
             timer.Stop();
@@ -194,20 +194,20 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
-                await telegram.SuccessAsync(config.Project.Name, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
+                await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
                 _output.IssueCompleted(config.Project.Name, issue, result.Report.Duration, ShortCompletion(result.Summary));
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, result.Summary, ct);
-                await telegram.BlockedAsync(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
+                await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
                 _output.IssueBlocked(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.");
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, message, ct);
-                await telegram.FailedAsync(config.Project.Name, issue, result.Report.Duration, Limit(message, 1400), ct);
+                await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, Limit(message, 1400), ct);
                 _output.IssueFailed(config.Project.Name, issue, result.Report.Duration, FirstLine(message));
                 break;
         }

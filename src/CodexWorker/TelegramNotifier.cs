@@ -49,35 +49,34 @@ public sealed class TelegramNotifier : IDisposable
     public Task StoppedAsync(string project, CancellationToken ct) =>
         SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO\n{project}"), ct);
 
-    public Task StartingAsync(string project, GitHubIssue issue, CancellationToken ct) =>
-        SendAsync(Format($"▶️ TAREA INICIADA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}"), ct);
+    public Task StartingAsync(string project, string repository, GitHubIssue issue, CancellationToken ct) =>
+        SendTaskAsync(project, repository, issue, $"▶ CW {ApplicationVersion.Display} · {Project(project)} · TAREA INICIADA", null, ct);
 
-    public Task SuccessAsync(string project, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
+    public Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
     {
-        var lines = new List<string>
-        {
-            $"✅ TAREA COMPLETADA · {project.ToUpperInvariant()} · #{issue.Number}", Clean(issue.Title), "",
-            $"Duración: {WorkerConsole.FormatDuration(duration)}"
-        };
-        var commit = Regex.Match(summary, @"Committed as `([^`]+)`");
-        if (commit.Success) lines.Add($"Commit: {commit.Groups[1].Value}");
-        var branch = Regex.Match(summary, @"Merged into `([^`]+)`");
-        if (branch.Success) lines.Add($"Integrada en: {branch.Groups[1].Value}");
-        else if (summary.Contains("No code changes", StringComparison.OrdinalIgnoreCase)) lines.Add("Completada sin cambios de código");
+        var lines = new List<string> { $"✅ CW {ApplicationVersion.Display} · {Project(project)} · TAREA COMPLETADA", IssueLink(repository, issue), "",
+            $"Duración: {WorkerConsole.FormatDuration(duration)}" };
+        AddMatch(lines, summary, @"Committed as `([^`]+)`", "Commit");
+        AddMatch(lines, summary, @"Merged into `([^`]+)`", "Integrada en");
+        AddMatch(lines, summary, @"Preserved on origin as `([^`]+)`", "Rama completada preservada");
+        AddMatch(lines, summary, @"Local feature branch: `([^`]+)`", "Rama completada local");
+        if (summary.Contains("No code changes", StringComparison.OrdinalIgnoreCase)) lines.Add("Completada sin cambios de código");
         var codexSummary = Regex.Match(summary, @"(?:^|\n\n)Codex summary:\s*(.*)$", RegexOptions.Singleline);
         if (codexSummary.Success && !string.IsNullOrWhiteSpace(codexSummary.Groups[1].Value))
         {
             lines.Add("");
-            lines.Add(Clean(codexSummary.Groups[1].Value));
+            lines.Add($"Resumen de Codex:\n{codexSummary.Groups[1].Value.Trim()}");
         }
-        return SendAsync(Format(string.Join("\n", lines)), ct);
+        return SendAsync(HtmlMessage(lines), ct, html: true);
     }
 
-    public Task BlockedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format($"🟡 TAREA BLOQUEADA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}"), ct);
+    public Task BlockedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
+        SendTaskAsync(project, repository, issue, $"🟡 CW {ApplicationVersion.Display} · {Project(project)} · TAREA BLOQUEADA",
+            $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
 
-    public Task FailedAsync(string project, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendAsync(Format($"❌ TAREA FALLIDA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}\nDuración: {WorkerConsole.FormatDuration(duration)}"), ct);
+    public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
+        SendTaskAsync(project, repository, issue, $"❌ CW {ApplicationVersion.Display} · {Project(project)} · TAREA FALLIDA",
+            $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
 
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
         SendAsync(Format($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
@@ -85,16 +84,44 @@ public sealed class TelegramNotifier : IDisposable
     public Task StoppedAsync(int projectCount, CancellationToken ct) =>
         SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO"), ct);
 
-    public static string Format(string message) => string.Join("\n", message.Split('\n').Select(line =>
-        string.IsNullOrWhiteSpace(line) ? "" : Clean(line)));
+    public static string Format(string message) => string.Join("\n", message.Split('\n').Select(Clean));
 
-    private async Task SendAsync(string text, CancellationToken ct)
+    private Task SendTaskAsync(string project, string repository, GitHubIssue issue, string header, string? details, CancellationToken ct)
+    {
+        var lines = new List<string> { header, IssueLink(repository, issue) };
+        if (!string.IsNullOrWhiteSpace(details)) { lines.Add(""); lines.Add(details); }
+        return SendAsync(HtmlMessage(lines), ct, html: true);
+    }
+
+    private static string IssueLink(string repository, GitHubIssue issue)
+    {
+        var url = $"https://github.com/{repository}/issues/{issue.Number}";
+        return $"<a href=\"{EscapeHtml(url)}\">{EscapeHtml($"#{issue.Number} · {issue.Title}")}</a>";
+    }
+
+    private static string HtmlMessage(IEnumerable<string> lines) => string.Join("\n", lines.Select(line =>
+        string.IsNullOrEmpty(line) || line.StartsWith("<a href=\"https://github.com/", StringComparison.Ordinal)
+            ? line
+            : string.Join("\n", line.Split('\n').Select(EscapeHtml))));
+
+    private static string Project(string project) => EscapeHtml(project.ToUpperInvariant());
+    private static string EscapeHtml(string value) => value.Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal).Replace(">", "&gt;", StringComparison.Ordinal)
+        .Replace("\"", "&quot;", StringComparison.Ordinal).Replace("'", "&#39;", StringComparison.Ordinal);
+    private static void AddMatch(List<string> lines, string summary, string pattern, string label)
+    {
+        var match = Regex.Match(summary, pattern);
+        if (match.Success) lines.Add($"{label}: {match.Groups[1].Value}");
+    }
+
+    private async Task SendAsync(string text, CancellationToken ct, bool html = false)
     {
         if (!_enabled) return;
         try
         {
-            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{_token}/sendMessage",
-                new { chat_id = _chatId, text }, ct);
+            var payload = new Dictionary<string, object?> { ["chat_id"] = _chatId, ["text"] = text };
+            if (html) payload["parse_mode"] = "HTML";
+            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{_token}/sendMessage", payload, ct);
             if (!response.IsSuccessStatusCode) _console.Warning($"Telegram notification failed with HTTP {(int)response.StatusCode}; worker continues.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
