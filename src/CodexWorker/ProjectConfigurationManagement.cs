@@ -71,7 +71,8 @@ public sealed record ProjectConfigurationView(string Name, string Repository, st
     ValidationSettings Validation, WorkerSettings Worker);
 
 /// <summary>Serializes project mutations, validates the complete resulting set, and guards active removals.</summary>
-public sealed class ProjectConfigurationService(IProjectConfigurationProvider provider, ExecutionHistoryStore history, string configurationDirectory)
+public sealed class ProjectConfigurationService(IProjectConfigurationProvider provider, ExecutionHistoryStore history, string configurationDirectory,
+    ProjectRuntimeRegistry? runtimeRegistry = null)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -86,6 +87,26 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
         var projects = await provider.ReadAllAsync(ct);
         var item = projects.FirstOrDefault(x => string.Equals(x.Configuration.Project.Name, name, StringComparison.OrdinalIgnoreCase));
         return item.Configuration is null ? null : ToView(item.Configuration);
+    }
+
+    /// <summary>Validates the complete on-disk set before atomically replacing the active configuration snapshot.</summary>
+    public async Task<IReadOnlyList<ProjectConfigurationView>> ReloadAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            var candidate = await provider.ReadAllAsync(ct);
+            ProjectConfigurationDiscovery.ValidateSet(candidate);
+            runtimeRegistry?.ReplaceConfiguration(candidate);
+            runtimeRegistry?.Publish("configuration.reloaded", "Project configuration reloaded.");
+            return candidate.Select(x => ToView(x.Configuration)).ToArray();
+        }
+        catch (Exception)
+        {
+            runtimeRegistry?.Publish("configuration.reload.rejected", "Project configuration reload was rejected.");
+            throw;
+        }
+        finally { _gate.Release(); }
     }
 
     public Task<ProjectConfigurationView> CreateAsync(WorkerConfiguration configuration, CancellationToken ct) => MutateAsync(null, configuration, ct);
@@ -104,6 +125,7 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             var remaining = projects.Where(x => !string.Equals(x.Path, item.Path, StringComparison.OrdinalIgnoreCase)).ToArray();
             if (remaining.Length == 0) throw new InvalidDataException("At least one project configuration must remain.");
             await provider.RemoveAsync(item.Path, ct);
+            await RefreshRuntimeAsync(ct, name);
             return true;
         }
         finally { _gate.Release(); }
@@ -117,17 +139,29 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             var projects = await provider.ReadAllAsync(ct);
             var existing = existingName is null ? default : projects.FirstOrDefault(x => string.Equals(x.Configuration.Project.Name, existingName, StringComparison.OrdinalIgnoreCase));
             if (existingName is not null && existing.Configuration is null) throw new KeyNotFoundException($"Project '{existingName}' was not found.");
-            if (existingName is not null && (await history.ReadActiveAsync(ct)).Any(x => string.Equals(x.Project, existingName, StringComparison.OrdinalIgnoreCase)))
-                throw new ProjectConfigurationConflictException($"Project '{existingName}' has an active execution and cannot be updated.");
+            var active = existingName is not null && (await history.ReadActiveAsync(ct)).Any(x => string.Equals(x.Project, existingName, StringComparison.OrdinalIgnoreCase));
             var oldPath = existingName is null ? null : existing.Path;
             configuration.ResolvePaths(Path.Combine(Path.GetFullPath(configurationDirectory), "candidate.yml"));
             var candidatePath = oldPath ?? Path.Combine(Path.GetFullPath(configurationDirectory), "candidate.yml");
             ProjectConfigurationDiscovery.ValidateCandidate(candidatePath, configuration, projects, oldPath);
+            if (active && existing.Configuration is { } previous &&
+                (!string.Equals(previous.Project.Repository, configuration.Project.Repository, StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(Path.GetFullPath(previous.Project.Directory), Path.GetFullPath(configuration.Project.Directory), StringComparison.OrdinalIgnoreCase)))
+                throw new ProjectConfigurationConflictException($"Project '{existingName}' has an active execution and cannot change repository or checkout.");
             var path = await provider.WriteAsync(configuration, ct);
             if (oldPath is not null && !string.Equals(oldPath, path, StringComparison.OrdinalIgnoreCase)) await provider.RemoveAsync(oldPath, ct);
+            await RefreshRuntimeAsync(ct, configuration.Project.Name);
             return ToView(configuration);
         }
         finally { _gate.Release(); }
+    }
+
+    private async Task RefreshRuntimeAsync(CancellationToken ct, string? project)
+    {
+        if (runtimeRegistry is null) return;
+        var updated = await provider.ReadAllAsync(ct);
+        runtimeRegistry.ReplaceConfiguration(updated);
+        runtimeRegistry.Publish("configuration.reloaded", "Project configuration reloaded.", project);
     }
 
     private static ProjectConfigurationView ToView(WorkerConfiguration config) => new(config.Project.Name,

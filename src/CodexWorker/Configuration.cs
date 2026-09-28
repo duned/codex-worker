@@ -179,7 +179,7 @@ public static class ProjectConfigurationDiscovery
 public sealed class ProjectScheduler(int projectCount)
 {
     private int _next;
-    public int ProjectCount { get; } = projectCount > 0 ? projectCount : throw new ArgumentOutOfRangeException(nameof(projectCount));
+    public int ProjectCount { get; private set; } = projectCount > 0 ? projectCount : throw new ArgumentOutOfRangeException(nameof(projectCount));
     public int NextIndex => _next;
     public IEnumerable<int> ScanOrder()
     {
@@ -189,6 +189,12 @@ public sealed class ProjectScheduler(int projectCount)
     {
         if ((uint)index >= (uint)ProjectCount) throw new ArgumentOutOfRangeException(nameof(index));
         _next = (index + 1) % ProjectCount;
+    }
+    public void Reconfigure(int projectCount)
+    {
+        if (projectCount <= 0) throw new ArgumentOutOfRangeException(nameof(projectCount));
+        ProjectCount = projectCount;
+        _next %= projectCount;
     }
     public async Task<int?> ScanAsync(Func<int, Task<bool>> processOne)
     {

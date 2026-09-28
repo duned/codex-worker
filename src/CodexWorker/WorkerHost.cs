@@ -24,7 +24,10 @@ public sealed class WorkerHost
         ExecutionHistoryStore? history = null;
         WorkerRuntimeReadModel? runtimeReadModel = null;
         Microsoft.AspNetCore.Builder.WebApplication? managementApi = null;
+        ProjectConfigurationWatcher? configurationWatcher = null;
         var runtimes = new List<ProjectRuntime>();
+        var allRuntimes = new List<ProjectRuntime>();
+        var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
         string? activeProject = null;
         var safeToStop = true;
         var operational = false;
@@ -35,21 +38,15 @@ public sealed class WorkerHost
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             history = new ExecutionHistoryStore();
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
-            var configurationService = new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory);
-            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history, configurationService);
+            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
+            var configurationService = new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
-            var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, config) in _projects)
             {
-                var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
-                var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
-                var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
-                var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
-                if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
-                    repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
-                runtimes.Add(new ProjectRuntime(path, config, git,
-                    new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate), codex, github, repositoryGate));
+                var project = CreateRuntime(path, config, telegram, history, repositoryGates);
+                runtimes.Add(project);
+                allRuntimes.Add(project);
             }
 
             var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
@@ -70,6 +67,7 @@ public sealed class WorkerHost
                 async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
             )).ToArray();
             var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
+            configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
             _output.GitHubCliReady();
             _output.GitHubAuthenticationReady();
             _output.GitHubLabelsReady(runtimes.Count, createdLabels);
@@ -94,13 +92,38 @@ public sealed class WorkerHost
             var scheduler = new ProjectScheduler(runtimes.Count);
             while (!ct.IsCancellationRequested)
             {
+                var runtimeVersion = runtimeReadModel.Registry.Version;
                 foreach (var completed in active.Keys.Where(task => task.IsCompleted).ToArray())
                 {
                     var project = active[completed];
                     activeProject = project.Configuration.Project.Name;
                     await completed;
                     active.Remove(completed);
+                    runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
                     runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
+                }
+
+                // Rebuild schedulable project runtimes from one atomically installed configuration snapshot.
+                var currentConfigurations = runtimeReadModel.Registry.Snapshot();
+                if (currentConfigurations.Count != runtimes.Count || currentConfigurations.Where((item, index) =>
+                        !ReferenceEquals(item.Configuration, runtimes[index].Configuration)).Any())
+                {
+                    var currentByName = runtimes.ToDictionary(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase);
+                    var replacement = new List<ProjectRuntime>(currentConfigurations.Count);
+                    foreach (var (path, configuration) in currentConfigurations)
+                    {
+                        if (currentByName.TryGetValue(configuration.Project.Name, out var existing) && ReferenceEquals(existing.Configuration, configuration))
+                            replacement.Add(existing);
+                        else
+                        {
+                            var project = CreateRuntime(path, configuration, telegram, history, repositoryGates);
+                            replacement.Add(project);
+                            allRuntimes.Add(project);
+                        }
+                    }
+                    runtimes.Clear();
+                    runtimes.AddRange(replacement);
+                    scheduler.Reconfigure(runtimes.Count);
                 }
 
                 var foundWork = false;
@@ -110,13 +133,17 @@ public sealed class WorkerHost
                     foreach (var index in scheduler.ScanOrder())
                     {
                         var project = runtimes[index];
-                        var projectActive = active.Values.Count(activeProject => ReferenceEquals(activeProject, project));
+                        var projectActive = active.Values.Count(activeProject => string.Equals(activeProject.Configuration.Project.Name,
+                            project.Configuration.Project.Name, StringComparison.OrdinalIgnoreCase));
                         if (projectActive >= project.Configuration.Worker.MaxParallelTasks) continue;
+                        if (!runtimeReadModel.Registry.TryReserve(project.Configuration.Project.Name, project.Configuration)) continue;
                         activeProject = project.Configuration.Project.Name;
                         safeToStop = true; // no Issue has been claimed while queue lookup is in progress
-                        var execution = await project.Worker.ClaimNextAsync(executionToken);
+                        Task<IssueProcessingResult?>? execution;
+                        try { execution = await project.Worker.ClaimNextAsync(executionToken); }
+                        catch { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); throw; }
                         safeToStop = true;
-                        if (execution is null) continue;
+                        if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }
                         active.Add(execution, project);
                         runtimeReadModel.Events.Publish("execution.started", "Execution claimed.", project.Configuration.Project.Name);
                         scheduler.Selected(index);
@@ -132,7 +159,11 @@ public sealed class WorkerHost
                 if (active.Count > 0)
                 {
                     safeToStop = false;
-                    await Task.WhenAny(active.Keys);
+                    using var changeWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    var activeFinished = Task.WhenAny(active.Keys);
+                    var runtimeChanged = runtimeReadModel.Registry.WaitForChangeAsync(runtimeVersion, changeWait.Token);
+                    await Task.WhenAny(activeFinished, runtimeChanged);
+                    changeWait.Cancel();
                     // Observe on the next pass so all task exceptions follow the common infrastructure path.
                     continue;
                 }
@@ -187,13 +218,27 @@ public sealed class WorkerHost
         }
         finally
         {
+            if (configurationWatcher is not null) await configurationWatcher.DisposeAsync();
             if (managementApi is not null) await managementApi.DisposeAsync();
             await _output.StopWaitingAsync();
-            foreach (var project in runtimes) project.Git.Dispose();
-            foreach (var gate in runtimes.Select(project => project.RepositoryGate).Distinct()) gate.Dispose();
+            foreach (var project in allRuntimes) project.Git.Dispose();
+            foreach (var gate in repositoryGates.Values) gate.Dispose();
             history?.Dispose();
             executionCancellation?.Dispose();
         }
+    }
+
+    private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,
+        ExecutionHistoryStore history, IDictionary<string, SemaphoreSlim> repositoryGates)
+    {
+        var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
+        var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
+        var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
+        var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
+        if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
+            repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
+        return new ProjectRuntime(path, config, git,
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate), codex, github, repositoryGate);
     }
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
