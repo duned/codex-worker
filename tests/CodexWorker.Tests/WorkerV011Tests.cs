@@ -5,6 +5,23 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Fact]
+    public async Task SchedulerDispatchesExplicitExecutionAndReceivesSafeTerminalOutcome()
+    {
+        using var h = new Harness();
+        h.Codex.InitialOutcome = new CodexOutcome("blocked", "Needs a decision", [], true, "Which API?");
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.NotNull(result);
+        Assert.Equal(IssueOutcomeKind.Blocked, result.Kind);
+        Assert.NotNull(result.Report.ExecutionId);
+        Assert.Equal(result.Report.ExecutionId, h.Git.LastExecutionId);
+        Assert.Equal(1, h.Git.Started);
+        Assert.Contains("ready->working", h.GitHub.Labels);
+        Assert.Contains("working->blocked", h.GitHub.Labels);
+    }
+
+    [Fact]
     public async Task InitialValidationSuccessDoesNotInvokeRepair()
     {
         using var h = new Harness();
@@ -355,6 +372,7 @@ public sealed class WorkerV011Tests
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
 
         public async Task RunAsync() => await Worker.RunAsync(Cancellation.Token);
+        public Task<IssueProcessingResult?> ProcessOneAsync() => Worker.ProcessOneAsync(Cancellation.Token);
 
         public void Dispose()
         {
@@ -425,8 +443,9 @@ public sealed class WorkerV011Tests
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
         public int Integrations { get; private set; }
+        public Guid? LastExecutionId { get; private set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; return Task.CompletedTask; }
+        public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct)

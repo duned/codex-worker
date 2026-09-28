@@ -27,6 +27,19 @@ public sealed class WorkerExecutionTests
     }
 
     [Fact]
+    public void GitRepositoryCreatesSeparateMutableRepositoryStatePerExecution()
+    {
+        using var repository = new GitRepository(new ProcessRunner(), Path.GetTempPath(), "owner/repo",
+            Git, new WorkerSettings(), Path.Combine(Path.GetTempPath(), "codex-worker-test-worktrees"));
+
+        var first = repository.CreateExecutionRepository();
+        var second = repository.CreateExecutionRepository();
+
+        Assert.NotSame(repository, first);
+        Assert.NotSame(first, second);
+    }
+
+    [Fact]
     public void NormalLifecycleTransitionsToCompleted()
     {
         var execution = WorkerExecution.Create(Project, Git, Issue);

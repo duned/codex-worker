@@ -85,13 +85,12 @@ public sealed class WorkerHost
                     activeProject = project.Configuration.Project.Name;
                     safeToStop = true; // only a read-only queue lookup is initially in flight
                     var task = project.Worker.ProcessOneAsync(ct);
-                    // Once ProcessOneAsync has found an Issue, it claims immediately. From this point cancellation is conservative.
+                    // A safe queue cancellation returns no result. Once a claim begins, cancellation is treated conservatively.
                     safeToStop = false;
-                    var processed = await task;
+                    var result = await task;
                     safeToStop = true;
-                    if (!processed) return false;
-                    safeToStop = true;
-                    return true;
+                    // A terminal blocked/task-failed result is still completed work; infrastructure exceptions escape and stop scheduling.
+                    return result is not null;
                 });
                 if (selected is null && !ct.IsCancellationRequested)
                 {

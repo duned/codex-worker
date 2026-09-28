@@ -2,7 +2,13 @@
 
 `codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.5.0. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
-## V0.4 architecture
+## V0.5 execution architecture
+
+The host owns global project scheduling and dispatches one explicit `ExecutionContext` at a time. `ExecutionRunner` owns that execution's workspace, Codex implementation, sequential authoritative validation and bounded repair, Git state checks, integration request, and task outcome. Each attempt gets its own Git repository execution object for mutable branch, worktree, and starting-commit state; it shares only repository paths and settings with the project runtime. The scheduler receives the terminal task result and advances the round-robin cursor after one execution completes. GitHub claiming and result reporting remain in the worker orchestration; infrastructure failures escape and stop scheduling, while blocked and safe task-failed outcomes can advance to another project.
+
+V0.5 intentionally remains globally sequential: execution A completes before execution B is dispatched. V0.6 can add bounded concurrency around these execution boundaries. Integration into a repository's shared base branch remains a repository-level operation that must be serialized per repository. No integration lock or parallel execution is introduced in V0.5.
+
+## Startup and project scheduling
 
 At startup the worker loads one global YAML file, discovers every project YAML file in the configured directory in deterministic filename order, validates the complete set, and inspects every checkout without changing it. Before any label initialization, it verifies that GitHub CLI (`gh`) runs, configured authentication and repository/Issue reads work, and the dependency API can be read on an existing Issue when one is available. It then queries repository labels and creates missing configured labels. Existing labels are left unchanged; custom names from each project's `github` section are supported. A validation, capability, label query, or label creation failure stops startup before queue access. The worker then initializes each checkout and runs one global Codex CLI/authentication preflight. GitHub checks use `gh api` and standard `gh issue` operations; no `blockedBy` JSON field or newer GitHub CLI version is required.
 
