@@ -198,7 +198,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely clean the task branch: {ex.Message}", ex); }
     }
 
-    public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct)
+    public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
     {
         try
         {
@@ -224,9 +225,19 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (settings.AutoMerge)
             {
+                await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
                 await GitAsync(["switch", "--", settings.BaseBranch], ct);
-                await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
-                await GitAsync(["merge", "--no-ff", "--no-edit", $"refs/heads/{_featureBranch}"], ct);
+                await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
+                var featureContainsBase = await GitAtAsync(ExecutionDirectory,
+                    ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
+                if (featureContainsBase.ExitCode != 0)
+                {
+                    await GitAtAsync(ExecutionDirectory, ["rebase", settings.BaseBranch], ct);
+                    var validation = await validateAfterRebase(ct);
+                    if (!validation.Succeeded)
+                        throw new WorkerInfrastructureException($"Validation failed after rebasing Issue #{issue.Number}; integration was stopped. {validation.Failure!.ToSummary()}");
+                }
+                await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
                 if (settings.PushCompletedBranch)
                     await GitAsync(["push", "origin", $"{_featureBranch}:refs/heads/{_completedBranch}"], ct);
@@ -238,7 +249,15 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 _executionId = null;
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
-                await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
+                if (settings.PushCompletedBranch)
+                {
+                    await GitAsync(["branch", "-m", "--", _featureBranch!, _completedBranch!], ct);
+                    _featureBranch = _completedBranch;
+                }
+                else
+                {
+                    await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
+                }
             }
             else
             {

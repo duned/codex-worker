@@ -55,7 +55,7 @@ public sealed class GitWorktreeTests
         await File.WriteAllTextAsync(Path.Combine(executionDirectory, "implemented.txt"), "implementation");
         await git.VerifyCodexStateAsync(CancellationToken.None);
 
-        var result = await git.CommitAndIntegrateAsync(fixture.Issue, CancellationToken.None);
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue, _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
 
         Assert.True(result.HasChanges);
         Assert.False(Directory.Exists(executionDirectory));
@@ -63,6 +63,114 @@ public sealed class GitWorktreeTests
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
         Assert.Contains("feature/example-task-17", await fixture.Git("branch", "--list", "feature/example-task-17"));
         Assert.Equal("implementation", await fixture.Git("show", "feature/example-task-17:implemented.txt"));
+    }
+
+    [Fact]
+    public async Task AutoMergeFastForwardsWithoutMergeCommitAndPreservesCompletedBranch()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+
+        Assert.Equal(1, (await fixture.Git("rev-list", "--parents", "-n", "1", "main")).Split(' ').Length - 1);
+        Assert.Equal("implementation", await fixture.Git("show", "main:implemented.txt"));
+        Assert.Equal("implementation", await fixture.Git("show", "done/feature/example-task-17:implemented.txt"));
+        Assert.Equal("main", await fixture.Git("branch", "--show-current"));
+        Assert.Contains("done/feature/example-task-17", result.Summary);
+    }
+
+    [Fact]
+    public async Task AdvancedBaseRebasesFeatureValidatesAndFastForwardsFeatureCommit()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var featureFile = Path.Combine(git.ExecutionDirectory, "implemented.txt");
+        await File.WriteAllTextAsync(featureFile, "implementation");
+        var validations = 0;
+
+        await fixture.AdvanceBaseAsync();
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue, _ =>
+        {
+            validations++;
+            return Task.FromResult(ValidationResult.Success);
+        }, CancellationToken.None);
+
+        Assert.Equal(1, validations);
+        Assert.Equal("independent base change", await fixture.Git("show", "main:base-advanced.txt"));
+        Assert.Equal("implementation", await fixture.Git("show", "main:implemented.txt"));
+        Assert.Equal("main", await fixture.Git("branch", "--show-current"));
+        Assert.Contains("done/feature/example-task-17", result.Summary);
+        var featureCommit = (await fixture.Git("rev-parse", "done/feature/example-task-17")).Trim();
+        Assert.Contains(featureCommit, await fixture.Git("rev-list", "main"));
+    }
+
+    [Fact]
+    public async Task FastForwardFailureDoesNotFallBackToMergeCommit()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+        await fixture.AdvanceBaseAsync();
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue, async _ =>
+        {
+            // Simulate another base update after the integration fetch/rebase but before the fast-forward.
+            await fixture.AdvanceBaseAsync("raced-base.txt", "base changed during integration");
+            return ValidationResult.Success;
+        }, CancellationToken.None));
+
+        Assert.Equal("base changed during integration", await fixture.Git("show", "main:raced-base.txt"));
+        Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+        var parents = (await fixture.Git("rev-list", "--parents", "-n", "1", "main")).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, parents.Length);
+        Assert.True(Directory.Exists(git.ExecutionDirectory));
+    }
+
+    [Fact]
+    public async Task RebaseConflictStopsBeforeFastForwardAndPreservesExecutionWorktree()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "base.txt"), "feature change");
+        var executionDirectory = git.ExecutionDirectory;
+        await fixture.AdvanceBaseAsync("base.txt", "base branch change");
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+
+        Assert.Equal("base branch change", await fixture.Git("show", "main:base.txt"));
+        Assert.True(Directory.Exists(executionDirectory));
+        Assert.Contains("UU base.txt", await fixture.GitAt(executionDirectory, "status", "--short"));
+    }
+
+    [Fact]
+    public async Task FailedValidationAfterRebaseStopsBeforeIntegration()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+        await fixture.AdvanceBaseAsync();
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(new ValidationResult(new ValidationFailure(1, "configured check", 1, "", "failed", false))),
+            CancellationToken.None));
+
+        Assert.Equal("base", await fixture.Git("show", "main:base.txt"));
+        Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+        Assert.True(Directory.Exists(git.ExecutionDirectory));
     }
 
     [Fact]
@@ -135,8 +243,8 @@ public sealed class GitWorktreeTests
         await File.WriteAllTextAsync(Path.Combine(secondDirectory, "second.txt"), "second");
 
         var results = await Task.WhenAll(
-            first.CommitAndIntegrateAsync(firstIssue, CancellationToken.None),
-            second.CommitAndIntegrateAsync(secondIssue, CancellationToken.None));
+            first.CommitAndIntegrateAsync(firstIssue, _ => Task.FromResult(ValidationResult.Success), CancellationToken.None),
+            second.CommitAndIntegrateAsync(secondIssue, _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
 
         Assert.All(results, result => Assert.True(result.HasChanges));
         Assert.False(Directory.Exists(firstDirectory));
@@ -247,6 +355,13 @@ public sealed class GitWorktreeTests
 
         public async Task<string> Git(params string[] args) => await RunGit(Checkout, args);
         public async Task<string> GitAt(string directory, params string[] args) => await RunGit(directory, args);
+        public async Task AdvanceBaseAsync(string path = "base-advanced.txt", string content = "independent base change")
+        {
+            await File.WriteAllTextAsync(Path.Combine(Checkout, path), content);
+            await RunGit(Checkout, "add", path);
+            await RunGit(Checkout, "commit", "-m", "advance base independently");
+            await RunGit(Checkout, "push", "origin", "main");
+        }
         public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
         private static async Task<string> RunGit(string directory, params string[] args)
