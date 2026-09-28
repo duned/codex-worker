@@ -175,6 +175,7 @@ public static class ManagementApi
         builder.Services.AddSingleton(runtime);
         if (projectConfigurations is not null) builder.Services.AddSingleton(projectConfigurations);
         var app = builder.Build();
+        app.MapGet("/", () => Results.Content(DashboardHtml.Content, "text/html; charset=utf-8"));
         app.MapGet("/api/status", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.StatusAsync(context.RequestAborted)));
         app.MapGet("/api/capabilities", (WorkerRuntimeReadModel model) => Results.Ok(model.Capabilities));
         app.MapGet("/api/projects", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.ProjectsAsync(context.RequestAborted)));
