@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- Respect GitHub native `blocked by` dependencies when selecting ready Issues, while continuing past dependency-waiting candidates.
+- Keep dependency-waiting Issues unchanged and document the recommended parent/child and dependency workflow.
+
 ## 0.3.1
 
 - Preserve the initial implementation summary and every validation repair summary in Issue execution reports.
