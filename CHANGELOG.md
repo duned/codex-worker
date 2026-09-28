@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Dispatch independent Issue executions concurrently up to a global `worker.maxParallelTasks` limit and each project's own limit; both default to one and are bounded to eight.
+- Keep queue scans and Issue claims sequential, skip projects at capacity, and leave dependency-blocked Issues outside execution capacity.
+- Run Codex and sequential project validation in isolated per-execution Git worktrees while serializing shared repository setup, cleanup, and integration with repository-scoped gates.
+- Preserve unrelated task outcomes when an execution is blocked or safely fails. Stop scheduling and cancel active work conservatively after infrastructure failure; shutdown waits for child processes and preserves uncertain execution workspaces and history.
+- Document V0.6 concurrency defaults, integration coordination, cancellation behavior, and the single-worker-per-repository limitation.
+
 ## 0.5.1
 
 - Upgrade Microsoft.Data.Sqlite to resolve its vulnerable SQLitePCLRaw native dependency.
