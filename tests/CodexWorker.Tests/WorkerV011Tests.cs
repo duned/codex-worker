@@ -22,6 +22,19 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task CodexAndValidationUseTheExecutionWorktreeDirectory()
+    {
+        using var h = new Harness();
+        h.Validation.Results.Enqueue(ValidationResult.Success);
+
+        await h.RunAsync();
+
+        Assert.Equal(h.Git.ExecutionDirectory, h.Codex.InitialDirectory);
+        Assert.Equal(h.Git.ExecutionDirectory, h.Validation.LastDirectory);
+        Assert.NotEqual(h.Worker.Configuration.Project.Directory, h.Codex.InitialDirectory);
+    }
+
+    [Fact]
     public async Task InitialValidationFailureThenSuccessfulRepairIsRevalidatedAndIntegrated()
     {
         using var h = new Harness();
@@ -363,11 +376,12 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeGit : IGitRepository
     {
+        public string ExecutionDirectory { get; } = Path.Combine(Path.GetTempPath(), "execution-worktree");
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
         public int Integrations { get; private set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task StartIssueAsync(GitHubIssue issue, CancellationToken ct) { Started++; return Task.CompletedTask; }
+        public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; return Task.CompletedTask; }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct)
@@ -388,7 +402,13 @@ public sealed class WorkerV011Tests
             return PreflightException is null ? Task.CompletedTask : Task.FromException(PreflightException);
         }
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
-            InitialException is null ? Task.FromResult(InitialOutcome) : Task.FromException<CodexOutcome>(InitialException);
+            RunCoreAsync(projectDirectory);
+        private Task<CodexOutcome> RunCoreAsync(string projectDirectory)
+        {
+            InitialDirectory = projectDirectory;
+            return InitialException is null ? Task.FromResult(InitialOutcome) : Task.FromException<CodexOutcome>(InitialException);
+        }
+        public string? InitialDirectory { get; private set; }
         public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
             ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct)
         {
@@ -402,9 +422,11 @@ public sealed class WorkerV011Tests
     {
         public Queue<ValidationResult> Results { get; } = new();
         public int Calls { get; private set; }
+        public string? LastDirectory { get; private set; }
         public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
         {
             Calls++;
+            LastDirectory = directory;
             return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : ValidationResult.Success);
         }
     }

@@ -153,10 +153,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(WorkerExecution execution, GitHubIssue issue, CancellationToken ct)
     {
         execution.TransitionTo(ExecutionState.Preparing);
-        await git.StartIssueAsync(issue, ct);
+        await git.StartIssueAsync(execution.ExecutionId, issue, ct);
         execution.TransitionTo(ExecutionState.Implementing);
         var outcome = await _output.RunProgressAsync("Codex working", () =>
-            codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct),
+            codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, ct),
             completion: x => x.Status, succeeded: x => x.Status == "success",
             warning: x => x.Status == "blocked", ct: ct);
         await git.VerifyCodexStateAsync(ct);
@@ -172,7 +172,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         {
             execution.TransitionTo(ExecutionState.Validating);
             var validationResult = await _output.RunProgressAsync("Validation", () =>
-                validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct),
+                validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
                 x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
                 x => x.Succeeded, ct: ct);
             if (validationResult.Succeeded) break;
@@ -187,7 +187,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             repairAttempts++;
             execution.TransitionTo(ExecutionState.Repairing);
             outcome = await _output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
-                codex.RepairAsync(config.Project.Directory, config.Codex.InstructionsFile, issue,
+                codex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
                     failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
