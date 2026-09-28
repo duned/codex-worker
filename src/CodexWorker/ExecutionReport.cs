@@ -9,7 +9,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? Failure = null,
     string? HumanInput = null,
     GitIntegrationResult? Integration = null,
-    TimeSpan Duration = default)
+    TimeSpan Duration = default,
+    Guid? ExecutionId = null)
 {
     public string ToMarkdown(IssueOutcomeKind kind)
     {
