@@ -198,13 +198,13 @@ public sealed class OperabilityTests
         await telegram.FailedAsync("Codex Worker Test", issue, TimeSpan.FromMinutes(2), "Validation failed", CancellationToken.None);
         await telegram.CriticalAsync("Codex Worker Test", "Git integration state is uncertain", CancellationToken.None);
 
-        Assert.StartsWith("🟢 CODEX WORKER · INICIADO\nCodex Worker Test", MessageAt(0));
+        Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
         Assert.StartsWith("▶️ TAREA INICIADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(1));
         Assert.StartsWith("🟡 TAREA BLOQUEADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
         Assert.StartsWith("❌ TAREA FALLIDA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
-        Assert.StartsWith("🚨 CODEX WORKER · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
+        Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
         Assert.All(handler.Bodies, body =>
         {
             Assert.DoesNotContain("════════════", body);
@@ -241,7 +241,7 @@ public sealed class OperabilityTests
         await telegram.StoppedAsync("Example", CancellationToken.None);
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
-        Assert.StartsWith("⚫ CODEX WORKER · DETENIDO\nExample", message);
+        Assert.StartsWith($"⚫ CW {ApplicationVersion.Display} · DETENIDO\nExample", message);
         Assert.DoesNotContain("Cancellation received", message);
     }
 
@@ -255,8 +255,8 @@ public sealed class OperabilityTests
         await telegram.StoppedAsync(2, CancellationToken.None);
         using var start = JsonDocument.Parse(handler.Bodies[0]);
         using var stop = JsonDocument.Parse(handler.Bodies[1]);
-        Assert.Equal("🟢 CODEX WORKER · INICIADO\n2 proyectos cargados", start.RootElement.GetProperty("text").GetString());
-        Assert.Equal("⚫ CODEX WORKER · DETENIDO", stop.RootElement.GetProperty("text").GetString());
+        Assert.Equal($"🟢 CW {ApplicationVersion.Display} · INICIADO\n2 proyectos cargados", start.RootElement.GetProperty("text").GetString());
+        Assert.Equal($"⚫ CW {ApplicationVersion.Display} · DETENIDO", stop.RootElement.GetProperty("text").GetString());
     }
 
     private sealed class RecordingHandler(HttpStatusCode status) : HttpMessageHandler

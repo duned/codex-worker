@@ -41,13 +41,13 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     public Task StartedAsync(string project, CancellationToken ct) =>
-        SendAsync(Format($"🟢 CODEX WORKER · INICIADO\n{project}"), ct);
+        SendAsync(Format($"🟢 CW {ApplicationVersion.Display} · INICIADO\n{project}"), ct);
 
     public Task StartedAsync(int projectCount, CancellationToken ct) =>
-        SendAsync(Format($"🟢 CODEX WORKER · INICIADO\n{projectCount} proyectos cargados"), ct);
+        SendAsync(Format($"🟢 CW {ApplicationVersion.Display} · INICIADO\n{projectCount} proyectos cargados"), ct);
 
     public Task StoppedAsync(string project, CancellationToken ct) =>
-        SendAsync(Format($"⚫ CODEX WORKER · DETENIDO\n{project}"), ct);
+        SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO\n{project}"), ct);
 
     public Task StartingAsync(string project, GitHubIssue issue, CancellationToken ct) =>
         SendAsync(Format($"▶️ TAREA INICIADA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}"), ct);
@@ -80,10 +80,10 @@ public sealed class TelegramNotifier : IDisposable
         SendAsync(Format($"❌ TAREA FALLIDA · {project.ToUpperInvariant()} · #{issue.Number}\n{Clean(issue.Title)}\n\n{Clean(details)}\nDuración: {WorkerConsole.FormatDuration(duration)}"), ct);
 
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
-        SendAsync(Format($"🚨 CODEX WORKER · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
+        SendAsync(Format($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
 
     public Task StoppedAsync(int projectCount, CancellationToken ct) =>
-        SendAsync(Format("⚫ CODEX WORKER · DETENIDO"), ct);
+        SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO"), ct);
 
     public static string Format(string message) => string.Join("\n", message.Split('\n').Select(line =>
         string.IsNullOrWhiteSpace(line) ? "" : Clean(line)));

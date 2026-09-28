@@ -143,7 +143,7 @@ public sealed class WorkerV011Tests
         Assert.Contains("○ Waiting for work...", h.Output.ToString());
         Assert.Contains("■ Worker stopped.", h.Output.ToString());
         Assert.DoesNotContain("Infrastructure failure", h.Output.ToString());
-        Assert.Contains(h.TelegramMessages, message => message.Contains("⚫ CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+        Assert.Contains(h.TelegramMessages, message => message.Contains($"⚫ CW {ApplicationVersion.Display} · DETENIDO", StringComparison.Ordinal));
         Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
     }
 
@@ -157,7 +157,7 @@ public sealed class WorkerV011Tests
 
         Assert.Null(exception);
         Assert.Contains("■ Worker stopped.", h.Output.ToString());
-        Assert.Contains(h.TelegramMessages, message => message.Contains("⚫ CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+        Assert.Contains(h.TelegramMessages, message => message.Contains($"⚫ CW {ApplicationVersion.Display} · DETENIDO", StringComparison.Ordinal));
         Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
     }
 
@@ -171,8 +171,8 @@ public sealed class WorkerV011Tests
 
         Assert.Contains("may be uncertain", exception.Message);
         Assert.Contains("Infrastructure failure", h.ErrorOutput.ToString());
-        Assert.Contains(h.TelegramMessages, message => message.Contains("🚨 CODEX WORKER · INFRAESTRUCTURA", StringComparison.Ordinal));
-        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("CODEX WORKER · DETENIDO", StringComparison.Ordinal));
+        Assert.Contains(h.TelegramMessages, message => message.Contains($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains($"CW {ApplicationVersion.Display} · DETENIDO", StringComparison.Ordinal));
     }
 
     [Fact]

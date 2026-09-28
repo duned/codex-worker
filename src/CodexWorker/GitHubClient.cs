@@ -24,22 +24,22 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     public async Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
     {
         var result = await RunGhAsync(["issue", "list", "--repo", repository, "--state", "open", "--label", label,
-            "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt,blockedBy"], cancellationToken,
+            "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt"], cancellationToken,
             allowGracefulCancellation: true);
         try
         {
             using var document = JsonDocument.Parse(result.StandardOutput);
             var candidates = document.RootElement.EnumerateArray()
-                .Select(e => (Issue: new GitHubIssue(e.GetProperty("number").GetInt32(), e.GetProperty("title").GetString() ?? "",
+                .Select(e => new GitHubIssue(e.GetProperty("number").GetInt32(), e.GetProperty("title").GetString() ?? "",
                     e.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "",
-                    e.GetProperty("createdAt").GetDateTimeOffset()),
-                    Dependencies: e.GetProperty("blockedBy")))
-                .OrderBy(candidate => candidate.Issue.CreatedAt);
+                    e.GetProperty("createdAt").GetDateTimeOffset()))
+                .OrderBy(candidate => candidate.CreatedAt);
 
             foreach (var candidate in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (DependenciesAreClosed(candidate.Dependencies)) return candidate.Issue;
+                using var dependencies = await GetBlockingDependenciesAsync(candidate.Number, cancellationToken);
+                if (DependenciesAreClosed(dependencies)) return candidate;
             }
             return null;
         }
@@ -51,32 +51,86 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
-    private static bool DependenciesAreClosed(JsonElement blockedBy)
+    private async Task<JsonDocument> GetBlockingDependenciesAsync(int issueNumber, CancellationToken ct)
     {
-        if (blockedBy.ValueKind != JsonValueKind.Object ||
-            !blockedBy.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array ||
-            !blockedBy.TryGetProperty("totalCount", out var totalCount) || !totalCount.TryGetInt32(out var count))
-            throw new JsonException("GitHub 'blockedBy' data did not include dependency nodes and their total count.");
-        if (count != nodes.GetArrayLength())
-            throw new JsonException($"GitHub returned {nodes.GetArrayLength()} of {count} blocking dependencies; dependency state is incomplete.");
-
-        foreach (var dependency in nodes.EnumerateArray())
+        ProcessResult result;
+        try
         {
-            if (dependency.TryGetProperty("closed", out var closed) &&
-                (closed.ValueKind == JsonValueKind.True || closed.ValueKind == JsonValueKind.False))
+            result = await RunGhAsync(["api", "--paginate", "--slurp", $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by"], ct,
+                allowGracefulCancellation: true);
+        }
+        catch (WorkerInfrastructureException ex)
+        {
+            throw new WorkerInfrastructureException($"GitHub Issue Dependencies API unavailable for '{repository}' Issue #{issueNumber}: {ex.Message}", ex);
+        }
+        try { return JsonDocument.Parse(result.StandardOutput); }
+        catch (JsonException ex) { throw new WorkerInfrastructureException($"Could not parse GitHub Issue dependencies for #{issueNumber} in '{repository}': {ex.Message}", ex); }
+    }
+
+    private static bool DependenciesAreClosed(JsonDocument pages)
+    {
+        var root = pages.RootElement;
+        if (root.ValueKind != JsonValueKind.Array)
+            throw new JsonException("GitHub dependency API did not return paginated JSON arrays.");
+
+        // gh api --paginate --slurp wraps each page in an array. Inspect every page
+        // so a later unresolved dependency can never be hidden by the first page.
+        foreach (var page in root.EnumerateArray())
+        {
+            if (page.ValueKind != JsonValueKind.Array)
+                throw new JsonException("GitHub dependency API returned a page that was not an array.");
+            foreach (var dependency in page.EnumerateArray())
             {
-                if (!closed.GetBoolean()) return false;
-                continue;
-            }
-            if (dependency.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.String)
-            {
+                if (!dependency.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.String)
+                    throw new JsonException("GitHub dependency entry did not include a usable state.");
                 var value = state.GetString();
-                if (string.Equals(value, "CLOSED", StringComparison.OrdinalIgnoreCase)) continue;
-                if (string.Equals(value, "OPEN", StringComparison.OrdinalIgnoreCase)) return false;
+                if (string.Equals(value, "open", StringComparison.OrdinalIgnoreCase)) return false;
+                if (!string.Equals(value, "closed", StringComparison.OrdinalIgnoreCase))
+                    throw new JsonException("GitHub dependency entry returned an unknown state.");
             }
-            throw new JsonException("GitHub 'blockedBy' entry did not include a usable dependency state.");
         }
         return true;
+    }
+
+    /// <summary>Validates the read-only GitHub capabilities needed before queue polling.</summary>
+    public async Task ValidateCapabilitiesAsync(CancellationToken ct)
+    {
+        await RunCapabilityAsync(["--version"], "GitHub CLI", ct);
+        await RunCapabilityAsync(["auth", "status"], "GitHub authentication", ct);
+        await RunCapabilityAsync(["api", $"repos/{repository}"], "GitHub repository access", ct);
+        var issues = await RunCapabilityAsync(["issue", "list", "--repo", repository, "--state", "all", "--limit", "1", "--json", "number"], "GitHub Issue access", ct);
+        try
+        {
+            using var document = JsonDocument.Parse(issues.StandardOutput);
+            var existingIssue = document.RootElement.EnumerateArray().FirstOrDefault();
+            if (existingIssue.ValueKind == JsonValueKind.Object)
+            {
+                var number = existingIssue.GetProperty("number").GetInt32();
+                using var dependencies = await GetBlockingDependenciesAsync(number, ct);
+                _ = DependenciesAreClosed(dependencies);
+            }
+            // A repository without Issues has no valid Issue number against which the
+            // dependency endpoint can be called. Repository/API and Issue-list access
+            // above are still checked without creating test data.
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            throw new WorkerInfrastructureException($"GitHub Issue dependency capability validation failed for '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    private async Task<ProcessResult> RunCapabilityAsync(IEnumerable<string> args, string capability, CancellationToken ct)
+    {
+        try
+        {
+            var result = await runCommand(args, ct);
+            if (result.ExitCode != 0)
+                throw new WorkerInfrastructureException($"{capability} unavailable for repository '{repository}' (exit {result.ExitCode}). {Tail(result.StandardError)}");
+            return result;
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"{capability} unavailable for repository '{repository}': {ex.Message}", ex); }
     }
 
     public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct) =>
