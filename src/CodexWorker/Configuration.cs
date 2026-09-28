@@ -81,7 +81,7 @@ public sealed class WorkerConfiguration
     }
 }
 
-/// <summary>Global settings shared by the single sequential worker process.</summary>
+/// <summary>Global settings shared by one worker process with bounded execution concurrency.</summary>
 public sealed class GlobalWorkerConfiguration
 {
     public GlobalWorkerSettings Worker { get; set; } = new();
