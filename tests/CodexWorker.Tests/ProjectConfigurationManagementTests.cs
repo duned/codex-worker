@@ -58,6 +58,48 @@ public sealed class ProjectConfigurationManagementTests
         await Assert.ThrowsAsync<ProjectConfigurationConflictException>(() => service.RemoveAsync("alpha", CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ConfigurationMutationReplacesRuntimeSnapshotOnlyAfterValidation()
+    {
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var registry = new ProjectRuntimeRegistry([]);
+        var service = new ProjectConfigurationService(new LocalYamlProjectConfigurationProvider(fixture.Projects), history, fixture.Projects, registry);
+        await service.CreateAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        Assert.Equal("owner/alpha", registry.Snapshot().Single().Configuration.Project.Repository);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.UpdateAsync("alpha", fixture.Configuration("alpha", "invalid"), CancellationToken.None));
+        Assert.Equal("owner/alpha", registry.Snapshot().Single().Configuration.Project.Repository);
+
+        await service.UpdateAsync("alpha", fixture.Configuration("alpha", "owner/renamed"), CancellationToken.None);
+        Assert.Equal("owner/renamed", registry.Snapshot().Single().Configuration.Project.Repository);
+
+        var accepted = registry.Snapshot().Single().Configuration;
+        var path = Directory.GetFiles(fixture.Projects, "*.yml").Single();
+        await File.WriteAllTextAsync(path, "project: [incomplete");
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.ReloadAsync(CancellationToken.None));
+        Assert.Same(accepted, registry.Snapshot().Single().Configuration);
+    }
+
+    [Fact]
+    public async Task FileWatcherDebouncesAndAppliesManualYamlChangesThroughValidatedReload()
+    {
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var registry = new ProjectRuntimeRegistry([]);
+        var provider = new LocalYamlProjectConfigurationProvider(fixture.Projects);
+        var service = new ProjectConfigurationService(provider, history, fixture.Projects, registry);
+        await service.CreateAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        await using var watcher = new ProjectConfigurationWatcher(fixture.Projects, service, registry, TimeSpan.FromMilliseconds(10));
+        var previousVersion = registry.Version;
+
+        await provider.WriteAsync(fixture.Configuration("alpha", "owner/renamed"), CancellationToken.None);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await registry.WaitForChangeAsync(previousVersion, timeout.Token);
+        Assert.Equal("owner/renamed", registry.Snapshot().Single().Configuration.Project.Repository);
+    }
+
     private sealed class Fixture : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "project-config-management-" + Guid.NewGuid().ToString("N"));

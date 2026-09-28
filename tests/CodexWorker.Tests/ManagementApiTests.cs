@@ -85,6 +85,19 @@ public sealed class ManagementApiTests
                 client.GetStringAsync("/api/status"), client.GetStringAsync("/api/projects"),
                 client.GetStringAsync("/api/executions")));
             await Task.WhenAll(concurrentReads);
+
+            var disable = new StringContent("{\"action\":\"disable\"}", System.Text.Encoding.UTF8, "application/json");
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/projects/sample/lifecycle", disable)).StatusCode);
+            var disabled = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement[0];
+            Assert.False(disabled.GetProperty("enabled").GetBoolean());
+            Assert.Equal("Disabled", disabled.GetProperty("state").GetString());
+            var drain = new StringContent("{\"action\":\"drain\"}", System.Text.Encoding.UTF8, "application/json");
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/projects/sample/lifecycle", drain)).StatusCode);
+            var draining = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement[0];
+            Assert.Equal("Draining", draining.GetProperty("state").GetString());
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/worker/drain", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
+            var workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
+            Assert.True(workerDrain.GetProperty("draining").GetBoolean());
         }
         finally
         {

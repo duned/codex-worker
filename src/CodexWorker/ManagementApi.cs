@@ -15,6 +15,7 @@ public sealed record WorkerStatus(string Version, string State, long UptimeSecon
     int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount);
 public sealed record ProjectRuntimeInfo(string Name, string Repository, bool Enabled, string State,
     int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount);
+public sealed record ProjectLifecycleRequest(string Action);
 public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool PassedAfterRepair);
 public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, string Repository, int IssueNumber,
     string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
@@ -91,6 +92,7 @@ public sealed class WorkerRuntimeReadModel
     private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
     private readonly ExecutionHistoryStore _history;
     private readonly ProjectConfigurationService? _configurationService;
+    private readonly ProjectRuntimeRegistry _registry;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private volatile string _state = "starting";
 
@@ -103,19 +105,21 @@ public sealed class WorkerRuntimeReadModel
         _history = history;
         _configurationService = configurationService;
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
+        _registry = new ProjectRuntimeRegistry(projects, Events);
     }
 
     public RuntimeEventLog Events { get; }
+    public ProjectRuntimeRegistry Registry => _registry;
     public string State { get => _state; set => _state = value; }
 
     public async Task<WorkerStatus> StatusAsync(CancellationToken ct)
     {
         var active = (await _history.ReadActiveAsync(ct)).Count;
-        var projectCount = _configurationService is null ? _projects.Count : (await _configurationService.ListAsync(ct)).Count;
+        var projectCount = _registry.Snapshot().Count;
         return new WorkerStatus(ApplicationVersion.Display, State,
             Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
-            projectCount, projectCount);
+            projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled));
     }
 
     public IReadOnlyList<WorkerCapability> Capabilities =>
@@ -130,22 +134,15 @@ public sealed class WorkerRuntimeReadModel
     public async Task<IReadOnlyList<ProjectRuntimeInfo>> ProjectsAsync(CancellationToken ct)
     {
         var entries = await _history.ReadActiveAsync(ct);
-        if (_configurationService is not null)
-        {
-            var configs = await _configurationService.ListAsync(ct);
-            return configs.Select(config =>
-            {
-                var active = entries.Count(e => string.Equals(e.Project, config.Name, StringComparison.OrdinalIgnoreCase));
-                return new ProjectRuntimeInfo(config.Name, config.Repository, true, State, config.Worker.MaxParallelTasks,
-                    active, Math.Max(0, config.Worker.MaxParallelTasks - active), null);
-            }).ToArray();
-        }
-        return _projects.Select(item =>
+        var lifecycle = _registry.Status().ToDictionary(x => x.Name, StringComparer.OrdinalIgnoreCase);
+        return _registry.Snapshot().Select(item =>
             {
                 var config = item.Configuration;
+                var state = lifecycle[config.Project.Name];
                 var active = entries.Count(e => string.Equals(e.Project, config.Project.Name, StringComparison.OrdinalIgnoreCase));
-                return new ProjectRuntimeInfo(config.Project.Name, config.Project.Repository, true, State,
-                    config.Worker.MaxParallelTasks, active, Math.Max(0, config.Worker.MaxParallelTasks - active), null);
+                return new ProjectRuntimeInfo(config.Project.Name, config.Project.Repository, state.State == ProjectLifecycleState.Enabled,
+                    state.State.ToString(), config.Worker.MaxParallelTasks, active,
+                    Math.Max(0, config.Worker.MaxParallelTasks - active), null);
             }).ToArray();
     }
 
@@ -181,8 +178,37 @@ public static class ManagementApi
         app.MapGet("/api/status", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.StatusAsync(context.RequestAborted)));
         app.MapGet("/api/capabilities", (WorkerRuntimeReadModel model) => Results.Ok(model.Capabilities));
         app.MapGet("/api/projects", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.ProjectsAsync(context.RequestAborted)));
+        app.MapPost("/api/projects/{name}/lifecycle", (string name, ProjectLifecycleRequest request, WorkerRuntimeReadModel model) =>
+        {
+            var action = request.Action?.ToLowerInvariant();
+            if (action is not ("enable" or "disable" or "drain")) return (IResult)Results.BadRequest(new { error = "action must be enable, disable, or drain." });
+            var result = action switch
+            {
+                "enable" => model.Registry.Enable(name),
+                "disable" => model.Registry.Disable(name),
+                "drain" => model.Registry.Drain(name),
+                _ => null
+            };
+            return result is null ? (IResult)Results.NotFound() : Results.Ok(result);
+        });
+        app.MapPost("/api/worker/drain", (WorkerRuntimeReadModel model) =>
+        {
+            model.Registry.DrainWorker();
+            return Results.Ok(new { draining = true, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
+                drainComplete = model.Registry.WorkerDrainComplete });
+        });
+        app.MapGet("/api/worker/drain", (WorkerRuntimeReadModel model) =>
+            Results.Ok(new { draining = model.Registry.WorkerDraining, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
+                drainComplete = model.Registry.WorkerDrainComplete }));
         if (projectConfigurations is not null)
         {
+            app.MapPost("/api/project-configurations/reload", async (ProjectConfigurationService service, HttpContext context) =>
+            {
+                try { return Results.Ok(await service.ReloadAsync(context.RequestAborted)); }
+                catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+                catch (IOException ex) { return Results.BadRequest(new { error = ex.Message }); }
+                catch (ProjectConfigurationConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+            });
             app.MapGet("/api/project-configurations", async (ProjectConfigurationService service, HttpContext context) => Results.Ok(await service.ListAsync(context.RequestAborted)));
             app.MapGet("/api/project-configurations/{name}", async (string name, ProjectConfigurationService service, HttpContext context) =>
                 await service.GetAsync(name, context.RequestAborted) is { } found ? Results.Ok(found) : Results.NotFound());
