@@ -21,6 +21,7 @@ public sealed class WorkerHost
         _output.Startup(_projects.Count);
         foreach (var item in _projects) _output.ProjectLoaded(item.Configuration.Project.Name);
         using var telegram = new TelegramNotifier(_global.Telegram.Enabled, _output);
+        ExecutionHistoryStore? history = null;
         var runtimes = new List<ProjectRuntime>();
         string? activeProject = null;
         var safeToStop = true;
@@ -28,6 +29,7 @@ public sealed class WorkerHost
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
+            history = new ExecutionHistoryStore();
             foreach (var (path, config) in _projects)
             {
                 var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
@@ -35,7 +37,7 @@ public sealed class WorkerHost
                 var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
                 var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
                 runtimes.Add(new ProjectRuntime(path, config, git,
-                    new Worker(config, github, git, codex, validation, telegram, _output), codex, github));
+                    new Worker(config, github, git, codex, validation, telegram, _output, history), codex, github));
             }
 
             var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
@@ -123,6 +125,7 @@ public sealed class WorkerHost
         {
             await _output.StopWaitingAsync();
             foreach (var project in runtimes) project.Git.Dispose();
+            history?.Dispose();
         }
     }
 

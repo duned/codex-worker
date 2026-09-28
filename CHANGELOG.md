@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- Persist execution lifecycle, summaries, validation repairs, and Git integration facts in a local SQLite database outside project checkouts.
+- Keep interrupted executions identifiable and add a versioned schema initialization path for future history upgrades.
+
 ## 0.4.2
 
 - Use the GitHub CLI 2.45-compatible `gh api --paginate` invocation for Issue dependencies and parse every returned page without requiring `--slurp`.

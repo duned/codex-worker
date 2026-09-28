@@ -1,0 +1,177 @@
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+
+namespace CodexWorker;
+
+/// <summary>A durable snapshot of one Issue execution. Raw process output is intentionally excluded.</summary>
+public sealed record ExecutionHistoryEntry(
+    Guid ExecutionId,
+    string Project,
+    string Repository,
+    int IssueNumber,
+    string IssueTitle,
+    string FeatureBranch,
+    string BaseBranch,
+    DateTimeOffset StartedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    string State,
+    long? DurationMilliseconds,
+    string? ImplementationSummary,
+    string? ValidationOutcome,
+    int RepairCount,
+    IReadOnlyList<ValidationRepairRecord> Repairs,
+    string? CommitSha,
+    string? IntegrationBranch,
+    string? CompletedBranch,
+    string? FailureReason);
+
+/// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
+public sealed class ExecutionHistoryStore : IDisposable
+{
+    private const int CurrentSchemaVersion = 1;
+    private readonly string _connectionString;
+
+    public ExecutionHistoryStore(string? databasePath = null)
+    {
+        databasePath ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "codex-worker.db");
+        var fullPath = Path.GetFullPath(databasePath);
+        var directory = Path.GetDirectoryName(fullPath)!;
+        Directory.CreateDirectory(directory);
+        _connectionString = new SqliteConnectionStringBuilder { DataSource = fullPath, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
+        Initialize();
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(fullPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
+    public async Task CreateAsync(ExecutionHistoryEntry entry, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO executions (execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch,
+                started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
+                repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason)
+            VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
+                $repairCount,$repairs,$sha,$integration,$completedBranch,$failure)
+            """;
+        Bind(command, entry);
+        try { await command.ExecuteNonQueryAsync(ct); }
+        catch (SqliteException ex) { throw PersistenceFailure("create execution history", ex); }
+    }
+
+    public async Task UpdateAsync(ExecutionHistoryEntry entry, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE executions SET completed_at_utc=COALESCE($completed,completed_at_utc), state=$state,
+                duration_ms=COALESCE($duration,duration_ms), implementation_summary=COALESCE($summary,implementation_summary),
+                validation_outcome=COALESCE($validation,validation_outcome),
+                repair_count=MAX($repairCount,repair_count), repairs_json=CASE WHEN $repairCount > 0 THEN $repairs ELSE repairs_json END,
+                commit_sha=COALESCE($sha,commit_sha), integration_branch=COALESCE($integration,integration_branch),
+                completed_branch=COALESCE($completedBranch,completed_branch), failure_reason=COALESCE($failure,failure_reason)
+                WHERE execution_id=$id
+            """;
+        Bind(command, entry);
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException($"Execution history row was not found for {entry.ExecutionId}.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("update execution history", ex); }
+    }
+
+    public async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason FROM executions ORDER BY started_at_utc";
+        var entries = new List<ExecutionHistoryEntry>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            entries.Add(new ExecutionHistoryEntry(Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2),
+                reader.GetInt32(3), reader.GetString(4), reader.GetString(5), reader.GetString(6),
+                DateTimeOffset.Parse(reader.GetString(7)), NullableDate(reader, 8), reader.GetString(9),
+                reader.IsDBNull(10) ? null : reader.GetInt64(10), NullableString(reader, 11), NullableString(reader, 12),
+                reader.GetInt32(13), JsonSerializer.Deserialize<List<ValidationRepairRecord>>(reader.GetString(14)) ?? [],
+                NullableString(reader, 15), NullableString(reader, 16), NullableString(reader, 17), NullableString(reader, 18)));
+        }
+        return entries;
+    }
+
+    public void Dispose() { }
+
+    private void Initialize()
+    {
+        try
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            using var transaction = connection.BeginTransaction();
+            using var version = connection.CreateCommand();
+            version.Transaction = transaction;
+            version.CommandText = "PRAGMA user_version";
+            var schemaVersion = Convert.ToInt32(version.ExecuteScalar());
+            if (schemaVersion > CurrentSchemaVersion)
+                throw new WorkerInfrastructureException($"Execution history database schema {schemaVersion} is newer than this worker supports ({CurrentSchemaVersion}).");
+            if (schemaVersion < 1)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = """
+                    CREATE TABLE executions (
+                        execution_id TEXT PRIMARY KEY, project TEXT NOT NULL, repository TEXT NOT NULL,
+                        issue_number INTEGER NOT NULL, issue_title TEXT NOT NULL, feature_branch TEXT NOT NULL,
+                        base_branch TEXT NOT NULL, started_at_utc TEXT NOT NULL, completed_at_utc TEXT NULL,
+                        state TEXT NOT NULL, duration_ms INTEGER NULL, implementation_summary TEXT NULL,
+                        validation_outcome TEXT NULL, repair_count INTEGER NOT NULL, repairs_json TEXT NOT NULL,
+                        commit_sha TEXT NULL, integration_branch TEXT NULL, completed_branch TEXT NULL, failure_reason TEXT NULL
+                    );
+                    CREATE INDEX idx_executions_started_at ON executions(started_at_utc);
+                    PRAGMA user_version = 1;
+                    """;
+                migration.ExecuteNonQuery();
+            }
+            transaction.Commit();
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw PersistenceFailure("initialize execution history database", ex); }
+    }
+
+    private async Task<SqliteConnection> OpenAsync(CancellationToken ct)
+    {
+        var connection = new SqliteConnection(_connectionString);
+        try { await connection.OpenAsync(ct); return connection; }
+        catch (Exception ex) { await connection.DisposeAsync(); throw PersistenceFailure("open execution history database", ex); }
+    }
+
+    private static void Bind(SqliteCommand command, ExecutionHistoryEntry entry)
+    {
+        command.Parameters.AddWithValue("$id", entry.ExecutionId.ToString());
+        command.Parameters.AddWithValue("$project", entry.Project);
+        command.Parameters.AddWithValue("$repository", entry.Repository);
+        command.Parameters.AddWithValue("$number", entry.IssueNumber);
+        command.Parameters.AddWithValue("$title", entry.IssueTitle);
+        command.Parameters.AddWithValue("$feature", entry.FeatureBranch);
+        command.Parameters.AddWithValue("$base", entry.BaseBranch);
+        command.Parameters.AddWithValue("$started", entry.StartedAtUtc.ToString("O"));
+        Add(command, "$completed", entry.CompletedAtUtc?.ToString("O"));
+        command.Parameters.AddWithValue("$state", entry.State);
+        Add(command, "$duration", entry.DurationMilliseconds);
+        Add(command, "$summary", entry.ImplementationSummary);
+        Add(command, "$validation", entry.ValidationOutcome);
+        command.Parameters.AddWithValue("$repairCount", entry.RepairCount);
+        command.Parameters.AddWithValue("$repairs", JsonSerializer.Serialize(entry.Repairs));
+        Add(command, "$sha", entry.CommitSha);
+        Add(command, "$integration", entry.IntegrationBranch);
+        Add(command, "$completedBranch", entry.CompletedBranch);
+        Add(command, "$failure", entry.FailureReason);
+    }
+
+    private static void Add(SqliteCommand command, string name, object? value) => command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+    private static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+    private static DateTimeOffset? NullableDate(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : DateTimeOffset.Parse(reader.GetString(ordinal));
+    private static WorkerInfrastructureException PersistenceFailure(string action, Exception ex) =>
+        new($"Could not {action}; execution history is required to continue safely: {ex.Message}", ex);
+}

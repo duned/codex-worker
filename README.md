@@ -1,6 +1,6 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.4.2. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.5.0. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
 ## V0.4 architecture
 
@@ -74,9 +74,11 @@ The configured checkout must be dedicated to this worker and initially clean on 
 
 Codex implementation and validation run in a managed worktree outside the source checkout at `~/.codex-worker/worktrees/<project>/<execution-id>`. The execution ID in the directory name identifies its owner if an infrastructure failure leaves the worktree for inspection. Successful integration and safe task failure remove the worktree; uncertain Git state is preserved. The canonical checkout coordinates base branch updates and integration and does not receive task file edits.
 
+Execution history is stored locally in SQLite at `~/.codex-worker/codex-worker.db`, outside project checkouts. It records concise execution and validation summaries without raw process logs or environment contents. An execution left without a terminal state by a worker restart remains marked as incomplete; the worker does not resume it automatically.
+
 ## Telegram and console
 
-When global `telegram.enabled` is true, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the worker environment. Global start/stop and infrastructure messages describe the worker and include its assembly-derived version (for example, `CW 0.4.2 · INFRAESTRUCTURA`); task messages include the project name, Issue, duration, and completion details when available. Telegram delivery failures are warnings and never change task outcomes. Secrets are not stored in YAML.
+When global `telegram.enabled` is true, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the worker environment. Global start/stop and infrastructure messages describe the worker and include its assembly-derived version (for example, `CW 0.5.0 · INFRAESTRUCTURA`); task messages include the project name, Issue, duration, and completion details when available. Telegram delivery failures are warnings and never change task outcomes. Secrets are not stored in YAML.
 
 Interactive terminals get a spinner, elapsed idle timer, restrained color, and deduplicated global idle status. Redirected output remains line-based without animation or ANSI sequences. Ctrl+C and SIGTERM request graceful shutdown. Startup/configuration/infrastructure failures exit non-zero.
 
@@ -102,6 +104,6 @@ V0.4.1 production startup exposed an invalid `gh api` argument construction desp
 
 The worker never force-pushes or automatically resolves merge conflicts. Task cleanup is allowed only after verifying the worker-created branch, registered worktree, and starting commit. Infrastructure failures preserve execution worktree state for manual review. GitHub mutations are separate, so an error after a partial transition can leave state requiring inspection. No speculative recovery or service retry is attempted.
 
-V0.3 assumes exactly one Codex Worker instance manages a given configured repository. The local checkout lock prevents two local processes from owning one checkout, but there are no distributed leases or cross-machine ownership guarantees. Multiple projects are supported; parallel Issue execution, multiple-worker coordination, databases, webhooks, session recovery, and service-manager setup are not.
+V0.5 assumes exactly one Codex Worker instance manages a given configured repository. The local checkout lock prevents two local processes from owning one checkout, but there are no distributed leases or cross-machine ownership guarantees. Multiple projects are supported; execution history is local to one worker installation. Parallel Issue execution, multiple-worker coordination, shared databases, webhooks, session recovery, and service-manager setup are not supported.
 
 Codex runs with the existing restricted child environment and Git state verification. Treat Codex and repository instructions as trusted, use a least-privileged worker account, and do not put credentials in repository files or Codex-visible content. Validation commands are trusted project YAML and run sequentially with bounded timeouts and repair attempts.
