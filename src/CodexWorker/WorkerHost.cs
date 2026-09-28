@@ -34,9 +34,11 @@ public sealed class WorkerHost
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             history = new ExecutionHistoryStore();
-            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
+            var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
+            var configurationService = new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory);
+            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history, configurationService);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
-            managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct);
+            managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
             var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, config) in _projects)
             {

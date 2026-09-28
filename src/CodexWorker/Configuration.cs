@@ -62,7 +62,7 @@ public sealed class WorkerConfiguration
         if (errors.Count > 0) throw new InvalidDataException("Invalid configuration:\n- " + string.Join("\n- ", errors));
     }
 
-    private void ResolvePaths(string configPath)
+    internal void ResolvePaths(string configPath)
     {
         var configDirectory = Path.GetDirectoryName(configPath)!;
         if (!string.IsNullOrWhiteSpace(Project.Directory)) Project.Directory = Path.GetFullPath(Project.Directory, configDirectory);
@@ -156,6 +156,17 @@ public static class ProjectConfigurationDiscovery
         }
     }
 
+    /// <summary>Applies the same filesystem and uniqueness checks used when loading the startup project set.</summary>
+    public static void ValidateCandidate(string path, WorkerConfiguration configuration,
+        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> existing, string? replacingPath = null)
+    {
+        configuration.Validate();
+        var candidates = existing.Where(item => replacingPath is null ||
+                !string.Equals(Path.GetFullPath(item.Path), Path.GetFullPath(replacingPath), StringComparison.OrdinalIgnoreCase))
+            .Append((Path.GetFullPath(path), configuration)).ToArray();
+        ValidateSet(candidates);
+    }
+
     private static void Duplicate(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> items,
         Func<(string Path, WorkerConfiguration Configuration), string> key, string description)
     {
@@ -196,6 +207,7 @@ public sealed class ProjectEnvironmentSettings
 {
     public string? File { get; set; }
     [YamlIgnore]
+    [System.Text.Json.Serialization.JsonIgnore]
     public IReadOnlyDictionary<string, string> Variables { get; set; } = new Dictionary<string, string>();
 }
 public sealed class GitSettings
@@ -215,6 +227,8 @@ public sealed class GitHubSettings
     public string FailedLabel { get; set; } = "";
     public string DoneLabel { get; set; } = "";
 
+    [YamlIgnore]
+    [System.Text.Json.Serialization.JsonIgnore]
     public IReadOnlyList<RequiredGitHubLabel> RequiredLabels =>
     [
         new(ReadyLabel, "1D76DB", "Issues ready for Codex Worker"),
