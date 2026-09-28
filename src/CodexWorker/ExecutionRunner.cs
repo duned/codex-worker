@@ -118,9 +118,17 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
+        var workspace = git.ExecutionDirectory;
+        var checkout = config.Project.Directory;
+        if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
+            !PathEquals(workspace, checkout) && Directory.Exists(workspace))
+            reason += $" Preserved execution workspace: {Path.GetFullPath(workspace)}";
         try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason), CancellationToken.None); }
         catch (WorkerInfrastructureException) { /* Preserve the original failure; the existing row remains incomplete. */ }
     }
+
+    private static bool PathEquals(string left, string right) =>
+        Path.GetFullPath(left).Equals(Path.GetFullPath(right), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private Task SaveHistoryAsync(ExecutionHistoryEntry entry, CancellationToken ct) =>
         history is null ? Task.CompletedTask : history.UpdateAsync(entry, ct);

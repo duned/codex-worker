@@ -71,6 +71,114 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task SimultaneousCleanupRemovesOnlyEachExecutionAndKeepsGitMetadataValid()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        var secondIssue = fixture.Issue with { Number = 18, Title = "Second task" };
+        await second.StartIssueAsync(secondId, secondIssue, CancellationToken.None);
+        var firstDirectory = first.ExecutionDirectory;
+        var secondDirectory = second.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(firstDirectory, "first.txt"), "first");
+        await File.WriteAllTextAsync(Path.Combine(secondDirectory, "second.txt"), "second");
+
+        await Task.WhenAll(
+            first.DiscardUncommittedIssueChangesAsync(CancellationToken.None),
+            second.DiscardUncommittedIssueChangesAsync(CancellationToken.None));
+
+        Assert.False(Directory.Exists(firstDirectory));
+        Assert.False(Directory.Exists(secondDirectory));
+        Assert.DoesNotContain(firstId.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
+        Assert.DoesNotContain(secondId.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/17-example-task"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/18-second-task"));
+    }
+
+    [Fact]
+    public async Task SimultaneousSuccessfulIntegrationsCleanOnlyTheirOwnWorktrees()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false, DeleteLocalFeatureBranch = false });
+        using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false, DeleteLocalFeatureBranch = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var firstIssue = fixture.Issue;
+        var secondIssue = fixture.Issue with { Number = 18, Title = "Second task" };
+        await first.StartIssueAsync(firstId, firstIssue, CancellationToken.None);
+        await second.StartIssueAsync(secondId, secondIssue, CancellationToken.None);
+        var firstDirectory = first.ExecutionDirectory;
+        var secondDirectory = second.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(firstDirectory, "first.txt"), "first");
+        await File.WriteAllTextAsync(Path.Combine(secondDirectory, "second.txt"), "second");
+
+        var results = await Task.WhenAll(
+            first.CommitAndIntegrateAsync(firstIssue, CancellationToken.None),
+            second.CommitAndIntegrateAsync(secondIssue, CancellationToken.None));
+
+        Assert.All(results, result => Assert.True(result.HasChanges));
+        Assert.False(Directory.Exists(firstDirectory));
+        Assert.False(Directory.Exists(secondDirectory));
+        var worktrees = await fixture.Git("worktree", "list", "--porcelain");
+        Assert.DoesNotContain(firstId.ToString("N"), worktrees);
+        Assert.DoesNotContain(secondId.ToString("N"), worktrees);
+        Assert.Equal("first", await fixture.Git("show", "feature/17-example-task:first.txt"));
+        Assert.Equal("second", await fixture.Git("show", "feature/18-second-task:second.txt"));
+    }
+
+    [Fact]
+    public async Task CleaningExecutionADoesNotRemoveExecutionB()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        await second.StartIssueAsync(secondId, fixture.Issue with { Number = 18, Title = "Second task" }, CancellationToken.None);
+        var firstDirectory = first.ExecutionDirectory;
+        var secondDirectory = second.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(secondDirectory, "diagnostic.txt"), "still active");
+
+        await first.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(firstDirectory));
+        Assert.True(Directory.Exists(secondDirectory));
+        Assert.Equal("still active", await File.ReadAllTextAsync(Path.Combine(secondDirectory, "diagnostic.txt")));
+        Assert.Contains(secondDirectory, await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
+    [Fact]
+    public async Task CancellationBeforeCleanupPreservesThisAndOtherExecutionWorkspaces()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        await second.StartIssueAsync(secondId, fixture.Issue with { Number = 18, Title = "Second task" }, CancellationToken.None);
+        var firstDirectory = first.ExecutionDirectory;
+        var secondDirectory = second.ExecutionDirectory;
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => first.DiscardUncommittedIssueChangesAsync(cancelled.Token));
+
+        Assert.True(Directory.Exists(firstDirectory));
+        Assert.True(Directory.Exists(secondDirectory));
+        Assert.Contains(firstDirectory, await fixture.Git("worktree", "list", "--porcelain"));
+        Assert.Contains(secondDirectory, await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
+    [Fact]
     public async Task UnexpectedWorktreeBranchPreservesExecutionState()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
