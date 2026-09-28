@@ -2,7 +2,8 @@ using System.Text.RegularExpressions;
 
 namespace CodexWorker;
 
-public sealed record GitIntegrationResult(bool HasChanges, string Summary);
+public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
+    string? IntegrationBranch = null, string? CompletedBranch = null);
 
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
@@ -226,7 +227,10 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             if (settings.AutoMerge) summary += $" Merged into `{settings.BaseBranch}`.";
             if (settings.AutoMerge && settings.PushCompletedBranch) summary += $" Preserved on origin as `{_completedBranch}`.";
             else if (!settings.AutoMerge) summary += $" Local feature branch: `{_featureBranch}`.";
-            return new GitIntegrationResult(true, summary);
+            var completedBranch = settings.AutoMerge && settings.PushCompletedBranch ? _completedBranch :
+                settings.AutoMerge && settings.DeleteLocalFeatureBranch ? null : _featureBranch;
+            return new GitIntegrationResult(true, summary, commit, settings.AutoMerge ? settings.BaseBranch : null,
+                completedBranch);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git commit/integration for Issue #{issue.Number} failed; checkout state is preserved for diagnosis: {ex.Message}", ex); }

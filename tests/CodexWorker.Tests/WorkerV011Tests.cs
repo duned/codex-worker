@@ -22,6 +22,32 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task SuccessfulIssuePersistsWorkerLifecycleAndIntegrationFacts()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using (var h = new Harness(history: history))
+        {
+            h.Validation.Results.Enqueue(Failure("authoritative-check", 1, "failed once"));
+            h.Validation.Results.Enqueue(ValidationResult.Success);
+            h.Codex.Repairs.Enqueue(Success("fixed check"));
+            await h.RunAsync();
+        }
+
+        using var reopened = new ExecutionHistoryStore(database);
+        var execution = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal("Completed", execution.State);
+        Assert.Equal("implemented", execution.ImplementationSummary);
+        Assert.Equal("passed", execution.ValidationOutcome);
+        Assert.Equal(1, execution.RepairCount);
+        Assert.True(Assert.Single(execution.Repairs).PassedAfterRepair);
+        Assert.Equal("0123456789abcdef0123456789abcdef01234567", execution.CommitSha);
+        Assert.Equal("main", execution.IntegrationBranch);
+        Assert.Equal("completed/17", execution.CompletedBranch);
+        File.Delete(database);
+    }
+
+    [Fact]
     public async Task CodexAndValidationUseTheExecutionWorktreeDirectory()
     {
         using var h = new Harness();
@@ -102,7 +128,9 @@ public sealed class WorkerV011Tests
     [Fact]
     public async Task BlockedRepairStopsLoopAndUsesBlockedWorkflow()
     {
-        using var h = new Harness();
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using var h = new Harness(history: history);
         h.Validation.Results.Enqueue(Failure("check", 1, "failure"));
         h.Codex.Repairs.Enqueue(new CodexOutcome("blocked", "Need a decision", [], true, "Which API?"));
 
@@ -114,6 +142,11 @@ public sealed class WorkerV011Tests
         Assert.Contains("working->blocked", h.GitHub.Labels);
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Which API?", StringComparison.Ordinal));
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Work performed", StringComparison.Ordinal));
+        var execution = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Blocked", execution.State);
+        Assert.Equal(1, execution.RepairCount);
+        Assert.Contains("Which API?", execution.FailureReason);
+        File.Delete(database);
     }
 
     [Fact]
@@ -235,7 +268,9 @@ public sealed class WorkerV011Tests
     [Fact]
     public async Task RuntimeCodexInfrastructureFailureStopsWithoutMarkingIssueFailed()
     {
-        using var h = new Harness();
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using var h = new Harness(history: history);
         h.Codex.InitialException = new WorkerInfrastructureException("service authentication failed");
 
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.RunAsync(h.Cancellation.Token));
@@ -244,12 +279,18 @@ public sealed class WorkerV011Tests
         Assert.Contains("ready->working", h.GitHub.Labels);
         Assert.DoesNotContain("working->failed", h.GitHub.Labels);
         Assert.Equal(0, h.Git.Cleanups);
+        var execution = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", execution.State);
+        Assert.Contains("service authentication failed", execution.FailureReason);
+        File.Delete(database);
     }
 
     [Fact]
     public async Task StructuredTaskFailureStillCleansAndReportsFailedIssue()
     {
-        using var h = new Harness();
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using var h = new Harness(history: history);
         h.Codex.InitialOutcome = new CodexOutcome("failed", "Implementation could not be completed", [], false, null);
 
         await h.RunAsync();
@@ -257,6 +298,10 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->failed", h.GitHub.Labels);
         Assert.Equal(0, h.Validation.Calls);
+        var execution = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Failed", execution.State);
+        Assert.Contains("Implementation could not be completed", execution.FailureReason);
+        File.Delete(database);
     }
 
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
@@ -280,7 +325,7 @@ public sealed class WorkerV011Tests
         private readonly HttpClient? _telegramClient;
         private readonly StubTelegramHandler? _telegramHandler;
 
-        public Harness(bool interactive = false, bool telegramEnabled = false)
+        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null)
         {
             Directory.CreateDirectory(_directory);
             var instructions = Path.Combine(_directory, "AGENTS.md");
@@ -304,7 +349,7 @@ public sealed class WorkerV011Tests
                 _telegram = new TelegramNotifier(true, "fake-token", "fake-chat", _telegramClient, output);
             }
             else _telegram = new TelegramNotifier(false, output);
-            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output);
+            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history);
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
@@ -385,7 +430,9 @@ public sealed class WorkerV011Tests
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct)
-        { Integrations++; return Task.FromResult(new GitIntegrationResult(true, "integrated")); }
+        { Integrations++; return Task.FromResult(new GitIntegrationResult(true,
+            "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
+            "0123456789abcdef0123456789abcdef01234567", "main", "completed/17")); }
     }
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
