@@ -59,6 +59,25 @@ public sealed class ProjectConfigurationManagementTests
     }
 
     [Fact]
+    public async Task RuntimeReservationPreventsRemovalBeforeExecutionHistoryIsWritten()
+    {
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var registry = new ProjectRuntimeRegistry([]);
+        var service = new ProjectConfigurationService(new LocalYamlProjectConfigurationProvider(fixture.Projects), history,
+            fixture.Projects, registry);
+        await service.CreateAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        Assert.True(registry.TryReserve("alpha"));
+        var configurationFile = Directory.GetFiles(fixture.Projects, "*.yml").Single();
+
+        await Assert.ThrowsAsync<ProjectConfigurationConflictException>(() => service.RemoveAsync("alpha", CancellationToken.None));
+
+        Assert.True(File.Exists(configurationFile));
+        Assert.Single(registry.Snapshot());
+        registry.Release("alpha");
+    }
+
+    [Fact]
     public async Task ConfigurationMutationReplacesRuntimeSnapshotOnlyAfterValidation()
     {
         using var fixture = new Fixture();
