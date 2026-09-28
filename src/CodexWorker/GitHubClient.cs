@@ -24,15 +24,59 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     public async Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
     {
         var result = await RunGhAsync(["issue", "list", "--repo", repository, "--state", "open", "--label", label,
-            "--search", "sort:created-asc", "--limit", "1", "--json", "number,title,body,createdAt"], cancellationToken,
+            "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt,blockedBy"], cancellationToken,
             allowGracefulCancellation: true);
-        using var document = JsonDocument.Parse(result.StandardOutput);
-        return document.RootElement.EnumerateArray()
-            .Select(e => new GitHubIssue(e.GetProperty("number").GetInt32(), e.GetProperty("title").GetString() ?? "",
-                e.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "",
-                e.GetProperty("createdAt").GetDateTimeOffset()))
-            .OrderBy(i => i.CreatedAt)
-            .FirstOrDefault();
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var candidates = document.RootElement.EnumerateArray()
+                .Select(e => (Issue: new GitHubIssue(e.GetProperty("number").GetInt32(), e.GetProperty("title").GetString() ?? "",
+                    e.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "",
+                    e.GetProperty("createdAt").GetDateTimeOffset()),
+                    Dependencies: e.GetProperty("blockedBy")))
+                .OrderBy(candidate => candidate.Issue.CreatedAt);
+
+            foreach (var candidate in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (DependenciesAreClosed(candidate.Dependencies)) return candidate.Issue;
+            }
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw new WorkerInfrastructureException($"Could not reliably read ready Issue dependencies for repository '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    private static bool DependenciesAreClosed(JsonElement blockedBy)
+    {
+        if (blockedBy.ValueKind != JsonValueKind.Object ||
+            !blockedBy.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array ||
+            !blockedBy.TryGetProperty("totalCount", out var totalCount) || !totalCount.TryGetInt32(out var count))
+            throw new JsonException("GitHub 'blockedBy' data did not include dependency nodes and their total count.");
+        if (count != nodes.GetArrayLength())
+            throw new JsonException($"GitHub returned {nodes.GetArrayLength()} of {count} blocking dependencies; dependency state is incomplete.");
+
+        foreach (var dependency in nodes.EnumerateArray())
+        {
+            if (dependency.TryGetProperty("closed", out var closed) &&
+                (closed.ValueKind == JsonValueKind.True || closed.ValueKind == JsonValueKind.False))
+            {
+                if (!closed.GetBoolean()) return false;
+                continue;
+            }
+            if (dependency.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.String)
+            {
+                var value = state.GetString();
+                if (string.Equals(value, "CLOSED", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(value, "OPEN", StringComparison.OrdinalIgnoreCase)) return false;
+            }
+            throw new JsonException("GitHub 'blockedBy' entry did not include a usable dependency state.");
+        }
+        return true;
     }
 
     public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct) =>
