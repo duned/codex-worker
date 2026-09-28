@@ -46,7 +46,7 @@ public sealed class StartupCoordinatorTests
         Assert.Equal(2, created);
         Assert.Equal(new[]
         {
-            "validate:A", "validate:B", "query:A", "query:B",
+            "validate:A", "validate:B", "capabilities:A", "capabilities:B", "query:A", "query:B",
             "create:A:a-ready", "create:B:b-done", "initialize:A", "initialize:B"
         }, events);
     }
@@ -71,6 +71,21 @@ public sealed class StartupCoordinatorTests
         Assert.False(laterPhasesReached);
         Assert.DoesNotContain(events, x => x.StartsWith("create:", StringComparison.Ordinal));
         Assert.DoesNotContain(events, x => x.StartsWith("initialize:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GitHubCapabilityFailureStopsBeforeLabelsCodexPreflightAndQueueAccess()
+    {
+        var events = new List<string>();
+        var projects = new[] { Plan("A", events, missing: [new RequiredGitHubLabel("ready", "123456", "ready")]),
+            Plan("B", events, githubError: new WorkerInfrastructureException("dependency API unavailable")) };
+
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => StartupCoordinator.RunAsync(projects, CancellationToken.None));
+
+        Assert.Contains("dependency API unavailable", failure.Message);
+        Assert.Equal(new[] { "validate:A", "validate:B", "capabilities:A", "capabilities:B" }, events);
+        Assert.DoesNotContain(events, item => item.StartsWith("query:", StringComparison.Ordinal) ||
+            item.StartsWith("create:", StringComparison.Ordinal) || item.StartsWith("initialize:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -99,9 +114,10 @@ public sealed class StartupCoordinatorTests
 
     private static ProjectStartupPlan Plan(string name, List<string> events,
         Exception? validateError = null, IReadOnlyList<RequiredGitHubLabel>? missing = null,
-        Exception? queryError = null, Exception? createError = null) => new(
+        Exception? queryError = null, Exception? createError = null, Exception? githubError = null) => new(
         $"{name}.yml", name,
         _ => { events.Add($"validate:{name}"); return Return(validateError); },
+        _ => { events.Add($"capabilities:{name}"); return Return(githubError); },
         _ => { events.Add($"query:{name}"); return queryError is null ? Task.FromResult(missing ?? []) : Task.FromException<IReadOnlyList<RequiredGitHubLabel>>(queryError); },
         (label, _) => { events.Add($"create:{name}:{label.Name}"); return Return(createError); },
         _ => { events.Add($"initialize:{name}"); return Task.CompletedTask; });

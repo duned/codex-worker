@@ -38,8 +38,11 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     }
 
     public void ProjectLoaded(string name) => WriteLine($"Loaded · {name}", ConsoleColor.Green, "✓");
+    public void GitHubCliReady() => WriteLine("GitHub CLI ready", ConsoleColor.Green, "✓");
+    public void GitHubAuthenticationReady() => WriteLine("GitHub authentication ready", ConsoleColor.Green, "✓");
     public void GitHubLabelsReady(int projectCount, int createdCount) =>
         WriteLine($"GitHub labels ready · {projectCount} project{(projectCount == 1 ? "" : "s")}{(createdCount == 0 ? "" : $" · {createdCount} created")}", ConsoleColor.Green, "✓");
+    public void GitHubDependenciesReady() => WriteLine("GitHub dependency API ready", ConsoleColor.Green, "✓");
     public void GlobalPreflight() => WriteLine("Global Codex preflight", ConsoleColor.Cyan, "▶");
 
     public void Started() => WriteLine("Worker started.", ConsoleColor.Green, "✓");

@@ -4,6 +4,7 @@ public sealed record ProjectStartupPlan(
     string Path,
     string Name,
     Func<CancellationToken, Task> ValidateReadOnlyAsync,
+    Func<CancellationToken, Task> ValidateGitHubCapabilitiesAsync,
     Func<CancellationToken, Task<IReadOnlyList<RequiredGitHubLabel>>> FindMissingLabelsAsync,
     Func<RequiredGitHubLabel, CancellationToken, Task> CreateLabelAsync,
     Func<CancellationToken, Task> InitializeAsync);
@@ -18,6 +19,13 @@ public static class StartupCoordinator
             try { await project.ValidateReadOnlyAsync(ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { throw new WorkerInfrastructureException($"Project configuration '{project.Path}' failed read-only startup validation: {ex.Message}", ex); }
+        }
+
+        foreach (var project in projects)
+        {
+            try { await project.ValidateGitHubCapabilitiesAsync(ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { throw new WorkerInfrastructureException($"Project '{project.Name}' GitHub capability validation failed: {ex.Message}", ex); }
         }
 
         var missingLabels = new List<(ProjectStartupPlan Project, IReadOnlyList<RequiredGitHubLabel> Missing)>();

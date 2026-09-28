@@ -41,6 +41,7 @@ public sealed class WorkerHost
                 project.Path,
                 project.Configuration.Project.Name,
                 async token => { activeProject = project.Configuration.Project.Name; await project.Git.ValidateStartupReadOnlyAsync(token); },
+                async token => { activeProject = project.Configuration.Project.Name; await project.GitHub.ValidateCapabilitiesAsync(token); },
                 async token =>
                 {
                     activeProject = project.Configuration.Project.Name;
@@ -54,7 +55,10 @@ public sealed class WorkerHost
                 async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
             )).ToArray();
             var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
+            _output.GitHubCliReady();
+            _output.GitHubAuthenticationReady();
             _output.GitHubLabelsReady(runtimes.Count, createdLabels);
+            _output.GitHubDependenciesReady();
 
             _output.GlobalPreflight();
             activeProject = null;

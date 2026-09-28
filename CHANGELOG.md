@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Fix V0.4.0 startup and scheduling compatibility with GitHub CLI 2.45.0 by reading Issue dependencies through GitHub's paginated REST API instead of the `blockedBy` JSON field.
+- Validate GitHub CLI, authentication, repository/Issue access, and the dependency API before label initialization or queue polling.
+- Include the assembly-derived worker version in Telegram lifecycle and infrastructure headers.
+
 ## 0.4.0
 
 - Respect GitHub native `blocked by` dependencies when selecting ready Issues, while continuing past dependency-waiting candidates.
