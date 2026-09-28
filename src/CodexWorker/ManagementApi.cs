@@ -90,15 +90,18 @@ public sealed class WorkerRuntimeReadModel
     private readonly GlobalWorkerConfiguration _global;
     private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
     private readonly ExecutionHistoryStore _history;
+    private readonly ProjectConfigurationService? _configurationService;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private volatile string _state = "starting";
 
     public WorkerRuntimeReadModel(GlobalWorkerConfiguration global,
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history)
+        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history,
+        ProjectConfigurationService? configurationService = null)
     {
         _global = global;
         _projects = projects;
         _history = history;
+        _configurationService = configurationService;
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
     }
 
@@ -108,10 +111,11 @@ public sealed class WorkerRuntimeReadModel
     public async Task<WorkerStatus> StatusAsync(CancellationToken ct)
     {
         var active = (await _history.ReadActiveAsync(ct)).Count;
+        var projectCount = _configurationService is null ? _projects.Count : (await _configurationService.ListAsync(ct)).Count;
         return new WorkerStatus(ApplicationVersion.Display, State,
             Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
-            _projects.Count, _projects.Count);
+            projectCount, projectCount);
     }
 
     public IReadOnlyList<WorkerCapability> Capabilities =>
@@ -126,6 +130,16 @@ public sealed class WorkerRuntimeReadModel
     public async Task<IReadOnlyList<ProjectRuntimeInfo>> ProjectsAsync(CancellationToken ct)
     {
         var entries = await _history.ReadActiveAsync(ct);
+        if (_configurationService is not null)
+        {
+            var configs = await _configurationService.ListAsync(ct);
+            return configs.Select(config =>
+            {
+                var active = entries.Count(e => string.Equals(e.Project, config.Name, StringComparison.OrdinalIgnoreCase));
+                return new ProjectRuntimeInfo(config.Name, config.Repository, true, State, config.Worker.MaxParallelTasks,
+                    active, Math.Max(0, config.Worker.MaxParallelTasks - active), null);
+            }).ToArray();
+        }
         return _projects.Select(item =>
             {
                 var config = item.Configuration;
@@ -155,17 +169,43 @@ public sealed class WorkerRuntimeReadModel
 public static class ManagementApi
 {
     public static async Task<WebApplication?> StartAsync(WorkerRuntimeReadModel runtime, ManagementApiSettings settings,
-        CancellationToken ct)
+        CancellationToken ct, ProjectConfigurationService? projectConfigurations = null)
     {
         if (!settings.Enabled) return null;
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls(settings.ListenUrl);
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(runtime);
+        if (projectConfigurations is not null) builder.Services.AddSingleton(projectConfigurations);
         var app = builder.Build();
         app.MapGet("/api/status", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.StatusAsync(context.RequestAborted)));
         app.MapGet("/api/capabilities", (WorkerRuntimeReadModel model) => Results.Ok(model.Capabilities));
         app.MapGet("/api/projects", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.ProjectsAsync(context.RequestAborted)));
+        if (projectConfigurations is not null)
+        {
+            app.MapGet("/api/project-configurations", async (ProjectConfigurationService service, HttpContext context) => Results.Ok(await service.ListAsync(context.RequestAborted)));
+            app.MapGet("/api/project-configurations/{name}", async (string name, ProjectConfigurationService service, HttpContext context) =>
+                await service.GetAsync(name, context.RequestAborted) is { } found ? Results.Ok(found) : Results.NotFound());
+            app.MapPost("/api/project-configurations", async (WorkerConfiguration configuration, ProjectConfigurationService service, HttpContext context) =>
+            {
+                try { return (IResult)Results.Created($"/api/project-configurations/{Uri.EscapeDataString(configuration.Project.Name)}", await service.CreateAsync(configuration, context.RequestAborted)); }
+                catch (ProjectConfigurationConflictException ex) { return (IResult)Results.Conflict(new { error = ex.Message }); }
+                catch (InvalidDataException ex) { return (IResult)Results.BadRequest(new { error = ex.Message }); }
+            });
+            app.MapPut("/api/project-configurations/{name}", async (string name, WorkerConfiguration configuration, ProjectConfigurationService service, HttpContext context) =>
+            {
+                try { return (IResult)Results.Ok(await service.UpdateAsync(name, configuration, context.RequestAborted)); }
+                catch (KeyNotFoundException) { return (IResult)Results.NotFound(); }
+                catch (ProjectConfigurationConflictException ex) { return (IResult)Results.Conflict(new { error = ex.Message }); }
+                catch (InvalidDataException ex) { return (IResult)Results.BadRequest(new { error = ex.Message }); }
+            });
+            app.MapDelete("/api/project-configurations/{name}", async (string name, ProjectConfigurationService service, HttpContext context) =>
+            {
+                try { return await service.RemoveAsync(name, context.RequestAborted) ? (IResult)Results.NoContent() : Results.NotFound(); }
+                catch (ProjectConfigurationConflictException ex) { return (IResult)Results.Conflict(new { error = ex.Message }); }
+                catch (InvalidDataException ex) { return (IResult)Results.BadRequest(new { error = ex.Message }); }
+            });
+        }
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
         app.MapGet("/api/events", (int? limit, WorkerRuntimeReadModel model) => Results.Ok(model.Events.ReadRecent(limit)));
