@@ -1,8 +1,18 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.6.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.7.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
-## V0.6 execution architecture
+## V0.7 local control plane
+
+The worker serves a local dashboard and JSON management API at `http://127.0.0.1:5080/` by default. The API can be disabled with `api.enabled: false`; `api.listenUrl` accepts only a loopback IP address. Keep remote access behind an SSH tunnel or another external access mechanism. The dashboard reads and changes state only through the API. Routes provide worker status and capabilities, project and execution views, bounded recent events, a Server-Sent Events stream, project configuration CRUD/reload, project lifecycle controls, and worker drain status.
+
+Project YAML remains the V0.7 local configuration source. API writes validate the full candidate project set before atomically replacing a YAML file; file watcher reloads and explicit reloads activate only complete valid snapshots. A bad replacement leaves the current runtime snapshot in place. The provider boundary is `IProjectConfigurationProvider`, so a future Codex Server can supply project definitions without changing the scheduling and execution contracts. API configuration views expose configuration paths and settings, but never dotenv contents.
+
+Projects start enabled. **Enabled** projects may be scheduled within their configured capacity. **Disabled** projects receive no new executions, while existing executions finish. **Draining** projects receive no new executions and report completion after their active count reaches zero. Worker drain similarly stops all new claims while allowing active work to finish. Project removal is rejected while a claim is reserved or execution history is active. Local runtime events are process-local and bounded; SQLite execution history remains the authoritative execution record.
+
+The API has no authentication in V0.7, so its loopback-only default is a security boundary. It does not expose process environment values, dotenv contents, GitHub tokens, Telegram credentials, or Codex authentication. Do not bind it to a non-loopback interface.
+
+## Execution architecture
 
 The host owns project scheduling and dispatches up to the global `worker.maxParallelTasks` limit, subject to each project's own `worker.maxParallelTasks` limit. Both default to `1`; supported values are `1` through `8`, and project limits never raise the global cap. Round-robin scheduling skips projects that are at capacity, so they do not hold up projects with free slots. Only claimed executions consume capacity; Issues waiting on dependencies do not. `ExecutionRunner` owns each execution's workspace, Codex implementation, sequential authoritative validation and bounded repair, Git state checks, integration request, and task outcome. Each attempt gets its own Git repository execution object for mutable branch, worktree, and starting-commit state. GitHub claiming and result reporting remain in the worker orchestration; infrastructure failures stop new scheduling and trigger conservative worker-wide cancellation, while blocked and safe task-failed outcomes free capacity without cancelling unrelated executions.
 

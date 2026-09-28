@@ -51,6 +51,42 @@ public sealed class ProjectRuntimeRegistry
         lock (_gate) return _projects.TryGetValue(name, out var entry) ? Info(name, entry) : null;
     }
 
+    /// <summary>Prevents reservations while a configuration is being removed from its provider.</summary>
+    public bool TryBeginRemoval(string name)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || entry.Active != 0 || entry.Removing) return false;
+            entry.StateBeforeRemoval = entry.State;
+            entry.Removing = true;
+            entry.State = ProjectLifecycleState.Disabled;
+            SignalChanged();
+            return true;
+        }
+    }
+
+    public void CompleteRemoval(string name)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || !entry.Removing || entry.Active != 0)
+                throw new InvalidOperationException($"Project '{name}' is not safely marked for removal.");
+            _projects.Remove(name);
+            SignalChanged();
+        }
+    }
+
+    public void CancelRemoval(string name)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || !entry.Removing) return;
+            entry.Removing = false;
+            entry.State = entry.StateBeforeRemoval;
+            SignalChanged();
+        }
+    }
+
     public ProjectLifecycleInfo? Enable(string name) => Transition(name, ProjectLifecycleState.Enabled, "project.enabled", "Project enabled.");
     public ProjectLifecycleInfo? Disable(string name) => Transition(name, ProjectLifecycleState.Disabled, "project.disabled", "Project disabled.");
 
@@ -139,6 +175,7 @@ public sealed class ProjectRuntimeRegistry
         lock (_gate)
         {
             if (!_projects.TryGetValue(name, out var entry)) return null;
+            if (entry.Removing) return Info(name, entry);
             if (entry.State != target)
             {
                 entry.State = target;
@@ -172,5 +209,7 @@ public sealed class ProjectRuntimeRegistry
         public WorkerConfiguration Configuration = configuration;
         public ProjectLifecycleState State = state;
         public int Active = active;
+        public bool Removing;
+        public ProjectLifecycleState StateBeforeRemoval = state;
     }
 }

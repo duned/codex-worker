@@ -123,10 +123,22 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             if ((await history.ReadActiveAsync(ct)).Any(x => string.Equals(x.Project, name, StringComparison.OrdinalIgnoreCase)))
                 throw new ProjectConfigurationConflictException($"Project '{name}' has an active execution and cannot be removed.");
             var remaining = projects.Where(x => !string.Equals(x.Path, item.Path, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (remaining.Length == 0) throw new InvalidDataException("At least one project configuration must remain.");
-            await provider.RemoveAsync(item.Path, ct);
-            await RefreshRuntimeAsync(ct, name);
-            return true;
+            var removalReserved = runtimeRegistry is null || runtimeRegistry.TryBeginRemoval(name);
+            if (!removalReserved)
+                throw new ProjectConfigurationConflictException($"Project '{name}' has an active execution or is already being removed.");
+            try
+            {
+                if (remaining.Length == 0) throw new InvalidDataException("At least one project configuration must remain.");
+                await provider.RemoveAsync(item.Path, ct);
+                if (runtimeRegistry is not null) runtimeRegistry.CompleteRemoval(name);
+                runtimeRegistry?.Publish("configuration.reloaded", "Project configuration reloaded.", name);
+                return true;
+            }
+            catch
+            {
+                runtimeRegistry?.CancelRemoval(name);
+                throw;
+            }
         }
         finally { _gate.Release(); }
     }

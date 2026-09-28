@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- Add a loopback-only local Worker Control API and dashboard for worker status, capabilities, projects, executions, runtime events, project controls, and worker drain.
+- Add a replaceable project configuration provider boundary with validated project CRUD, atomic local YAML writes, explicit reload, and debounced file watching.
+- Add enabled, disabled, and draining project lifecycle states that stop new scheduling while existing executions finish safely.
+- Expose bounded process-local runtime event history and Server-Sent Events; retain SQLite as the authoritative execution history.
+- Prevent project removal while execution history or an in-flight runtime reservation indicates active work.
+- Document the local security boundary, dashboard/API usage, lifecycle semantics, and future Codex Server configuration direction.
+
 ## 0.6.0
 
 - Dispatch independent Issue executions concurrently up to a global `worker.maxParallelTasks` limit and each project's own limit; both default to one and are bounded to eight.
