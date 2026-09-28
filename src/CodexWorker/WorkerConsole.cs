@@ -91,24 +91,24 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void IssueStarted(GitHubIssue issue)
     {
         _waiting = false;
-        WriteLine($"#{issue.Number} · {issue.Title}", ConsoleColor.Cyan, "▶");
+        WriteLine(IssueFormatting.Display(issue), ConsoleColor.Cyan, "▶");
     }
 
     public void IssueStarted(string project, GitHubIssue issue)
     {
         _waiting = false;
-        WriteLine($"{project.ToUpperInvariant()} · #{issue.Number} · {issue.Title}", ConsoleColor.Cyan, "▶");
+        WriteLine($"{project.ToUpperInvariant()} · {IssueFormatting.Display(issue)}", ConsoleColor.Cyan, "▶");
     }
 
     private static string TaskIdentity(string project, GitHubIssue issue) =>
-        $"{project.ToUpperInvariant()} · #{issue.Number} · {issue.Title}";
+        $"{project.ToUpperInvariant()} · {IssueFormatting.Display(issue)}";
 
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"#{issue.Number} completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
+        WriteLine($"{IssueFormatting.Display(issue)} · completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"#{issue.Number} blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
+        WriteLine($"{IssueFormatting.Display(issue)} · blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"#{issue.Number} failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
+        WriteLine($"{IssueFormatting.Display(issue)} · failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
 
     public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
         WriteLine($"{TaskIdentity(project, issue)} · completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");

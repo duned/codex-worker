@@ -220,21 +220,21 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         {
             case IssueOutcomeKind.Succeeded:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
-                await github.CommentAsync(issue.Number, result.Summary, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
                 _output.IssueCompleted(config.Project.Name, issue, result.Report.Duration, ShortCompletion(result.Summary));
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
-                await github.CommentAsync(issue.Number, result.Summary, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
                 _output.IssueBlocked(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.");
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
-                await github.CommentAsync(issue.Number, message, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, Limit(message, 1400), ct);
                 _output.IssueFailed(config.Project.Name, issue, result.Report.Duration, FirstLine(message));
                 break;

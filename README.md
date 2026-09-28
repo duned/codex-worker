@@ -1,6 +1,6 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.7.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.7.1. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
 ## V0.7 local control plane
 
@@ -87,6 +87,8 @@ Absolute paths are supported. Relative `environment.file` paths resolve from the
 To migrate from V0.1.x, move its project YAML into the new projects directory. Remove `telegram`, `worker.pollingSeconds`, and `codex.preflightTimeoutSeconds` from that project file. Put Telegram enablement, polling interval, and the global preflight timeout in `worker.yml`. Keep per-project `worker.gitTimeoutSeconds` and `worker.githubTimeoutSeconds` if customized. There is one CLI/configuration path; `CodexWorker <project.yml>` is no longer supported.
 
 The configured checkout must be dedicated to this worker and initially clean on its configured base branch. Startup verifies the Git origin, checkout root, branch, cleanliness, and generated branch refs for every project before queue access. The worker then acquires local checkout locks and updates configured base branches. Do not edit a checkout concurrently or configure the same repository in multiple project files.
+
+New execution branches use `{featurePrefix}{slugified-title}-{issueNumber}`; completed branches use `{completedPrefix}{slugified-title}-{issueNumber}`. Existing branches created with the previous number-first naming convention remain untouched and are not used to determine Issue identity.
 
 Codex implementation and validation run in a managed worktree outside the source checkout at `~/.codex-worker/worktrees/<repository-owner>/<repository-name>/<execution-id>`. Repository scoping keeps projects with similarly named checkout directories isolated. The execution ID in the directory name identifies its owner if an infrastructure failure leaves the worktree for inspection. Successful integration and safe task failure remove the worktree; uncertain Git state is preserved. The canonical checkout coordinates base branch updates and integration and does not receive task file edits.
 

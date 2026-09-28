@@ -22,7 +22,7 @@ public sealed class WorkerExecutionTests
         Assert.Equal(17, first.IssueNumber);
         Assert.Equal(Issue.Title, first.IssueTitle);
         Assert.Equal("main", first.BaseBranch);
-        Assert.Equal("feature/17-add-execution-context", first.FeatureBranch);
+        Assert.Equal("feature/add-execution-context-17", first.FeatureBranch);
         Assert.True(first.StartedAtUtc <= DateTimeOffset.UtcNow);
     }
 

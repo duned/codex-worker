@@ -154,5 +154,5 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    private string TaskLabel(GitHubIssue issue, string stage) => $"{config.Project.Name} · #{issue.Number} · {stage}";
+    private string TaskLabel(GitHubIssue issue, string stage) => $"{config.Project.Name} · {IssueFormatting.Display(issue)} · {stage}";
 }

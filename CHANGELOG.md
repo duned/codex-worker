@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+- Display Issue references as `<title> #<number>` across console output, Telegram notifications, runtime events, and GitHub execution reports.
+- Name new feature and completed branches with the slugified title followed by the Issue number, preserving configured prefixes and existing historical branches.
+
 ## 0.7.0
 
 - Add a loopback-only local Worker Control API and dashboard for worker status, capabilities, projects, executions, runtime events, project controls, and worker drain.
