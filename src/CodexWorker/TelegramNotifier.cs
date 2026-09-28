@@ -96,7 +96,7 @@ public sealed class TelegramNotifier : IDisposable
     private static string IssueLink(string repository, GitHubIssue issue)
     {
         var url = $"https://github.com/{repository}/issues/{issue.Number}";
-        return $"<a href=\"{EscapeHtml(url)}\">{EscapeHtml($"#{issue.Number} · {issue.Title}")}</a>";
+        return $"<a href=\"{EscapeHtml(url)}\">{EscapeHtml(IssueFormatting.Display(issue))}</a>";
     }
 
     private static string HtmlMessage(IEnumerable<string> lines) => string.Join("\n", lines.Select(line =>

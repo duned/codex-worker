@@ -93,6 +93,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Cleanups);
         Assert.Contains("working->done", h.GitHub.Labels);
         var comment = Assert.Single(h.GitHub.Comments);
+        Assert.StartsWith("# Example task #17\n\n", comment);
         Assert.Contains("implemented", comment);
         Assert.Contains("fixed restore issue", comment);
         Assert.Contains("Initial validation failed: `dotnet test`.", comment);
@@ -245,13 +246,13 @@ public sealed class WorkerV011Tests
         h.GitHub.CancelWhenEmpty = false;
         var workerTask = h.Worker.RunAsync(h.Cancellation.Token);
 
-        await WaitForOutputAsync(h.Output, "TEST PROJECT · #17 · Example task · completed");
+        await WaitForOutputAsync(h.Output, "TEST PROJECT · Example task #17 · completed");
         await WaitForOutputAsync(h.Output, "Waiting for work... 00:00");
         h.Cancellation.Cancel();
         await workerTask;
 
         var output = h.Output.ToString();
-        var completed = output.IndexOf("TEST PROJECT · #17 · Example task · completed", StringComparison.Ordinal);
+        var completed = output.IndexOf("TEST PROJECT · Example task #17 · completed", StringComparison.Ordinal);
         var idle = output.IndexOf("Waiting for work...", completed, StringComparison.Ordinal);
         var stopped = output.IndexOf("■ Worker stopped.", StringComparison.Ordinal);
         Assert.True(completed >= 0 && idle > completed && stopped > idle, output);

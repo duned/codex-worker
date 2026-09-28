@@ -68,10 +68,10 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     }
 
     public static string FeatureBranchName(GitSettings settings, GitHubIssue issue) =>
-        $"{settings.FeaturePrefix}{issue.Number}-{SanitizeTitle(issue.Title)}";
+        $"{settings.FeaturePrefix}{SanitizeTitle(issue.Title)}-{issue.Number}";
 
     public static string CompletedBranchName(GitSettings settings, GitHubIssue issue) =>
-        $"{settings.CompletedPrefix}{issue.Number}-{SanitizeTitle(issue.Title)}";
+        $"{settings.CompletedPrefix}{SanitizeTitle(issue.Title)}-{issue.Number}";
 
     public static async Task<bool> IsValidBranchRefAsync(ProcessRunner runner, string workingDirectory, string branch,
         TimeSpan? timeout = null, CancellationToken ct = default)

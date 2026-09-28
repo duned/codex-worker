@@ -23,7 +23,24 @@ public sealed class GitWorktreeTests
         Assert.False(Directory.Exists(Path.Combine(fixture.WorktreeRoot, id.ToString("N"))));
         Assert.False(File.Exists(Path.Combine(fixture.Checkout, "generated.txt")));
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
-        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/17-example-task"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
+    }
+
+    [Fact]
+    public async Task ExistingHistoricalNumberFirstBranchDoesNotBlockOrGetRemovedWithNewExecution()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        const string historicalBranch = "feature/17-example-task";
+        await fixture.Git("branch", historicalBranch, "main");
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await git.InitializeAsync(CancellationToken.None);
+
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        Assert.Equal("feature/example-task-17", await fixture.GitAt(git.ExecutionDirectory, "branch", "--show-current"));
+        await git.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
+
+        Assert.Contains(historicalBranch, await fixture.Git("branch", "--list", historicalBranch));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
     }
 
     [Fact]
@@ -44,8 +61,8 @@ public sealed class GitWorktreeTests
         Assert.False(Directory.Exists(executionDirectory));
         Assert.False(File.Exists(Path.Combine(fixture.Checkout, "implemented.txt")));
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
-        Assert.Contains("feature/17-example-task", await fixture.Git("branch", "--list", "feature/17-example-task"));
-        Assert.Equal("implementation", await fixture.Git("show", "feature/17-example-task:implemented.txt"));
+        Assert.Contains("feature/example-task-17", await fixture.Git("branch", "--list", "feature/example-task-17"));
+        Assert.Equal("implementation", await fixture.Git("show", "feature/example-task-17:implemented.txt"));
     }
 
     [Fact]
@@ -95,8 +112,8 @@ public sealed class GitWorktreeTests
         Assert.False(Directory.Exists(secondDirectory));
         Assert.DoesNotContain(firstId.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
         Assert.DoesNotContain(secondId.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
-        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/17-example-task"));
-        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/18-second-task"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/second-task-18"));
     }
 
     [Fact]
@@ -127,8 +144,8 @@ public sealed class GitWorktreeTests
         var worktrees = await fixture.Git("worktree", "list", "--porcelain");
         Assert.DoesNotContain(firstId.ToString("N"), worktrees);
         Assert.DoesNotContain(secondId.ToString("N"), worktrees);
-        Assert.Equal("first", await fixture.Git("show", "feature/17-example-task:first.txt"));
-        Assert.Equal("second", await fixture.Git("show", "feature/18-second-task:second.txt"));
+        Assert.Equal("first", await fixture.Git("show", "feature/example-task-17:first.txt"));
+        Assert.Equal("second", await fixture.Git("show", "feature/second-task-18:second.txt"));
     }
 
     [Fact]

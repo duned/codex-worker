@@ -82,9 +82,9 @@ public sealed class OperabilityTests
         output.IssueFailed(new GitHubIssue(4, "Fail", "", DateTimeOffset.UtcNow), TimeSpan.FromSeconds(3), "Check failed");
         output.IssueBlocked(new GitHubIssue(5, "Needs input", "", DateTimeOffset.UtcNow), TimeSpan.FromSeconds(1), "Choose API");
         var text = writer.ToString();
-        Assert.Contains("✓ #3 completed · 01:17", text);
-        Assert.Contains("✗ #4 failed", text);
-        Assert.Contains("⚠ #5 blocked", text);
+        Assert.Contains("✓ Add config #3 · completed · 01:17", text);
+        Assert.Contains("✗ Fail #4 · failed", text);
+        Assert.Contains("⚠ Needs input #5 · blocked", text);
         Assert.DoesNotContain("\u001b[", text);
     }
 
@@ -207,10 +207,10 @@ public sealed class OperabilityTests
         await telegram.CriticalAsync("Codex Worker Test", "Git integration state is uncertain", CancellationToken.None);
 
         Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
-        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA INICIADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(1));
-        Assert.StartsWith($"🟡 CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA BLOQUEADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(2));
+        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA INICIADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(1));
+        Assert.StartsWith($"🟡 CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA BLOQUEADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
-        Assert.StartsWith($"❌ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA FALLIDA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(3));
+        Assert.StartsWith($"❌ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA FALLIDA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
         Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
         Assert.All(handler.Bodies, body =>
@@ -237,7 +237,7 @@ public sealed class OperabilityTests
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
         Assert.Contains("Rama completada preservada: completed/3", message);
-        Assert.StartsWith($"✅ CW {ApplicationVersion.Display} · EXAMPLE · TAREA COMPLETADA\n<a href=\"https://github.com/owner/repo/issues/3\">#3 · Add config</a>", message);
+        Assert.StartsWith($"✅ CW {ApplicationVersion.Display} · EXAMPLE · TAREA COMPLETADA\n<a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>", message);
         Assert.DoesNotContain("════════════", message);
     }
 
@@ -255,7 +255,7 @@ public sealed class OperabilityTests
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
         Assert.Contains("https://github.com/owner/repo/issues/8", message);
-        Assert.Contains("#8 · Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title", message);
+        Assert.Contains("Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title #8", message);
         Assert.DoesNotContain("#8 · Add <uptime>", message);
     }
 
@@ -272,10 +272,10 @@ public sealed class OperabilityTests
         console.IssueFailed("Finance", issue, TimeSpan.FromSeconds(14), "Failed");
 
         var lines = writer.ToString();
-        Assert.Contains($"▶ FINANCE · #7 · {issue.Title}", lines);
-        Assert.Contains($"✓ FINANCE · #7 · {issue.Title} · completed · 12s", lines);
-        Assert.Contains($"⚠ FINANCE · #7 · {issue.Title} · blocked · 13s", lines);
-        Assert.Contains($"✗ FINANCE · #7 · {issue.Title} · failed · 14s", lines);
+        Assert.Contains($"▶ FINANCE · {issue.Title} #7", lines);
+        Assert.Contains($"✓ FINANCE · {issue.Title} #7 · completed · 12s", lines);
+        Assert.Contains($"⚠ FINANCE · {issue.Title} #7 · blocked · 13s", lines);
+        Assert.Contains($"✗ FINANCE · {issue.Title} #7 · failed · 14s", lines);
         Assert.DoesNotContain("\u001b[", lines);
     }
 
