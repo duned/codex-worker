@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Upgrade Microsoft.Data.Sqlite to resolve its vulnerable SQLitePCLRaw native dependency.
+- Capture expected startup infrastructure diagnostics through the test console abstraction.
+- Identify task lifecycle notifications by worker version, project, and event, with safe clickable Issue links and complete completion summaries.
+
 ## 0.5.0
 
 - Separate project scheduling and GitHub lifecycle coordination from per-Issue execution, which now runs through an explicit execution context and runner.

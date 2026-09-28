@@ -63,7 +63,7 @@ public sealed class OperabilityTests
     public async Task RedirectedIdleFinalizationRemainsPlainLineBasedOutput()
     {
         var writer = new StringWriter();
-        var console = new WorkerConsole(writer, interactive: false);
+        var console = new WorkerConsole(writer, interactive: false, errorWriter: writer);
         console.Waiting();
         await console.StopWaitingAsync(finalizeLine: true);
         console.Shutdown();
@@ -201,16 +201,16 @@ public sealed class OperabilityTests
         using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
         var issue = new GitHubIssue(5, "Add application uptime endpoint", "", DateTimeOffset.UtcNow);
         await telegram.StartedAsync("Codex Worker Test", CancellationToken.None);
-        await telegram.StartingAsync("Codex Worker Test", issue, CancellationToken.None);
-        await telegram.BlockedAsync("Codex Worker Test", issue, TimeSpan.FromMinutes(1), "Which endpoint path?", CancellationToken.None);
-        await telegram.FailedAsync("Codex Worker Test", issue, TimeSpan.FromMinutes(2), "Validation failed", CancellationToken.None);
+        await telegram.StartingAsync("Codex Worker Test", "duned/codex-worker", issue, CancellationToken.None);
+        await telegram.BlockedAsync("Codex Worker Test", "duned/codex-worker", issue, TimeSpan.FromMinutes(1), "Which endpoint path?", CancellationToken.None);
+        await telegram.FailedAsync("Codex Worker Test", "duned/codex-worker", issue, TimeSpan.FromMinutes(2), "Validation failed", CancellationToken.None);
         await telegram.CriticalAsync("Codex Worker Test", "Git integration state is uncertain", CancellationToken.None);
 
         Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
-        Assert.StartsWith("▶️ TAREA INICIADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(1));
-        Assert.StartsWith("🟡 TAREA BLOQUEADA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(2));
+        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA INICIADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(1));
+        Assert.StartsWith($"🟡 CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA BLOQUEADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
-        Assert.StartsWith("❌ TAREA FALLIDA · CODEX WORKER TEST · #5\nAdd application uptime endpoint", MessageAt(3));
+        Assert.StartsWith($"❌ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA FALLIDA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">#5 · Add application uptime endpoint</a>", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
         Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
         Assert.All(handler.Bodies, body =>
@@ -228,16 +228,55 @@ public sealed class OperabilityTests
         var handler = new RecordingHandler(HttpStatusCode.OK);
         using var client = new HttpClient(handler);
         using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
-        await telegram.SuccessAsync("Example", new GitHubIssue(3, "Add config", "", DateTimeOffset.UtcNow),
-            TimeSpan.FromSeconds(77), "Committed as `abcdef123456`. Merged into `main`.\n\nCodex summary: Added the uptime endpoint with focused coverage.", CancellationToken.None);
+        await telegram.SuccessAsync("Example", "owner/repo", new GitHubIssue(3, "Add config", "", DateTimeOffset.UtcNow),
+            TimeSpan.FromSeconds(77), "Committed as `abcdef123456`. Merged into `main`. Preserved on origin as `completed/3`.\n\nCodex summary: Added the uptime endpoint with focused coverage.", CancellationToken.None);
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Contains("Duración: 01:17", message);
         Assert.Contains("Commit: abcdef123456", message);
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
-        Assert.StartsWith("✅ TAREA COMPLETADA · EXAMPLE · #3\nAdd config", message);
+        Assert.Contains("Rama completada preservada: completed/3", message);
+        Assert.StartsWith($"✅ CW {ApplicationVersion.Display} · EXAMPLE · TAREA COMPLETADA\n<a href=\"https://github.com/owner/repo/issues/3\">#3 · Add config</a>", message);
         Assert.DoesNotContain("════════════", message);
+    }
+
+    [Fact]
+    public async Task TaskIssueLinkEscapesCompleteIssueTitleForTelegramHtml()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
+        const string title = "Add <uptime> & \"health\" endpoint with a complete descriptive title";
+
+        await telegram.StartingAsync("Example", "owner/repo", new GitHubIssue(8, title, "", DateTimeOffset.UtcNow), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        var message = body.RootElement.GetProperty("text").GetString()!;
+        Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
+        Assert.Contains("https://github.com/owner/repo/issues/8", message);
+        Assert.Contains("#8 · Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title", message);
+        Assert.DoesNotContain("#8 · Add <uptime>", message);
+    }
+
+    [Fact]
+    public void ConsoleTaskLifecycleLinesRetainProjectIssueAndCompleteTitle()
+    {
+        var writer = new StringWriter();
+        var issue = new GitHubIssue(7, "V0.5 · P1 · Introduce execution identity and lifecycle state", "", DateTimeOffset.UtcNow);
+        var console = new WorkerConsole(writer, interactive: false, errorWriter: writer);
+
+        console.IssueStarted("Finance", issue);
+        console.IssueCompleted("Finance", issue, TimeSpan.FromSeconds(12), "Completed");
+        console.IssueBlocked("Finance", issue, TimeSpan.FromSeconds(13), "Needs input");
+        console.IssueFailed("Finance", issue, TimeSpan.FromSeconds(14), "Failed");
+
+        var lines = writer.ToString();
+        Assert.Contains($"▶ FINANCE · #7 · {issue.Title}", lines);
+        Assert.Contains($"✓ FINANCE · #7 · {issue.Title} · completed · 12s", lines);
+        Assert.Contains($"⚠ FINANCE · #7 · {issue.Title} · blocked · 13s", lines);
+        Assert.Contains($"✗ FINANCE · #7 · {issue.Title} · failed · 14s", lines);
+        Assert.DoesNotContain("\u001b[", lines);
     }
 
     [Fact]

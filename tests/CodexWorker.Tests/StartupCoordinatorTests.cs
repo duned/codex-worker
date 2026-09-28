@@ -13,13 +13,16 @@ public sealed class StartupCoordinatorTests
             GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
             Codex = new CodexSettings { InstructionsFile = "instructions.md" }
         };
+        var output = new StringWriter();
+        var errors = new StringWriter();
         var host = new WorkerHost(new GlobalWorkerConfiguration(), [("project.yml", config)],
-            new WorkerConsole(new StringWriter(), interactive: false));
+            new WorkerConsole(output, interactive: false, errorWriter: errors));
 
         var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
 
         Assert.Contains("checkout does not exist", failure.Message);
         Assert.Equal(ProcessExitCodes.StartupFailure, Program.ExitCodeFor(failure));
+        Assert.Contains("Infrastructure failure: Project configuration 'project.yml' failed read-only startup validation", errors.ToString());
     }
 
     [Fact]

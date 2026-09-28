@@ -1,6 +1,6 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.5.0. The startup header and worker-level Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.5.1. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It runs one Issue at a time globally, asks Codex to implement it in an execution-specific Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
 ## V0.5 execution architecture
 
@@ -84,7 +84,7 @@ Execution history is stored locally in SQLite at `~/.codex-worker/codex-worker.d
 
 ## Telegram and console
 
-When global `telegram.enabled` is true, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the worker environment. Global start/stop and infrastructure messages describe the worker and include its assembly-derived version (for example, `CW 0.5.0 · INFRAESTRUCTURA`); task messages include the project name, Issue, duration, and completion details when available. Telegram delivery failures are warnings and never change task outcomes. Secrets are not stored in YAML.
+When global `telegram.enabled` is true, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the worker environment. Global start/stop and infrastructure messages describe the worker and include its assembly-derived version (for example, `CW 0.5.1 · INFRAESTRUCTURA`). Task headers include the version, project, and event; the complete Issue title appears below as a link to that Issue in its configured repository. Completion messages retain duration, commit, integration and preserved branch details, and the complete Codex implementation summary when available. Telegram delivery failures are warnings and never change task outcomes. Secrets are not stored in YAML.
 
 Interactive terminals get a spinner, elapsed idle timer, restrained color, and deduplicated global idle status. Redirected output remains line-based without animation or ANSI sequences. Ctrl+C and SIGTERM request graceful shutdown. Startup/configuration/infrastructure failures exit non-zero.
 
