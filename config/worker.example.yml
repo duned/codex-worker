@@ -8,3 +8,8 @@ projects:
 
 telegram:
   enabled: false
+
+api:
+  enabled: true
+  listenUrl: http://127.0.0.1:5080
+  eventHistoryLimit: 500

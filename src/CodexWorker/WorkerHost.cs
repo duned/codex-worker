@@ -22,6 +22,8 @@ public sealed class WorkerHost
         foreach (var item in _projects) _output.ProjectLoaded(item.Configuration.Project.Name);
         using var telegram = new TelegramNotifier(_global.Telegram.Enabled, _output);
         ExecutionHistoryStore? history = null;
+        WorkerRuntimeReadModel? runtimeReadModel = null;
+        Microsoft.AspNetCore.Builder.WebApplication? managementApi = null;
         var runtimes = new List<ProjectRuntime>();
         string? activeProject = null;
         var safeToStop = true;
@@ -32,6 +34,9 @@ public sealed class WorkerHost
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             history = new ExecutionHistoryStore();
+            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
+            runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
+            managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct);
             var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, config) in _projects)
             {
@@ -78,6 +83,8 @@ public sealed class WorkerHost
             }, ct: ct);
             await telegram.StartedAsync(runtimes.Count, ct);
             _output.Started();
+            runtimeReadModel.State = "running";
+            runtimeReadModel.Events.Publish("worker.started", "Worker is ready.");
             operational = true;
 
             executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -91,6 +98,7 @@ public sealed class WorkerHost
                     activeProject = project.Configuration.Project.Name;
                     await completed;
                     active.Remove(completed);
+                    runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
                 }
 
                 var foundWork = false;
@@ -108,6 +116,7 @@ public sealed class WorkerHost
                         safeToStop = true;
                         if (execution is null) continue;
                         active.Add(execution, project);
+                        runtimeReadModel.Events.Publish("execution.started", "Execution claimed.", project.Configuration.Project.Name);
                         scheduler.Selected(index);
                         selected = true;
                         foundWork = true;
@@ -137,12 +146,19 @@ public sealed class WorkerHost
             if (active.Count > 0) await Task.WhenAll(active.Keys);
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown();
+            runtimeReadModel.State = "stopped";
+            runtimeReadModel.Events.Publish("worker.stopped", "Worker stopped.");
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested && safeToStop && active.Count == 0)
         {
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown("Worker stopped.");
+            if (runtimeReadModel is not null)
+            {
+                runtimeReadModel.State = "stopped";
+                runtimeReadModel.Events.Publish("worker.stopped", "Worker stopped.");
+            }
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
         catch (Exception ex)
@@ -156,6 +172,11 @@ public sealed class WorkerHost
             await _output.StopWaitingAsync();
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Worker startup or project processing failed: {ex.Message}", ex);
+            if (runtimeReadModel is not null)
+            {
+                runtimeReadModel.State = "failed";
+                runtimeReadModel.Events.Publish("worker.failed", "Worker stopped after an infrastructure failure.", activeProject);
+            }
             _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
             await telegram.CriticalAsync(activeProject, infrastructure.Message, CancellationToken.None);
             if (!operational)
@@ -164,6 +185,7 @@ public sealed class WorkerHost
         }
         finally
         {
+            if (managementApi is not null) await managementApi.DisposeAsync();
             await _output.StopWaitingAsync();
             foreach (var project in runtimes) project.Git.Dispose();
             foreach (var gate in runtimes.Select(project => project.RepositoryGate).Distinct()) gate.Dispose();

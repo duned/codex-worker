@@ -87,6 +87,7 @@ public sealed class GlobalWorkerConfiguration
     public GlobalWorkerSettings Worker { get; set; } = new();
     public ProjectsSettings Projects { get; set; } = new();
     public TelegramSettings Telegram { get; set; } = new();
+    public ManagementApiSettings Api { get; set; } = new();
 
     public static GlobalWorkerConfiguration Load(string path)
     {
@@ -103,6 +104,12 @@ public sealed class GlobalWorkerConfiguration
                 throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
             if (value.Worker.PreflightTimeoutSeconds <= 0 || value.Worker.PreflightTimeoutSeconds > 300)
                 throw new InvalidDataException("worker.preflightTimeoutSeconds must be between 1 and 300.");
+            if (value.Api.Enabled && (!Uri.TryCreate(value.Api.ListenUrl, UriKind.Absolute, out var listenUri) ||
+                listenUri.Scheme is not ("http" or "https") ||
+                !System.Net.IPAddress.TryParse(listenUri.Host, out var listenAddress) || !System.Net.IPAddress.IsLoopback(listenAddress)))
+                throw new InvalidDataException("api.listenUrl must be an absolute HTTP URL bound to a loopback IP address.");
+            if (value.Api.EventHistoryLimit < 1 || value.Api.EventHistoryLimit > 10000)
+                throw new InvalidDataException("api.eventHistoryLimit must be between 1 and 10000.");
             return value;
         }
         catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid global worker configuration '{fullPath}': {ex.Message}", ex); }
@@ -231,6 +238,12 @@ public sealed class ValidationSettings
     public int MaxFixAttempts { get; set; } = 2;
 }
 public sealed class TelegramSettings { public bool Enabled { get; set; } }
+public sealed class ManagementApiSettings
+{
+    public bool Enabled { get; set; } = true;
+    public string ListenUrl { get; set; } = "http://127.0.0.1:5080";
+    public int EventHistoryLimit { get; set; } = 500;
+}
 public sealed class WorkerSettings
 {
     public int GitTimeoutSeconds { get; set; } = 120;

@@ -100,6 +100,14 @@ public sealed class ExecutionHistoryStore : IDisposable
         return entries;
     }
 
+    /// <summary>Returns a detached snapshot of executions that have not reached a terminal state.</summary>
+    public async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadActiveAsync(CancellationToken ct = default)
+    {
+        var entries = await ReadAllAsync(ct);
+        return entries.Where(entry => entry.CompletedAtUtc is null && entry.State is not
+            ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")).ToArray();
+    }
+
     public void Dispose() { }
 
     private void Initialize()
