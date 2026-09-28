@@ -5,6 +5,24 @@ namespace CodexWorker.Tests;
 public sealed class StartupCoordinatorTests
 {
     [Fact]
+    public async Task HostMapsPreOperationalCheckoutFailureToStartupExitCode()
+    {
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "Test", Repository = "owner/repo", Directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")) },
+            GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
+            Codex = new CodexSettings { InstructionsFile = "instructions.md" }
+        };
+        var host = new WorkerHost(new GlobalWorkerConfiguration(), [("project.yml", config)],
+            new WorkerConsole(new StringWriter(), interactive: false));
+
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
+
+        Assert.Contains("checkout does not exist", failure.Message);
+        Assert.Equal(ProcessExitCodes.StartupFailure, Program.ExitCodeFor(failure));
+    }
+
+    [Fact]
     public async Task InvalidFirstProjectPreventsEveryLabelOperation()
     {
         var events = new List<string>();

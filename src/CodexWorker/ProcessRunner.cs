@@ -82,3 +82,12 @@ public sealed class ProcessTimeoutException(string executable, TimeSpan timeout,
 }
 
 public class WorkerInfrastructureException(string message, Exception? inner = null) : Exception(message, inner);
+
+public sealed class WorkerStartupException(string message, Exception? inner = null) : WorkerInfrastructureException(message, inner);
+
+public static class ProcessExitCodes
+{
+    public const int Success = 0;
+    public const int RuntimeFailure = 1;
+    public const int StartupFailure = 2;
+}

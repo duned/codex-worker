@@ -10,7 +10,7 @@ public static class Program
         if (args.Length != 1 || args[0] is "--help" or "-h")
         {
             Console.WriteLine("Usage: CodexWorker <worker.yml>");
-            return args.Length == 1 ? 0 : 2;
+            return args.Length == 1 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
         }
 
         GlobalWorkerConfiguration? global = null;
@@ -32,7 +32,7 @@ public static class Program
                 using var startupTelegram = new TelegramNotifier(true, output);
                 await startupTelegram.CriticalAsync(null, ex.Message, CancellationToken.None);
             }
-            return 2;
+            return ProcessExitCodes.StartupFailure;
         }
 
         using var shutdown = new CancellationTokenSource();
@@ -42,7 +42,14 @@ public static class Program
             context.Cancel = true;
             shutdown.Cancel();
         });
-        try { await new WorkerHost(global, projects, output).RunAsync(shutdown.Token); return 0; }
-        catch (Exception) { return 1; }
+        try { await new WorkerHost(global, projects, output).RunAsync(shutdown.Token); return ProcessExitCodes.Success; }
+        catch (Exception ex) { return ExitCodeFor(ex); }
     }
+
+    internal static int ExitCodeFor(Exception? failure) => failure switch
+    {
+        null => ProcessExitCodes.Success,
+        WorkerStartupException => ProcessExitCodes.StartupFailure,
+        _ => ProcessExitCodes.RuntimeFailure
+    };
 }

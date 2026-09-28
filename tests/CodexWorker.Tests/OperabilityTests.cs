@@ -7,6 +7,14 @@ namespace CodexWorker.Tests;
 public sealed class OperabilityTests
 {
     [Fact]
+    public void ProcessExitCodesDistinguishGracefulStartupAndRuntimeOutcomes()
+    {
+        Assert.Equal(ProcessExitCodes.Success, Program.ExitCodeFor(null));
+        Assert.Equal(ProcessExitCodes.StartupFailure, Program.ExitCodeFor(new WorkerStartupException("preflight failed")));
+        Assert.Equal(ProcessExitCodes.RuntimeFailure, Program.ExitCodeFor(new WorkerInfrastructureException("runtime failed")));
+    }
+
+    [Fact]
     public void InteractiveStartupClearsTerminalBeforeHeader()
     {
         var writer = new StringWriter();
