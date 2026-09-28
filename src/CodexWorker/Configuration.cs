@@ -97,6 +97,8 @@ public sealed class GlobalWorkerConfiguration
             if (string.IsNullOrWhiteSpace(value.Projects.Directory)) throw new InvalidDataException("projects.directory is required.");
             if (!Path.IsPathRooted(value.Projects.Directory)) value.Projects.Directory = Path.GetFullPath(value.Projects.Directory, Path.GetDirectoryName(fullPath)!);
             if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
+            if (value.Worker.MaxParallelTasks < 1 || value.Worker.MaxParallelTasks > 8)
+                throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
             if (value.Worker.PreflightTimeoutSeconds <= 0 || value.Worker.PreflightTimeoutSeconds > 300)
                 throw new InvalidDataException("worker.preflightTimeoutSeconds must be between 1 and 300.");
             return value;
@@ -109,6 +111,7 @@ public sealed class GlobalWorkerSettings
 {
     public int PollingSeconds { get; set; } = 60;
     public int PreflightTimeoutSeconds { get; set; } = 60;
+    public int MaxParallelTasks { get; set; } = 1;
 }
 public sealed class ProjectsSettings { public string Directory { get; set; } = "./projects"; }
 

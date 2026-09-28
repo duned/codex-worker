@@ -13,7 +13,28 @@ public sealed class MultiProjectConfigurationTests
         var config = GlobalWorkerConfiguration.Load(path);
         Assert.Equal(23, config.Worker.PollingSeconds);
         Assert.Equal(45, config.Worker.PreflightTimeoutSeconds);
+        Assert.Equal(1, config.Worker.MaxParallelTasks);
         Assert.Equal(Path.Combine(fixture.Root, "projects"), config.Projects.Directory);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void RejectsUnsupportedGlobalParallelism(int parallelism)
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.Root, "worker.yml");
+        File.WriteAllText(path, $"worker:\n  maxParallelTasks: {parallelism}\nprojects:\n  directory: ./projects\n");
+        Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
+    }
+
+    [Fact]
+    public void LoadsSupportedGlobalParallelism()
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.Root, "worker.yml");
+        File.WriteAllText(path, "worker:\n  maxParallelTasks: 3\nprojects:\n  directory: ./projects\n");
+        Assert.Equal(3, GlobalWorkerConfiguration.Load(path).Worker.MaxParallelTasks);
     }
 
     [Fact]

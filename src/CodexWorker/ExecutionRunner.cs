@@ -7,12 +7,13 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 
 /// <summary>
 /// Runs the repository workspace, Codex, validation, repair, and integration lifecycle for one execution.
-/// Integration is invoked through the repository boundary; a future concurrent scheduler must serialize that
-/// operation per repository while allowing the preceding workspace work to run concurrently.
+/// Repository mutations that share Git metadata are serialized per repository while implementation and
+/// validation use the independent execution worktree concurrently.
 /// </summary>
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
-    IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null)
+    IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null)
 {
+    private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
     {
         var execution = context.Execution;
@@ -20,9 +21,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         try
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
-            await git.StartIssueAsync(execution.ExecutionId, issue, ct);
+            await _repositoryGate.WaitAsync(ct);
+            try { await git.StartIssueAsync(execution.ExecutionId, issue, ct); }
+            finally { _repositoryGate.Release(); }
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
-            var outcome = await output.RunProgressAsync("Codex working", () =>
+            var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working"), () =>
                 codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
@@ -39,7 +42,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             while (true)
             {
                 await TransitionAsync(execution, ExecutionState.Validating, ct);
-                var validationResult = await output.RunProgressAsync("Validation", () =>
+                var validationResult = await output.RunProgressAsync(TaskLabel(issue, "Validation"), () =>
                     validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
                     x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
                     x => x.Succeeded, ct: ct);
@@ -54,7 +57,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
 
                 repairAttempts++;
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
-                outcome = await output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
+                outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}"), () =>
                     codex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
                         failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
                     completion: x => x.Status, succeeded: x => x.Status == "success",
@@ -77,8 +80,14 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
 
             await git.VerifyCodexStateAsync(ct);
             await TransitionAsync(execution, ExecutionState.Integrating, ct);
-            var integration = await output.RunProgressAsync("Integrating", () => git.CommitAndIntegrateAsync(issue, ct),
-                completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
+            await _repositoryGate.WaitAsync(ct);
+            GitIntegrationResult integration;
+            try
+            {
+                integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating"), () => git.CommitAndIntegrateAsync(issue, ct),
+                    completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
+            }
+            finally { _repositoryGate.Release(); }
             if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
                 new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
@@ -93,7 +102,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task<IssueProcessingResult> CleanupOutcomeAsync(ExecutionContext context, IssueOutcomeKind kind,
         IssueExecutionReport report, CancellationToken ct)
     {
-        await git.DiscardUncommittedIssueChangesAsync(ct);
+        await _repositoryGate.WaitAsync(ct);
+        try { await git.DiscardUncommittedIssueChangesAsync(ct); }
+        finally { _repositoryGate.Release(); }
         await SaveHistoryAsync(CreateEntry(context.Execution, report, null, null), ct);
         return new IssueProcessingResult(kind, report);
     }
@@ -134,4 +145,6 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var match = Regex.Match(text, pattern);
         return match.Success ? match.Groups[1].Value : null;
     }
+
+    private string TaskLabel(GitHubIssue issue, string stage) => $"{config.Project.Name} · #{issue.Number} · {stage}";
 }

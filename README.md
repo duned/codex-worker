@@ -4,9 +4,9 @@
 
 ## V0.5 execution architecture
 
-The host owns global project scheduling and dispatches one explicit `ExecutionContext` at a time. `ExecutionRunner` owns that execution's workspace, Codex implementation, sequential authoritative validation and bounded repair, Git state checks, integration request, and task outcome. Each attempt gets its own Git repository execution object for mutable branch, worktree, and starting-commit state; it shares only repository paths and settings with the project runtime. The scheduler receives the terminal task result and advances the round-robin cursor after one execution completes. GitHub claiming and result reporting remain in the worker orchestration; infrastructure failures escape and stop scheduling, while blocked and safe task-failed outcomes can advance to another project.
+The host owns global project scheduling and dispatches up to `worker.maxParallelTasks` explicit executions. The default is `1`; values from `1` through `8` are supported. `ExecutionRunner` owns each execution's workspace, Codex implementation, sequential authoritative validation and bounded repair, Git state checks, integration request, and task outcome. Each attempt gets its own Git repository execution object for mutable branch, worktree, and starting-commit state. GitHub claiming and result reporting remain in the worker orchestration; infrastructure failures escape and stop scheduling, while blocked and safe task-failed outcomes free capacity.
 
-V0.5 intentionally remains globally sequential: execution A completes before execution B is dispatched. V0.6 can add bounded concurrency around these execution boundaries. Integration into a repository's shared base branch remains a repository-level operation that must be serialized per repository. No integration lock or parallel execution is introduced in V0.5.
+Codex and validation can run concurrently in separate execution worktrees. Shared Git setup, cleanup, and integration are serialized with a repository-scoped gate; executions for other repositories use independent gates. Integration fetches the current base before merging, so work that started against an older base either integrates safely or fails without overwriting newer work.
 
 ## Startup and project scheduling
 
