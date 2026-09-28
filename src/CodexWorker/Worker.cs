@@ -23,18 +23,18 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     }
 
     /// <summary>Checks this project's queue once and processes at most one claimed Issue.</summary>
-    public async Task<bool> ProcessOneAsync(CancellationToken ct)
+    public async Task<IssueProcessingResult?> ProcessOneAsync(CancellationToken ct)
     {
         GitHubIssue? issue;
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
-        if (issue is null) return false;
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
+        if (issue is null) return null;
         var execution = WorkerExecution.Create(config.Project, config.Git, issue);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
             await TransitionAsync(execution, ExecutionState.Cancelled, CancellationToken.None);
-            return false;
+            return null;
         }
         try
         {
@@ -44,7 +44,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             _output.IssueStarted(config.Project.Name, issue);
             await telegram.StartingAsync(config.Project.Name, issue, ct);
             var timer = Stopwatch.StartNew();
-            var result = await ProcessClaimedIssueAsync(execution, issue, ct);
+            var result = await RunExecutionAsync(new ExecutionContext(execution, issue), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             await ReportResultAsync(issue, result with { Report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId } }, ct);
@@ -55,7 +55,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 IssueOutcomeKind.Failed => ExecutionState.Failed,
                 _ => throw new ArgumentOutOfRangeException()
             }, CancellationToken.None);
-            return true;
+            return result with { Report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId } };
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -73,7 +73,6 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         _output.Startup(config.Project.Name, config.Project.Repository);
         var safelyIdle = false;
-        WorkerExecution? activeExecution = null;
         try
         {
             if (!File.Exists(config.Codex.InstructionsFile))
@@ -90,38 +89,17 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             while (!ct.IsCancellationRequested)
             {
                 _output.Waiting();
-                var issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct);
-                if (issue is null) { await DelayAsync(ct); continue; }
-                var execution = activeExecution = WorkerExecution.Create(config.Project, config.Git, issue);
-                await CreateHistoryAsync(execution, ct);
-                await _output.StopWaitingAsync();
-                safelyIdle = false;
-                await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
-                await TransitionAsync(execution, ExecutionState.Claimed, ct);
-                _output.IssueStarted(issue);
-                await telegram.StartingAsync(config.Project.Name, issue, ct);
-                var issueTimer = Stopwatch.StartNew();
-                var result = await ProcessClaimedIssueAsync(execution, issue, ct);
-                issueTimer.Stop();
-                await TransitionAsync(execution, ExecutionState.Reporting, ct);
-                await ReportResultAsync(issue, result with { Report = result.Report with { Duration = issueTimer.Elapsed, ExecutionId = execution.ExecutionId } }, ct);
-                await CompleteHistoryAsync(execution, result.Report with { Duration = issueTimer.Elapsed }, result.Kind switch
-                {
-                    IssueOutcomeKind.Succeeded => ExecutionState.Completed,
-                    IssueOutcomeKind.Blocked => ExecutionState.Blocked,
-                    IssueOutcomeKind.Failed => ExecutionState.Failed,
-                    _ => throw new ArgumentOutOfRangeException()
-                }, CancellationToken.None);
-                activeExecution = null;
+                var result = await ProcessOneAsync(ct);
+                if (result is null && !ct.IsCancellationRequested) await DelayAsync(ct);
                 safelyIdle = true;
             }
             await _output.StopWaitingAsync();
             _output.Shutdown();
+            await telegram.StoppedAsync(config.Project.Name, CancellationToken.None);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
             await _output.StopWaitingAsync(finalizeLine: true);
-            if (activeExecution is { IsTerminal: false }) await RecordInfrastructureFailureAsync(activeExecution, "Cancellation interrupted execution.");
             if (safelyIdle)
             {
                 _output.Shutdown("Worker stopped.");
@@ -139,7 +117,6 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (Exception ex)
         {
             await _output.StopWaitingAsync();
-            if (activeExecution is { IsTerminal: false }) await RecordInfrastructureFailureAsync(activeExecution, ex.Message);
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Unexpected worker failure; queue processing stopped: {ex.Message}", ex);
             _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
@@ -152,87 +129,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(WorkerExecution execution, GitHubIssue issue, CancellationToken ct)
-    {
-        await TransitionAsync(execution, ExecutionState.Preparing, ct);
-        await git.StartIssueAsync(execution.ExecutionId, issue, ct);
-        await TransitionAsync(execution, ExecutionState.Implementing, ct);
-        var outcome = await _output.RunProgressAsync("Codex working", () =>
-            codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, ct),
-            completion: x => x.Status, succeeded: x => x.Status == "success",
-            warning: x => x.Status == "blocked", ct: ct);
-        await git.VerifyCodexStateAsync(ct);
-        var implementationSummary = outcome.Summary;
-        var repairs = new List<ValidationRepairRecord>();
-        await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
-        if (outcome.Status == "blocked") return await CleanupOutcomeAsync(execution, issue, IssueOutcomeKind.Blocked,
-            new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
-        if (outcome.Status == "failed") return await CleanupOutcomeAsync(execution, issue, IssueOutcomeKind.Failed,
-            new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary), ct);
-
-        var repairAttempts = 0;
-        while (true)
-        {
-            await TransitionAsync(execution, ExecutionState.Validating, ct);
-            var validationResult = await _output.RunProgressAsync("Validation", () =>
-                validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
-                x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
-                x => x.Succeeded, ct: ct);
-            if (validationResult.Succeeded) break;
-
-            await git.VerifyCodexStateAsync(ct);
-            var failure = validationResult.Failure!;
-            if (repairAttempts >= config.Validation.MaxFixAttempts)
-                return await CleanupOutcomeAsync(execution, issue, IssueOutcomeKind.Failed,
-                    new IssueExecutionReport(implementationSummary, repairs, FinalValidationFailure: failure.Command,
-                        Failure: $"Validation failed after {repairAttempts} repair attempt(s)."), ct);
-
-            repairAttempts++;
-            await TransitionAsync(execution, ExecutionState.Repairing, ct);
-            outcome = await _output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
-                codex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
-                    failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
-                completion: x => x.Status, succeeded: x => x.Status == "success",
-                warning: x => x.Status == "blocked", ct: ct);
-            await git.VerifyCodexStateAsync(ct);
-            if (outcome.Status == "blocked")
-            {
-                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                    outcome.Summary, false));
-                return await CleanupOutcomeAsync(execution, issue, IssueOutcomeKind.Blocked,
-                    new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
-            }
-            if (outcome.Status == "failed")
-            {
-                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                    outcome.Summary, false));
-                return await CleanupOutcomeAsync(execution, issue, IssueOutcomeKind.Failed,
-                    new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary), ct);
-            }
-            // The next validation result determines whether this repair passed. Store its independent summary now.
-            repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                outcome.Summary, false));
-            await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
-        }
-
-        await git.VerifyCodexStateAsync(ct);
-        await TransitionAsync(execution, ExecutionState.Integrating, ct);
-        var integration = await _output.RunProgressAsync("Integrating", () => git.CommitAndIntegrateAsync(issue, ct),
-            completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
-        if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
-        return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
-            new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
-    }
-
-    private async Task<IssueProcessingResult> CleanupOutcomeAsync(WorkerExecution execution, GitHubIssue issue, IssueOutcomeKind kind, IssueExecutionReport report, CancellationToken ct)
-    {
-        await git.DiscardUncommittedIssueChangesAsync(ct);
-        await SaveHistoryAsync(CreateEntry(execution, report, null, null), ct);
-        return new IssueProcessingResult(kind, report);
-    }
-
     private Task CreateHistoryAsync(WorkerExecution execution, CancellationToken ct) =>
         history is null ? Task.CompletedTask : history.CreateAsync(CreateEntry(execution, null, null, null), ct);
+
+    private Task<IssueProcessingResult> RunExecutionAsync(ExecutionContext context, CancellationToken ct)
+    {
+        // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
+        var executionRepository = git.CreateExecutionRepository();
+        var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history);
+        return runner.RunAsync(context, ct);
+    }
 
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
     {

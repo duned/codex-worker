@@ -2,6 +2,8 @@
 
 ## 0.5.0
 
+- Separate project scheduling and GitHub lifecycle coordination from per-Issue execution, which now runs through an explicit execution context and runner.
+- Keep project round-robin scheduling globally sequential; document per-repository integration serialization as a requirement for future bounded concurrency in V0.6.
 - Persist execution lifecycle, summaries, validation repairs, and Git integration facts in a local SQLite database outside project checkouts.
 - Keep interrupted executions identifiable and add a versioned schema initialization path for future history upgrades.
 

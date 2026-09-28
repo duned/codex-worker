@@ -17,6 +17,8 @@ public interface IGitHubLabelClient
 public interface IGitRepository
 {
     string ExecutionDirectory { get; }
+    /// <summary>Creates repository execution state owned by one execution; integration still targets the shared repository checkout.</summary>
+    IGitRepository CreateExecutionRepository() => this;
     Task InitializeAsync(CancellationToken ct);
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct);
     Task VerifyCodexStateAsync(CancellationToken ct);

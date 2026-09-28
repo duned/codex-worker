@@ -19,6 +19,13 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     public void Dispose() => _workerLock?.Dispose();
     public string ExecutionDirectory => _executionDirectory ?? directory;
 
+    /// <summary>
+    /// Gives each Issue attempt its own mutable worktree/branch/starting-commit state. The returned instance
+    /// shares repository paths and settings; base-branch integration remains a repository-level operation.
+    /// </summary>
+    public IGitRepository CreateExecutionRepository() =>
+        new GitRepository(runner, directory, repository, settings, timeouts, worktreeRoot);
+
     /// <summary>Read-only safety inspection used across every configured project before any queue is queried.</summary>
     public async Task ValidateStartupReadOnlyAsync(CancellationToken ct)
     {
