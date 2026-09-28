@@ -23,7 +23,8 @@ public interface IGitRepository
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct);
     Task VerifyCodexStateAsync(CancellationToken ct);
     Task DiscardUncommittedIssueChangesAsync(CancellationToken ct);
-    Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct);
+    Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct);
 }
 
 public interface ICodexExecutor

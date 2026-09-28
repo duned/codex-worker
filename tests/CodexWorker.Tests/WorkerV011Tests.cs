@@ -449,7 +449,8 @@ public sealed class WorkerV011Tests
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
-        public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue, CancellationToken ct)
+        public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+            Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
         { Integrations++; return Task.FromResult(new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
             "0123456789abcdef0123456789abcdef01234567", "main", "completed/17")); }

@@ -84,7 +84,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             GitIntegrationResult integration;
             try
             {
-                integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating"), () => git.CommitAndIntegrateAsync(issue, ct),
+                integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating"), () => git.CommitAndIntegrateAsync(issue,
+                    token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase"),
+                        () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),
+                        x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token), ct),
                     completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
             }
             finally { _repositoryGate.Release(); }
