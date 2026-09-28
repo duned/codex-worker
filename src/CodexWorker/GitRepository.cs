@@ -13,6 +13,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private string? _featureBranch;
     private string? _completedBranch;
     private string? _startingCommit;
+    private Guid? _executionId;
     private FileStream? _workerLock;
 
     public void Dispose() => _workerLock?.Dispose();
@@ -145,6 +146,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await GitAsync(["switch", "--", settings.BaseBranch], ct);
             await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            _executionId = executionId;
             _featureBranch = FeatureBranchName(settings, issue);
             _completedBranch = CompletedBranchName(settings, issue);
             var root = Path.GetFullPath(worktreeRoot);
@@ -187,9 +189,10 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await GitAtAsync(ExecutionDirectory, ["reset", "--hard", _startingCommit], ct);
             await GitAtAsync(ExecutionDirectory, ["clean", "-fd"], ct);
             await RemoveExecutionWorktreeAsync(ct);
-            await GitAsync(["branch", "-d", "--", _featureBranch], ct);
+            await DeleteFeatureBranchIfUnownedAsync(_featureBranch, ct);
             _featureBranch = null;
             _executionDirectory = null;
+            _executionId = null;
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely clean the task branch: {ex.Message}", ex); }
@@ -210,9 +213,10 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
                 if (!string.IsNullOrWhiteSpace(status)) throw new WorkerInfrastructureException("Unexpected unstaged or untracked changes remain after staging; preserving checkout.");
                 await RemoveExecutionWorktreeAsync(ct);
-                await GitAsync(["branch", "-d", "--", _featureBranch!], ct);
+                await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
                 _featureBranch = null;
                 _executionDirectory = null;
+                _executionId = null;
                 return new GitIntegrationResult(false, "No code changes were required; the Issue was completed without a commit or integration.");
             }
 
@@ -231,14 +235,16 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             {
                 await RemoveExecutionWorktreeAsync(ct);
                 _executionDirectory = null;
+                _executionId = null;
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
-                await GitAsync(["branch", "-d", "--", _featureBranch!], ct);
+                await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
             }
             else
             {
                 await RemoveExecutionWorktreeAsync(ct);
                 _executionDirectory = null;
+                _executionId = null;
             }
             var summary = $"Committed as `{commit[..Math.Min(commit.Length, 12)]}`.";
             if (settings.AutoMerge) summary += $" Merged into `{settings.BaseBranch}`.";
@@ -286,8 +292,11 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
 
     private async Task EnsureWorktreeOwnedAsync(CancellationToken ct)
     {
-        if (_executionDirectory is null || _featureBranch is null)
+        if (_executionDirectory is null || _featureBranch is null || _executionId is null)
             throw new WorkerInfrastructureException("No execution worktree is registered for this Issue.");
+        var ownedPath = Path.GetFullPath(Path.Combine(worktreeRoot, _executionId.Value.ToString("N")));
+        if (!PathEquals(Path.GetFullPath(_executionDirectory), ownedPath))
+            throw new WorkerInfrastructureException("Execution worktree path does not match its execution ID; refusing cleanup or integration.");
         if (!Directory.Exists(_executionDirectory))
             throw new WorkerInfrastructureException($"Execution worktree is missing; preserving Git state for inspection: {_executionDirectory}");
         var top = Path.GetFullPath((await GitAtAsync(_executionDirectory, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
@@ -308,7 +317,18 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private async Task RemoveExecutionWorktreeAsync(CancellationToken ct)
     {
         await EnsureWorktreeOwnedAsync(ct);
-        await GitAsync(["worktree", "remove", _executionDirectory!], ct);
+        // Git removes only this verified registered path and updates the corresponding administrative metadata.
+        await GitAsync(["worktree", "remove", Path.GetFullPath(_executionDirectory!)], ct);
+    }
+
+    private async Task DeleteFeatureBranchIfUnownedAsync(string branch, CancellationToken ct)
+    {
+        var list = (await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput;
+        var checkedOut = list.Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
+            .Any(entry => entry.Split('\n').Any(line => line == $"branch refs/heads/{branch}"));
+        if (checkedOut)
+            throw new WorkerInfrastructureException($"Refusing to delete feature branch '{branch}' because a registered worktree still has it checked out.");
+        await GitAsync(["branch", "-d", "--", branch], ct);
     }
 
     private static bool PathEquals(string left, string right) =>
