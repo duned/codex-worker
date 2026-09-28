@@ -8,8 +8,7 @@ public sealed record GitIntegrationResult(bool HasChanges, string Summary, strin
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
 {
-    private readonly string worktreeRoot = executionWorktreeRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".codex-worker", "worktrees", Regex.Replace(Path.GetFileName(Path.TrimEndingDirectorySeparator(directory)), "[^A-Za-z0-9._-]", "-"));
+    private readonly string worktreeRoot = executionWorktreeRoot ?? DefaultWorktreeRoot(repository);
     private string? _executionDirectory;
     private string? _featureBranch;
     private string? _completedBranch;
@@ -18,6 +17,17 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
 
     public void Dispose() => _workerLock?.Dispose();
     public string ExecutionDirectory => _executionDirectory ?? directory;
+
+    internal static string DefaultWorktreeRoot(string repository)
+    {
+        var parts = repository.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+            throw new WorkerInfrastructureException($"Configured repository must be owner/name to select an isolated worktree root: '{repository}'.");
+
+        static string Segment(string value) => Regex.Replace(value, "[^A-Za-z0-9._-]", "-");
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worktrees",
+            Segment(parts[0]), Segment(parts[1]));
+    }
 
     /// <summary>
     /// Gives each Issue attempt its own mutable worktree/branch/starting-commit state. The returned instance

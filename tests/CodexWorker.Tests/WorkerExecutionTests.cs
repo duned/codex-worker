@@ -40,6 +40,17 @@ public sealed class WorkerExecutionTests
     }
 
     [Fact]
+    public void DefaultExecutionWorktreeRootsAreScopedByRepository()
+    {
+        var first = GitRepository.DefaultWorktreeRoot("owner-one/app");
+        var second = GitRepository.DefaultWorktreeRoot("owner-two/app");
+
+        Assert.NotEqual(first, second);
+        Assert.EndsWith(Path.Combine("worktrees", "owner-one", "app"), first);
+        Assert.EndsWith(Path.Combine("worktrees", "owner-two", "app"), second);
+    }
+
+    [Fact]
     public void NormalLifecycleTransitionsToCompleted()
     {
         var execution = WorkerExecution.Create(Project, Git, Issue);
