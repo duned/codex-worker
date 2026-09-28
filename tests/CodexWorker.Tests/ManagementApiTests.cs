@@ -41,6 +41,11 @@ public sealed class ManagementApiTests
         try
         {
             using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            var dashboard = await client.GetStringAsync("/");
+            Assert.Contains("Codex Worker", dashboard);
+            Assert.Contains("/api/status", dashboard);
+            Assert.Contains("/api/events/stream", dashboard);
+            Assert.DoesNotContain("secret-value", dashboard);
             var status = JsonDocument.Parse(await client.GetStringAsync("/api/status")).RootElement;
             Assert.Equal(ApplicationVersion.Display, status.GetProperty("version").GetString());
             Assert.Equal(3, status.GetProperty("maxParallelTasks").GetInt32());
