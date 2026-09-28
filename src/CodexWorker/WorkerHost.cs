@@ -100,6 +100,8 @@ public sealed class WorkerHost
                     foreach (var index in scheduler.ScanOrder())
                     {
                         var project = runtimes[index];
+                        var projectActive = active.Values.Count(activeProject => ReferenceEquals(activeProject, project));
+                        if (projectActive >= project.Configuration.Worker.MaxParallelTasks) continue;
                         activeProject = project.Configuration.Project.Name;
                         safeToStop = true; // no Issue has been claimed while queue lookup is in progress
                         var execution = await project.Worker.ClaimNextAsync(executionToken);

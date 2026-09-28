@@ -23,6 +23,11 @@ github:
   failedLabel: codex-failed
   doneLabel: codex-done
 
+# Maximum Issues this project may execute at once. Defaults to 1; the global
+# worker.maxParallelTasks limit still caps the entire worker process.
+worker:
+  maxParallelTasks: 1
+
 codex:
   instructionsFile: AGENTS.md
   model: gpt-6-luna
