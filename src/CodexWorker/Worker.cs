@@ -29,21 +29,42 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return false; }
         if (issue is null) return false;
+        var execution = WorkerExecution.Create(config.Project, config.Git, issue);
+        if (ct.IsCancellationRequested)
+        {
+            execution.TransitionTo(ExecutionState.Cancelled);
+            return false;
+        }
         try
         {
             await _output.StopWaitingAsync();
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+            execution.TransitionTo(ExecutionState.Claimed);
             _output.IssueStarted(config.Project.Name, issue);
             await telegram.StartingAsync(config.Project.Name, issue, ct);
             var timer = Stopwatch.StartNew();
-            var result = await ProcessClaimedIssueAsync(issue, ct);
+            var result = await ProcessClaimedIssueAsync(execution, issue, ct);
             timer.Stop();
-            await ReportResultAsync(issue, result with { Report = result.Report with { Duration = timer.Elapsed } }, ct);
+            execution.TransitionTo(ExecutionState.Reporting);
+            await ReportResultAsync(issue, result with { Report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId } }, ct);
+            execution.TransitionTo(result.Kind switch
+            {
+                IssueOutcomeKind.Succeeded => ExecutionState.Completed,
+                IssueOutcomeKind.Blocked => ExecutionState.Blocked,
+                IssueOutcomeKind.Failed => ExecutionState.Failed,
+                _ => throw new ArgumentOutOfRangeException()
+            });
             return true;
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
+            if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
             throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
+        }
+        catch
+        {
+            if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
+            throw;
         }
     }
 
@@ -51,6 +72,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         _output.Startup(config.Project.Name, config.Project.Repository);
         var safelyIdle = false;
+        WorkerExecution? activeExecution = null;
         try
         {
             if (!File.Exists(config.Codex.InstructionsFile))
@@ -69,15 +91,26 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 _output.Waiting();
                 var issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct);
                 if (issue is null) { await DelayAsync(ct); continue; }
+                var execution = activeExecution = WorkerExecution.Create(config.Project, config.Git, issue);
                 await _output.StopWaitingAsync();
                 safelyIdle = false;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+                execution.TransitionTo(ExecutionState.Claimed);
                 _output.IssueStarted(issue);
                 await telegram.StartingAsync(config.Project.Name, issue, ct);
                 var issueTimer = Stopwatch.StartNew();
-                var result = await ProcessClaimedIssueAsync(issue, ct);
+                var result = await ProcessClaimedIssueAsync(execution, issue, ct);
                 issueTimer.Stop();
-                await ReportResultAsync(issue, result with { Report = result.Report with { Duration = issueTimer.Elapsed } }, ct);
+                execution.TransitionTo(ExecutionState.Reporting);
+                await ReportResultAsync(issue, result with { Report = result.Report with { Duration = issueTimer.Elapsed, ExecutionId = execution.ExecutionId } }, ct);
+                execution.TransitionTo(result.Kind switch
+                {
+                    IssueOutcomeKind.Succeeded => ExecutionState.Completed,
+                    IssueOutcomeKind.Blocked => ExecutionState.Blocked,
+                    IssueOutcomeKind.Failed => ExecutionState.Failed,
+                    _ => throw new ArgumentOutOfRangeException()
+                });
+                activeExecution = null;
                 safelyIdle = true;
             }
             await _output.StopWaitingAsync();
@@ -86,6 +119,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
             await _output.StopWaitingAsync(finalizeLine: true);
+            if (activeExecution is { IsTerminal: false }) activeExecution.TransitionTo(ExecutionState.InfrastructureFailure);
             if (safelyIdle)
             {
                 _output.Shutdown("Worker stopped.");
@@ -103,6 +137,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (Exception ex)
         {
             await _output.StopWaitingAsync();
+            if (activeExecution is { IsTerminal: false }) activeExecution.TransitionTo(ExecutionState.InfrastructureFailure);
             var infrastructure = ex as WorkerInfrastructureException ??
                 new WorkerInfrastructureException($"Unexpected worker failure; queue processing stopped: {ex.Message}", ex);
             _output.InfrastructureFailure($"Infrastructure failure: {infrastructure.Message}");
@@ -115,9 +150,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(GitHubIssue issue, CancellationToken ct)
+    private async Task<IssueProcessingResult> ProcessClaimedIssueAsync(WorkerExecution execution, GitHubIssue issue, CancellationToken ct)
     {
+        execution.TransitionTo(ExecutionState.Preparing);
         await git.StartIssueAsync(issue, ct);
+        execution.TransitionTo(ExecutionState.Implementing);
         var outcome = await _output.RunProgressAsync("Codex working", () =>
             codex.RunAsync(config.Project.Directory, config.Codex.InstructionsFile, issue, ct),
             completion: x => x.Status, succeeded: x => x.Status == "success",
@@ -133,6 +170,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var repairAttempts = 0;
         while (true)
         {
+            execution.TransitionTo(ExecutionState.Validating);
             var validationResult = await _output.RunProgressAsync("Validation", () =>
                 validation.RunAsync(config.Validation.Commands, config.Project.Directory, ct),
                 x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
@@ -147,6 +185,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                         Failure: $"Validation failed after {repairAttempts} repair attempt(s)."), ct);
 
             repairAttempts++;
+            execution.TransitionTo(ExecutionState.Repairing);
             outcome = await _output.RunProgressAsync($"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", () =>
                 codex.RepairAsync(config.Project.Directory, config.Codex.InstructionsFile, issue,
                     failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
@@ -173,6 +212,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
 
         await git.VerifyCodexStateAsync(ct);
+        execution.TransitionTo(ExecutionState.Integrating);
         var integration = await _output.RunProgressAsync("Integrating", () => git.CommitAndIntegrateAsync(issue, ct),
             completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
         if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
