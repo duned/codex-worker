@@ -846,7 +846,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     }
 }
 
-/// <summary>Marks elapsed leases stale periodically; this never changes queue or execution state.</summary>
+/// <summary>Expires elapsed leases and conservatively reconciles abandoned Server-managed attempts.</summary>
 public sealed class ExecutionLeaseExpirationService(IRegistryStore store, TimeProvider? timeProvider = null) : BackgroundService
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;

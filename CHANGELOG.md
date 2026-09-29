@@ -1,11 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- Add durable, generation-numbered execution leases with bounded renewal and expiry that survive Server restarts.
+- Fence assignment reports and lease renewals by Worker identity, assignment, generation, and active lease; reject stale Workers after ownership expires.
+- Reconcile expired attempts conservatively: create a linked fresh-workspace retry only when expiry occurred before integration, and retain uncertain integration or completion state for operator review.
+- Keep execution attempts immutable, expose lease ownership and recovery state in the execution API and dashboard, and preserve standalone Worker polling.
+- Renew managed ownership throughout execution and stop the Worker attempt when lease ownership cannot be confirmed before expiry.
+
 ## 0.9.0
 
 - Add a durable Server execution queue and outbound Worker assignment requests with global and per-project capacity checks.
 - Execute Server assignments through the existing Worker claim, execution history, worktree, Codex, validation, repair, Git integration, and GitHub reporting pipeline.
 - Link Server execution and assignment IDs to Worker execution history, report structured lifecycle and terminal outcome details, and expose queue state in the Server API and dashboard.
-- Keep assigned work owned by its Worker across restarts; V0.9 does not expire leases or automatically reassign uncertain work.
+- Keep assigned work owned by its Worker across restarts; V0.9 did not expire leases or automatically reassign uncertain work.
 - Preserve standalone polling as the default and add explicit Server-managed project ownership mode.
 
 ## 0.8.0
