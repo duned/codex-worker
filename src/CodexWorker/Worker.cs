@@ -41,11 +41,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
             .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
-        var retryOf = issueHistory.FirstOrDefault()?.State == "Failed" ? issueHistory[0] : null;
+        var retryOf = issueHistory.FirstOrDefault()?.State is "Failed" or "Blocked" ? issueHistory[0] : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
-            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but failed execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
+            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed);
         await CreateHistoryAsync(execution, ct);

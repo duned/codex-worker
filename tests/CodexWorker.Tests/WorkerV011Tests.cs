@@ -348,6 +348,30 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task BlockedExecutionPreservesUsefulWorkspaceForAnExplicitRetry()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using (var h = new Harness(history: history))
+        {
+            h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "1 changed path(s); 0 staged path(s). Workspace retained for recovery.");
+            h.Codex.InitialOutcome = new CodexOutcome("blocked", "Need a product decision", [], false, "Choose a policy.");
+
+            var result = await h.ProcessOneAsync();
+
+            Assert.Equal(IssueOutcomeKind.Blocked, result!.Kind);
+            Assert.Equal(0, h.Git.Cleanups);
+            var execution = Assert.Single(await history.ReadAllAsync());
+            Assert.Equal("Blocked", execution.State);
+            Assert.Equal("recoverable", execution.RecoveryState);
+        }
+
+        using var reopened = new ExecutionHistoryStore(database);
+        Assert.Equal("Blocked", Assert.Single(await reopened.ReadAllAsync()).State);
+        File.Delete(database);
+    }
+
+    [Fact]
     public async Task ResumedRetryKeepsFailedAttemptAndRunsFreshValidationBeforeIntegration()
     {
         var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");

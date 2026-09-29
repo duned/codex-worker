@@ -30,7 +30,7 @@ worker:
   # Retries start clean by default. Set to "resume" only when failed work should be reused;
   # resume stops safely if the prior execution's persisted workspace cannot be verified.
   retryMode: restart
-  # Failed recovery workspaces are cleaned after 7 days; execution history is retained.
+  # Failed and blocked recovery workspaces are cleaned after 7 days; execution history is retained.
   recoveryRetentionDays: 7
 
 codex:

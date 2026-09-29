@@ -162,7 +162,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 throw new WorkerInfrastructureException($"Execution worktree path already exists; preserving it: {_executionDirectory}");
             if (resume)
             {
-                if (retryOf is null || retryOf.State != "Failed" || retryOf.RecoveryState != "recoverable" ||
+                if (retryOf is null || retryOf.State is not ("Failed" or "Blocked") || retryOf.RecoveryState != "recoverable" ||
                     string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit))
                     throw new WorkerInfrastructureException("Retry resume was requested, but the previous failed execution has no complete recoverable-state metadata.");
                 await ValidateRecoveryWorkspaceAsync(Path.Combine(root, retryOf.ExecutionId.ToString("N")), retryOf, ct);

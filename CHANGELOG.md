@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.5
+
+- Preserve useful workspaces from safe failed and blocked executions while cleaning outcomes with no changes.
+- Keep each attempt immutable in SQLite history and link retries to their previous execution with an attempt number and explicit resume/restart policy.
+- Resume only after verifying the previous workspace's persisted branch, base commit, Git registration, and unambiguous worktree state; retries always receive a new execution identity and worktree.
+- Reconcile missing and expired recovery workspaces at startup, retain them for the configured period, and clean only verified worker-owned Git resources without deleting execution history.
+- Expose attempt, retry, resume, and recovery retention state in the Worker API/dashboard; document configuration and recovery behavior.
+
 ## 0.7.1
 
 - Display Issue references as `<title> #<number>` across console output, Telegram notifications, runtime events, and GitHub execution reports.

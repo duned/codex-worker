@@ -128,7 +128,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         await _repositoryGate.WaitAsync(ct);
         try
         {
-            if (kind == IssueOutcomeKind.Failed)
+            if (kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked)
                 recovery = await git.PreserveFailedIssueChangesAsync(ct);
             else
                 await git.DiscardUncommittedIssueChangesAsync(ct);
@@ -136,7 +136,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         finally { _repositoryGate.Release(); }
         await SaveHistoryAsync(CreateEntry(context.Execution, report, null, null) with
         {
-            RecoveryState = recovery is not null ? "recoverable" : kind == IssueOutcomeKind.Failed ? "cleaned-no-changes" : null,
+            RecoveryState = recovery is not null ? "recoverable" : kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked ? "cleaned-no-changes" : null,
             RecoveryBaseCommit = recovery?.BaseCommit,
             RecoveryStatus = recovery?.StatusSummary,
             RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)
