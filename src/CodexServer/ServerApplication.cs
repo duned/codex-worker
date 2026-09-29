@@ -135,6 +135,35 @@ public static class ServerApplication
             try { return await store.RemoveProjectAsync(projectId, expectedRevision, context.RequestAborted) ? Results.NoContent() : Results.NotFound(); }
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
         });
+        app.MapGet("/api/v1/executions", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Ok(await store.GetExecutionsAsync(context.RequestAborted));
+        });
+        app.MapPost("/api/v1/executions", async (EnqueueExecutionRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var error = ExecutionRequestValidation.Error(request);
+            if (error is not null) return Results.BadRequest(new { error });
+            try
+            {
+                var created = await store.EnqueueExecutionAsync(request, context.RequestAborted);
+                return Results.Created($"/api/v1/executions/{created.Id}", created);
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (ExecutionRequestConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/executions/{executionRequestId}/state", async (string executionRequestId, ExecutionStateTransition transition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            try
+            {
+                var updated = await store.TransitionExecutionAsync(executionRequestId, transition, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (ExecutionRequestTransitionException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
         return app;
     }
 

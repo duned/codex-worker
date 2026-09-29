@@ -269,6 +269,81 @@ public sealed class CodexServerTests
         }
     }
 
+    [Fact]
+    public async Task ExecutionQueuePersistsFifoTransitionsAndAllowsLaterAttemptsAcrossProjects()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "queue.db");
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-02-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(database, timeProvider: clock);
+        await store.InitializeAsync();
+        var projectA = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
+        var projectB = await store.CreateProjectAsync(new CentralProjectDefinition("Beta", "team/beta", "main", "", []));
+        var work = new WorkReference("github-issue", "42", "https://github.com/team/alpha/issues/42");
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, new WorkReference("github-issue", "43")));
+        await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work)));
+        var sameIssueOtherProject = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectB.Id, work));
+        Assert.Equal(new[] { first.Id, second.Id, sameIssueOtherProject.Id }, (await store.GetExecutionsAsync()).Select(x => x.Id));
+
+        var assigned = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Assigned", "worker-a"));
+        Assert.Equal("Assigned", assigned!.State);
+        Assert.Equal("worker-a", assigned.AssignedWorkerId);
+        Assert.NotNull(assigned.AssignedAtUtc);
+        var running = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Running", ExecutionId: "run-a"));
+        Assert.Equal("Running", running!.State);
+        Assert.Equal("run-a", running.ExecutionId);
+        await Assert.ThrowsAsync<ExecutionRequestTransitionException>(() => store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Assigned", "worker-b")));
+        var completed = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Completed"));
+        Assert.Equal("Completed", completed!.State);
+        var retry = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work));
+        Assert.NotEqual(first.Id, retry.Id);
+
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        var persisted = await restarted.GetExecutionsAsync();
+        Assert.Equal(new[] { "Completed", "Queued", "Queued", "Queued" }, persisted.Select(x => x.State));
+        Assert.Equal(new[] { projectA.Id, projectA.Id, projectB.Id, projectA.Id }, persisted.Select(x => x.ProjectId));
+        Assert.Equal(first.Id, persisted[0].Id);
+        Assert.Equal(work, persisted[0].WorkReference);
+    }
+
+    [Fact]
+    public async Task ExecutionQueueApiRequiresManagementTokenAndReturnsStructuredRequests()
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "execution-test-token");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            var projectDefinition = new CentralProjectDefinition("Queue project", "team/queue", "main", "", []);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "execution-test-token");
+            var projectResponse = await client.PostAsJsonAsync("/api/v1/projects", projectDefinition);
+            var project = (await projectResponse.Content.ReadFromJsonAsync<CentralProject>())!;
+            client.DefaultRequestHeaders.Authorization = null;
+            var request = new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "7", "https://example.test/7"));
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/executions", request)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "execution-test-token");
+            var created = await client.PostAsJsonAsync("/api/v1/executions", request);
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+            using var representation = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+            Assert.Equal(project.Id, representation.RootElement.GetProperty("projectId").GetString());
+            Assert.Equal("Queued", representation.RootElement.GetProperty("state").GetString());
+            Assert.Equal("7", representation.RootElement.GetProperty("workReference").GetProperty("id").GetString());
+            Assert.True(representation.RootElement.TryGetProperty("createdAtUtc", out _));
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/executions", request)).StatusCode);
+            var list = await client.GetFromJsonAsync<ExecutionRequest[]>("/api/v1/executions");
+            Assert.Equal("Queued", Assert.Single(list!).State);
+            Assert.Contains("Execution queue", await (await client.GetAsync("/")).Content.ReadAsStringAsync());
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
     [Theory]
     [InlineData("file:///tmp/server")]
     [InlineData("http://user:pass@127.0.0.1:5090")]

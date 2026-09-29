@@ -20,7 +20,33 @@ public interface IRegistryStore
     Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default);
     Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision, CancellationToken cancellationToken = default);
     Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default);
 }
+
+public sealed record WorkReference(string Type, string Id, string? Url = null);
+public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference);
+public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference WorkReference,
+    DateTimeOffset CreatedAtUtc, string State, string? AssignedWorkerId, DateTimeOffset? AssignedAtUtc, string? ExecutionId);
+public sealed record ExecutionStateTransition(string State, string? AssignedWorkerId = null, string? ExecutionId = null);
+
+public static class ExecutionRequestValidation
+{
+    public static string? Error(EnqueueExecutionRequest? request)
+    {
+        if (request is null) return "Execution request is required.";
+        if (string.IsNullOrWhiteSpace(request.ProjectId) || request.ProjectId.Length > 80) return "projectId must contain 1 to 80 characters.";
+        if (request.WorkReference is null) return "workReference is required.";
+        if (string.IsNullOrWhiteSpace(request.WorkReference.Type) || request.WorkReference.Type.Length > 80 || request.WorkReference.Type.Any(char.IsControl)) return "workReference.type must contain 1 to 80 printable characters.";
+        if (string.IsNullOrWhiteSpace(request.WorkReference.Id) || request.WorkReference.Id.Length > 300 || request.WorkReference.Id.Any(char.IsControl)) return "workReference.id must contain 1 to 300 printable characters.";
+        if (request.WorkReference.Url is { Length: > 2000 } || request.WorkReference.Url?.Any(char.IsControl) == true) return "workReference.url must contain at most 2000 printable characters.";
+        return null;
+    }
+}
+
+public sealed class ExecutionRequestConflictException() : Exception("An active execution request already exists for this project and work reference.") { }
+public sealed class ExecutionRequestTransitionException() : Exception("The requested execution state transition is invalid.") { }
 
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
@@ -73,7 +99,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
 /// <summary>Creates the server's durable registry schema without coupling APIs to SQLite.</summary>
 public sealed class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null) : IRegistryStore
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -96,7 +122,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 3);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 4);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -112,6 +138,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             if (schemaVersion == 2)
             {
                 command.CommandText = "ALTER TABLE workers ADD COLUMN heartbeat_json TEXT NULL; UPDATE schema_metadata SET schema_version = 3 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 3;
+            }
+            if (schemaVersion == 3)
+            {
+                command.CommandText = "UPDATE schema_metadata SET schema_version = 4 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
@@ -140,11 +172,107 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     metadata_json TEXT NOT NULL,
                     updated_at_utc TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS execution_requests (
+                    queue_order INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    project_id TEXT NOT NULL,
+                    work_type TEXT NOT NULL,
+                    work_id TEXT NOT NULL,
+                    work_reference_json TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('Queued', 'Assigned', 'Running', 'Completed', 'Failed')),
+                    assigned_worker_id TEXT NULL,
+                    assigned_at_utc TEXT NULL,
+                    execution_id TEXT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
     }
+
+    public async Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default)
+    {
+        var error = ExecutionRequestValidation.Error(request);
+        if (error is not null) throw new InvalidDataException(error);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM projects WHERE project_id = $projectId;";
+        command.Parameters.AddWithValue("$projectId", request.ProjectId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is null) throw new KeyNotFoundException($"Project '{request.ProjectId}' was not found.");
+        var id = Guid.NewGuid().ToString("N");
+        var now = _timeProvider.GetUtcNow();
+        command.Parameters.Clear();
+        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) VALUES ($id, $projectId, $workType, $workId, $workReference, $created, 'Queued');";
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$projectId", request.ProjectId);
+        command.Parameters.AddWithValue("$workType", request.WorkReference.Type);
+        command.Parameters.AddWithValue("$workId", request.WorkReference.Id);
+        command.Parameters.AddWithValue("$workReference", JsonSerializer.Serialize(request.WorkReference, ProjectJson));
+        command.Parameters.AddWithValue("$created", now.ToString("O"));
+        try { await command.ExecuteNonQueryAsync(cancellationToken); }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new ExecutionRequestConflictException(); }
+        return new(id, request.ProjectId, request.WorkReference, now, "Queued", null, null, null);
+    }
+
+    public async Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id FROM execution_requests ORDER BY queue_order;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<ExecutionRequest>();
+        while (await reader.ReadAsync(cancellationToken)) result.Add(ReadExecution(reader));
+        return result;
+    }
+
+    public async Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default)
+    {
+        if (transition is null || (transition.AssignedWorkerId is not null && !Printable(transition.AssignedWorkerId, 128)) ||
+            (transition.ExecutionId is not null && !Printable(transition.ExecutionId, 200)))
+            throw new InvalidDataException("State transition contract is invalid.");
+        var valid = transition.State switch
+        {
+            "Assigned" => !string.IsNullOrWhiteSpace(transition.AssignedWorkerId),
+            "Running" => transition.AssignedWorkerId is null,
+            "Completed" or "Failed" => transition.AssignedWorkerId is null,
+            _ => false
+        };
+        if (!valid) throw new InvalidDataException("State transition contract is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE execution_requests SET state = $next, assigned_worker_id = COALESCE($worker, assigned_worker_id), assigned_at_utc = CASE WHEN $next = 'Assigned' THEN $now ELSE assigned_at_utc END, execution_id = COALESCE($executionId, execution_id) WHERE id = $id AND (state = CASE $next WHEN 'Assigned' THEN 'Queued' WHEN 'Running' THEN 'Assigned' WHEN 'Completed' THEN 'Running' WHEN 'Failed' THEN 'Running' ELSE '' END) AND ($next != 'Running' OR ($workerForRun IS NULL AND assigned_worker_id IS NOT NULL) OR assigned_worker_id = $workerForRun);";
+        command.Parameters.AddWithValue("$next", transition.State);
+        command.Parameters.AddWithValue("$worker", (object?)transition.AssignedWorkerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$workerForRun", (object?)transition.AssignedWorkerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$executionId", (object?)transition.ExecutionId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            await using var exists = connection.CreateCommand();
+            exists.CommandText = "SELECT 1 FROM execution_requests WHERE id = $id;";
+            exists.Parameters.AddWithValue("$id", executionRequestId);
+            if (await exists.ExecuteScalarAsync(cancellationToken) is null) return null;
+            throw new ExecutionRequestTransitionException();
+        }
+        await using var read = connection.CreateCommand();
+        read.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id FROM execution_requests WHERE id = $id;";
+        read.Parameters.AddWithValue("$id", executionRequestId);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+    }
+
+    private static bool Printable(string value, int maxLength) => !string.IsNullOrWhiteSpace(value) && value.Length <= maxLength && !value.Any(char.IsControl);
+
+    private static ExecutionRequest ReadExecution(SqliteDataReader reader) => new(reader.GetString(0), reader.GetString(1),
+        JsonSerializer.Deserialize<WorkReference>(reader.GetString(2), ProjectJson) ?? throw new InvalidDataException("Stored work reference is invalid."),
+        DateTimeOffset.Parse(reader.GetString(3)), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5),
+        reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6)), reader.IsDBNull(7) ? null : reader.GetString(7));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {
