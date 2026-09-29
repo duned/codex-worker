@@ -158,6 +158,78 @@ public sealed class CodexServerTests
         Assert.Equal(1L, (long)(await verifyCommand.ExecuteScalarAsync())!);
     }
 
+    [Fact]
+    public async Task CentralProjectsSupportValidatedCrudDurabilityUniquenessAndRevisionConflicts()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "projects.db"));
+        await store.InitializeAsync();
+        Assert.Null(CentralProjectValidation.Error(new CentralProjectDefinition("Compiler", "team/compiler", "main", "", ["dotnet:10", "postgresql"])));
+        Assert.NotNull(CentralProjectValidation.Error(new CentralProjectDefinition("", "bad", "", "", [])));
+        var definition = new CentralProjectDefinition("Compiler", "team/compiler", "main", "Compiler source", ["dotnet:10"]);
+        var created = await store.CreateProjectAsync(definition);
+        Assert.Equal("compiler", created.Id);
+        Assert.Equal(1, created.Revision);
+        Assert.False(JsonSerializer.Serialize(created).Contains("directory", StringComparison.OrdinalIgnoreCase));
+        Assert.False(JsonSerializer.Serialize(created).Contains("secret", StringComparison.OrdinalIgnoreCase));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CreateProjectAsync(definition with { Name = "Other" }));
+
+        var attempts = await Task.WhenAll(
+            AttemptUpdateAsync(store, created.Id, definition with { Description = "Updated A" }),
+            AttemptUpdateAsync(store, created.Id, definition with { Description = "Updated B" }));
+        Assert.Equal(1, attempts.Count(x => x is not null));
+        Assert.Equal(1, attempts.Count(x => x is null));
+
+        var restarted = new SqliteRegistryStore(Path.Combine(temporary.Path, "projects.db"));
+        await restarted.InitializeAsync();
+        var persisted = Assert.Single(await restarted.GetProjectsAsync());
+        Assert.Equal(2, persisted.Revision);
+        Assert.Contains(persisted.Description, new[] { "Updated A", "Updated B" });
+        Assert.True(await restarted.RemoveProjectAsync(created.Id, 2));
+        Assert.Empty(await restarted.GetProjectsAsync());
+    }
+
+    private static async Task<CentralProject?> AttemptUpdateAsync(SqliteRegistryStore store, string id, CentralProjectDefinition definition)
+    {
+        try { return await store.UpdateProjectAsync(id, definition, 1); }
+        catch (ProjectRevisionConflictException) { return null; }
+    }
+
+    [Fact]
+    public async Task CentralProjectHttpApiRequiresAuthorizationAndExposesCrudContracts()
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "project-test-token");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            var definition = new CentralProjectDefinition("Widget", "team/widget", "main", "Portable definition", ["node"]);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", definition)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "project-test-token");
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/projects", definition with { Repository = "invalid" })).StatusCode);
+            using var create = await client.PostAsJsonAsync("/api/v1/projects", definition);
+            Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+            var project = (await create.Content.ReadFromJsonAsync<CentralProject>())!;
+            using var list = await client.GetAsync("/api/v1/projects");
+            Assert.Single(await list.Content.ReadFromJsonAsync<CentralProject[]>() ?? []);
+            using var invalidUpdate = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}", new ProjectUpdateRequest(definition with { Repository = "invalid" }, 1));
+            Assert.Equal(HttpStatusCode.BadRequest, invalidUpdate.StatusCode);
+            using var beforeValidUpdate = await client.GetAsync($"/api/v1/projects/{project.Id}");
+            Assert.Equal(1, (await beforeValidUpdate.Content.ReadFromJsonAsync<CentralProject>())!.Revision);
+            using var update = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}", new ProjectUpdateRequest(definition with { Description = "Changed" }, 1));
+            Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+            using var stale = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}", new ProjectUpdateRequest(definition, 1));
+            Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+            using var delete = await client.DeleteAsync($"/api/v1/projects/{project.Id}?expectedRevision=2");
+            Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
+    }
+
     [Theory]
     [InlineData("file:///tmp/server")]
     [InlineData("http://user:pass@127.0.0.1:5090")]

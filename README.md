@@ -6,7 +6,7 @@
 
 The worker serves a local dashboard and JSON management API at `http://127.0.0.1:5080/` by default. The API can be disabled with `api.enabled: false`; `api.listenUrl` accepts only a loopback IP address. Keep remote access behind an SSH tunnel or another external access mechanism. The dashboard reads and changes state only through the API. Routes provide worker status and capabilities, project and execution views, bounded recent events, a Server-Sent Events stream, project configuration CRUD/reload, project lifecycle controls, and worker drain status.
 
-Project YAML remains the V0.7 local configuration source. API writes validate the full candidate project set before atomically replacing a YAML file; file watcher reloads and explicit reloads activate only complete valid snapshots. A bad replacement leaves the current runtime snapshot in place. The provider boundary is `IProjectConfigurationProvider`, so a future Codex Server can supply project definitions without changing the scheduling and execution contracts. API configuration views expose configuration paths and settings, but never dotenv contents.
+Project ownership is explicit in global Worker YAML: `projects.ownership: standalone` (the default) means local project YAML is authoritative; `projects.ownership: managed` declares Codex Server authoritative and requires `server.enabled: true`. Managed ownership establishes the configuration boundary; remote project synchronization and dispatch are not part of this release. Local project API writes still validate the full candidate set before atomically replacing a YAML file. Worker-local checkout paths, dotenv files, and credentials are not part of central project definitions.
 
 Projects start enabled. **Enabled** projects may be scheduled within their configured capacity. **Disabled** projects receive no new executions, while existing executions finish. **Draining** projects receive no new executions and report completion after their active count reaches zero. Worker drain similarly stops all new claims while allowing active work to finish. Project removal is rejected while a claim is reserved or execution history is active. Local runtime events are process-local and bounded; SQLite execution history remains the authoritative execution record.
 
@@ -108,7 +108,7 @@ Interactive terminals get a spinner, elapsed idle timer, restrained color, and d
 
 ### Codex Server
 
-The standalone `CodexServer` application hosts the central control plane API. It exposes `/api/status`, `/api/version`, `/health`, and versioned Worker registry endpoints. Registration metadata is stored durably in SQLite using a versioned schema. The registry API returns public operational metadata only; it never stores or returns Worker secrets.
+The standalone `CodexServer` application hosts the central control plane API. It exposes `/api/status`, `/api/version`, `/health`, versioned Worker registry endpoints, and authenticated central project CRUD at `/api/v1/projects`. A central project contains a stable ID, name, repository, default branch, description, and extensible runtime requirement names. It has no checkout path, dotenv contents, or secret fields. Project updates and removals require the current revision; stale writes return `409 Conflict`. Names and repositories are unique without regard to case. Invalid definitions are rejected before persistence. Registration and project metadata are stored durably in SQLite; normal project responses contain no secrets.
 
 Run the server independently from the worker:
 

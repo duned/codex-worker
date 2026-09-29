@@ -118,6 +118,10 @@ public sealed class GlobalWorkerConfiguration
             if (value.Api.EventHistoryLimit < 1 || value.Api.EventHistoryLimit > 10000)
                 throw new InvalidDataException("api.eventHistoryLimit must be between 1 and 10000.");
             value.Server.Validate();
+            if (value.Projects.Ownership is not ("standalone" or "managed"))
+                throw new InvalidDataException("projects.ownership must be standalone or managed.");
+            if (value.Projects.Ownership == "managed" && !value.Server.Enabled)
+                throw new InvalidDataException("projects.ownership managed requires server.enabled: true.");
             return value;
         }
         catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid global worker configuration '{fullPath}': {ex.Message}", ex); }
@@ -130,7 +134,12 @@ public sealed class GlobalWorkerSettings
     public int PreflightTimeoutSeconds { get; set; } = 60;
     public int MaxParallelTasks { get; set; } = 1;
 }
-public sealed class ProjectsSettings { public string Directory { get; set; } = "./projects"; }
+public sealed class ProjectsSettings
+{
+    public string Directory { get; set; } = "./projects";
+    /// <summary>Standalone means local configuration is authoritative; managed declares Codex Server authoritative.</summary>
+    public string Ownership { get; set; } = "standalone";
+}
 
 public static class ProjectConfigurationDiscovery
 {

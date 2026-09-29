@@ -1,7 +1,10 @@
 namespace CodexServer;
 
 using Microsoft.Data.Sqlite;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 /// <summary>Persistence boundary for future worker and project registry services.</summary>
 public interface IRegistryStore
@@ -12,6 +15,47 @@ public interface IRegistryStore
     Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkersAsync(CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> GetWorkerAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
+    Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);
+    Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default);
+    Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision, CancellationToken cancellationToken = default);
+    Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
+public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
+    string Description, IReadOnlyList<string> Requirements);
+public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
+    string Description, IReadOnlyList<string> Requirements, long Revision,
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+
+public static class CentralProjectValidation
+{
+    public static string? Error(CentralProjectDefinition? value)
+    {
+        if (value is null) return "Project definition is required.";
+        if (string.IsNullOrWhiteSpace(value.Name) || value.Name.Length > 120) return "name must contain 1 to 120 characters.";
+        if (!Regex.IsMatch(value.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$")) return "name contains unsupported characters.";
+        if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[^/\\s]+/[^/\\s]+$")) return "repository must be in owner/repository form.";
+        if (string.IsNullOrWhiteSpace(value.DefaultBranch) || value.DefaultBranch.Length > 200 || value.DefaultBranch.Any(char.IsControl)) return "defaultBranch must contain 1 to 200 printable characters.";
+        if (value.Description is null || value.Description.Length > 4000) return "description must contain at most 4000 characters.";
+        if (value.Requirements is null || value.Requirements.Count > 64 || value.Requirements.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 100 || x.Any(char.IsControl))) return "requirements must contain at most 64 non-empty values of at most 100 characters.";
+        if (value.Requirements.Distinct(StringComparer.OrdinalIgnoreCase).Count() != value.Requirements.Count) return "requirements must be unique.";
+        return null;
+    }
+
+    public static string IdFor(string name)
+    {
+        var id = new string(name.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
+        if (id.Length == 0) id = "project-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..12].ToLowerInvariant();
+        return id.Length > 80 ? id[..80].TrimEnd('-') : id;
+    }
+}
+
+public sealed class ProjectRevisionConflictException(long currentRevision)
+    : Exception($"Project revision is stale; current revision is {currentRevision}.")
+{
+    public long CurrentRevision { get; } = currentRevision;
 }
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
@@ -33,6 +77,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private static readonly JsonSerializerOptions ProjectJson = new(JsonSerializerDefaults.Web);
     private string ConnectionString => new SqliteConnectionStringBuilder { DataSource = _databasePath }.ToString();
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -85,6 +130,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     configuration_json TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL
                 );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_projects_repository ON projects (lower(json_extract(configuration_json, '$.repository')));
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_projects_name ON projects (lower(display_name));
                 CREATE TABLE IF NOT EXISTS execution_metadata (
                     execution_id TEXT NOT NULL PRIMARY KEY,
                     worker_id TEXT NULL,
@@ -98,6 +145,94 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         await transaction.CommitAsync(cancellationToken);
     }
+
+    public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT project_id, configuration_json, created_at_utc FROM projects ORDER BY lower(display_name), project_id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<CentralProject>();
+        while (await reader.ReadAsync(cancellationToken)) result.Add(ToProject(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        return result;
+    }
+
+    public async Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT project_id, configuration_json, created_at_utc FROM projects WHERE project_id = $id;";
+        command.Parameters.AddWithValue("$id", projectId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ToProject(reader.GetString(0), reader.GetString(1), reader.GetString(2)) : null;
+    }
+
+    public async Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default)
+    {
+        var validationError = CentralProjectValidation.Error(definition);
+        if (validationError is not null) throw new InvalidDataException(validationError);
+        var now = _timeProvider.GetUtcNow();
+        var id = CentralProjectValidation.IdFor(definition.Name);
+        if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
+        var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
+            definition.Description.Trim(), definition.Requirements.Select(x => x.Trim()).ToArray(), 1, now, now);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO projects (project_id, display_name, configuration_json, created_at_utc) VALUES ($id, $name, $json, $created);";
+        command.Parameters.AddWithValue("$id", project.Id);
+        command.Parameters.AddWithValue("$name", project.Name);
+        command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(project, ProjectJson));
+        command.Parameters.AddWithValue("$created", now.ToString("O"));
+        try { await command.ExecuteNonQueryAsync(cancellationToken); }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new InvalidOperationException("A project with this identifier, name, or repository already exists.", ex); }
+        return project;
+    }
+
+    public async Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision, CancellationToken cancellationToken = default)
+    {
+        var validationError = CentralProjectValidation.Error(definition);
+        if (validationError is not null) throw new InvalidDataException(validationError);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        var now = _timeProvider.GetUtcNow();
+        await using var write = connection.CreateCommand();
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.Parameters.AddWithValue("$name", definition.Name.Trim());
+        write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
+        write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
+        write.Parameters.AddWithValue("$description", definition.Description.Trim());
+        write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize(definition.Requirements.Select(x => x.Trim()).ToArray()));
+        write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
+        write.Parameters.AddWithValue("$updated", now.ToString("O"));
+        write.Parameters.AddWithValue("$id", projectId);
+        write.Parameters.AddWithValue("$expectedRevision", expectedRevision);
+        try { if (await write.ExecuteNonQueryAsync(cancellationToken) == 1) return await GetProjectAsync(projectId, cancellationToken); }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new InvalidOperationException("A project with this name or repository already exists.", ex); }
+        var current = await GetProjectAsync(projectId, cancellationToken);
+        if (current is not null) throw new ProjectRevisionConflictException(current.Revision);
+        return null;
+    }
+
+    public async Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM projects WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $revision;";
+        command.Parameters.AddWithValue("$id", projectId);
+        command.Parameters.AddWithValue("$revision", expectedRevision);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 1) return true;
+        var current = await GetProjectAsync(projectId, cancellationToken);
+        if (current is not null) throw new ProjectRevisionConflictException(current.Revision);
+        return false;
+    }
+
+    private static CentralProject ToProject(string id, string json, string created) =>
+        JsonSerializer.Deserialize<CentralProject>(json, ProjectJson) is { } value ? value with { Id = id, CreatedAtUtc = DateTimeOffset.Parse(created) } :
+        throw new InvalidDataException($"Stored project '{id}' is invalid.");
 
     public async Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default)
     {

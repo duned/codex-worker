@@ -11,6 +11,7 @@ using System.Text;
 public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc);
 public sealed record ServerVersion(string Version, string Product);
 public sealed record ServerHealth(string Status, bool PersistenceAvailable);
+public sealed record ProjectUpdateRequest(CentralProjectDefinition Definition, long ExpectedRevision);
 
 public interface IServerHealthService
 {
@@ -81,6 +82,45 @@ public static class ServerApplication
         {
             var worker = await store.GetWorkerAsync(workerId, ct);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
+        });
+        app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            return Results.Ok(await store.GetProjectsAsync(context.RequestAborted));
+        });
+        app.MapGet("/api/v1/projects/{projectId}", async (string projectId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            var project = await store.GetProjectAsync(projectId, context.RequestAborted);
+            return project is null ? Results.NotFound() : Results.Ok(project);
+        });
+        app.MapPost("/api/v1/projects", async (CentralProjectDefinition definition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            var error = CentralProjectValidation.Error(definition);
+            if (error is not null) return Results.BadRequest(new { error });
+            try { return Results.Created($"/api/v1/projects/{CentralProjectValidation.IdFor(definition.Name)}", await store.CreateProjectAsync(definition, context.RequestAborted)); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}", async (string projectId, ProjectUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            var error = CentralProjectValidation.Error(request.Definition);
+            if (error is not null || request.ExpectedRevision < 1) return Results.BadRequest(new { error = error ?? "expectedRevision must be positive." });
+            try
+            {
+                var updated = await store.UpdateProjectAsync(projectId, request.Definition, request.ExpectedRevision, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapDelete("/api/v1/projects/{projectId}", async (string projectId, long expectedRevision, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (expectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
+            try { return await store.RemoveProjectAsync(projectId, expectedRevision, context.RequestAborted) ? Results.NoContent() : Results.NotFound(); }
+            catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
         });
         return app;
     }

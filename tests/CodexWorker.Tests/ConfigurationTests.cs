@@ -17,6 +17,24 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void ProjectOwnershipDefaultsToStandaloneAndManagedRequiresServerConfiguration()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"worker-ownership-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "worker.yml");
+            File.WriteAllText(path, "projects:\n  directory: ./projects\n");
+            Assert.Equal("standalone", GlobalWorkerConfiguration.Load(path).Projects.Ownership);
+            File.WriteAllText(path, "projects:\n  directory: ./projects\n  ownership: managed\n");
+            Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
+            File.WriteAllText(path, "projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example:5090\n");
+            Assert.Equal("managed", GlobalWorkerConfiguration.Load(path).Projects.Ownership);
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
     public void LoadsYamlAndResolvesProjectAndInstructionPaths()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"worker-config-{Guid.NewGuid():N}");
