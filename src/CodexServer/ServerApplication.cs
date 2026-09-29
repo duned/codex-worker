@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc);
 public sealed record ServerVersion(string Version, string Product);
@@ -46,6 +47,7 @@ public static class ServerApplication
         await persistence.InitializeAsync(cancellationToken);
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
+        app.MapGet("/", () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>
         {
             try
@@ -83,6 +85,7 @@ public static class ServerApplication
             var worker = await store.GetWorkerAsync(workerId, ct);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
+        app.MapGet("/api/v1/events/stream", StreamWorkerUpdatesAsync);
         app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings)) return Results.Unauthorized();
@@ -123,6 +126,34 @@ public static class ServerApplication
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
         });
         return app;
+    }
+
+    private static string ReadDashboard()
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CodexServer.dashboard.html")
+            ?? throw new InvalidOperationException("The Server dashboard resource is missing.");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
+    private static async Task StreamWorkerUpdatesAsync(HttpContext context, IRegistryStore store)
+    {
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers["Cache-Control"] = "no-cache";
+        context.Response.Headers["X-Accel-Buffering"] = "no";
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        try
+        {
+            do
+            {
+                var workers = await store.GetWorkersAsync(context.RequestAborted);
+                await context.Response.WriteAsync("event: workers\ndata: ", context.RequestAborted);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(workers), context.RequestAborted);
+                await context.Response.WriteAsync("\n\n", context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
+            } while (await timer.WaitForNextTickAsync(context.RequestAborted));
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
     }
 
     private static bool Authorized(HttpContext context, ServerConfiguration configuration)

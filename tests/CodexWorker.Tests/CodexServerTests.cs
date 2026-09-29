@@ -111,6 +111,11 @@ public sealed class CodexServerTests
         try
         {
             using var client = new HttpClient { BaseAddress = new Uri(url) };
+            using var dashboardResponse = await client.GetAsync("/");
+            Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
+            Assert.Contains("Codex Server", await dashboardResponse.Content.ReadAsStringAsync());
+            Assert.Contains("/api/v1/events/stream", await dashboardResponse.Content.ReadAsStringAsync());
+            Assert.Contains("Worker details", await dashboardResponse.Content.ReadAsStringAsync());
             using var statusResponse = await client.GetAsync("/api/status");
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
             using var status = JsonDocument.Parse(await statusResponse.Content.ReadAsStringAsync());
@@ -128,6 +133,13 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
             Assert.Equal("healthy", health.RootElement.GetProperty("status").GetString());
             Assert.True(health.RootElement.GetProperty("persistenceAvailable").GetBoolean());
+
+            using var streamResponse = await client.GetAsync("/api/v1/events/stream", HttpCompletionOption.ResponseHeadersRead);
+            Assert.Equal("text/event-stream", streamResponse.Content.Headers.ContentType?.MediaType);
+            await using var stream = await streamResponse.Content.ReadAsStreamAsync();
+            using var reader = new StreamReader(stream);
+            Assert.Equal("event: workers", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.StartsWith("data: ", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
         }
         finally { await app.StopAsync(); }
     }
