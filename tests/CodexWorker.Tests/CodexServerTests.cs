@@ -331,6 +331,87 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public void WorkerEligibilityMatchesAllRequirementsAndExplainsMissingOrIncompatibleCapabilities()
+    {
+        ProjectRequirement[] requirements =
+        [
+            new("runtime", ".NET", ">=10"),
+            new("tool", "Docker"),
+            new("service", "PostgreSQL", "18.0")
+        ];
+        Assert.True(WorkerEligibility.Evaluate(null, null).IsEligible);
+        Assert.True(WorkerEligibility.Evaluate(requirements,
+        [
+            new("runtime", "dotnet", "10.0.0"),
+            new("tool", "docker"),
+            new("service", "postgresql", "18")
+        ]).IsEligible);
+
+        var result = WorkerEligibility.Evaluate(requirements,
+        [
+            new("runtime", "dotnet", "9"),
+            new("service", "postgresql", "17.9")
+        ]);
+        Assert.False(result.IsEligible);
+        Assert.Equal(3, result.MissingRequirements.Count);
+        Assert.Contains("requires .NET >=10; worker reports .NET 9", result.MissingRequirements);
+        Assert.Contains("requires Docker; capability unavailable", result.MissingRequirements);
+        Assert.Contains("requires PostgreSQL 18.0; worker reports PostgreSQL 17.9", result.MissingRequirements);
+    }
+
+    [Fact]
+    public async Task AssignmentSkipsIncompatibleWorkersKeepsWorkQueuedAndReevaluatesUpdatedCapabilities()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "eligibility.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Capability project", "team/project", "main", "",
+            [new("runtime", ".NET", ">=10"), new("tool", "docker")]));
+        var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "49")));
+        var workerId = Guid.NewGuid().ToString("N");
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "old worker", "1.0", "test", 1,
+            [new("runtime", ".NET", "9")]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1,
+            [new("runtime", ".NET", "9")], []));
+
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
+        var pending = Assert.Single(await store.GetExecutionsAsync());
+        Assert.Equal("Queued", pending.State);
+        Assert.Equal("no compatible worker", pending.PendingReason);
+        Assert.Contains("requires .NET >=10; worker reports .NET 9", pending.MissingRequirements!);
+        Assert.Contains("requires Docker; capability unavailable", pending.MissingRequirements!);
+
+        var laterWorkerId = Guid.NewGuid().ToString("N");
+        var matchingCapabilities = new WorkerCapability[] { new("runtime", ".NET", "10.0"), new("tool", "Docker") };
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, laterWorkerId, "later worker", "1.0", "test", 1,
+            matchingCapabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, laterWorkerId, "1.0", "running", 1, 1,
+            matchingCapabilities, [project.Id]));
+        var laterRequest = request with { WorkerId = laterWorkerId };
+        Assert.False((await store.RequestAssignmentAsync(laterRequest)).HasWork);
+        pending = Assert.Single(await store.GetExecutionsAsync());
+        Assert.Equal("compatible workers currently at capacity", pending.PendingReason);
+
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, laterWorkerId, "1.0", "running", 0, 1,
+            matchingCapabilities, []));
+        var assignment = (await store.RequestAssignmentAsync(laterRequest)).Assignment;
+        Assert.NotNull(assignment);
+        Assert.Equal(execution.Id, assignment.ServerExecutionId);
+        Assert.Equal(laterWorkerId, assignment.WorkerId);
+        Assert.Equal("Assigned", Assert.Single(await store.GetExecutionsAsync()).State);
+
+        var nextExecution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "50")));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1,
+            matchingCapabilities, []));
+        var updatedWorkerAssignment = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(updatedWorkerAssignment);
+        Assert.Equal(nextExecution.Id, updatedWorkerAssignment.ServerExecutionId);
+        Assert.Equal(workerId, updatedWorkerAssignment.WorkerId);
+    }
+
+    [Fact]
     public async Task ExecutionQueuePersistsFifoTransitionsAndAllowsLaterAttemptsAcrossProjects()
     {
         using var temporary = new TemporaryDirectory();
@@ -698,7 +779,7 @@ public sealed class CodexServerTests
             await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
-            var projectDefinition = new CentralProjectDefinition("Queue project", "team/queue", "main", "", []);
+            var projectDefinition = new CentralProjectDefinition("Queue project", "team/queue", "main", "", [new("tool", "docker")]);
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "execution-test-token");
             var projectResponse = await client.PostAsJsonAsync("/api/v1/projects", projectDefinition);
             var project = (await projectResponse.Content.ReadFromJsonAsync<CentralProject>())!;
@@ -715,7 +796,10 @@ public sealed class CodexServerTests
             Assert.True(representation.RootElement.TryGetProperty("createdAtUtc", out _));
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/executions", request)).StatusCode);
             var list = await client.GetFromJsonAsync<ExecutionRequest[]>("/api/v1/executions");
-            Assert.Equal("Queued", Assert.Single(list!).State);
+            var queued = Assert.Single(list!);
+            Assert.Equal("Queued", queued.State);
+            Assert.Equal("no compatible worker", queued.PendingReason);
+            Assert.Contains("requires Docker; capability unavailable", queued.MissingRequirements!);
             Assert.Contains("Execution queue", await (await client.GetAsync("/")).Content.ReadAsStringAsync());
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }

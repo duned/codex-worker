@@ -40,7 +40,7 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? ValidationResult = null, string? IntegrationResult = null, string? FailureClassification = null,
     bool Recoverable = false, string? CompletionSummary = null, ExecutionLease? Lease = null,
     string? RecoveryState = null, string? RecoveryReason = null, string? RetryOfExecutionId = null, int AttemptNumber = 1,
-    string? WorkspaceRecovery = null);
+    string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record ExecutionLeaseRenewal(string WorkerId, long Generation);
@@ -491,6 +491,10 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             return new(false, null);
         }
 
+        var registration = await ReadWorkerRegistrationAsync(command, request.WorkerId, cancellationToken);
+        var workerCapabilities = heartbeat.Capabilities ?? registration?.Capabilities ?? [];
+        var projects = await ReadProjectsByIdAsync(command, cancellationToken);
+
         command.Parameters.Clear();
         command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc FROM execution_requests WHERE state = 'Queued' ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -507,6 +511,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         (string Id, string ProjectId, WorkReference Work, string Created)? candidate = null;
         foreach (var queuedItem in queued)
         {
+            if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
+                !WorkerEligibility.Evaluate(candidateProject.Requirements, workerCapabilities).IsEligible) continue;
             command.Parameters.Clear();
             command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND assigned_worker_id = $worker AND state = 'Assigned';";
             command.Parameters.AddWithValue("$project", queuedItem.ProjectId);
@@ -566,14 +572,69 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     public async Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default)
     {
         await ExpireLeasesAsync(cancellationToken);
+        var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
+        var workers = await GetWorkersAsync(cancellationToken);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = ExecutionSelect + " ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ExecutionRequest>();
-        while (await reader.ReadAsync(cancellationToken)) result.Add(ReadExecution(reader));
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var execution = ReadExecution(reader);
+            result.Add(execution.State == "Queued"
+                ? execution with { PendingReason = PendingReasonFor(execution, projects, workers),
+                    MissingRequirements = MissingFor(execution, projects, workers) }
+                : execution);
+        }
         return result;
+    }
+
+    private static string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
+        IReadOnlyList<WorkerRegistrationResponse> workers)
+    {
+        if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
+        var eligible = workers.Where(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).IsEligible).ToArray();
+        if (eligible.Length == 0) return "no compatible worker";
+        var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running").ToArray();
+        if (accepting.Length == 0 || accepting.Any(worker => worker.AvailableCapacity > 0)) return "waiting for available worker";
+        return "compatible workers currently at capacity";
+    }
+
+    private static IReadOnlyList<string> MissingFor(ExecutionRequest execution,
+        IReadOnlyDictionary<string, CentralProject> projects, IReadOnlyList<WorkerRegistrationResponse> workers)
+    {
+        if (!projects.TryGetValue(execution.ProjectId, out var project)) return [];
+        if (workers.Any(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).IsEligible)) return [];
+        if (workers.Count == 0) return WorkerEligibility.Evaluate(project.Requirements, []).MissingRequirements;
+        return workers.SelectMany(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).MissingRequirements)
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+    }
+
+    private static async Task<WorkerRegistrationRequest?> ReadWorkerRegistrationAsync(SqliteCommand command, string workerId,
+        CancellationToken cancellationToken)
+    {
+        command.Parameters.Clear();
+        command.CommandText = "SELECT registration_json FROM workers WHERE worker_id = $worker AND registration_json IS NOT NULL;";
+        command.Parameters.AddWithValue("$worker", workerId);
+        var json = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return json is null ? null : JsonSerializer.Deserialize<WorkerRegistrationRequest>(json);
+    }
+
+    private static async Task<IReadOnlyDictionary<string, CentralProject>> ReadProjectsByIdAsync(SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        command.Parameters.Clear();
+        command.CommandText = "SELECT project_id, configuration_json, created_at_utc FROM projects;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var projects = new Dictionary<string, CentralProject>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var project = ToProject(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+            projects.Add(project.Id, project);
+        }
+        return projects;
     }
 
     public async Task<ExecutionLease?> RenewExecutionLeaseAsync(string executionId, ExecutionLeaseRenewal renewal, CancellationToken cancellationToken = default)
