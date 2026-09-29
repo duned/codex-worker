@@ -25,8 +25,14 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     public string ToMarkdown(IssueOutcomeKind kind)
     {
         var sections = new List<string>();
+        if (ExecutionId is { } executionId)
+            sections.Add($"## Execution\n\nExecution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
         if (AttemptNumber > 1)
-            sections.Add($"## Attempt history\n\nAttempt {AttemptNumber}{(Resumed ? " resumed from" : " restarted after")} execution `{RetryOfExecutionId}`.");
+            sections.Add($"## Attempt history\n\nCurrent execution " +
+                (ExecutionId is { } currentId ? $"`{ExecutionFormatting.Display(currentId)}` (`{currentId}`)" : "identity unavailable") +
+                $" (attempt {AttemptNumber}); " +
+                $"{(Resumed ? "resumed from" : "restarted after")} previous execution " +
+                (RetryOfExecutionId is { } previousId ? $"`{ExecutionFormatting.Display(previousId)}` (`{previousId}`)." : "identity unavailable."));
         if (kind == IssueOutcomeKind.Blocked)
         {
             if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"## Work performed\n\n{ImplementationSummary}");

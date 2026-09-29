@@ -1,10 +1,13 @@
 using System.Net.Http.Json;
+using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace CodexWorker;
 
 public sealed class TelegramNotifier : IDisposable
 {
+    private static readonly JsonSerializerOptions TelegramJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private readonly bool _enabled;
     private readonly string? _token;
     private readonly string? _chatId;
@@ -55,18 +58,25 @@ public sealed class TelegramNotifier : IDisposable
     public Task StartingAsync(string project, string repository, GitHubIssue issue, WorkerExecution execution,
         CancellationToken ct)
     {
-        if (execution.AttemptNumber <= 1) return StartingAsync(project, repository, issue, ct);
         var action = execution.Resumed ? "TAREA REANUDADA" : "REINTENTO INICIADO";
         var mode = execution.Resumed ? "resume" : "restart";
-        var previous = execution.RetryOfExecutionId is { } id ? $"\nEjecución anterior: {id.ToString("N")[..8]}" : "";
+        var retry = execution.AttemptNumber <= 1 ? "" : $"\nIntento {execution.AttemptNumber} · {mode} · ejecución actual {ExecutionFormatting.Display(execution.ExecutionId)}" +
+            (execution.RetryOfExecutionId is { } id ? $"\nejecución anterior {ExecutionFormatting.Display(id)}" : "");
         return SendTaskAsync(project, repository, issue,
-            $"▶ CW {ApplicationVersion.Display} · {Project(project)} · {action}",
-            $"Intento {execution.AttemptNumber} · {mode} · ejecución {execution.ExecutionId.ToString("N")[..8]}{previous}", ct);
+            $"▶ CW {ApplicationVersion.Display} · {Project(project)} · {(execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action)}",
+            $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}", ct);
     }
 
+    public Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string summary, CancellationToken ct) =>
+        SuccessAsync(project, repository, issue, duration, (Guid?)executionId, summary, ct);
+
     public Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
+        => SuccessAsync(project, repository, issue, duration, null, summary, ct);
+
+    private Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid? executionId, string summary, CancellationToken ct)
     {
-        var lines = new List<string> { $"✅ CW {ApplicationVersion.Display} · {Project(project)} · TAREA COMPLETADA", IssueLink(repository, issue), "",
+        var identity = executionId is null ? "" : $" · {ExecutionFormatting.Display(executionId.Value)}";
+        var lines = new List<string> { $"✅ CW {ApplicationVersion.Display} · {Project(project)} · TAREA COMPLETADA{identity}", IssueLink(repository, issue), "",
             $"Duración: {WorkerConsole.FormatDuration(duration)}" };
         AddMatch(lines, summary, @"Committed as `([^`]+)`", "Commit");
         AddMatch(lines, summary, @"Merged into `([^`]+)`", "Integrada en");
@@ -86,9 +96,15 @@ public sealed class TelegramNotifier : IDisposable
         SendTaskAsync(project, repository, issue, $"🟡 CW {ApplicationVersion.Display} · {Project(project)} · TAREA BLOQUEADA",
             $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
 
+    public Task BlockedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string details, CancellationToken ct) =>
+        BlockedAsync(project, repository, issue, duration, $"Ejecución {ExecutionFormatting.Display(executionId)}\n{details}", ct);
+
     public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
         SendTaskAsync(project, repository, issue, $"❌ CW {ApplicationVersion.Display} · {Project(project)} · TAREA FALLIDA",
             $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
+
+    public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string details, CancellationToken ct) =>
+        FailedAsync(project, repository, issue, duration, $"Ejecución {ExecutionFormatting.Display(executionId)}\n{details}", ct);
 
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
         SendAsync(Format($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
@@ -133,7 +149,8 @@ public sealed class TelegramNotifier : IDisposable
         {
             var payload = new Dictionary<string, object?> { ["chat_id"] = _chatId, ["text"] = text };
             if (html) payload["parse_mode"] = "HTML";
-            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{_token}/sendMessage", payload, ct);
+            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{_token}/sendMessage", payload,
+                TelegramJsonOptions, ct);
             if (!response.IsSuccessStatusCode) _console.Warning($"Telegram notification failed with HTTP {(int)response.StatusCode}; worker continues.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

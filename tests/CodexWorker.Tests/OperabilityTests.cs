@@ -220,7 +220,7 @@ public sealed class OperabilityTests
         Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
         Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA REANUDADA\n", MessageAt(5));
         Assert.Contains("Intento 2 · resume · ejecución", MessageAt(5));
-        Assert.Contains("Ejecución anterior: 0b3fdff5", MessageAt(5));
+        Assert.Contains("ejecución anterior [0b3fdff5]", MessageAt(5));
         Assert.DoesNotContain(retry.ExecutionId.ToString(), MessageAt(5));
         Assert.All(handler.Bodies, body =>
         {
@@ -302,6 +302,62 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("## Validation", lines);
         Assert.DoesNotContain("Implemented X.", lines);
         Assert.DoesNotContain("\u001b[", lines);
+    }
+
+    [Fact]
+    public async Task ExecutionLifecycleFormattingKeepsIdsStableAcrossConcurrentTasksAndRetryHistory()
+    {
+        var firstId = Guid.Parse("91ac37e2-1111-4111-8111-111111111111");
+        var secondId = Guid.Parse("72bd9fa1-2222-4222-8222-222222222222");
+        var previousId = Guid.Parse("0b3fdff5-3333-4333-8333-333333333333");
+        Assert.Equal("91ac37e2", ExecutionFormatting.ShortId(firstId));
+        Assert.Equal("[91ac37e2]", ExecutionFormatting.Display(firstId));
+
+        var writer = new StringWriter();
+        var console = new WorkerConsole(writer, interactive: false);
+        var firstIssue = new GitHubIssue(62, "Worker installation", "", DateTimeOffset.UtcNow);
+        var secondIssue = new GitHubIssue(66, "Server state backup", "", DateTimeOffset.UtcNow);
+        await console.RunProgressAsync($"{ExecutionFormatting.OperationalIdentity(firstIssue, firstId)} · Codex working", () => Task.FromResult(true));
+        await console.RunProgressAsync($"{ExecutionFormatting.OperationalIdentity(secondIssue, secondId)} · Validation", () => Task.FromResult(true));
+        Assert.Contains("▶ Issue · [91ac37e2] · Worker installation #62 · Codex working...", writer.ToString());
+        Assert.Contains("✓ Issue · [91ac37e2] · Worker installation #62 · Codex working OK", writer.ToString());
+        Assert.Contains("▶ Issue · [72bd9fa1] · Server state backup #66 · Validation...", writer.ToString());
+
+        var retry = WorkerExecution.Create(new ProjectSettings { Name = "Example", Repository = "owner/repo", Directory = "." },
+            new GitSettings { BaseBranch = "main" }, firstIssue, retryOfExecutionId: previousId, attemptNumber: 2, resumed: true);
+        console.IssueStarted("Example", firstIssue, retry);
+        Assert.Contains($"▶ Issue · [{ExecutionFormatting.ShortId(retry.ExecutionId)}] · Worker installation #62", writer.ToString());
+        Assert.Contains($"↳ Retry 2 · resume · resuming execution {ExecutionFormatting.Display(previousId)}", writer.ToString());
+
+        var report = new IssueExecutionReport(null, [], ExecutionId: retry.ExecutionId, AttemptNumber: 2,
+            RetryOfExecutionId: previousId, Resumed: true).ToMarkdown(IssueOutcomeKind.Failed);
+        var completionReport = new IssueExecutionReport(null, [], ExecutionId: firstId).ToMarkdown(IssueOutcomeKind.Succeeded);
+        Assert.Contains($"Execution `{ExecutionFormatting.Display(retry.ExecutionId)}` (`{retry.ExecutionId}`)", report);
+        Assert.Contains($"Current execution `{ExecutionFormatting.Display(retry.ExecutionId)}` (`{retry.ExecutionId}`) (attempt 2); resumed from previous execution `{ExecutionFormatting.Display(previousId)}` (`{previousId}`)", report);
+        Assert.Contains($"Execution `{ExecutionFormatting.Display(firstId)}` (`{firstId}`)", completionReport);
+    }
+
+    [Fact]
+    public async Task ExecutionTelegramMessagesCarryCurrentAndPreviousIdsWhileGlobalMessagesStayGlobal()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
+        var issue = new GitHubIssue(8, "Add endpoint", "", DateTimeOffset.UtcNow);
+        var previousId = Guid.Parse("0b3fdff5-3333-4333-8333-333333333333");
+        var execution = WorkerExecution.Create(new ProjectSettings { Name = "Example", Repository = "owner/repo", Directory = "." },
+            new GitSettings { BaseBranch = "main" }, issue, retryOfExecutionId: previousId, attemptNumber: 2, resumed: true);
+        await telegram.StartingAsync("Example", "owner/repo", issue, execution, CancellationToken.None);
+        await telegram.FailedAsync("Example", "owner/repo", issue, TimeSpan.FromSeconds(1), execution.ExecutionId, "Failed", CancellationToken.None);
+        await telegram.SuccessAsync("Example", "owner/repo", issue, TimeSpan.FromSeconds(1), execution.ExecutionId, "", CancellationToken.None);
+        await telegram.StartedAsync("Example", CancellationToken.None);
+
+        Assert.Contains("Ejecución [", handler.Bodies[0]);
+        Assert.Contains($"ejecución anterior {ExecutionFormatting.Display(previousId)}", handler.Bodies[0]);
+        Assert.Contains(ExecutionFormatting.Display(execution.ExecutionId), handler.Bodies[0]);
+        Assert.Contains(ExecutionFormatting.Display(execution.ExecutionId), handler.Bodies[1]);
+        Assert.Contains(ExecutionFormatting.Display(execution.ExecutionId), handler.Bodies[2]);
+        Assert.DoesNotContain("[", handler.Bodies[3]);
     }
 
     [Fact]

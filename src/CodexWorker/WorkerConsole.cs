@@ -52,7 +52,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
     public void Warning(string message) => WriteLine(message, ConsoleColor.Yellow, "⚠");
     public void RecoveryCleanupCompleted(Guid executionId) =>
-        WriteLine($"Recovery resources cleaned · execution {executionId}", ConsoleColor.Green, "✓");
+        WriteLine($"Recovery resources cleaned · execution {ExecutionFormatting.Display(executionId)}", ConsoleColor.Green, "✓");
 
     public void Waiting()
     {
@@ -111,26 +111,38 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
 
     public void IssueStarted(string project, GitHubIssue issue, WorkerExecution execution)
     {
-        IssueStarted(project, issue);
+        _waiting = false;
+        WriteLine(ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId), ConsoleColor.Cyan, "▶");
         if (execution.AttemptNumber > 1)
         {
             var mode = execution.Resumed ? "resume" : "restart";
-            var previous = execution.RetryOfExecutionId is { } previousId ? $" · previous {ShortId(previousId)}" : "";
-            WriteLine($"Attempt {execution.AttemptNumber} · {mode} · execution {ShortId(execution.ExecutionId)}{previous}",
+            var previous = execution.RetryOfExecutionId is { } previousId
+                ? $" · {(execution.Resumed ? "resuming" : "after")} execution {ExecutionFormatting.Display(previousId)}"
+                : "";
+            var history = execution.RetryOfExecutionId is { } historyId
+                ? $" · Attempt {execution.AttemptNumber} · {mode} · execution {ExecutionFormatting.ShortId(execution.ExecutionId)} · previous {ExecutionFormatting.ShortId(historyId)}"
+                : "";
+            WriteLine($"Retry {execution.AttemptNumber} · {mode}{previous}{history}",
                 ConsoleColor.DarkGray, "↳");
         }
     }
 
-    private static string ShortId(Guid id) => id.ToString("N")[..8];
-
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>
         IssueCompletedCore(issue, elapsed);
+    public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, Guid executionId) =>
+        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · completed · {FormatDuration(elapsed)} (Issue · {IssueFormatting.Display(issue)} · completed)", ConsoleColor.Green, "✓");
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) => IssueCompleted(issue, elapsed);
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed) =>
         IssueBlockedCore(issue, elapsed);
+    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, Guid executionId) =>
+        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · blocked · {FormatDuration(elapsed)}", ConsoleColor.Yellow, "⚠");
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) => IssueBlocked(issue, elapsed);
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed) =>
         IssueFailedCore(issue, elapsed);
+    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, Guid executionId, string details) =>
+        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · failed · {FormatDuration(elapsed)}" +
+            (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {details}"),
+            ConsoleColor.Red, "✗", _errorWriter);
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
         IssueFailedCore(issue, elapsed, details);
 

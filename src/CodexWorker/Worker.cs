@@ -82,7 +82,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
-            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
+            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
             ownershipGeneration: ownershipGeneration);
@@ -335,25 +335,27 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
-                await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
-                _output.IssueCompleted(issue, result.Report.Duration);
+                await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
+                    result.Report.ExecutionId!.Value, TelegramCompletion(result.Report), ct);
+                _output.IssueCompleted(issue, result.Report.Duration, result.Report.ExecutionId!.Value);
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
-                await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
-                _output.IssueBlocked(issue, result.Report.Duration);
+                await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
+                    result.Report.ExecutionId!.Value, result.Report.HumanInput ?? "Human input is required.", ct);
+                _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value);
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
-                    $"Execution {result.Report.ExecutionId}; see the Issue report for validation diagnostics and recovery details.", ct);
-                var recoveryDetails = $"execution {result.Report.ExecutionId}" +
+                    result.Report.ExecutionId!.Value, "See the Issue report for validation diagnostics and recovery details.", ct);
+                var recoveryDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.RecoveryBranch is null ? " · workspace not preserved · retry/resume unavailable" :
                         $" · workspace preserved on {result.Report.RecoveryBranch} · retry/resume {(result.Report.RetryAvailable ? "available" : "unavailable")}");
-                _output.IssueFailed(issue, result.Report.Duration, recoveryDetails);
+                _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, recoveryDetails);
                 break;
             case IssueOutcomeKind.Superseded:
                 break;

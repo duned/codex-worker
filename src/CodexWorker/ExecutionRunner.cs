@@ -39,7 +39,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     }
                     catch (WorkerInfrastructureException cleanupError)
                     {
-                        output.Warning($"Recovery cleanup skipped for execution {previous.ExecutionId}: {cleanupError.Message}");
+                        output.Warning($"Recovery cleanup skipped for execution {ExecutionFormatting.Display(previous.ExecutionId)} ({previous.ExecutionId}): {cleanupError.Message}");
                     }
                 }
             }
@@ -237,6 +237,5 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     }
 
     private static string TaskLabel(GitHubIssue issue, string stage, WorkerExecution execution) =>
-        execution.AttemptNumber == 1 ? $"{IssueFormatting.OperationalIdentity(issue)} · {stage}" :
-        $"{IssueFormatting.OperationalIdentity(issue)} · attempt {execution.AttemptNumber} · execution {execution.ExecutionId.ToString("N")[..8]} · {stage}";
+        $"{ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId)} · {stage}";
 }
