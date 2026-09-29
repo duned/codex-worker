@@ -15,7 +15,7 @@ public sealed class StartupCoordinatorTests
         };
         var output = new StringWriter();
         var errors = new StringWriter();
-        var host = new WorkerHost(new GlobalWorkerConfiguration(), [("project.yml", config)],
+        var host = new WorkerHost(new GlobalWorkerConfiguration { Api = new ManagementApiSettings { Enabled = false } }, [("project.yml", config)],
             new WorkerConsole(output, interactive: false, errorWriter: errors));
 
         var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));

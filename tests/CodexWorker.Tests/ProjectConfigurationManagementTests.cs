@@ -36,12 +36,12 @@ public sealed class ProjectConfigurationManagementTests
         var service = fixture.Service(history);
         await service.CreateAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
         await service.CreateAsync(fixture.Configuration("beta", "owner/beta"), CancellationToken.None);
-        var before = Directory.GetFiles(fixture.Projects, "*.yml").ToDictionary(Path.GetFileName, File.ReadAllText);
+        var before = Directory.GetFiles(fixture.Projects, "*.yml").ToDictionary(path => Path.GetFileName(path)!, File.ReadAllText);
 
         var invalid = fixture.Configuration("alpha", "not-a-repository");
         await Assert.ThrowsAsync<InvalidDataException>(() => service.UpdateAsync("alpha", invalid, CancellationToken.None));
         await Assert.ThrowsAsync<InvalidDataException>(() => service.UpdateAsync("alpha", fixture.Configuration("alpha", "owner/beta"), CancellationToken.None));
-        Assert.Equal(before, Directory.GetFiles(fixture.Projects, "*.yml").ToDictionary(Path.GetFileName, File.ReadAllText));
+        Assert.Equal(before, Directory.GetFiles(fixture.Projects, "*.yml").ToDictionary(path => Path.GetFileName(path)!, File.ReadAllText));
     }
 
     [Fact]
