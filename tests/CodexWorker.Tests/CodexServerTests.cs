@@ -356,7 +356,7 @@ public sealed class CodexServerTests
         var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "lease-1")));
         WorkerAssignmentRequest Request(string worker) => new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
         var attempts = await Task.WhenAll(store.RequestAssignmentAsync(Request(firstWorker)), store.RequestAssignmentAsync(Request(secondWorker)));
-        var acquired = Assert.Single(attempts.Where(x => x.HasWork)).Assignment!;
+        var acquired = Assert.Single(attempts, x => x.HasWork).Assignment!;
         Assert.Equal(execution.Id, acquired.ServerExecutionId);
         Assert.Equal(1L, acquired.Lease!.Generation);
         Assert.Equal(clock.GetUtcNow(), acquired.Lease.AcquiredAtUtc);
@@ -431,7 +431,7 @@ public sealed class CodexServerTests
         var expiredAttempt = expired.Single(x => x.Id == second.Id);
         Assert.Equal("Failed", expiredAttempt.State);
         Assert.Equal("LeaseExpiredRequeued", expiredAttempt.RecoveryState);
-        var retry = Assert.Single(expired.Where(x => x.RetryOfExecutionId == second.Id));
+        var retry = Assert.Single(expired, x => x.RetryOfExecutionId == second.Id);
         Assert.Equal("Queued", retry.State);
         Assert.Equal(2, retry.AttemptNumber);
         Assert.Null(await restarted.RenewExecutionLeaseAsync(second.Id,
@@ -485,7 +485,7 @@ public sealed class CodexServerTests
         await afterRestart.InitializeAsync(); // reconciliation also runs after a Server restart
         var firstRead = await afterRestart.GetExecutionsAsync();
         var safeOriginal = firstRead.Single(x => x.Id == safe.Id);
-        var safeRetry = Assert.Single(firstRead.Where(x => x.RetryOfExecutionId == safe.Id));
+        var safeRetry = Assert.Single(firstRead, x => x.RetryOfExecutionId == safe.Id);
         Assert.Equal("LeaseExpiredRequeued", safeOriginal.RecoveryState);
         Assert.Equal("Failed", safeOriginal.State);
         Assert.Equal("Queued", safeRetry.State);
@@ -495,24 +495,24 @@ public sealed class CodexServerTests
         Assert.Equal("PreviousWorkerLocalStateUnknown", safeOriginal.WorkspaceRecovery);
         Assert.Equal("FreshWorkspaceRequired", safeRetry.WorkspaceRecovery);
         Assert.Equal("LeaseExpiredRequeued", firstRead.Single(x => x.Id == implementing.Id).RecoveryState);
-        Assert.Single(firstRead.Where(x => x.RetryOfExecutionId == implementing.Id));
+        Assert.Single(firstRead, x => x.RetryOfExecutionId == implementing.Id);
         var validatingOriginal = firstRead.Single(x => x.Id == validating.Id);
         Assert.Equal("LeaseExpiredRequeued", validatingOriginal.RecoveryState);
-        Assert.Single(firstRead.Where(x => x.RetryOfExecutionId == validating.Id));
+        Assert.Single(firstRead, x => x.RetryOfExecutionId == validating.Id);
 
         var uncertainResult = firstRead.Single(x => x.Id == uncertain.Id);
         Assert.Equal("LeaseExpiredUncertain", uncertainResult.RecoveryState);
         Assert.Contains("Integration", uncertainResult.RecoveryReason);
-        Assert.Empty(firstRead.Where(x => x.RetryOfExecutionId == uncertain.Id));
+        Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == uncertain.Id);
         Assert.Equal("LeaseExpiredUncertain", firstRead.Single(x => x.Id == claiming.Id).RecoveryState);
-        Assert.Empty(firstRead.Where(x => x.RetryOfExecutionId == claiming.Id));
+        Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == claiming.Id);
 
         var secondRead = await afterRestart.GetExecutionsAsync();
         Assert.Equal(8, secondRead.Count);
-        Assert.Single(secondRead.Where(x => x.RetryOfExecutionId == safe.Id));
-        Assert.Single(secondRead.Where(x => x.RetryOfExecutionId == implementing.Id));
-        Assert.Single(secondRead.Where(x => x.RetryOfExecutionId == validating.Id));
-        Assert.Single(secondRead.Where(x => x.Id == uncertain.Id));
+        Assert.Single(secondRead, x => x.RetryOfExecutionId == safe.Id);
+        Assert.Single(secondRead, x => x.RetryOfExecutionId == implementing.Id);
+        Assert.Single(secondRead, x => x.RetryOfExecutionId == validating.Id);
+        Assert.Single(secondRead, x => x.Id == uncertain.Id);
     }
 
     private static async Task<long> LeaseCountAsync(string database, string executionId)

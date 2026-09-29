@@ -16,6 +16,7 @@ This repository contains the generic .NET 10 Codex worker. Keep it project-agnos
 ## Implementation practices
 
 - Use .NET 10 and nullable reference types.
+- Authoritative build and test validation must pass without compiler or analyzer warnings introduced by the change, including production and test compiler warnings, .NET analyzers, xUnit analyzers, and other repository-owned analyzers. Fix the cause rather than suppressing warnings, unless the repository explicitly documents a warning as accepted.
 - Pass process arguments as argument lists rather than building shell command strings, except for validation commands that are explicitly configured shell commands.
 - Keep external-service access out of automated tests. Test parsing and deterministic decision logic locally.
 - Preserve bounded process output and useful failure context.
