@@ -425,7 +425,8 @@ public static class ServerApplication
 
     private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion is 1 or 2 &&
         Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
-        request.WorkerVersion.Length <= 100 && (request.LifecycleState is "starting" or "running" or "draining" or "stopped") &&
+        request.WorkerVersion.Length <= 100 && (request.LifecycleState is "starting" or "running" or "draining" or "drain-requested" or "drained" or
+            "updating" or "update-failed" or "updated" or "restarting" or "restart-failed" or "reconnecting" or "capability-regression" or "configuration-incompatible" or "ready" or "stopped") &&
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(ValidCapability) &&

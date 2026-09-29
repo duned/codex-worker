@@ -1251,7 +1251,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var online = heartbeat is not null && _timeProvider.GetUtcNow() - seen <= _staleAfter;
         var availability = !online ? "stale" : heartbeat!.LifecycleState switch
         {
-            "draining" => "draining",
+            "draining" or "drain-requested" or "drained" or "updating" or "update-failed" or "updated" or "restarting" or
+                "restart-failed" or "reconnecting" or "capability-regression" or "configuration-incompatible" => "draining",
             "stopped" => "offline",
             _ => "online"
         };

@@ -12,7 +12,8 @@ using Microsoft.Extensions.Logging;
 public sealed record RuntimeEvent(long Id, DateTimeOffset TimestampUtc, string Type, string Message, string? Project = null);
 public sealed record WorkerCapability(string Name, string Kind, string? Version = null, IReadOnlyDictionary<string, string>? Attributes = null);
 public sealed record WorkerStatus(string Version, string State, long UptimeSeconds, int MaxParallelTasks,
-    int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount);
+    int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount,
+    string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult);
 public sealed record ProjectRuntimeInfo(string Name, string Repository, bool Enabled, string State,
     int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount);
 public sealed record ProjectLifecycleRequest(string Action);
@@ -95,25 +96,28 @@ public sealed class WorkerRuntimeReadModel
     private readonly ProjectConfigurationService? _configurationService;
     private readonly ProjectRuntimeRegistry _registry;
     private readonly ManagedConfigurationSynchronizer? _managedConfiguration;
+    private readonly WorkerLifecycle _lifecycle;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private volatile string _state = "starting";
 
     public WorkerRuntimeReadModel(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history,
         ProjectConfigurationService? configurationService = null,
-        ManagedConfigurationSynchronizer? managedConfiguration = null)
+        ManagedConfigurationSynchronizer? managedConfiguration = null, WorkerLifecycle? lifecycle = null)
     {
         _global = global;
         _projects = projects;
         _history = history;
         _configurationService = configurationService;
         _managedConfiguration = managedConfiguration;
+        _lifecycle = lifecycle ?? new WorkerLifecycle();
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
         _registry = new ProjectRuntimeRegistry(projects, Events);
     }
 
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
+    public WorkerLifecycle Lifecycle => _lifecycle;
     public string State { get => _state; set => _state = value; }
     public WorkerConfigurationSyncStatus? ConfigurationSyncStatus => _managedConfiguration?.Status;
 
@@ -121,10 +125,12 @@ public sealed class WorkerRuntimeReadModel
     {
         var active = (await _history.ReadActiveAsync(ct)).Count;
         var projectCount = _registry.Snapshot().Count;
+        var lifecycle = _lifecycle.Snapshot;
         return new WorkerStatus(ApplicationVersion.Display, State,
             Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
-            projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled));
+            projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled),
+            lifecycle.State, lifecycle.DrainRequested, lifecycle.LastUpdateResult, lifecycle.ReconnectReadinessResult);
     }
 
     public IReadOnlyList<WorkerCapability> Capabilities =>
@@ -210,12 +216,13 @@ public static class ManagementApi
         });
         app.MapPost("/api/worker/drain", (WorkerRuntimeReadModel model) =>
         {
+            model.Lifecycle.RequestDrain();
             model.Registry.DrainWorker();
             return Results.Ok(new { draining = true, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
                 drainComplete = model.Registry.WorkerDrainComplete });
         });
         app.MapGet("/api/worker/drain", (WorkerRuntimeReadModel model) =>
-            Results.Ok(new { draining = model.Registry.WorkerDraining, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
+            Results.Ok(new { draining = model.Registry.WorkerDraining, state = model.Lifecycle.Snapshot.State, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
                 drainComplete = model.Registry.WorkerDrainComplete }));
         if (projectConfigurations is not null)
         {

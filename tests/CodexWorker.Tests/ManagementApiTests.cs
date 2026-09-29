@@ -54,6 +54,7 @@ public sealed class ManagementApiTests
             Assert.Equal(0, status.GetProperty("activeExecutionCount").GetInt32());
             Assert.Equal(3, status.GetProperty("availableExecutionCapacity").GetInt32());
             Assert.Equal("running", status.GetProperty("state").GetString());
+            Assert.Equal("starting", status.GetProperty("lifecycleState").GetString());
 
             var projects = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement;
             Assert.Equal("owner/repo", projects[0].GetProperty("repository").GetString());
@@ -112,6 +113,7 @@ public sealed class ManagementApiTests
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/worker/drain", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
             var workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
             Assert.True(workerDrain.GetProperty("draining").GetBoolean());
+            Assert.Equal("drain-requested", workerDrain.GetProperty("state").GetString());
         }
         finally
         {

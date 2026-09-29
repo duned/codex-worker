@@ -124,7 +124,9 @@ public sealed class WorkerHost
                 }
             }
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
-            runtimeReadModel = new WorkerRuntimeReadModel(_global, configuredProjects, history, managedConfiguration: managedConfiguration);
+            var lifecycle = new WorkerLifecycle();
+            runtimeReadModel = new WorkerRuntimeReadModel(_global, configuredProjects, history, managedConfiguration: managedConfiguration,
+                lifecycle: lifecycle);
             var configurationService = _global.Projects.Ownership == "managed"
                 ? null
                 : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
@@ -199,6 +201,12 @@ public sealed class WorkerHost
             heartbeatCapabilities = heartbeatCapabilities
                 .Append(WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
             await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, ct);
+            lifecycle.BeginReconnect();
+            var synchronization = managedConfiguration?.Status;
+            var configurationCompatible = synchronization?.SynchronizationStatus != "error";
+            if (!lifecycle.CompleteReadiness(discoveredCapabilities, heartbeatCapabilities, configurationCompatible,
+                    synchronization?.Error ?? "Server-managed configuration is incompatible."))
+                throw new WorkerInfrastructureException($"Worker readiness failed: {lifecycle.Snapshot.ReconnectReadinessResult}");
             await telegram.StartedAsync(runtimes.Count, ct);
             _output.Started();
             runtimeReadModel.State = "running";
@@ -212,6 +220,13 @@ public sealed class WorkerHost
             while (!ct.IsCancellationRequested)
             {
                 var runtimeVersion = runtimeReadModel.Registry.Version;
+                if (runtimeReadModel.Registry.WorkerDraining)
+                {
+                    lifecycle.RequestDrain();
+                    lifecycle.SetActiveExecutions(active.Count);
+                    var drainState = active.Count == 0 ? "drained" : "draining";
+                    Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = drainState });
+                }
                 foreach (var completed in active.Keys.Where(task => task.IsCompleted).ToArray())
                 {
                     var project = active[completed];
@@ -304,13 +319,13 @@ public sealed class WorkerHost
                 {
                     if (_global.Projects.Ownership == "managed")
                     {
-                        var lifecycle = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+                        var projectLifecycles = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
                         var projectCapacities = new Dictionary<string, int>(StringComparer.Ordinal);
                         foreach (var candidate in runtimes)
                         {
                             var name = candidate.Configuration.Project.Name;
                             var activeForProject = active.Values.Count(value => string.Equals(value.Configuration.Project.Name, name, StringComparison.OrdinalIgnoreCase));
-                            if (lifecycle.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
+                            if (projectLifecycles.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
                                 activeForProject < candidate.Configuration.Worker.MaxParallelTasks)
                             {
                                 if (!projectCapacities.TryAdd(ServerProjectId(name), candidate.Configuration.Worker.MaxParallelTasks - activeForProject))
