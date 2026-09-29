@@ -246,13 +246,13 @@ public sealed class WorkerV011Tests
         h.GitHub.CancelWhenEmpty = false;
         var workerTask = h.Worker.RunAsync(h.Cancellation.Token);
 
-        await WaitForOutputAsync(h.Output, "TEST PROJECT · Example task #17 · completed");
+        await WaitForOutputAsync(h.Output, "Issue · Example task #17 · completed");
         await WaitForOutputAsync(h.Output, "Waiting for work... 00:00");
         h.Cancellation.Cancel();
         await workerTask;
 
         var output = h.Output.ToString();
-        var completed = output.IndexOf("TEST PROJECT · Example task #17 · completed", StringComparison.Ordinal);
+        var completed = output.IndexOf("Issue · Example task #17 · completed", StringComparison.Ordinal);
         var idle = output.IndexOf("Waiting for work...", completed, StringComparison.Ordinal);
         var stopped = output.IndexOf("■ Worker stopped.", StringComparison.Ordinal);
         Assert.True(completed >= 0 && idle > completed && stopped > idle, output);

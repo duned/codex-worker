@@ -234,20 +234,20 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, TelegramCompletion(result.Report), ct);
-                _output.IssueCompleted(config.Project.Name, issue, result.Report.Duration, ShortCompletion(result.Summary));
+                _output.IssueCompleted(issue, result.Report.Duration);
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.", ct);
-                _output.IssueBlocked(config.Project.Name, issue, result.Report.Duration, result.Report.HumanInput ?? "Human input is required.");
+                _output.IssueBlocked(issue, result.Report.Duration);
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, Limit(message, 1400), ct);
-                _output.IssueFailed(config.Project.Name, issue, result.Report.Duration, FirstLine(message));
+                _output.IssueFailed(issue, result.Report.Duration);
                 break;
         }
     }
@@ -259,10 +259,6 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     }
 
-    private static string ShortCompletion(string summary)
-    {
-        return FirstLine(summary);
-    }
     private static string TelegramCompletion(IssueExecutionReport report)
     {
         var details = new List<string>();
@@ -270,6 +266,5 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (!string.IsNullOrWhiteSpace(report.ImplementationSummary)) details.Add($"Codex summary: {report.ImplementationSummary}");
         return string.Join("\n\n", details);
     }
-    private static string FirstLine(string value) => value.Split('\n', 2)[0];
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..(length - 20)] + " … [truncated]";
 }

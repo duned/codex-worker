@@ -82,9 +82,9 @@ public sealed class OperabilityTests
         output.IssueFailed(new GitHubIssue(4, "Fail", "", DateTimeOffset.UtcNow), TimeSpan.FromSeconds(3), "Check failed");
         output.IssueBlocked(new GitHubIssue(5, "Needs input", "", DateTimeOffset.UtcNow), TimeSpan.FromSeconds(1), "Choose API");
         var text = writer.ToString();
-        Assert.Contains("✓ Add config #3 · completed · 01:17", text);
-        Assert.Contains("✗ Fail #4 · failed", text);
-        Assert.Contains("⚠ Needs input #5 · blocked", text);
+        Assert.Contains("✓ Issue · Add config #3 · completed · 01:17", text);
+        Assert.Contains("✗ Issue · Fail #4 · failed", text);
+        Assert.Contains("⚠ Issue · Needs input #5 · blocked", text);
         Assert.DoesNotContain("\u001b[", text);
     }
 
@@ -260,23 +260,59 @@ public sealed class OperabilityTests
     }
 
     [Fact]
-    public void ConsoleTaskLifecycleLinesRetainProjectIssueAndCompleteTitle()
+    public async Task ConsoleTaskLifecycleLinesUseIssueIdentityAndKeepMarkdownOutOfOperationalOutput()
     {
         var writer = new StringWriter();
         var issue = new GitHubIssue(7, "V0.5 · P1 · Introduce execution identity and lifecycle state", "", DateTimeOffset.UtcNow);
         var console = new WorkerConsole(writer, interactive: false, errorWriter: writer);
+        const string summary = "## Implementation\n\nImplemented X.\n\n## Validation\n\nTests passed.";
 
         console.IssueStarted("Finance", issue);
-        console.IssueCompleted("Finance", issue, TimeSpan.FromSeconds(12), "Completed");
-        console.IssueBlocked("Finance", issue, TimeSpan.FromSeconds(13), "Needs input");
-        console.IssueFailed("Finance", issue, TimeSpan.FromSeconds(14), "Failed");
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(issue)} · Codex working", () => Task.FromResult(true), _ => "success");
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(issue)} · Validation", () => Task.FromResult(true), _ => "passed");
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(issue)} · Repair 1/2", () => Task.FromResult(true), _ => "success");
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(issue)} · Integrating", () => Task.FromResult(true), _ => "complete");
+        console.IssueCompleted("Finance", issue, TimeSpan.FromSeconds(12), summary);
+        console.IssueBlocked("Finance", issue, TimeSpan.FromSeconds(13), summary);
+        console.IssueFailed("Finance", issue, TimeSpan.FromSeconds(14), summary);
 
         var lines = writer.ToString();
-        Assert.Contains($"▶ FINANCE · {issue.Title} #7", lines);
-        Assert.Contains($"✓ FINANCE · {issue.Title} #7 · completed · 12s", lines);
-        Assert.Contains($"⚠ FINANCE · {issue.Title} #7 · blocked · 13s", lines);
-        Assert.Contains($"✗ FINANCE · {issue.Title} #7 · failed · 14s", lines);
+        Assert.Contains($"▶ Issue · {issue.Title} #7", lines);
+        Assert.Contains($"▶ Issue · {issue.Title} #7 · Codex working...", lines);
+        Assert.Contains($"✓ Issue · {issue.Title} #7 · Codex working OK · 0s · success", lines);
+        Assert.Contains($"▶ Issue · {issue.Title} #7 · Validation...", lines);
+        Assert.Contains($"✓ Issue · {issue.Title} #7 · Validation OK · 0s · passed", lines);
+        Assert.Contains($"▶ Issue · {issue.Title} #7 · Repair 1/2...", lines);
+        Assert.Contains($"✓ Issue · {issue.Title} #7 · Repair 1/2 OK · 0s · success", lines);
+        Assert.Contains($"▶ Issue · {issue.Title} #7 · Integrating...", lines);
+        Assert.Contains($"✓ Issue · {issue.Title} #7 · Integrating OK · 0s · complete", lines);
+        Assert.Contains($"✓ Issue · {issue.Title} #7 · completed · 12s", lines);
+        Assert.Contains($"⚠ Issue · {issue.Title} #7 · blocked · 13s", lines);
+        Assert.Contains($"✗ Issue · {issue.Title} #7 · failed · 14s", lines);
+        Assert.DoesNotContain("## Implementation", lines);
+        Assert.DoesNotContain("## Validation", lines);
+        Assert.DoesNotContain("Implemented X.", lines);
         Assert.DoesNotContain("\u001b[", lines);
+    }
+
+    [Fact]
+    public async Task InterleavedProgressEventsKeepEachIssueContext()
+    {
+        var writer = new StringWriter();
+        var console = new WorkerConsole(writer, interactive: false);
+        var first = new GitHubIssue(42, "Finance task", "", DateTimeOffset.UtcNow);
+        var second = new GitHubIssue(31, "Worker task", "", DateTimeOffset.UtcNow);
+
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(first)} · Validation", () => Task.FromResult(true));
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(second)} · Codex working", () => Task.FromResult(true));
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(first)} · Validation", () => Task.FromResult(true));
+        await console.RunProgressAsync($"{IssueFormatting.OperationalIdentity(second)} · Codex working", () => Task.FromResult(true));
+
+        var lines = writer.ToString();
+        Assert.Contains("▶ Issue · Finance task #42 · Validation...", lines);
+        Assert.Contains("✓ Issue · Finance task #42 · Validation OK", lines);
+        Assert.Contains("▶ Issue · Worker task #31 · Codex working...", lines);
+        Assert.Contains("✓ Issue · Worker task #31 · Codex working OK", lines);
     }
 
     [Fact]

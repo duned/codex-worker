@@ -33,6 +33,7 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("Completed", actual.State);
         Assert.Equal(started.AddMinutes(3), actual.CompletedAtUtc);
         Assert.Equal((long?)180_000, actual.DurationMilliseconds);
+        Assert.Equal("Implemented the requested change.", actual.ImplementationSummary);
         Assert.Equal(repair, Assert.Single(actual.Repairs));
         Assert.Equal(completed.CommitSha, actual.CommitSha);
         Assert.Equal("main", actual.IntegrationBranch);

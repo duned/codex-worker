@@ -20,6 +20,19 @@ public sealed class ExecutionReportTests
     }
 
     [Fact]
+    public void CompletionMarkdownRetainsCodexSummaryHeadingsForGitHubReporting()
+    {
+        const string summary = "## Implementation\n\nImplemented X.\n\n## Validation\n\nTests passed.";
+        var report = new IssueExecutionReport(summary, []);
+
+        var markdown = report.ToMarkdown(IssueOutcomeKind.Succeeded);
+
+        Assert.Contains(summary, markdown);
+        Assert.Contains("## Implementation", markdown);
+        Assert.Contains("## Validation", markdown);
+    }
+
+    [Fact]
     public void OneRepairKeepsInitialAndRepairSummariesWithoutValidationLogs()
     {
         var report = new IssueExecutionReport("Implemented fiscal year closure snapshots.",

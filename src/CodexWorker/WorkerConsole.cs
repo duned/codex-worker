@@ -93,31 +93,41 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void IssueStarted(GitHubIssue issue)
     {
         _waiting = false;
-        WriteLine(IssueFormatting.Display(issue), ConsoleColor.Cyan, "▶");
+        WriteLine(IssueFormatting.OperationalIdentity(issue), ConsoleColor.Cyan, "▶");
     }
 
     public void IssueStarted(string project, GitHubIssue issue)
     {
         _waiting = false;
-        WriteLine($"{project.ToUpperInvariant()} · {IssueFormatting.Display(issue)}", ConsoleColor.Cyan, "▶");
+        WriteLine(IssueFormatting.OperationalIdentity(issue), ConsoleColor.Cyan, "▶");
     }
 
-    private static string TaskIdentity(string project, GitHubIssue issue) =>
-        $"{project.ToUpperInvariant()} · {IssueFormatting.Display(issue)}";
+    public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>
+        IssueCompletedCore(issue, elapsed);
+    public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) => IssueCompleted(issue, elapsed);
+    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed) =>
+        IssueBlockedCore(issue, elapsed);
+    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) => IssueBlocked(issue, elapsed);
+    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed) =>
+        IssueFailedCore(issue, elapsed);
+    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) => IssueFailed(issue, elapsed);
 
-    public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{IssueFormatting.Display(issue)} · completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
-    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{IssueFormatting.Display(issue)} · blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
-    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{IssueFormatting.Display(issue)} · failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
-
+    public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed) => IssueCompleted(issue, elapsed);
     public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{TaskIdentity(project, issue)} · completed · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(details) ? "" : "\n  " + details)}", ConsoleColor.Green, "✓");
+        IssueCompleted(issue, elapsed);
+    public void IssueBlocked(string project, GitHubIssue issue, TimeSpan elapsed) => IssueBlocked(issue, elapsed);
     public void IssueBlocked(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{TaskIdentity(project, issue)} · blocked · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Yellow, "⚠");
+        IssueBlocked(issue, elapsed);
+    public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed) => IssueFailed(issue, elapsed);
     public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
-        WriteLine($"{TaskIdentity(project, issue)} · failed · {FormatDuration(elapsed)}\n  {details}", ConsoleColor.Red, "✗", _errorWriter);
+        IssueFailed(issue, elapsed);
+
+    private void IssueCompletedCore(GitHubIssue issue, TimeSpan elapsed) =>
+        WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · completed · {FormatDuration(elapsed)}", ConsoleColor.Green, "✓");
+    private void IssueBlockedCore(GitHubIssue issue, TimeSpan elapsed) =>
+        WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · blocked · {FormatDuration(elapsed)}", ConsoleColor.Yellow, "⚠");
+    private void IssueFailedCore(GitHubIssue issue, TimeSpan elapsed) =>
+        WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · failed · {FormatDuration(elapsed)}", ConsoleColor.Red, "✗", _errorWriter);
 
     public async Task<T> RunProgressAsync<T>(string label, Func<Task<T>> operation, Func<T, string>? completion = null,
         Func<T, bool>? succeeded = null, Func<T, bool>? warning = null,
