@@ -46,6 +46,18 @@ public sealed class WorkerHost
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore();
+            if (_global.Server.Enabled)
+            {
+                foreach (var entry in await history.ReadAllAsync(ct))
+                {
+                    if (entry.ServerExecutionId is null || entry.AssignmentId is null ||
+                        entry.State is not ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")) continue;
+                    var serverState = entry.State == "Completed" ? "Completed" : "Failed";
+                    try { await new WorkerRegistrationClient().ReportExecutionAsync(_global.Server, entry, serverState, null, ct); }
+                    catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                    { _output.Warning($"Codex Server result reporting remains pending for execution {entry.ExecutionId}: {ex.Message}"); }
+                }
+            }
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
             runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
             var configurationService = new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
@@ -376,7 +388,7 @@ public sealed class WorkerHost
         if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
             repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
-            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate), codex, github, repositoryGate);
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server), codex, github, repositoryGate);
     }
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,

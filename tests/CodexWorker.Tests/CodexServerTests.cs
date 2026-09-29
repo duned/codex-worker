@@ -292,12 +292,21 @@ public sealed class CodexServerTests
         Assert.Equal("Assigned", assigned!.State);
         Assert.Equal("worker-a", assigned.AssignedWorkerId);
         Assert.NotNull(assigned.AssignedAtUtc);
-        var running = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Running", ExecutionId: "run-a"));
+        var started = DateTimeOffset.Parse("2026-02-01T00:00:03Z");
+        var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started));
         Assert.Equal("Running", running!.State);
         Assert.Equal("run-a", running.ExecutionId);
-        await Assert.ThrowsAsync<ExecutionRequestTransitionException>(() => store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Assigned", "worker-b")));
-        var completed = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Completed"));
+        var finalReport = new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Completed", null,
+            started, started.AddMinutes(2), 120000, "passed", "integrated", null, false, "Implemented Issue #42.");
+        var completed = await store.ReportExecutionAsync(first.Id, finalReport);
+        var duplicate = await store.ReportExecutionAsync(first.Id, finalReport);
         Assert.Equal("Completed", completed!.State);
+        Assert.Equal(completed, duplicate);
+        Assert.Equal("Implementing", completed.CurrentStage);
+        Assert.Equal("run-a", completed.WorkerExecutionId);
+        Assert.Equal("passed", completed.ValidationResult);
+        Assert.Equal("integrated", completed.IntegrationResult);
+        Assert.Equal("Implemented Issue #42.", completed.CompletionSummary);
         var retry = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work));
         Assert.NotEqual(first.Id, retry.Id);
 
@@ -308,6 +317,9 @@ public sealed class CodexServerTests
         Assert.Equal(new[] { projectA.Id, projectA.Id, projectB.Id, projectA.Id }, persisted.Select(x => x.ProjectId));
         Assert.Equal(first.Id, persisted[0].Id);
         Assert.Equal(work, persisted[0].WorkReference);
+        Assert.Equal("Completed", persisted[0].State);
+        Assert.Equal(120000, persisted[0].DurationMilliseconds);
+        Assert.Equal(started.AddMinutes(2), persisted[0].CompletedAtUtc);
     }
 
     [Fact]
@@ -372,6 +384,18 @@ public sealed class CodexServerTests
                 var second = (await secondResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;
                 Assert.True(second.HasWork);
                 Assert.Equal(beta.Id, second.Assignment!.Project.Id);
+                var report = new WorkerExecutionReport(workerA, second.Assignment.AssignmentId, "worker-run-2", "Running", "Validation",
+                    DateTimeOffset.UtcNow);
+                using var lifecycle = await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/executions/{second.Assignment.ServerExecutionId}/report", report);
+                Assert.Equal(HttpStatusCode.OK, lifecycle.StatusCode);
+                report = report with { State = "Failed", Stage = null, CompletedAtUtc = DateTimeOffset.UtcNow,
+                    FailureClassification = "TaskFailure", Recoverable = true, Summary = "Validation could not be repaired." };
+                using var final = await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/executions/{second.Assignment.ServerExecutionId}/report", report);
+                Assert.Equal(HttpStatusCode.OK, final.StatusCode);
+                var reported = await final.Content.ReadFromJsonAsync<ExecutionRequest>();
+                Assert.Equal("Failed", reported!.State);
+                Assert.True(reported.Recoverable);
+                Assert.Equal("TaskFailure", reported.FailureClassification);
                 await Heartbeat(workerB, "running");
                 using var otherWorkerResponse = await Request(workerB, true, 2, new() { [alpha.Id] = 1 });
                 var otherWorkerAssignment = (await otherWorkerResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;

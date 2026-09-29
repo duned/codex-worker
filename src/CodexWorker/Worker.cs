@@ -10,7 +10,7 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
-    SemaphoreSlim? repositoryGate = null)
+    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null)
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
@@ -111,6 +111,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 IssueOutcomeKind.Failed => ExecutionState.Failed,
                 _ => throw new ArgumentOutOfRangeException()
             }, CancellationToken.None);
+            var finalEntry = history is null ? CreateEntry(execution, report, null, null) :
+                (await history.ReadAllAsync(CancellationToken.None)).FirstOrDefault(entry => entry.ExecutionId == execution.ExecutionId)
+                ?? CreateEntry(execution, report, null, null);
+            await ReportServerAsync(finalEntry, execution.State, CancellationToken.None);
             return result with { Report = report };
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
@@ -192,14 +196,44 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
-        var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate);
+        var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
+            (entry, state, token) => ReportServerAsync(entry, state, token));
         return runner.RunAsync(context, ct);
     }
 
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
     {
         execution.TransitionTo(state);
-        return history is null ? Task.CompletedTask : history.UpdateAsync(CreateEntry(execution, null, null, null), ct);
+        var entry = CreateEntry(execution, null, null, null);
+        return SaveAndReportAsync(entry, state, ct);
+    }
+
+    private async Task SaveAndReportAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
+    {
+        if (history is not null) await history.UpdateAsync(entry, ct);
+        await ReportServerAsync(entry, state, ct);
+    }
+
+    private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
+    {
+        if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
+        try
+        {
+            var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
+            await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
+                stateName == "Running" ? (state switch
+                {
+                    ExecutionState.Claimed => "Assigned",
+                    ExecutionState.Preparing => "Preparing",
+                    ExecutionState.Implementing => "Codex",
+                    ExecutionState.Validating or ExecutionState.Repairing => "Validation",
+                    ExecutionState.Integrating => "Integration",
+                    ExecutionState.Reporting => "Reporting",
+                    _ => state.ToString()
+                }) : null, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        { _output.Warning($"Codex Server execution reporting is pending: {ex.Message}"); }
     }
 
     private async Task CompleteHistoryAsync(WorkerExecution execution, IssueExecutionReport report, ExecutionState state,
@@ -213,7 +247,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
-        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason), CancellationToken.None); }
+        try
+        {
+            var entry = CreateEntry(execution, null, null, reason);
+            await SaveHistoryAsync(entry, CancellationToken.None);
+            await ReportServerAsync(entry, execution.State, CancellationToken.None);
+        }
         catch (WorkerInfrastructureException) { /* Preserve the original infrastructure failure. The existing row remains incomplete. */ }
     }
 

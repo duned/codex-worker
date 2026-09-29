@@ -28,6 +28,10 @@ public sealed record ServerWorkReferenceContract(string Type, string Id, string?
 public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,
     ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata);
 public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment);
+public sealed record WorkerExecutionReportContract(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
+    string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
+    long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null);
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
@@ -152,6 +156,36 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
+
+    public async Task ReportExecutionAsync(WorkerServerSettings settings, ExecutionHistoryEntry entry, string state,
+        string? stage, CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
+        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to report execution state.");
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        try
+        {
+            var final = state is "Completed" or "Failed";
+            var report = new WorkerExecutionReportContract(workerId, entry.AssignmentId, entry.ExecutionId.ToString(), state,
+                stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
+                entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
+                state == "Completed" ? "passed" : null,
+                state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState == "recoverable",
+                Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000));
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"),
+                $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Content = JsonContent.Create(report);
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    private static string? Bound(string? value, int limit) => value is { Length: > 0 } ? value[..Math.Min(value.Length, limit)] : null;
 }
 
 /// <summary>Best-effort runtime reporting. Connectivity loss is reported once per degraded period and never stops execution.</summary>

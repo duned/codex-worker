@@ -90,6 +90,19 @@ public static class ServerApplication
             try { return Results.Ok(await store.RequestAssignmentAsync(request, context.RequestAborted)); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
+        app.MapPost("/api/v1/workers/{workerId}/executions/{executionRequestId}/report", async (string workerId, string executionRequestId,
+            WorkerExecutionReport report, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
+                return Results.BadRequest(new { error = "Worker execution report identity is invalid." });
+            try
+            {
+                var updated = await store.ReportExecutionAsync(executionRequestId, report, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
         app.MapGet("/api/v1/workers", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();

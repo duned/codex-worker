@@ -11,7 +11,8 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 /// validation use the independent execution worktree concurrently.
 /// </summary>
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
-    IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null)
+    IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
+    Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null)
 {
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
@@ -147,7 +148,19 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
     {
         execution.TransitionTo(state);
-        return history is null ? Task.CompletedTask : history.UpdateAsync(CreateEntry(execution, null, null, null), ct);
+        var entry = CreateEntry(execution, null, null, null);
+        return SaveAndReportAsync(entry, state, ct);
+    }
+
+    private async Task SaveAndReportAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
+    {
+        if (history is not null) await history.UpdateAsync(entry, ct);
+        if (reportServer is not null)
+        {
+            try { await reportServer(entry, state, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            { output.Warning($"Codex Server execution reporting is pending: {ex.Message}"); }
+        }
     }
 
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
