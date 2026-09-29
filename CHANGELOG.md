@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+- Add structured requirements to central projects and preserve them through SQLite persistence and project management APIs.
+- Discover and advertise structured Worker capabilities during registration and heartbeat, including detected versions for supported runtimes and tools.
+- Match project requirements against the requesting Worker's current capabilities before assignment; keep incompatible work queued and expose missing requirements.
+- Preserve the existing scheduling behavior for projects without requirements and read legacy string requirements and capability forms for compatibility.
+
 ## 0.10.0
 
 - Add durable, generation-numbered execution leases with bounded renewal and expiry that survive Server restarts.
