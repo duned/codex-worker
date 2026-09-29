@@ -55,6 +55,89 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task BackupRoundTripPreservesControlPlaneMetadataAndExcludesSecrets()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "server.db");
+        var restoredDatabase = Path.Combine(temporary.Path, "restored.db");
+        var archivePath = Path.Combine(temporary.Path, "backup.zip");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new CentralProjectDefinition("Example", "owner/repo", "main", "description"));
+        var encryptionKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var credentials = new SqliteCredentialStore(database, encryptionKey);
+        await credentials.InitializeAsync();
+        const string secret = "credential-secret-value";
+        const string deliveryToken = "worker-delivery-token-value-that-is-long-enough";
+        var workerId = Guid.NewGuid().ToString("N");
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "backup worker", "1.0.0", "test", 1, [new WorkerCapability("tool", "git")]));
+        var credential = await credentials.CreateAsync(new CreateCredentialRequest("github", "api", new CredentialSecretInput(secret)));
+        await credentials.AssignAsync(credential.Id, workerId);
+        await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
+
+        await new ServerBackup(database).ExportAsync(archivePath);
+        await new ServerBackup(database).ValidateAsync(archivePath);
+        using (var archive = System.IO.Compression.ZipFile.OpenRead(archivePath))
+        {
+            var manifestEntry = Assert.IsType<System.IO.Compression.ZipArchiveEntry>(archive.GetEntry("manifest.json"));
+            await using (var manifestStream = manifestEntry.Open())
+            using (var manifest = await JsonDocument.ParseAsync(manifestStream))
+            {
+                Assert.Equal(1, manifest.RootElement.GetProperty("formatVersion").GetInt32());
+                Assert.Equal(SqliteRegistryStore.CurrentSchemaVersion, manifest.RootElement.GetProperty("registrySchemaVersion").GetInt32());
+            }
+            var entry = Assert.IsType<System.IO.Compression.ZipArchiveEntry>(archive.GetEntry("state.sqlite"));
+            await using var stream = entry.Open();
+            using var contents = new MemoryStream();
+            await stream.CopyToAsync(contents);
+            var databaseContents = System.Text.Encoding.Latin1.GetString(contents.ToArray());
+            Assert.DoesNotContain(secret, databaseContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(deliveryToken, databaseContents, StringComparison.Ordinal);
+        }
+
+        await new ServerBackup(restoredDatabase).RestoreOfflineAsync(archivePath);
+        var restoredRegistry = new SqliteRegistryStore(restoredDatabase);
+        await restoredRegistry.InitializeAsync();
+        var restoredProject = Assert.IsType<CentralProject>(await restoredRegistry.GetProjectAsync(project.Id));
+        Assert.Equal(project.Id, restoredProject.Id);
+        Assert.Equal(project.Name, restoredProject.Name);
+        Assert.Equal(project.Repository, restoredProject.Repository);
+        Assert.Equal("backup worker", (await restoredRegistry.GetWorkerAsync(workerId))?.DisplayName);
+        var restoredCredentials = new SqliteCredentialStore(restoredDatabase, encryptionKey);
+        await restoredCredentials.InitializeAsync();
+        var metadata = Assert.Single(await restoredCredentials.ListAsync());
+        Assert.Equal("NeedsReprovision", metadata.Status);
+        Assert.False(await restoredCredentials.IsWorkerDeliveryTokenValidAsync(workerId, deliveryToken));
+        Assert.Null(await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
+        Assert.Equal("Ready", (await restoredCredentials.ReplaceSecretAsync(credential.Id, new CredentialSecretInput("re-entered-test-secret")))?.Status);
+        await restoredCredentials.AssignAsync(credential.Id, workerId);
+        Assert.Equal("re-entered-test-secret", await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
+    }
+
+    [Fact]
+    public async Task InvalidBackupIsRejectedBeforeRestoreChangesExistingDatabase()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "server.db");
+        var archivePath = Path.Combine(temporary.Path, "invalid.zip");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new CentralProjectDefinition("Existing", "owner/existing", "main", "keep"));
+        await using (var file = File.Create(archivePath))
+        using (var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            var manifest = archive.CreateEntry("manifest.json");
+            await using var stream = manifest.Open();
+            await JsonSerializer.SerializeAsync(stream, new { formatVersion = 999, registrySchemaVersion = SqliteRegistryStore.CurrentSchemaVersion });
+        }
+
+        var backup = new ServerBackup(database);
+        await Assert.ThrowsAsync<InvalidDataException>(() => backup.RestoreOfflineAsync(archivePath));
+        var existingProject = Assert.IsType<CentralProject>(await registry.GetProjectAsync(project.Id));
+        Assert.Equal(project.Name, existingProject.Name);
+    }
+
+    [Fact]
     public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
     {
         using var temporary = new TemporaryDirectory();

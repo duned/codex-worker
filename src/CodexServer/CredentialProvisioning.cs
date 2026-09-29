@@ -187,7 +187,7 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
             throw new InvalidDataException("Credential secret must contain 1 to 16384 characters.");
         var key = _key ?? throw new InvalidOperationException("Credential encryption is not configured.");
         var metadata = await GetAsync(credentialId, cancellationToken);
-        if (metadata is null || metadata.Status != "Ready") return metadata;
+        if (metadata is null || metadata.Status is not ("Ready" or "NeedsReprovision")) return metadata;
         var nonce = RandomNumberGenerator.GetBytes(12);
         var plaintext = Encoding.UTF8.GetBytes(secret.Value);
         var ciphertext = new byte[plaintext.Length];
@@ -198,7 +198,7 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE credentials SET nonce=$nonce,ciphertext=$ciphertext,tag=$tag,updated_at_utc=$now,version=version+1 WHERE id=$id AND status='Ready';";
+        command.CommandText = "UPDATE credentials SET status='Ready',nonce=$nonce,ciphertext=$ciphertext,tag=$tag,updated_at_utc=$now,version=version+1 WHERE id=$id AND status IN ('Ready','NeedsReprovision');";
         command.Parameters.AddWithValue("$nonce", nonce);
         command.Parameters.AddWithValue("$ciphertext", ciphertext);
         command.Parameters.AddWithValue("$tag", tag);
