@@ -41,7 +41,7 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities);
-public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null);
+public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null, string? Scope = null);
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
@@ -193,6 +193,24 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 throw new HttpRequestException($"Codex Server assignment request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
             return await response.Content.ReadFromJsonAsync<WorkerAssignmentResponseContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty assignment response.");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task<ServerManagedConfigurationContract> GetManagedConfigurationAsync(WorkerServerSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) throw new InvalidOperationException("Managed configuration requires Server mode.");
+        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        try
+        {
+            using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{identity}/configuration");
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Codex Server configuration request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            return await response.Content.ReadFromJsonAsync<ServerManagedConfigurationContract>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Codex Server returned an empty managed configuration.");
         }
         finally { if (httpClient is null) client.Dispose(); }
     }

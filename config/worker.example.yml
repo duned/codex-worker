@@ -13,7 +13,9 @@ worker:
 
 projects:
   directory: ./projects
-  # standalone polls configured GitHub queues; managed requests Server assignments for configured projects.
+  # standalone uses project YAML as the project source of truth. Managed mode applies
+  # versioned Server project identity/repository/branch/requirements while retaining
+  # machine-local checkouts, authentication, execution settings, and recovery state.
   # In either mode the Worker owns GitHub labels, comments, and Issue closure.
   ownership: standalone
 

@@ -94,17 +94,20 @@ public sealed class WorkerRuntimeReadModel
     private readonly ExecutionHistoryStore _history;
     private readonly ProjectConfigurationService? _configurationService;
     private readonly ProjectRuntimeRegistry _registry;
+    private readonly ManagedConfigurationSynchronizer? _managedConfiguration;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private volatile string _state = "starting";
 
     public WorkerRuntimeReadModel(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history,
-        ProjectConfigurationService? configurationService = null)
+        ProjectConfigurationService? configurationService = null,
+        ManagedConfigurationSynchronizer? managedConfiguration = null)
     {
         _global = global;
         _projects = projects;
         _history = history;
         _configurationService = configurationService;
+        _managedConfiguration = managedConfiguration;
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
         _registry = new ProjectRuntimeRegistry(projects, Events);
     }
@@ -112,6 +115,7 @@ public sealed class WorkerRuntimeReadModel
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
     public string State { get => _state; set => _state = value; }
+    public WorkerConfigurationSyncStatus? ConfigurationSyncStatus => _managedConfiguration?.Status;
 
     public async Task<WorkerStatus> StatusAsync(CancellationToken ct)
     {
@@ -187,6 +191,8 @@ public static class ManagementApi
         var app = builder.Build();
         app.MapGet("/", () => Results.Content(DashboardHtml.Content, "text/html; charset=utf-8"));
         app.MapGet("/api/status", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.StatusAsync(context.RequestAborted)));
+        app.MapGet("/api/configuration-sync", (WorkerRuntimeReadModel model) =>
+            model.ConfigurationSyncStatus is { } status ? Results.Ok(status) : Results.NoContent());
         app.MapGet("/api/capabilities", (WorkerRuntimeReadModel model) => Results.Ok(model.Capabilities));
         app.MapGet("/api/projects", async (WorkerRuntimeReadModel model, HttpContext context) => Results.Ok(await model.ProjectsAsync(context.RequestAborted)));
         app.MapPost("/api/projects/{name}/lifecycle", (string name, ProjectLifecycleRequest request, WorkerRuntimeReadModel model) =>

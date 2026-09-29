@@ -281,6 +281,15 @@ public static class ServerApplication
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
+        app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (await store.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
+            var projects = await store.GetProjectsAsync(context.RequestAborted);
+            var version = ManagedConfigurationVersion(projects);
+            return Results.Ok(new ServerManagedConfigurationResponse(1, version, projects));
+        });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
@@ -418,6 +427,42 @@ public static class ServerApplication
         !string.IsNullOrWhiteSpace(value.Name) && value.Name.Length <= 100 &&
         !value.Type.Any(char.IsControl) && !value.Name.Any(char.IsControl) &&
         (value.Version is null || (value.Version.Length <= 100 && !value.Version.Any(char.IsControl)));
+
+    private static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects)
+    {
+        var material = new StringBuilder();
+        foreach (var project in projects.OrderBy(item => item.Id, StringComparer.Ordinal))
+        {
+            Append(material, "project");
+            Append(material, project.Id);
+            Append(material, project.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Append(material, project.Name);
+            Append(material, project.Repository);
+            Append(material, project.DefaultBranch);
+            Append(material, project.Description);
+            Append(material, project.Requirements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (var requirement in project.Requirements.OrderBy(item => item.Type, StringComparer.Ordinal)
+                         .ThenBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version, StringComparer.Ordinal)
+                         .ThenBy(item => item.Scope, StringComparer.Ordinal))
+            {
+                Append(material, requirement.Type);
+                Append(material, requirement.Name);
+                Append(material, requirement.Version);
+                Append(material, requirement.Scope);
+            }
+            Append(material, "end-project");
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
+    }
+
+    private static void Append(StringBuilder target, string? value)
+    {
+        if (value is null) target.Append("-1:");
+        else target.Append(value.Length).Append(':').Append(value);
+    }
+
+    private sealed record ServerManagedConfigurationResponse(int ContractVersion, string Version,
+        IReadOnlyList<CentralProject> Projects);
 
     public static string DisplayVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
 }

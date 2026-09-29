@@ -21,8 +21,15 @@ public sealed class WorkerHost
 
     public async Task RunAsync(CancellationToken ct)
     {
-        _output.Startup(_projects.Count);
-        foreach (var item in _projects) _output.ProjectLoaded(item.Configuration.Project.Name);
+        var configuredProjects = _projects;
+        ManagedConfigurationSynchronizer? managedConfiguration = null;
+        if (_global.Server.Enabled && _global.Projects.Ownership == "managed")
+        {
+            var identityPath = _global.Server.IdentityFile ?? WorkerIdentity.DefaultPath;
+            managedConfiguration = new ManagedConfigurationSynchronizer(identityPath + ".configuration.json");
+        }
+        _output.Startup(configuredProjects.Count);
+        foreach (var item in configuredProjects) _output.ProjectLoaded(item.Configuration.Project.Name);
         using var telegram = new TelegramNotifier(_global.Telegram.Enabled, _output);
         ExecutionHistoryStore? history = null;
         WorkerRuntimeReadModel? runtimeReadModel = null;
@@ -36,6 +43,7 @@ public sealed class WorkerHost
         string? activeProject = null;
         var safeToStop = true;
         var operational = false;
+        var nextManagedConfigurationSync = DateTimeOffset.MinValue;
         var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
         var leaseRenewals = new Dictionary<Task<IssueProcessingResult?>, (CancellationTokenSource Stop, Task Run)>();
         CancellationTokenSource? executionCancellation = null;
@@ -54,10 +62,47 @@ public sealed class WorkerHost
         }
         try
         {
-            if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
+            if (configuredProjects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.GetCachedAsync(ct);
             heartbeatCapabilities = discoveredCapabilities;
-            await new WorkerRegistrationClient().RegisterAsync(_global.Server, _global.Worker.MaxParallelTasks, ct);
+            if (managedConfiguration?.HasCachedSnapshot == true)
+            {
+                try { _ = managedConfiguration.LoadLastValid(configuredProjects); }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+                {
+                    managedConfiguration.RecordUnavailable(ex);
+                }
+            }
+            if (_global.Server.Enabled)
+            {
+                var registration = new WorkerRegistrationClient();
+                var registered = false;
+                try
+                {
+                    await registration.RegisterAsync(_global.Server, _global.Worker.MaxParallelTasks, ct);
+                    registered = true;
+                }
+                catch (Exception ex) when ((ex is HttpRequestException or WorkerStartupException or TaskCanceledException) &&
+                    (ex is not OperationCanceledException || !ct.IsCancellationRequested))
+                {
+                    if (_global.Projects.Ownership != "managed") throw;
+                    configuredProjects = LoadCachedManagedConfiguration(managedConfiguration!, configuredProjects, ex);
+                }
+                if (managedConfiguration is not null && registered)
+                {
+                    try
+                    {
+                        var desired = await registration.GetManagedConfigurationAsync(_global.Server, ct);
+                        configuredProjects = managedConfiguration.Apply(desired, _projects);
+                    }
+                    catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException) &&
+                        (ex is not OperationCanceledException || !ct.IsCancellationRequested))
+                    {
+                        managedConfiguration.RecordUnavailable(ex);
+                        configuredProjects = LoadCachedManagedConfiguration(managedConfiguration, configuredProjects, ex);
+                    }
+                }
+            }
             if (_global.Server.Enabled)
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
@@ -78,11 +123,13 @@ public sealed class WorkerHost
                 }
             }
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
-            runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
-            var configurationService = new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
+            runtimeReadModel = new WorkerRuntimeReadModel(_global, configuredProjects, history, managedConfiguration: managedConfiguration);
+            var configurationService = _global.Projects.Ownership == "managed"
+                ? null
+                : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
-            foreach (var (path, config) in _projects)
+            foreach (var (path, config) in configuredProjects)
             {
                 var project = CreateRuntime(path, config, telegram, history, repositoryGates);
                 runtimes.Add(project);
@@ -131,7 +178,8 @@ public sealed class WorkerHost
                 await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
                     Array.Empty<string>(), "starting", ct, heartbeatCapabilities);
             await ReconcileRecoveryAsync(runtimes, history, runtimeReadModel, ct);
-            configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
+            if (configurationService is not null)
+                configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
             _output.GitHubCliReady();
             _output.GitHubAuthenticationReady();
             _output.GitRepositoryAuthenticationReady(runtimes.Count);
@@ -178,6 +226,31 @@ public sealed class WorkerHost
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
                     runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
                     Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
+                }
+
+                if (_global.Server.Enabled && _global.Projects.Ownership == "managed" && active.Count == 0 &&
+                    _timeProvider.GetUtcNow() >= nextManagedConfigurationSync)
+                {
+                    nextManagedConfigurationSync = _timeProvider.GetUtcNow().AddSeconds(_global.Server.HeartbeatIntervalSeconds);
+                    try
+                    {
+                        var registration = new WorkerRegistrationClient();
+                        var desired = await registration.GetManagedConfigurationAsync(_global.Server, executionToken);
+                        var previousVersion = managedConfiguration!.Status.AppliedVersion;
+                        var replacement = managedConfiguration.Apply(desired, _projects);
+                        if (!string.Equals(previousVersion, desired.Version, StringComparison.Ordinal))
+                        {
+                            runtimeReadModel.Registry.ReplaceConfiguration(replacement);
+                            runtimeReadModel.Events.Publish("configuration.synchronized", "Server-managed configuration was applied.");
+                        }
+                    }
+                    catch (OperationCanceledException) when (executionToken.IsCancellationRequested) { throw; }
+                    catch (Exception ex)
+                    {
+                        managedConfiguration!.RecordUnavailable(ex);
+                        runtimeReadModel.Events.Publish("configuration.sync.failed", "Server-managed configuration could not be applied; the last valid configuration remains active.");
+                        _output.Warning($"Server-managed configuration sync failed: {ex.Message}");
+                    }
                 }
 
                 // Rebuild schedulable project runtimes from one atomically installed configuration snapshot.
@@ -414,6 +487,23 @@ public sealed class WorkerHost
             foreach (var gate in repositoryGates.Values) gate.Dispose();
             history?.Dispose();
             executionCancellation?.Dispose();
+        }
+    }
+
+    private IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadCachedManagedConfiguration(
+        ManagedConfigurationSynchronizer synchronizer,
+        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> localProjects, Exception cause)
+    {
+        synchronizer.RecordUnavailable(cause);
+        try
+        {
+            var cached = synchronizer.LoadLastValid(localProjects);
+            _output.Warning($"Codex Server configuration is unavailable; continuing with applied version {synchronizer.Status.AppliedVersion}.");
+            return cached;
+        }
+        catch (Exception cacheError) when (cacheError is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            throw new WorkerStartupException($"Managed Server configuration is unavailable and no valid cached configuration can be applied: {cacheError.Message}", cause);
         }
     }
 
