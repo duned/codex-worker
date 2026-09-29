@@ -106,6 +106,24 @@ Interactive terminals get a spinner, elapsed idle timer, restrained color, and d
 
 ## Build and run
 
+### Codex Server
+
+The standalone `CodexServer` application hosts the central control plane API. It currently exposes `/api/status`, `/api/version`, and `/health`; registry persistence is initialized in SQLite at startup. The schema is versioned and the store sits behind `IRegistryStore` so future worker and project services can depend on a persistence contract.
+
+Run the server independently from the worker:
+
+```sh
+dotnet run --project src/CodexServer/CodexServer.csproj
+```
+
+By default it listens on `http://127.0.0.1:5090` and stores its database at `~/.codex-server/codex-server.db`. Configure it through `appsettings.json`, environment variables, or command-line configuration keys. For example:
+
+```sh
+dotnet run --project src/CodexServer/CodexServer.csproj -- --Server:ListenUrl=http://127.0.0.1:5091 --Server:DatabasePath=/tmp/codex-server.db
+```
+
+The equivalent environment variables are `Server__ListenUrl` and `Server__DatabasePath`. The listen URL must be an absolute HTTP or HTTPS URL with a valid port. The server creates the database directory and initializes its schema before accepting requests. No service manager is required.
+
 ```sh
 dotnet restore CodexWorker.sln
 dotnet build CodexWorker.sln

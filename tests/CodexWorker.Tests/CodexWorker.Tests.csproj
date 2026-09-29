@@ -16,5 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/CodexWorker/CodexWorker.csproj" />
+    <ProjectReference Include="../../src/CodexServer/CodexServer.csproj" />
   </ItemGroup>
 </Project>
