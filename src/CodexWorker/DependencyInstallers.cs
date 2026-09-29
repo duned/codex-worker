@@ -7,10 +7,75 @@ namespace CodexWorker;
 public sealed record ProvisioningRequirement(string Type, string Name, string? Version);
 
 public sealed record DependencyInstallPlan(bool Supported, bool AlreadySatisfied, bool RequiresElevation,
-    string? Executable = null, IReadOnlyList<string>? Arguments = null, string? Reason = null);
+    string? Package = null, string? Reason = null);
 
 public sealed record DependencyInstallResult(bool Supported, bool Succeeded, bool RequiresElevation,
     string? DetectedVersion = null, WorkerCapabilityContract? DetectedCapability = null, string? Message = null);
+
+/// <summary>Only fixed, Worker-owned privileged operations are exposed to dependency installers.</summary>
+public interface IPrivilegedOperationExecutor
+{
+    Task<DependencyInstallResult> InstallAptPackageAsync(string package, CancellationToken cancellationToken);
+}
+
+/// <summary>Runs a fixed apt install operation and uses sudo only in non-interactive mode.</summary>
+public sealed class AptPrivilegedOperationExecutor : IPrivilegedOperationExecutor
+{
+    private readonly Func<string, IEnumerable<string>, TimeSpan, CancellationToken, Task<ProcessResult>> _run;
+    private readonly Func<bool> _isRoot;
+
+    public AptPrivilegedOperationExecutor()
+        : this((executable, arguments, timeout, cancellationToken) => new ProcessRunner().RunAsync(executable, arguments,
+            Environment.CurrentDirectory, timeout, cancellationToken), () => OperatingSystem.IsLinux() && Environment.UserName == "root") { }
+
+    public AptPrivilegedOperationExecutor(Func<string, IEnumerable<string>, TimeSpan, CancellationToken, Task<ProcessResult>> run,
+        Func<bool> isRoot)
+    {
+        _run = run;
+        _isRoot = isRoot;
+    }
+
+    public async Task<DependencyInstallResult> InstallAptPackageAsync(string package, CancellationToken cancellationToken)
+    {
+        if (!DebianAptDependencyInstaller.IsTrustedPackage(package))
+            return new DependencyInstallResult(false, false, true, Message: "Privileged operation is not in the Worker allowlist.");
+
+        var elevated = !_isRoot();
+        var packageArguments = new[] { "install", "-y", "--no-install-recommends", package };
+        if (elevated)
+        {
+            ProcessResult permission;
+            try { permission = await _run("sudo", ["-n", "-l", "/usr/bin/apt-get", .. packageArguments], TimeSpan.FromSeconds(10), cancellationToken); }
+            catch (Exception ex) when (IsProcessUnavailable(ex))
+            { return new DependencyInstallResult(true, false, true, Message: "Required host privileges are unavailable (non-interactive sudo permission is not configured)."); }
+            catch (ProcessTimeoutException)
+            { return new DependencyInstallResult(true, false, true, Message: "Required host privileges are unavailable (non-interactive permission check timed out)."); }
+            if (permission.ExitCode != ProcessExitCodes.Success)
+                return new DependencyInstallResult(true, false, true, Message: "Required host privileges are unavailable (the exact non-interactive apt install operation is not permitted).");
+        }
+
+        var executable = elevated ? "sudo" : "apt-get";
+        var arguments = packageArguments;
+        if (elevated) arguments = ["-n", "/usr/bin/apt-get", .. packageArguments];
+        ProcessResult result;
+        try { result = await _run(executable, arguments, TimeSpan.FromMinutes(10), cancellationToken); }
+        catch (ProcessTimeoutException)
+        { return new DependencyInstallResult(true, false, true, Message: "Trusted apt install operation exceeded its 10 minute timeout."); }
+        catch (Exception ex) when (IsProcessUnavailable(ex))
+        { return new DependencyInstallResult(true, false, true, Message: elevated
+            ? "Required host privileges are unavailable (non-interactive sudo is not available)."
+            : "Trusted apt install operation could not start."); }
+        return result.ExitCode == ProcessExitCodes.Success
+            ? new DependencyInstallResult(true, true, true, Message: "Trusted apt install operation completed.")
+            : new DependencyInstallResult(true, false, true, Message: result.StandardError.Contains("not allowed", StringComparison.OrdinalIgnoreCase) ||
+                result.StandardError.Contains("not permitted", StringComparison.OrdinalIgnoreCase)
+                    ? "Required host privileges are unavailable (the exact non-interactive apt install operation is not permitted)."
+                    : $"Trusted apt install operation failed with exit code {result.ExitCode}.");
+    }
+
+    private static bool IsProcessUnavailable(Exception exception) => exception is System.ComponentModel.Win32Exception or
+        FileNotFoundException || exception is InvalidOperationException && exception.Message.StartsWith("Could not start", StringComparison.Ordinal);
+}
 
 /// <summary>Worker-owned installer for one explicitly supported family of dependencies.</summary>
 public interface IDependencyInstaller
@@ -78,20 +143,23 @@ public sealed class DebianAptDependencyInstaller : IDependencyInstaller
         };
 
     private readonly Func<bool> _isSupportedPlatform;
-    private readonly Func<bool> _requiresElevation;
-    private readonly Func<string, IEnumerable<string>, CancellationToken, Task<ProcessResult>> _run;
+    private readonly IPrivilegedOperationExecutor _privilegedOperations;
 
     public DebianAptDependencyInstaller()
-        : this(IsDebianOrUbuntu, () => !OperatingSystem.IsLinux() || Environment.UserName != "root",
-            (executable, arguments, cancellationToken) => new ProcessRunner().RunAsync(executable, arguments,
-                Environment.CurrentDirectory, TimeSpan.FromMinutes(10), cancellationToken)) { }
+        : this(IsDebianOrUbuntu, new AptPrivilegedOperationExecutor()) { }
 
     public DebianAptDependencyInstaller(Func<bool> isSupportedPlatform, Func<bool> requiresElevation,
         Func<string, IEnumerable<string>, CancellationToken, Task<ProcessResult>> run)
     {
         _isSupportedPlatform = isSupportedPlatform;
-        _requiresElevation = requiresElevation;
-        _run = run;
+        _privilegedOperations = new AptPrivilegedOperationExecutor((executable, arguments, _, cancellationToken) =>
+            run(executable, arguments, cancellationToken), () => !requiresElevation());
+    }
+
+    public DebianAptDependencyInstaller(Func<bool> isSupportedPlatform, IPrivilegedOperationExecutor privilegedOperations)
+    {
+        _isSupportedPlatform = isSupportedPlatform;
+        _privilegedOperations = privilegedOperations;
     }
 
     public bool Supports(ProvisioningRequirement requirement) =>
@@ -114,24 +182,16 @@ public sealed class DebianAptDependencyInstaller : IDependencyInstaller
         var package = Packages[(requirement.Type.ToLowerInvariant(), requirement.Name.ToLowerInvariant())];
         if (requirement.Version is not null && !requirement.Version.StartsWith(">=", StringComparison.Ordinal))
             package += "=" + requirement.Version;
-        var elevated = _requiresElevation();
-        var arguments = elevated
-            ? new[] { "-n", "apt-get", "install", "-y", "--no-install-recommends", package }
-            : new[] { "install", "-y", "--no-install-recommends", package };
-        return new DependencyInstallPlan(true, false, elevated, elevated ? "sudo" : "apt-get", arguments);
+        return new DependencyInstallPlan(true, false, true, Package: package);
     }
 
     public async Task<DependencyInstallResult> InstallAsync(DependencyInstallPlan plan, CancellationToken cancellationToken)
     {
         if (!plan.Supported) return new DependencyInstallResult(false, false, plan.RequiresElevation, Message: plan.Reason);
         if (plan.AlreadySatisfied) return new DependencyInstallResult(true, true, false, Message: "Requirement already satisfied.");
-        if (plan.Executable is null || plan.Arguments is null)
-            return new DependencyInstallResult(false, false, plan.RequiresElevation, Message: "Installer plan has no command.");
-        var result = await _run(plan.Executable, plan.Arguments, cancellationToken);
-        return result.ExitCode == ProcessExitCodes.Success
-            ? new DependencyInstallResult(true, true, plan.RequiresElevation, Message: "Trusted apt install command completed.")
-            : new DependencyInstallResult(true, false, plan.RequiresElevation,
-                Message: $"Installer command exited with code {result.ExitCode}: {Bound(result.StandardError)}");
+        if (plan.Package is null)
+            return new DependencyInstallResult(false, false, true, Message: "Installer plan has no trusted package operation.");
+        return await _privilegedOperations.InstallAptPackageAsync(plan.Package, cancellationToken);
     }
 
     private static bool IsSupportedConstraint(string version)
@@ -140,7 +200,9 @@ public sealed class DebianAptDependencyInstaller : IDependencyInstaller
         return Regex.IsMatch(numeric, @"^\d+(?:\.\d+){0,3}$", RegexOptions.CultureInvariant);
     }
 
-    private static string Bound(string output) => output.Length <= 500 ? output : output[^500..];
+    internal static bool IsTrustedPackage(string package) => Packages.Values.Contains(package, StringComparer.Ordinal) ||
+        Packages.Values.Any(basePackage => package.StartsWith(basePackage + "=", StringComparison.Ordinal) &&
+            Regex.IsMatch(package[(basePackage.Length + 1)..], @"^\d+(?:\.\d+){0,3}$", RegexOptions.CultureInvariant));
 
     private static bool IsDebianOrUbuntu()
     {

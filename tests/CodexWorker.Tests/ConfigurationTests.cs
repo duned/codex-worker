@@ -35,6 +35,40 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void GlobalYamlLoadsWorkerProvisioningPolicyAndDefaultsToDisabled()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"worker-policy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "worker.yml");
+            File.WriteAllText(path, "projects:\n  directory: ./projects\n");
+            Assert.False(GlobalWorkerConfiguration.Load(path).Worker.Provisioning.Enabled);
+
+            File.WriteAllText(path, """
+                projects:
+                  directory: ./projects
+                worker:
+                  provisioning:
+                    enabled: true
+                    allowNonPrivileged: true
+                    allowCredentials: false
+                    allowedPrivilegedActions:
+                      - tool:git:install
+                    deniedActions:
+                      - tool:docker:install
+                """);
+            var policy = GlobalWorkerConfiguration.Load(path).Worker.Provisioning;
+            Assert.True(policy.Enabled);
+            Assert.True(policy.AllowNonPrivileged);
+            Assert.False(policy.AllowCredentials);
+            Assert.Equal("tool:git:install", Assert.Single(policy.AllowedPrivilegedActions));
+            Assert.Equal("tool:docker:install", Assert.Single(policy.DeniedActions));
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
     public void LoadsYamlAndResolvesProjectAndInstructionPaths()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"worker-config-{Guid.NewGuid():N}");

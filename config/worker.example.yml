@@ -2,6 +2,14 @@ worker:
   pollingSeconds: 60
   preflightTimeoutSeconds: 60
   maxParallelTasks: 1
+  # Server provisioning is disabled unless explicitly enabled here.
+  provisioning:
+    enabled: false
+    allowNonPrivileged: false
+    allowCredentials: false
+    # Keys use type:name:operation, for example tool:git:install.
+    allowedPrivilegedActions: []
+    deniedActions: []
 
 projects:
   directory: ./projects

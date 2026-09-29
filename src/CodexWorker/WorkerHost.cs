@@ -169,7 +169,8 @@ public sealed class WorkerHost
                     if (provisioningPlan is not null)
                     {
                         runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
-                        var provisioningResult = await new ProvisioningPlanExecutor(WorkerCapabilityDiscovery.Shared).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
+                        var provisioningResult = await new ProvisioningPlanExecutor(WorkerCapabilityDiscovery.Shared,
+                            policy: _global.Worker.Provisioning).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
                             (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, provisioningPlan.Id, report, token), executionToken);
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")

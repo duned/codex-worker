@@ -109,6 +109,11 @@ public sealed class GlobalWorkerConfiguration
             if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
             if (value.Worker.MaxParallelTasks < 1 || value.Worker.MaxParallelTasks > 8)
                 throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
+            if (value.Worker.Provisioning is null || value.Worker.Provisioning.AllowedPrivilegedActions is null || value.Worker.Provisioning.DeniedActions is null ||
+                value.Worker.Provisioning.AllowedPrivilegedActions.Count > 100 || value.Worker.Provisioning.DeniedActions.Count > 100 ||
+                value.Worker.Provisioning.AllowedPrivilegedActions.Concat(value.Worker.Provisioning.DeniedActions)
+                    .Any(action => string.IsNullOrWhiteSpace(action) || action.Length > 200 || action.Any(char.IsControl)))
+                throw new InvalidDataException("worker.provisioning action policy lists must contain at most 100 printable action keys.");
             if (value.Worker.PreflightTimeoutSeconds <= 0 || value.Worker.PreflightTimeoutSeconds > 300)
                 throw new InvalidDataException("worker.preflightTimeoutSeconds must be between 1 and 300.");
             if (value.Api.Enabled && (!Uri.TryCreate(value.Api.ListenUrl, UriKind.Absolute, out var listenUri) ||
@@ -133,6 +138,17 @@ public sealed class GlobalWorkerSettings
     public int PollingSeconds { get; set; } = 60;
     public int PreflightTimeoutSeconds { get; set; } = 60;
     public int MaxParallelTasks { get; set; } = 1;
+    public ProvisioningPolicy Provisioning { get; set; } = new();
+}
+
+/// <summary>Worker-side authorization policy for Server-requested provisioning.</summary>
+public sealed class ProvisioningPolicy
+{
+    public bool Enabled { get; set; }
+    public bool AllowNonPrivileged { get; set; }
+    public bool AllowCredentials { get; set; }
+    public List<string> AllowedPrivilegedActions { get; set; } = [];
+    public List<string> DeniedActions { get; set; } = [];
 }
 public sealed class ProjectsSettings
 {
