@@ -127,6 +127,7 @@ public sealed class ProvisioningPlanExecutorTests
     public async Task SuccessfulInstallMustPassCapabilityVerification()
     {
         var gitVersion = 0;
+        IReadOnlyList<WorkerCapabilityContract>? reportedCapabilities = null;
         var discovery = new WorkerCapabilityDiscovery((executable, _, _, _, _) => Task.FromResult(executable == "git"
             ? gitVersion == 0
                 ? new ProcessResult(1, "", "")
@@ -137,11 +138,13 @@ public sealed class ProvisioningPlanExecutorTests
             gitVersion++;
             return Task.FromResult(new ProcessResult(0, "", ""));
         });
-        var result = await new ProvisioningPlanExecutor(discovery, [installer], EnabledPolicy("tool:git:install")).ExecuteAsync(
+        var result = await new ProvisioningPlanExecutor(discovery, [installer], EnabledPolicy("tool:git:install"),
+            capabilitiesChanged: (capabilities, _) => { reportedCapabilities = capabilities; return Task.CompletedTask; }).ExecuteAsync(
             Plan([new ProvisioningActionContract("git", "tool", "git", ">=2.40", "install")]), "worker-id",
             (_, _) => Task.CompletedTask, CancellationToken.None);
         Assert.Equal("Completed", result.State);
         Assert.Contains("Installed and verified: tool git 2.43.0", result.Result);
+        Assert.Contains(reportedCapabilities!, capability => capability.Type == "tool" && capability.Name == "git" && capability.Version == "2.43.0");
     }
 
     [Fact]
@@ -268,6 +271,7 @@ public sealed class ProvisioningPlanExecutorTests
     public async Task CredentialProvisioningUsesWorkerHandlerAndReportsOnlySafeOutcomes()
     {
         var handler = new FakeAuthenticationExecutor();
+        IReadOnlyList<WorkerCapabilityContract>? reportedCapabilities = null;
         var action = new ProvisioningActionContract("api-auth", "authentication", "github-api", Operation: "provision",
             CredentialId: Guid.NewGuid().ToString("N"), Scope: "team/repo");
         var reports = new List<ProvisioningWorkerReportContract>();
@@ -275,12 +279,32 @@ public sealed class ProvisioningPlanExecutorTests
         var result = await new ProvisioningPlanExecutor(
             new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(1, "", ""))),
             policy: new ProvisioningPolicy { Enabled = true, AllowCredentials = true, AllowNonPrivileged = true },
-            authenticationExecutor: handler).ExecuteAsync(Plan([action]), "worker-id",
+            authenticationExecutor: handler,
+            capabilitiesChanged: (capabilities, _) => { reportedCapabilities = capabilities; return Task.CompletedTask; }).ExecuteAsync(Plan([action]), "worker-id",
                 (report, _) => { reports.Add(report); return Task.CompletedTask; }, CancellationToken.None);
 
         Assert.Equal("Completed", result.State);
         Assert.Equal(action, handler.Action);
+        Assert.Contains(reportedCapabilities!, capability => capability.Type == "authentication" &&
+            capability.Name == "github-api" && capability.Scope == "team/repo");
         Assert.DoesNotContain("fake-token", string.Join(" ", reports.Select(report => report.Result + report.Failure)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FailedAuthenticationReadinessDoesNotAdvertiseCapability()
+    {
+        IReadOnlyList<WorkerCapabilityContract>? reportedCapabilities = null;
+        var action = new ProvisioningActionContract("api-auth", "authentication", "github-api", Operation: "provision",
+            CredentialId: Guid.NewGuid().ToString("N"), Scope: "team/repo");
+        var result = await new ProvisioningPlanExecutor(
+            new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(1, "", ""))),
+            policy: new ProvisioningPolicy { Enabled = true, AllowCredentials = true, AllowNonPrivileged = true },
+            authenticationExecutor: new FakeAuthenticationExecutor(succeeded: false),
+            capabilitiesChanged: (capabilities, _) => { reportedCapabilities = capabilities; return Task.CompletedTask; })
+            .ExecuteAsync(Plan([action]), "worker-id", (_, _) => Task.CompletedTask, CancellationToken.None);
+
+        Assert.Equal("Failed", result.State);
+        Assert.Null(reportedCapabilities);
     }
 
     private sealed class FakeInstaller(bool requiresElevation) : IDependencyInstaller
@@ -296,13 +320,13 @@ public sealed class ProvisioningPlanExecutorTests
         }
     }
 
-    private sealed class FakeAuthenticationExecutor : IAuthenticationActionExecutor
+    private sealed class FakeAuthenticationExecutor(bool succeeded = true) : IAuthenticationActionExecutor
     {
         public ProvisioningActionContract? Action { get; private set; }
         public Task<DependencyInstallResult> ExecuteAsync(ProvisioningActionContract action, CancellationToken cancellationToken)
         {
             Action = action;
-            return Task.FromResult(new DependencyInstallResult(true, true, false, Message: "credential installed and verified"));
+            return Task.FromResult(new DependencyInstallResult(true, succeeded, false, Message: "credential installed and verified"));
         }
     }
 

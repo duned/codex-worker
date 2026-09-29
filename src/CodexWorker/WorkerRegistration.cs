@@ -355,7 +355,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
     {
         _stop.Cancel();
         if (_run is not null) try { await _run.ConfigureAwait(false); } catch (OperationCanceledException) { }
-        try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), "stopped", CancellationToken.None); }
+        try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), "stopped", CancellationToken.None, capabilities?.Invoke()); }
         catch (Exception ex) { if (!_degraded) report?.Invoke($"Codex Server final heartbeat failed: {ex.Message}"); }
         _stop.Dispose();
     }

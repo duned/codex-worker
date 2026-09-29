@@ -42,6 +42,16 @@ public sealed class WorkerHost
         WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), "starting");
         IReadOnlyList<WorkerCapabilityContract> heartbeatCapabilities = [];
         WorkerHeartbeatLoop? heartbeat = null;
+        async Task ReportProvisionedCapabilitiesAsync(IReadOnlyList<WorkerCapabilityContract> capabilities, CancellationToken token)
+        {
+            Volatile.Write(ref heartbeatCapabilities, capabilities);
+            if (_global.Server.Enabled)
+            {
+                var status = Volatile.Read(ref heartbeatStatus);
+                await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
+                    status.ActiveExecutions, status.Projects, status.State, token, capabilities);
+            }
+        }
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
@@ -86,7 +96,7 @@ public sealed class WorkerHost
                 if (initialPlan is not null)
                 {
                     runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {initialPlan.Id} started.");
-                    var result = await CreateProvisioningExecutor(registration, runtimes).ExecuteAsync(initialPlan,
+                    var result = await CreateProvisioningExecutor(registration, runtimes, ReportProvisionedCapabilitiesAsync).ExecuteAsync(initialPlan,
                         initialPlan.WorkerId,
                         (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, initialPlan.Id, report, token), ct);
                     runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {initialPlan.Id} finished.");
@@ -202,7 +212,7 @@ public sealed class WorkerHost
                     if (provisioningPlan is not null)
                     {
                         runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
-                        var provisioningResult = await CreateProvisioningExecutor(registration, runtimes).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
+                        var provisioningResult = await CreateProvisioningExecutor(registration, runtimes, ReportProvisionedCapabilitiesAsync).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
                             (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, provisioningPlan.Id, report, token), executionToken);
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")
@@ -534,12 +544,14 @@ public sealed class WorkerHost
     }
 
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
-        IReadOnlyList<ProjectRuntime> runtimes) => new(WorkerCapabilityDiscovery.Shared,
+        IReadOnlyList<ProjectRuntime> runtimes,
+        Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(WorkerCapabilityDiscovery.Shared,
         policy: _global.Worker.Provisioning,
         authenticationExecutor: new GitHubAuthenticationProvisioner(_runner,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.Git,
-            (credentialId, token) => registration.RetrieveCredentialAsync(_global.Server, credentialId, token)));
+            (credentialId, token) => registration.RetrieveCredentialAsync(_global.Server, credentialId, token)),
+        capabilitiesChanged: capabilitiesChanged);
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
         CodexExecutor Codex, GitHubClient GitHub, SemaphoreSlim RepositoryGate);

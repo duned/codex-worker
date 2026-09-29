@@ -33,14 +33,17 @@ public sealed class ProvisioningPlanExecutor
     private readonly IReadOnlyList<IDependencyInstaller> _installers;
     private readonly ProvisioningPolicy _policy;
     private readonly IAuthenticationActionExecutor? _authenticationExecutor;
+    private readonly Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task>? _capabilitiesChanged;
 
     public ProvisioningPlanExecutor(WorkerCapabilityDiscovery discovery, IEnumerable<IDependencyInstaller>? installers = null,
-        ProvisioningPolicy? policy = null, IAuthenticationActionExecutor? authenticationExecutor = null)
+        ProvisioningPolicy? policy = null, IAuthenticationActionExecutor? authenticationExecutor = null,
+        Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task>? capabilitiesChanged = null)
     {
         _discovery = discovery;
         _installers = (installers ?? [new DebianAptDependencyInstaller()]).ToArray();
         _policy = policy ?? new ProvisioningPolicy();
         _authenticationExecutor = authenticationExecutor;
+        _capabilitiesChanged = capabilitiesChanged;
     }
 
     public async Task<ProvisioningWorkerReportContract> ExecuteAsync(ProvisioningPlanContract plan, string workerId,
@@ -54,6 +57,7 @@ public sealed class ProvisioningPlanExecutor
             await report(new ProvisioningWorkerReportContract(workerId, "Completed", Result: noOp), cancellationToken);
             return new ProvisioningWorkerReportContract(workerId, "Completed", Result: noOp);
         }
+        IReadOnlyList<WorkerCapabilityContract> observedCapabilities = await _discovery.GetCachedAsync(cancellationToken);
 
         foreach (var action in plan.Actions)
         {
@@ -76,7 +80,8 @@ public sealed class ProvisioningPlanExecutor
             }
             if (action.Type == "refresh-capabilities")
             {
-                await _discovery.RefreshAsync(cancellationToken);
+                observedCapabilities = MergeObservedAuthentication(await _discovery.RefreshAsync(cancellationToken), observedCapabilities);
+                if (_capabilitiesChanged is not null) await _capabilitiesChanged(observedCapabilities, cancellationToken);
                 decisions.Add($"{action.Id}: capability refresh permitted");
                 continue;
             }
@@ -91,12 +96,21 @@ public sealed class ProvisioningPlanExecutor
                 var provisioned = await _authenticationExecutor.ExecuteAsync(action, cancellationToken);
                 if (!provisioned.Succeeded)
                     return await FailedAsync(workerId, action, provisioned.Message ?? "authentication provisioning failed", report, cancellationToken, decisions);
+                var readinessCapability = AuthenticationCapability(action);
+                if (readinessCapability is not null)
+                {
+                    observedCapabilities = observedCapabilities
+                        .Where(capability => !(capability.Type == readinessCapability.Type && capability.Name == readinessCapability.Name &&
+                            string.Equals(capability.Scope, readinessCapability.Scope, StringComparison.OrdinalIgnoreCase)))
+                        .Append(readinessCapability).ToArray();
+                    if (_capabilitiesChanged is not null) await _capabilitiesChanged(observedCapabilities, cancellationToken);
+                }
                 installedCapabilities.Add($"authentication {action.Name} for {action.Scope}");
                 continue;
             }
 
             var requirement = new ProvisioningRequirement(action.Type, action.Name, action.Version);
-            var capabilities = await _discovery.GetCachedAsync(cancellationToken);
+            var capabilities = observedCapabilities;
             if (capabilities.Any(capability => CapabilityVersionMatcher.Satisfies(capability, requirement)))
             {
                 decisions.Add($"{action.Id}: already satisfied; no operation performed");
@@ -123,10 +137,12 @@ public sealed class ProvisioningPlanExecutor
             if (!installed.Succeeded)
                 return await FailedAsync(workerId, action, installed.Message ?? "installation failed", report, cancellationToken, decisions);
 
-            var verified = await _discovery.RefreshAsync(cancellationToken);
+            var verified = MergeObservedAuthentication(await _discovery.RefreshAsync(cancellationToken), observedCapabilities);
+            observedCapabilities = verified;
             var detected = verified.FirstOrDefault(capability => CapabilityVersionMatcher.Satisfies(capability, requirement));
             if (detected is null)
                 return await FailedAsync(workerId, action, "installation completed but the requested capability/version was not detected afterward", report, cancellationToken, decisions);
+            if (_capabilitiesChanged is not null) await _capabilitiesChanged(observedCapabilities, cancellationToken);
             installed = installed with { DetectedVersion = detected.Version, DetectedCapability = detected };
             var detectedCapability = installed.DetectedCapability ?? detected;
             installedCapabilities.Add($"{detectedCapability.Type} {detectedCapability.Name}{(installed.DetectedVersion is null ? "" : " " + installed.DetectedVersion)}");
@@ -148,6 +164,19 @@ public sealed class ProvisioningPlanExecutor
         var text = string.Join("; ", decisions);
         return text.Length <= maximumLength ? text : text[..(maximumLength - 3)] + "...";
     }
+
+    private static WorkerCapabilityContract? AuthenticationCapability(ProvisioningActionContract action) =>
+        action.Type != "authentication" || action.Scope is null ? null : action.Name switch
+        {
+            "github-api" => new WorkerCapabilityContract("authentication", "github-api", Scope: action.Scope),
+            "git-https" => new WorkerCapabilityContract("authentication", "git-repository", Scope: action.Scope),
+            _ => null
+        };
+
+    private static IReadOnlyList<WorkerCapabilityContract> MergeObservedAuthentication(
+        IReadOnlyList<WorkerCapabilityContract> discovered, IReadOnlyList<WorkerCapabilityContract> previous) =>
+        discovered.Concat(previous.Where(capability => capability.Type == "authentication"))
+            .Distinct().ToArray();
 
     private static async Task<ProvisioningWorkerReportContract> FailedAsync(string workerId, ProvisioningActionContract action,
         string reason, Func<ProvisioningWorkerReportContract, CancellationToken, Task> report, CancellationToken cancellationToken,
