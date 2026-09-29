@@ -11,7 +11,7 @@ using System.Text.Json;
 
 public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc);
 public sealed record ServerVersion(string Version, string Product);
-public sealed record ServerHealth(string Status, bool PersistenceAvailable);
+public sealed record ServerHealth(string Status, bool PersistenceAvailable, bool ControlPlaneInitialized = true);
 public sealed record ProjectUpdateRequest(CentralProjectDefinition Definition, long ExpectedRevision);
 
 public interface IServerHealthService
@@ -24,7 +24,7 @@ public sealed class ServerHealthService(IRegistryStore registryStore) : IServerH
     public async Task<ServerHealth> GetHealthAsync(CancellationToken cancellationToken)
     {
         var available = await registryStore.IsAvailableAsync(cancellationToken);
-        return new ServerHealth(available ? "healthy" : "unhealthy", available);
+        return new ServerHealth(available ? "healthy" : "unhealthy", available, ControlPlaneInitialized: true);
     }
 }
 
@@ -64,13 +64,13 @@ public static class ServerApplication
             try
             {
                 var health = await healthService.GetHealthAsync(context.RequestAborted);
-                return health.PersistenceAvailable
-                    ? Results.Ok(new { status = "ready", health.PersistenceAvailable })
-                    : Results.Json(new { status = "not-ready", health.PersistenceAvailable }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                return health.PersistenceAvailable && health.ControlPlaneInitialized
+                    ? Results.Ok(new { status = "ready", health.PersistenceAvailable, health.ControlPlaneInitialized })
+                    : Results.Json(new { status = "not-ready", health.PersistenceAvailable, health.ControlPlaneInitialized }, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
             catch (Exception) when (!context.RequestAborted.IsCancellationRequested)
             {
-                return Results.Json(new { status = "not-ready", persistenceAvailable = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                return Results.Json(new { status = "not-ready", persistenceAvailable = false, controlPlaneInitialized = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
         });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
@@ -150,7 +150,7 @@ public static class ServerApplication
             try
             {
                 var health = await healthService.GetHealthAsync(context.RequestAborted);
-                return health.PersistenceAvailable ? Results.Ok(health) : Results.Json(health, statusCode: StatusCodes.Status503ServiceUnavailable);
+                return health.PersistenceAvailable && health.ControlPlaneInitialized ? Results.Ok(health) : Results.Json(health, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
             catch (Exception) when (!context.RequestAborted.IsCancellationRequested)
             {
@@ -280,6 +280,16 @@ public static class ServerApplication
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
+        });
+        app.MapGet("/api/v1/workers/{workerId}/diagnostics", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
+            if (worker is null) return Results.NotFound();
+            var projects = await store.GetProjectsAsync(context.RequestAborted);
+            var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
+            return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans, ManagedConfigurationVersion(projects)));
         });
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
@@ -420,6 +430,8 @@ public static class ServerApplication
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(ValidCapability) &&
         request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
+        (request.ConfigurationSynchronization is null or "synchronized" or "cached" or "unavailable" or "error" or "not-synchronized") &&
+        (request.ConfigurationVersion is null || (request.ConfigurationVersion.Length <= 128 && !request.ConfigurationVersion.Any(char.IsControl))) &&
         request.ActiveProjects.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 200);
 
     private static bool ValidCapability(WorkerCapability value) => value is not null &&
@@ -428,7 +440,7 @@ public static class ServerApplication
         !value.Type.Any(char.IsControl) && !value.Name.Any(char.IsControl) &&
         (value.Version is null || (value.Version.Length <= 100 && !value.Version.Any(char.IsControl)));
 
-    private static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects)
+    internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects)
     {
         var material = new StringBuilder();
         foreach (var project in projects.OrderBy(item => item.Id, StringComparer.Ordinal))

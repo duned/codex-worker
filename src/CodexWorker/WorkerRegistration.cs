@@ -37,7 +37,7 @@ public static class WorkerAgentCapabilities
 
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities);
@@ -150,7 +150,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 
     public async Task HeartbeatAsync(WorkerServerSettings settings, int capacity, int activeExecutions,
         IReadOnlyList<string> activeProjects, string lifecycleState, CancellationToken cancellationToken,
-        IReadOnlyList<WorkerCapabilityContract>? capabilities = null)
+        IReadOnlyList<WorkerCapabilityContract>? capabilities = null,
+        WorkerConfigurationSyncStatus? configurationSync = null)
     {
         if (!settings.Enabled) return;
         var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
@@ -162,7 +163,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
-                lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects));
+                lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
+                configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion));
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
@@ -345,7 +347,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 /// <summary>Best-effort runtime reporting. Connectivity loss is reported once per degraded period and never stops execution.</summary>
 public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capacity,
     Func<WorkerHeartbeatStatus> snapshot, Action<string>? report = null,
-    Func<IReadOnlyList<WorkerCapabilityContract>>? capabilities = null)
+    Func<IReadOnlyList<WorkerCapabilityContract>>? capabilities = null,
+    Func<WorkerConfigurationSyncStatus?>? configurationSync = null)
 {
     private readonly CancellationTokenSource _stop = new();
     private Task? _run;
@@ -363,7 +366,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
             {
                 var current = snapshot();
                 await _client.HeartbeatAsync(settings, capacity, current.ActiveExecutions, current.Projects, current.State,
-                    _stop.Token, capabilities?.Invoke());
+                    _stop.Token, capabilities?.Invoke(), configurationSync?.Invoke());
                 if (_degraded) report?.Invoke("Codex Server heartbeat connectivity recovered.");
                 _degraded = false;
             }
@@ -380,7 +383,8 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
     {
         _stop.Cancel();
         if (_run is not null) try { await _run.ConfigureAwait(false); } catch (OperationCanceledException) { }
-        try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), "stopped", CancellationToken.None, capabilities?.Invoke()); }
+        try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), "stopped", CancellationToken.None,
+            capabilities?.Invoke(), configurationSync?.Invoke()); }
         catch (Exception ex) { if (!_degraded) report?.Invoke($"Codex Server final heartbeat failed: {ex.Message}"); }
         _stop.Dispose();
     }

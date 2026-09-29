@@ -152,9 +152,14 @@ public sealed class CodexServerTests
         await store.InitializeAsync();
         var workerId = Guid.NewGuid().ToString("N");
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, [new("tool", "git")]));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 2, 2, [new("tool", "git")], ["one", "two"]));
-        Assert.Equal("online", (await store.GetWorkerAsync(workerId))!.Availability);
-        Assert.Equal(0, (await store.GetWorkerAsync(workerId))!.AvailableCapacity);
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 2, 2,
+            [new("tool", "git")], ["one", "two"], "synchronized", "configuration-v1"));
+        var initial = (await store.GetWorkerAsync(workerId))!;
+        Assert.Equal("online", initial.Availability);
+        Assert.Equal(0, initial.AvailableCapacity);
+        Assert.Equal("synchronized", initial.ConfigurationSynchronization);
+        Assert.Equal("configuration-v1", initial.ConfigurationVersion);
+        Assert.NotNull(initial.LastHeartbeatAtUtc);
         clock.Advance(TimeSpan.FromSeconds(31));
         var stale = (await store.GetWorkerAsync(workerId))!;
         Assert.Equal("stale", stale.Availability);
@@ -199,6 +204,7 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
             Assert.Equal("healthy", health.RootElement.GetProperty("status").GetString());
             Assert.True(health.RootElement.GetProperty("persistenceAvailable").GetBoolean());
+            Assert.True(health.RootElement.GetProperty("controlPlaneInitialized").GetBoolean());
 
             using var liveResponse = await client.GetAsync("/livez");
             Assert.Equal(HttpStatusCode.OK, liveResponse.StatusCode);
@@ -206,6 +212,7 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, readyResponse.StatusCode);
             using var ready = JsonDocument.Parse(await readyResponse.Content.ReadAsStringAsync());
             Assert.Equal("ready", ready.RootElement.GetProperty("status").GetString());
+            Assert.True(ready.RootElement.GetProperty("controlPlaneInitialized").GetBoolean());
 
         }
         finally { await app.StopAsync(); }
@@ -472,6 +479,58 @@ public sealed class CodexServerTests
         Assert.Contains("requires .NET >=10; worker reports .NET 9", result.MissingRequirements);
         Assert.Contains("requires Docker; capability unavailable", result.MissingRequirements);
         Assert.Contains("requires PostgreSQL 18.0; worker reports PostgreSQL 17.9", result.MissingRequirements);
+    }
+
+    [Fact]
+    public void WorkerDiagnosticsExplainHealthyAndUnhealthyReadiness()
+    {
+        var now = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var project = new CentralProject("project", "Project", "team/repository", "main", "", [], 1, now, now);
+        WorkerCapability[] readyCapabilities =
+        [
+            new("authentication", "github-api", Scope: "team/repository"),
+            new("authentication", "git-repository", Scope: "team/repository"),
+            new("agent-provider", "codex")
+        ];
+        var healthy = new WorkerRegistrationResponse(2, "worker", "worker", "1.2.3", "linux", 2,
+            readyCapabilities, now, now, "online", 0, 2, 2, "running", [], now, "synchronized", "config-v1");
+
+        var healthyDiagnostics = WorkerDiagnosticsDerivation.Derive(healthy, [project], [], "config-v1");
+
+        Assert.Empty(healthyDiagnostics.Reasons);
+        Assert.True(healthyDiagnostics.GitHubReady);
+        Assert.True(healthyDiagnostics.GitReady);
+        Assert.True(healthyDiagnostics.AiAgentReady);
+        Assert.True(Assert.Single(healthyDiagnostics.Projects).IsEligible);
+        Assert.Equal(now, healthyDiagnostics.LastHeartbeatAtUtc);
+        Assert.Equal("synchronized", healthyDiagnostics.ConfigurationSynchronization);
+
+        var unhealthy = healthy with
+        {
+            Availability = "stale",
+            LifecycleState = "draining",
+            ActiveExecutions = 2,
+            AvailableCapacity = 0,
+            Capabilities = [new("tool", "git")]
+        };
+        var unhealthyDiagnostics = WorkerDiagnosticsDerivation.Derive(unhealthy, [project], [], "config-v1");
+
+        Assert.Contains("Offline", unhealthyDiagnostics.Reasons);
+        Assert.Contains("GitHub unavailable", unhealthyDiagnostics.Reasons);
+        Assert.Contains("Git unavailable", unhealthyDiagnostics.Reasons);
+        Assert.Contains("AI agent unavailable", unhealthyDiagnostics.Reasons);
+        Assert.False(Assert.Single(unhealthyDiagnostics.Projects).IsEligible);
+        Assert.Contains("requires github-api for team/repository; capability unavailable",
+            Assert.Single(unhealthyDiagnostics.Projects).MissingRequirements);
+
+        var draining = healthy with { Availability = "draining", LifecycleState = "draining" };
+        Assert.Contains("Draining", WorkerDiagnosticsDerivation.Derive(draining, [project], [], "config-v1").Reasons);
+        var full = healthy with { ActiveExecutions = 2, AvailableCapacity = 0 };
+        Assert.Contains("At capacity", WorkerDiagnosticsDerivation.Derive(full, [project], [], "config-v1").Reasons);
+        var outOfSync = healthy with { ConfigurationVersion = "older-config" };
+        var syncDiagnostics = WorkerDiagnosticsDerivation.Derive(outOfSync, [project], [], "config-v1");
+        Assert.Equal("out-of-sync", syncDiagnostics.ConfigurationSynchronization);
+        Assert.Contains("Configuration synchronization required", syncDiagnostics.Reasons);
     }
 
     [Fact]

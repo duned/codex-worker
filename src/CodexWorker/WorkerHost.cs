@@ -57,7 +57,7 @@ public sealed class WorkerHost
             {
                 var status = Volatile.Read(ref heartbeatStatus);
                 await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
-                    status.ActiveExecutions, status.Projects, status.State, token, capabilities);
+                    status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
             }
         }
         try
@@ -106,7 +106,8 @@ public sealed class WorkerHost
             if (_global.Server.Enabled)
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
-                    message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities));
+                    message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities),
+                    () => managedConfiguration?.Status);
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore();
@@ -176,7 +177,7 @@ public sealed class WorkerHost
                 .Distinct().ToArray());
             if (_global.Server.Enabled)
                 await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
-                    Array.Empty<string>(), "starting", ct, heartbeatCapabilities);
+                    Array.Empty<string>(), "starting", ct, heartbeatCapabilities, managedConfiguration?.Status);
             await ReconcileRecoveryAsync(runtimes, history, runtimeReadModel, ct);
             if (configurationService is not null)
                 configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);

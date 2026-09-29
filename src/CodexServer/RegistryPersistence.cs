@@ -261,12 +261,13 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, DateTimeOffset? LastHeartbeatAtUtc = null,
+    string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
@@ -1259,7 +1260,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return new(request.ContractVersion, request.WorkerId, request.DisplayName, heartbeat?.WorkerVersion ?? request.WorkerVersion,
             request.Platform, request.Capacity, heartbeat?.Capabilities ?? request.Capabilities, registered, seen,
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
-            online ? heartbeat!.ActiveProjects : Array.Empty<string>());
+            online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat is null ? null : seen,
+            heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion);
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
