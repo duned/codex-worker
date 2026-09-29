@@ -11,6 +11,7 @@ public sealed class WorkerCapabilityDiscovery
         ("runtime", "dotnet", "dotnet", ["--version"]),
         ("runtime", "node", "node", ["--version"]),
         ("tool", "git", "git", ["--version"]),
+        ("tool", "github-cli", "gh", ["--version"]),
         ("tool", "docker", "docker", ["--version"]),
         ("tool", "postgresql", "psql", ["--version"]),
         ("tool", "codex-cli", "codex", ["--version"])

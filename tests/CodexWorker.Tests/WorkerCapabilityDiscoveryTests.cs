@@ -15,6 +15,7 @@ public sealed class WorkerCapabilityDiscoveryTests
                 "dotnet" => new ProcessResult(0, "10.0.112\n", ""),
                 "node" => new ProcessResult(0, "v22.3.0\n", ""),
                 "git" => new ProcessResult(0, "git version 2.43.0\n", ""),
+                "gh" => new ProcessResult(0, "gh version 2.55.0\n", ""),
                 _ => new ProcessResult(127, "", "not installed")
             });
         });
@@ -24,6 +25,7 @@ public sealed class WorkerCapabilityDiscoveryTests
         Assert.Contains(capabilities, item => item.Type == "runtime" && item.Name == "dotnet" && item.Version == "10.0.112");
         Assert.Contains(capabilities, item => item.Type == "runtime" && item.Name == "node" && item.Version == "22.3.0");
         Assert.Contains(capabilities, item => item.Type == "tool" && item.Name == "git" && item.Version == "2.43.0");
+        Assert.Contains(capabilities, item => item.Type == "tool" && item.Name == "github-cli" && item.Version == "2.55.0");
         Assert.DoesNotContain(capabilities, item => item.Name == "docker" || item.Name == "postgresql");
         Assert.Contains(capabilities, item => item.Type == "integration" && item.Name == "github-issues");
     }
@@ -53,7 +55,7 @@ public sealed class WorkerCapabilityDiscoveryTests
         await discovery.GetCachedAsync();
         await discovery.GetCachedAsync();
 
-        Assert.Equal(12, calls);
+        Assert.Equal(14, calls);
     }
 
     [Theory]
