@@ -79,6 +79,17 @@ public static class ServerApplication
             catch (InvalidOperationException) { return Results.NotFound(); }
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
+        app.MapPost("/api/v1/workers/{workerId}/assignments/request", async (string workerId, WorkerAssignmentRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (request is null || !string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) ||
+                request.AvailableCapacity is < 0 or > 8 || request.ProjectCapacities is null ||
+                request.ProjectCapacities.Count > 128 || request.ProjectCapacities.Any(p => string.IsNullOrWhiteSpace(p.Key) || p.Key.Length > 80 || p.Value is < 0 or > 8))
+                return Results.BadRequest(new { error = "Invalid Worker assignment request contract." });
+            try { return Results.Ok(await store.RequestAssignmentAsync(request, context.RequestAborted)); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
         app.MapGet("/api/v1/workers", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();

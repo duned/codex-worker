@@ -62,15 +62,59 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Fact]
+    public async Task AssignmentRequestUsesRegisteredIdentityAndDoesNotCallServerWithoutCapacity()
+    {
+        using var temporary = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "assignment-secret");
+        try
+        {
+            var handler = new CaptureHandler(HttpStatusCode.OK, "{\"hasWork\":false,\"assignment\":null}");
+            using var client = new HttpClient(handler);
+            var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+            var registration = new WorkerRegistrationClient(client);
+            var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile!);
+            var noCapacity = await registration.RequestAssignmentAsync(settings, true, 0,
+                new Dictionary<string, int> { ["compiler"] = 1 }, CancellationToken.None);
+            Assert.False(noCapacity.HasWork);
+            Assert.Null(handler.Body);
+
+            var response = await registration.RequestAssignmentAsync(settings, true, 1,
+                new Dictionary<string, int> { ["compiler"] = 1 }, CancellationToken.None);
+            Assert.False(response.HasWork);
+            Assert.Equal("POST", handler.Method);
+            Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{identity}/assignments/request", handler.Uri);
+            Assert.Equal("Bearer assignment-secret", handler.Authorization);
+            using var payload = JsonDocument.Parse(handler.Body!);
+            Assert.Equal(identity, payload.RootElement.GetProperty("workerId").GetString());
+            Assert.Equal(1, payload.RootElement.GetProperty("availableCapacity").GetInt32());
+            Assert.Equal(1, payload.RootElement.GetProperty("projectCapacities").GetProperty("compiler").GetInt32());
+            Assert.DoesNotContain("assignment-secret", handler.Body!, StringComparison.Ordinal);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
+        private readonly HttpStatusCode _statusCode;
+        private readonly string? _responseBody;
+        public CaptureHandler(HttpStatusCode statusCode = HttpStatusCode.ServiceUnavailable, string? responseBody = null)
+        {
+            _statusCode = statusCode;
+            _responseBody = responseBody;
+        }
         public string? Authorization { get; private set; }
         public string? Body { get; private set; }
+        public string? Method { get; private set; }
+        public string? Uri { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            Method = request.Method.Method;
+            Uri = request.RequestUri?.ToString();
             Authorization = request.Headers.Authorization?.ToString();
-            Body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(_statusCode) { Content = new StringContent(_responseBody ?? "") };
         }
     }
 

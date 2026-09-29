@@ -20,6 +20,14 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<string> Capabilities,
     IReadOnlyList<string> ActiveProjects);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
+public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
+    IReadOnlyDictionary<string, int> ProjectCapacities);
+public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
+    string Description, IReadOnlyList<string> Requirements, long Revision, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
+public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,
+    ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata);
+public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment);
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
@@ -114,6 +122,33 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task<WorkerAssignmentResponseContract> RequestAssignmentAsync(WorkerServerSettings settings, bool workerEnabled, int availableCapacity,
+        IReadOnlyDictionary<string, int> projectCapacities, CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) throw new InvalidOperationException("Assignment requests require managed Server mode.");
+        if (availableCapacity is < 0 or > 8 || projectCapacities is null || projectCapacities.Any(p => p.Value is < 0 or > 8))
+            throw new ArgumentOutOfRangeException(nameof(availableCapacity), "Assignment capacity must be between zero and eight.");
+        if (!workerEnabled || availableCapacity == 0 || projectCapacities.Count == 0 || projectCapacities.All(p => p.Value == 0))
+            return new(false, null);
+        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
+        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities));
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Codex Server assignment request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            return await response.Content.ReadFromJsonAsync<WorkerAssignmentResponseContract>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Codex Server returned an empty assignment response.");
         }
         finally { if (httpClient is null) client.Dispose(); }
     }

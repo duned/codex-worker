@@ -7,6 +7,7 @@ using System.Text.Json;
 using CodexServer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 [CollectionDefinition("ServerTokenEnvironment", DisableParallelization = true)]
 public sealed class ServerTokenEnvironmentCollection { }
@@ -307,6 +308,104 @@ public sealed class CodexServerTests
         Assert.Equal(new[] { projectA.Id, projectA.Id, projectB.Id, projectA.Id }, persisted.Select(x => x.ProjectId));
         Assert.Equal(first.Id, persisted[0].Id);
         Assert.Equal(work, persisted[0].WorkReference);
+    }
+
+    [Fact]
+    public async Task WorkerAssignmentRequestsRespectEligibilityCapacityAndRetainOwnershipAfterRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "assignments.db");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "assignment-test-token");
+        var workerA = Guid.NewGuid().ToString("N");
+        var workerB = Guid.NewGuid().ToString("N");
+        var firstAssignmentId = "";
+        var alphaId = "";
+        try
+        {
+            var app = await ServerApplication.BuildAsync(Args(url, database));
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var alpha = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
+            var beta = await store.CreateProjectAsync(new CentralProjectDefinition("Beta", "team/beta", "main", "", []));
+            alphaId = alpha.Id;
+            await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(alpha.Id, new WorkReference("issue", "1")));
+            await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(alpha.Id, new WorkReference("issue", "2")));
+            await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(beta.Id, new WorkReference("issue", "3")));
+            using (var client = new HttpClient { BaseAddress = new Uri(url) })
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
+                foreach (var id in new[] { workerA, workerB })
+                {
+                    var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, ["git"]);
+                    Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{id}", registration)).StatusCode);
+                }
+                async Task Heartbeat(string id, string state) => Assert.Equal(HttpStatusCode.OK,
+                    (await client.PostAsJsonAsync($"/api/v1/workers/{id}/heartbeat",
+                        new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, ["git"], []))).StatusCode);
+                await Heartbeat(workerA, "running");
+                await Heartbeat(workerB, "draining");
+
+                async Task<HttpResponseMessage> Request(string id, bool enabled, int capacity, Dictionary<string, int> projectCapacities) =>
+                    await client.PostAsJsonAsync($"/api/v1/workers/{id}/assignments/request",
+                        new WorkerAssignmentRequest(id, enabled, capacity, projectCapacities));
+
+                using var disabled = await Request(workerA, false, 2, new() { [alpha.Id] = 2 });
+                Assert.False((await disabled.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);
+                using var draining = await Request(workerB, true, 2, new() { [alpha.Id] = 2 });
+                Assert.False((await draining.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);
+                using var zeroCapacity = await Request(workerA, true, 0, new() { [alpha.Id] = 2 });
+                Assert.False((await zeroCapacity.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);
+
+                using var firstResponse = await Request(workerA, true, 2, new() { [alpha.Id] = 1, [beta.Id] = 1 });
+                Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+                var first = (await firstResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;
+                Assert.True(first.HasWork);
+                Assert.Equal(workerA, first.Assignment!.WorkerId);
+                Assert.Equal(alpha.Id, first.Assignment.Project.Id);
+                Assert.NotEqual(first.Assignment.AssignmentId, first.Assignment.ServerExecutionId);
+                firstAssignmentId = first.Assignment.AssignmentId;
+
+                // A project with no remaining declared slot is skipped while other projects remain eligible.
+                using var secondResponse = await Request(workerA, true, 2, new() { [alpha.Id] = 1, [beta.Id] = 1 });
+                var second = (await secondResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;
+                Assert.True(second.HasWork);
+                Assert.Equal(beta.Id, second.Assignment!.Project.Id);
+                await Heartbeat(workerB, "running");
+                using var otherWorkerResponse = await Request(workerB, true, 2, new() { [alpha.Id] = 1 });
+                var otherWorkerAssignment = (await otherWorkerResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;
+                Assert.True(otherWorkerAssignment.HasWork);
+                Assert.Equal(workerB, otherWorkerAssignment.Assignment!.WorkerId);
+                Assert.Equal(alpha.Id, otherWorkerAssignment.Assignment.Project.Id);
+
+                // The uncertain-delivery case is equivalent to dropping the response: server ownership is already durable.
+                var owned = Assert.Single((await store.GetExecutionsAsync()).Where(x => x.AssignmentId == first.Assignment.AssignmentId));
+                Assert.Equal("Assigned", owned.State);
+                Assert.Equal(workerA, owned.AssignedWorkerId);
+                Assert.Equal(first.Assignment.ServerExecutionId, owned.Id);
+                await app.StopAsync();
+                await app.DisposeAsync();
+            }
+
+            var restarted = await ServerApplication.BuildAsync(Args(url, database));
+            await restarted.StartAsync();
+            var restartedStore = restarted.Services.GetRequiredService<IRegistryStore>();
+            var retained = Assert.Single((await restartedStore.GetExecutionsAsync()).Where(x => x.AssignmentId == firstAssignmentId));
+            Assert.Equal("Assigned", retained.State);
+            Assert.Equal(workerA, retained.AssignedWorkerId);
+            using (var client = new HttpClient { BaseAddress = new Uri(url) })
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
+                using var noWork = await client.PostAsJsonAsync($"/api/v1/workers/{workerB}/assignments/request",
+                    new WorkerAssignmentRequest(workerB, true, 2, new Dictionary<string, int> { [alphaId] = 2 }));
+                Assert.False((await noWork.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);
+            }
+            await restarted.StopAsync();
+            await restarted.DisposeAsync();
+
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
     }
 
     [Fact]
