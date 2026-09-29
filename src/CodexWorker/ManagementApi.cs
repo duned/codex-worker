@@ -21,7 +21,7 @@ public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, stri
     string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
     long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
-    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed);
+    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -151,11 +151,19 @@ public sealed class WorkerRuntimeReadModel
     {
         var entries = await _history.ReadAllAsync(ct);
         return entries.OrderByDescending(e => e.StartedAtUtc).Take(Math.Clamp(limit, 1, 500)).Select(e =>
-            new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
+        {
+            var retentionDays = _registry.Snapshot()
+                .Where(project => string.Equals(project.Configuration.Project.Name, e.Project, StringComparison.OrdinalIgnoreCase))
+                .Select(project => (int?)project.Configuration.Worker.RecoveryRetentionDays)
+                .FirstOrDefault() ?? 7;
+            return new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
                 e.StartedAtUtc, e.CompletedAtUtc, e.DurationMilliseconds, e.ValidationOutcome, e.RepairCount,
                 e.Repairs.Select(repair => new ExecutionRepairInfo(repair.Attempt, repair.MaximumAttempts, repair.PassedAfterRepair)).ToArray(),
                 Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus,
-                e.RetryOfExecutionId, e.AttemptNumber, e.Resumed)).ToArray();
+                e.RetryOfExecutionId, e.AttemptNumber, e.Resumed,
+                e.RecoveryState is "recoverable" or "cleanup-pending"
+                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc);
+        }).ToArray();
     }
 
     private static string? Outcome(string state) => state switch

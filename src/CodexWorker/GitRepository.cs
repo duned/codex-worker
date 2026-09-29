@@ -174,8 +174,16 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not prepare Git checkout for Issue #{issue.Number}: {ex.Message}", ex); }
     }
 
-    private async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
+    public async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
     {
+        var root = Path.GetFullPath(worktreeRoot);
+        var expectedPath = Path.GetFullPath(Path.Combine(root, recovery.ExecutionId.ToString("N")));
+        if (!PathEquals(Path.GetFullPath(source), expectedPath))
+            throw new WorkerInfrastructureException("Persisted recovery path does not match its execution ID.");
+        var expectedBranch = FeatureBranchName(settings, new GitHubIssue(recovery.IssueNumber, recovery.IssueTitle, "", recovery.StartedAtUtc));
+        if (recovery.AttemptNumber > 1) expectedBranch += $"-retry-{recovery.AttemptNumber}";
+        if (recovery.FeatureBranch != expectedBranch)
+            throw new WorkerInfrastructureException("Persisted recovery branch does not match its Issue identity.");
         if (!Directory.Exists(source)) throw new WorkerInfrastructureException($"Recoverable execution workspace is missing: {source}");
         var branch = (await GitAtAsync(source, ["branch", "--show-current"], ct)).StandardOutput.Trim();
         var head = (await GitAtAsync(source, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
@@ -293,6 +301,86 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely preserve failed execution work: {ex.Message}", ex); }
+    }
+
+    /// <summary>Removes one persisted failed-execution workspace after proving its path, branch, and base identity.</summary>
+    public async Task CleanupRecoveryWorkspaceAsync(ExecutionHistoryEntry recovery, CancellationToken ct)
+    {
+        try
+        {
+            if (recovery.RecoveryState is not ("recoverable" or "cleanup-pending" or "missing") ||
+                string.IsNullOrWhiteSpace(recovery.RecoveryBaseCommit))
+                throw new WorkerInfrastructureException("Recovery metadata is incomplete; refusing cleanup.");
+            var expectedBranch = FeatureBranchName(settings, new GitHubIssue(recovery.IssueNumber, recovery.IssueTitle, "", recovery.StartedAtUtc));
+            if (recovery.AttemptNumber > 1) expectedBranch += $"-retry-{recovery.AttemptNumber}";
+            if (recovery.FeatureBranch != expectedBranch)
+                throw new WorkerInfrastructureException("Recovery branch does not match the persisted Issue identity; refusing cleanup.");
+            var root = Path.GetFullPath(worktreeRoot);
+            if (IsWithin(Path.GetFullPath(directory), root))
+                throw new WorkerInfrastructureException("Managed execution worktree root is inside the project checkout; refusing cleanup.");
+            var path = Path.GetFullPath(Path.Combine(root, recovery.ExecutionId.ToString("N")));
+            if (!IsWithin(root, path) || PathEquals(root, path))
+                throw new WorkerInfrastructureException("Recovery path is outside its managed worktree root; refusing cleanup.");
+
+            var registered = ParseWorktrees((await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput);
+            var registrationExists = registered.Any(item => PathEquals(item.Path, path));
+            var registration = registered.FirstOrDefault(item => PathEquals(item.Path, path));
+            if (Directory.Exists(path))
+            {
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    throw new WorkerInfrastructureException("Recovery workspace path is a link; refusing cleanup.");
+                if (!registrationExists || registration.Branch != $"refs/heads/{expectedBranch}")
+                    throw new WorkerInfrastructureException("Recovery workspace is not registered to its persisted branch; refusing cleanup.");
+                var top = Path.GetFullPath((await GitAtAsync(path, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
+                var branch = (await GitAtAsync(path, ["branch", "--show-current"], ct)).StandardOutput.Trim();
+                var head = (await GitAtAsync(path, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                if (!PathEquals(top, path) || branch != expectedBranch || head != recovery.RecoveryBaseCommit)
+                    throw new WorkerInfrastructureException("Recovery workspace state differs from persisted ownership metadata; refusing cleanup.");
+                await GitAsync(["worktree", "remove", "--force", path], ct);
+            }
+            else if (registrationExists)
+            {
+                throw new WorkerInfrastructureException("Recovery workspace is missing but remains registered in Git; refusing cleanup until Git state is inspected.");
+            }
+
+            // show-ref --verify can report an absent ref as a fatal error on some Git
+            // versions. Enumerate the expected ref prefix and require an exact match
+            // so cleanup remains idempotent without treating malformed refs as absent.
+            var expectedRef = $"refs/heads/{expectedBranch}";
+            var matchingRefs = (await GitAsync(["for-each-ref", "--format=%(refname)", expectedRef], ct))
+                .StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (matchingRefs.Contains(expectedRef, StringComparer.Ordinal))
+            {
+                var checkedOut = ParseWorktrees((await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput)
+                    .Any(item => item.Branch == $"refs/heads/{expectedBranch}");
+                var tip = (await GitAsync(["rev-parse", $"refs/heads/{expectedBranch}"], ct)).StandardOutput.Trim();
+                if (checkedOut || tip != recovery.RecoveryBaseCommit)
+                    throw new WorkerInfrastructureException("Recovery branch is in use or its commit changed; refusing cleanup.");
+                await GitAsync(["branch", "-D", "--", expectedBranch], ct);
+            }
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely clean recovery for execution {recovery.ExecutionId}: {ex.Message}", ex); }
+    }
+
+    public bool RecoveryWorkspaceExists(ExecutionHistoryEntry recovery) =>
+        Directory.Exists(RecoveryWorkspacePath(recovery));
+
+    public string RecoveryWorkspacePath(ExecutionHistoryEntry recovery) =>
+        Path.GetFullPath(Path.Combine(worktreeRoot, recovery.ExecutionId.ToString("N")));
+
+    private static IReadOnlyList<(string Path, string? Branch)> ParseWorktrees(string output)
+    {
+        var result = new List<(string Path, string? Branch)>();
+        foreach (var block in output.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var lines = block.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var pathLine = lines.FirstOrDefault(line => line.StartsWith("worktree ", StringComparison.Ordinal));
+            if (pathLine is null) continue;
+            var branchLine = lines.FirstOrDefault(line => line.StartsWith("branch ", StringComparison.Ordinal));
+            result.Add((pathLine[9..].TrimEnd('\r'), branchLine is null ? null : branchLine[7..].TrimEnd('\r')));
+        }
+        return result;
     }
 
     public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,

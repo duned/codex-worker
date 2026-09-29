@@ -67,6 +67,7 @@ public sealed class WorkerHost
                 async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
             )).ToArray();
             var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
+            await ReconcileRecoveryAsync(runtimes, history, runtimeReadModel, ct);
             configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
             _output.GitHubCliReady();
             _output.GitHubAuthenticationReady();
@@ -225,6 +226,62 @@ public sealed class WorkerHost
             foreach (var gate in repositoryGates.Values) gate.Dispose();
             history?.Dispose();
             executionCancellation?.Dispose();
+        }
+    }
+
+    private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
+        WorkerRuntimeReadModel runtime, CancellationToken ct)
+    {
+        var entries = await history.ReadAllAsync(ct);
+        foreach (var project in runtimes)
+        {
+            var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
+            foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
+                         item.Repository == project.Configuration.Project.Repository &&
+                         (item.RecoveryState is "recoverable" or "cleanup-pending" or "missing")))
+            {
+                var expired = RecoveryRetentionPolicy.IsExpired(entry, retention, DateTimeOffset.UtcNow);
+                var cleanupPending = entry.RecoveryState == "cleanup-pending";
+                if (!project.Git.RecoveryWorkspaceExists(entry) && !expired && !cleanupPending)
+                {
+                    if (entry.RecoveryState != "missing")
+                    {
+                        await history.UpdateRecoveryAsync(entry.ExecutionId, "missing", ct);
+                        runtime.Events.Publish("recovery.missing", $"Recovery workspace for execution {entry.ExecutionId} is missing.", entry.Project);
+                    }
+                    continue;
+                }
+                if (!expired && !cleanupPending)
+                {
+                    try
+                    {
+                        await project.Git.ValidateRecoveryWorkspaceAsync(project.Git.RecoveryWorkspacePath(entry), entry, ct);
+                    }
+                    catch (WorkerInfrastructureException ex)
+                    {
+                        runtime.Events.Publish("recovery.reconciliation.skipped", $"Recovery state for execution {entry.ExecutionId} could not be verified: {ex.Message}", entry.Project);
+                        _output.Warning($"Recovery state retained for execution {entry.ExecutionId}: {ex.Message}");
+                    }
+                    continue;
+                }
+
+                runtime.Events.Publish(expired ? "recovery.expired" : "recovery.cleanup.resuming",
+                    expired ? $"Recovery workspace for execution {entry.ExecutionId} expired and is eligible for cleanup." :
+                    $"Resuming interrupted recovery cleanup for execution {entry.ExecutionId}.", entry.Project);
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "cleanup-pending", ct);
+                try
+                {
+                    await project.Git.CleanupRecoveryWorkspaceAsync(entry with { RecoveryState = "cleanup-pending" }, ct);
+                    await history.UpdateRecoveryAsync(entry.ExecutionId, "expired-cleaned", ct);
+                    runtime.Events.Publish("recovery.cleanup.completed", $"Cleaned expired recovery resources for execution {entry.ExecutionId}.", entry.Project);
+                }
+                catch (WorkerInfrastructureException ex)
+                {
+                    runtime.Events.Publish("recovery.cleanup.skipped", $"Cleanup skipped for execution {entry.ExecutionId}: {ex.Message}", entry.Project);
+                    _output.Warning($"Recovery cleanup skipped for execution {entry.ExecutionId}: {ex.Message}");
+                }
+            }
+            runtime.Events.Publish("recovery.reconciled", "Recovery metadata reconciliation completed.", project.Configuration.Project.Name);
         }
     }
 

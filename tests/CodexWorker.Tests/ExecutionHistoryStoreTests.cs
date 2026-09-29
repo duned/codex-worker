@@ -116,6 +116,47 @@ public sealed class ExecutionHistoryStoreTests
     }
 
     [Fact]
+    public async Task RecoveryExpiryIsStoredAndRecoveryCleanupDoesNotChangeExecutionHistory()
+    {
+        using var database = new TemporaryDatabase();
+        var expires = DateTimeOffset.UtcNow.AddDays(7);
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "Failed", CompletedAtUtc = DateTimeOffset.UtcNow, RecoveryState = "recoverable",
+            RecoveryBaseCommit = "base", RecoveryExpiresAtUtc = expires
+        };
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            await store.UpdateRecoveryAsync(entry.ExecutionId, "expired-cleaned");
+        }
+
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var actual = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal("Failed", actual.State);
+        Assert.NotNull(actual.CompletedAtUtc);
+        Assert.Equal("expired-cleaned", actual.RecoveryState);
+        Assert.Equal(expires, actual.RecoveryExpiresAtUtc);
+    }
+
+    [Fact]
+    public void RecoveryRetentionUsesPersistedExpiryOrAControllableFallbackClock()
+    {
+        var started = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var entry = Entry(Guid.NewGuid(), started) with { CompletedAtUtc = started.AddHours(2) };
+        var retention = TimeSpan.FromDays(7);
+        var expiry = RecoveryRetentionPolicy.ExpiresAt(entry, retention);
+
+        Assert.Equal(started.AddHours(2).AddDays(7), expiry);
+        Assert.False(RecoveryRetentionPolicy.IsExpired(entry, retention, expiry.AddTicks(-1)));
+        Assert.True(RecoveryRetentionPolicy.IsExpired(entry, retention, expiry));
+        Assert.Equal(started.AddDays(20), RecoveryRetentionPolicy.ExpiresAt(entry with
+        {
+            RecoveryExpiresAtUtc = started.AddDays(20)
+        }, retention));
+    }
+
+    [Fact]
     public async Task FreshDatabaseInitializesSchemaAndDoesNotPersistEnvironmentValues()
     {
         using var database = new TemporaryDatabase();
@@ -128,7 +169,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(3L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(4L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

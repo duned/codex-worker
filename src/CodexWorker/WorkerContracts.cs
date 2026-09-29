@@ -34,6 +34,7 @@ public interface IGitRepository : IDisposable
         await DiscardUncommittedIssueChangesAsync(ct);
         return null;
     }
+    Task CleanupRecoveryWorkspaceAsync(ExecutionHistoryEntry recovery, CancellationToken ct) => Task.CompletedTask;
     Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct);
 }

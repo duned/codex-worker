@@ -51,6 +51,7 @@ public sealed class ConfigurationTests
             Assert.Equal(80, config.Worker.GitTimeoutSeconds);
             Assert.Equal(900, config.Validation.TimeoutSeconds);
             Assert.Equal(2, config.Validation.MaxFixAttempts);
+            Assert.Equal(7, config.Worker.RecoveryRetentionDays);
             Assert.False(config.Git.AutoMerge);
         }
         finally { Directory.Delete(folder, recursive: true); }

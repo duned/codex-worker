@@ -49,6 +49,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void Shutdown(string message = "Worker stopped.") { _waiting = false; WriteLine(message, null, "■"); }
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
     public void Warning(string message) => WriteLine(message, ConsoleColor.Yellow, "⚠");
+    public void RecoveryCleanupCompleted(Guid executionId) =>
+        WriteLine($"Recovery resources cleaned · execution {executionId}", ConsoleColor.Green, "✓");
 
     public void Waiting()
     {

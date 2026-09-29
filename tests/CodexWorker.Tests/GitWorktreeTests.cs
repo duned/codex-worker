@@ -459,6 +459,54 @@ public sealed class GitWorktreeTests
         Assert.Equal("keep for inspection", await File.ReadAllTextAsync(Path.Combine(executionDirectory, "diagnostic.txt")));
     }
 
+    [Fact]
+    public async Task RecoveryCleanupRemovesOnlyThePersistedWorkerOwnedWorkspaceAndBranch()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        using var active = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var activeId = Guid.NewGuid();
+        await active.StartIssueAsync(activeId, fixture.Issue with { Number = 18, Title = "Active execution" }, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(active.ExecutionDirectory, "active.txt"), "keep active");
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "partial.txt"), "recoverable");
+        var recovery = await git.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery!.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, null,
+            null, 0, [], null, null, null, "failed", "cleanup-pending", recovery.BaseCommit, recovery.StatusSummary);
+
+        await git.CleanupRecoveryWorkspaceAsync(entry, CancellationToken.None);
+        await git.CleanupRecoveryWorkspaceAsync(entry, CancellationToken.None);
+
+        Assert.False(Directory.Exists(Path.Combine(fixture.WorktreeRoot, id.ToString("N"))));
+        Assert.True(Directory.Exists(Path.Combine(fixture.WorktreeRoot, activeId.ToString("N"))));
+        Assert.Equal("keep active", await File.ReadAllTextAsync(Path.Combine(active.ExecutionDirectory, "active.txt")));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", recovery.Branch));
+        Assert.Equal("main", await fixture.Git("branch", "--show-current"));
+    }
+
+    [Fact]
+    public async Task RecoveryCleanupRefusesBranchNotMatchingExecutionIdentity()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "partial.txt"), "recoverable");
+        var recovery = await git.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            "unrelated/branch", "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, null,
+            null, 0, [], null, null, null, "failed", "cleanup-pending", recovery!.BaseCommit, recovery.StatusSummary);
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CleanupRecoveryWorkspaceAsync(entry, CancellationToken.None));
+
+        Assert.True(Directory.Exists(git.ExecutionDirectory));
+        Assert.Contains(id.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
     private sealed class RepositoryFixture : IDisposable
     {
         private readonly string _root;

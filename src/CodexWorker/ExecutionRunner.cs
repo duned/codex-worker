@@ -22,7 +22,25 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
             await _repositoryGate.WaitAsync(ct);
-            try { await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct); }
+            try
+            {
+                await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct);
+                if (context.RetryOf is { RecoveryState: "recoverable" or "cleanup-pending" or "missing" } previous)
+                {
+                    if (history is not null) await history.UpdateRecoveryAsync(previous.ExecutionId, "cleanup-pending", ct);
+                    try
+                    {
+                        await git.CleanupRecoveryWorkspaceAsync(previous with { RecoveryState = "cleanup-pending" }, ct);
+                        if (history is not null) await history.UpdateRecoveryAsync(previous.ExecutionId,
+                            execution.Resumed ? "resumed-cleaned" : "discarded", ct);
+                        output.RecoveryCleanupCompleted(previous.ExecutionId);
+                    }
+                    catch (WorkerInfrastructureException cleanupError)
+                    {
+                        output.Warning($"Recovery cleanup skipped for execution {previous.ExecutionId}: {cleanupError.Message}");
+                    }
+                }
+            }
             finally { _repositoryGate.Release(); }
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working"), () =>
@@ -120,7 +138,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             RecoveryState = recovery is not null ? "recoverable" : kind == IssueOutcomeKind.Failed ? "cleaned-no-changes" : null,
             RecoveryBaseCommit = recovery?.BaseCommit,
-            RecoveryStatus = recovery?.StatusSummary
+            RecoveryStatus = recovery?.StatusSummary,
+            RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)
         }, ct);
         return new IssueProcessingResult(kind, report);
     }

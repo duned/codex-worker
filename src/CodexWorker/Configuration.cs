@@ -57,6 +57,8 @@ public sealed class WorkerConfiguration
             errors.Add("worker.maxParallelTasks must be between 1 and 8.");
         if (!new[] { "restart", "resume" }.Contains(Worker.RetryMode, StringComparer.OrdinalIgnoreCase))
             errors.Add("worker.retryMode must be restart or resume.");
+        if (Worker.RecoveryRetentionDays < 1 || Worker.RecoveryRetentionDays > 3650)
+            errors.Add("worker.recoveryRetentionDays must be between 1 and 3650.");
         if (Validation.TimeoutSeconds <= 0) errors.Add("validation.timeoutSeconds must be greater than zero.");
         if (Validation.MaxFixAttempts < 0 || Validation.MaxFixAttempts > 5)
             errors.Add("validation.maxFixAttempts must be between 0 and 5.");
@@ -274,4 +276,5 @@ public sealed class WorkerSettings
     public int MaxParallelTasks { get; set; } = 1;
     /// <summary>Retry from the authoritative base by default; resume requires verified recoverable state.</summary>
     public string RetryMode { get; set; } = "restart";
+    public int RecoveryRetentionDays { get; set; } = 7;
 }
