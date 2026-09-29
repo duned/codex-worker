@@ -316,6 +316,12 @@ public sealed class CodexServerTests
             new("secret", "tool", "token=private-value")])));
         Assert.NotNull(ProvisioningPlanValidation.Error(new CreateProvisioningPlanRequest(workerId, [
             new("refresh", "refresh-capabilities", "worker")])));
+        Assert.Null(ProvisioningPlanValidation.Error(new CreateProvisioningPlanRequest(workerId, [
+            new("auth", "authentication", "github-api", Operation: "provision", CredentialId: Guid.NewGuid().ToString("N"), Scope: "team/repo")])));
+        Assert.NotNull(ProvisioningPlanValidation.Error(new CreateProvisioningPlanRequest(workerId, [
+            new("auth", "authentication", "github-api", Operation: "provision", CredentialId: Guid.NewGuid().ToString("N"))])));
+        Assert.NotNull(ProvisioningPlanValidation.Error(new CreateProvisioningPlanRequest(workerId, [
+            new("auth", "authentication", "github-api", Operation: "provision", Scope: "team/repo")] )));
     }
 
     [Fact]
@@ -411,9 +417,14 @@ public sealed class CodexServerTests
         Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet", "~10"))));
         Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet"), new ProjectRequirement("Runtime", "Dotnet", ">=10"))));
         Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet", ">=10..1"))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("tool", "git", Scope: "team/compiler"))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("authentication", "github-api", Scope: "invalid"))));
         var legacy = JsonSerializer.Deserialize<ProjectRequirement>("\"dotnet:10\"");
         Assert.Equal(new ProjectRequirement("runtime", "dotnet", "10"), legacy);
         Assert.Equal("{\"type\":\"runtime\",\"name\":\"dotnet\",\"version\":\"10\"}", JsonSerializer.Serialize(legacy));
+        var scoped = JsonSerializer.Deserialize<ProjectRequirement>("{\"type\":\"authentication\",\"name\":\"github-api\",\"scope\":\"team/compiler\"}");
+        Assert.Equal("team/compiler", scoped?.Scope);
+        Assert.Contains("\"scope\":\"team/compiler\"", JsonSerializer.Serialize(scoped));
     }
 
     [Fact]
@@ -446,6 +457,22 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public void AuthenticationEligibilityRequiresBothApiAndGitReadinessForTheExactRepository()
+    {
+        var required = WorkerAuthenticationRequirements.ForRepository("team/compiler");
+        WorkerCapability[] ready =
+        [
+            new("authentication", "github-api", Scope: "team/compiler"),
+            new("authentication", "git-repository", Scope: "team/compiler")
+        ];
+
+        Assert.True(WorkerEligibility.Evaluate(required, ready).IsEligible);
+        Assert.False(WorkerEligibility.Evaluate(required, [ready[0]]).IsEligible);
+        Assert.False(WorkerEligibility.Evaluate(required, [ready[1]]).IsEligible);
+        Assert.False(WorkerEligibility.Evaluate(required, ready.Select(capability => capability with { Scope = "team/other" })).IsEligible);
+    }
+
+    [Fact]
     public async Task AssignmentSkipsIncompatibleWorkersKeepsWorkQueuedAndReevaluatesUpdatedCapabilities()
     {
         using var temporary = new TemporaryDirectory();
@@ -470,7 +497,8 @@ public sealed class CodexServerTests
         Assert.Contains("requires Docker; capability unavailable", pending.MissingRequirements!);
 
         var laterWorkerId = Guid.NewGuid().ToString("N");
-        var matchingCapabilities = new WorkerCapability[] { new("runtime", ".NET", "10.0"), new("tool", "Docker") };
+        WorkerCapability[] matchingCapabilities = [new("runtime", ".NET", "10.0"), new("tool", "Docker"),
+            .. AuthenticationCapabilities(project.Repository)];
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, laterWorkerId, "later worker", "1.0", "test", 1,
             matchingCapabilities));
         await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, laterWorkerId, "1.0", "running", 1, 1,
@@ -565,8 +593,9 @@ public sealed class CodexServerTests
         var secondWorker = Guid.NewGuid().ToString("N");
         foreach (var worker in new[] { firstWorker, secondWorker })
         {
-            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, [new("tool", "git")]));
-            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, [new("tool", "git")], []));
+            WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
         }
         var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "lease-1")));
         WorkerAssignmentRequest Request(string worker) => new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
@@ -616,8 +645,9 @@ public sealed class CodexServerTests
         var other = Guid.NewGuid().ToString("N");
         foreach (var worker in new[] { owner, other })
         {
-            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, [new("tool", "git")]));
-            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, [new("tool", "git")], []));
+            WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, capabilities));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, capabilities, []));
         }
         var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-1")));
         var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-2")));
@@ -652,7 +682,8 @@ public sealed class CodexServerTests
         Assert.Null(await restarted.RenewExecutionLeaseAsync(second.Id,
             new ExecutionLeaseRenewal(owner, secondAssignment.Lease!.Generation)));
         Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, 0)));
-        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, other, "1.0", "running", 0, 2, [new("tool", "git")], []));
+        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, other, "1.0", "running", 0, 2,
+            [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)], []));
         var laterAssignment = (await restarted.RequestAssignmentAsync(Request(other))).Assignment;
         Assert.Equal(queued.Id, laterAssignment!.ServerExecutionId);
         Assert.Equal("Failed", (await restarted.GetExecutionsAsync()).Single(x => x.Id == second.Id).State);
@@ -673,8 +704,9 @@ public sealed class CodexServerTests
         await store.InitializeAsync();
         var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery", "team/recovery", "main", "", []));
         var workerId = Guid.NewGuid().ToString("N");
-        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, [new("tool", "git")]));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, [new("tool", "git")], []));
+        WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, capabilities, []));
         var safe = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "safe")));
         var implementing = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "implementing")));
         var validating = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "validating")));
@@ -759,6 +791,9 @@ public sealed class CodexServerTests
             var store = app.Services.GetRequiredService<IRegistryStore>();
             var alpha = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
             var beta = await store.CreateProjectAsync(new CentralProjectDefinition("Beta", "team/beta", "main", "", []));
+            WorkerCapability[] Capabilities(string id) => id == workerA
+                ? [new("tool", "git"), .. AuthenticationCapabilities("team/alpha"), .. AuthenticationCapabilities("team/beta")]
+                : [new("tool", "git"), .. AuthenticationCapabilities("team/alpha")];
             alphaId = alpha.Id;
             await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(alpha.Id, new WorkReference("issue", "1")));
             await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(alpha.Id, new WorkReference("issue", "2")));
@@ -768,12 +803,12 @@ public sealed class CodexServerTests
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
                 foreach (var id in new[] { workerA, workerB })
                 {
-                    var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, [new("tool", "git")]);
+                    var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, Capabilities(id));
                     Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{id}", registration)).StatusCode);
                 }
                 async Task Heartbeat(string id, string state) => Assert.Equal(HttpStatusCode.OK,
                     (await client.PostAsJsonAsync($"/api/v1/workers/{id}/heartbeat",
-                        new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, [new("tool", "git")], []))).StatusCode);
+                        new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, Capabilities(id), []))).StatusCode);
                 await Heartbeat(workerA, "running");
                 await Heartbeat(workerB, "draining");
 
@@ -928,6 +963,10 @@ public sealed class CodexServerTests
         listener.Start();
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
+
+    private static WorkerCapability[] AuthenticationCapabilities(string repository) =>
+        [.. WorkerAuthenticationRequirements.ForRepository(repository).Select(requirement =>
+            new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
 
     private sealed class TemporaryDirectory : IDisposable
     {

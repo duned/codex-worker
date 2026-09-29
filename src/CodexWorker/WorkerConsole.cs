@@ -39,7 +39,9 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
 
     public void ProjectLoaded(string name) => WriteLine($"Loaded · {name}", ConsoleColor.Green, "✓");
     public void GitHubCliReady() => WriteLine("GitHub CLI ready", ConsoleColor.Green, "✓");
-    public void GitHubAuthenticationReady() => WriteLine("GitHub authentication ready", ConsoleColor.Green, "✓");
+    public void GitHubAuthenticationReady() => WriteLine("GitHub API authentication ready", ConsoleColor.Green, "✓");
+    public void GitRepositoryAuthenticationReady(int projectCount) =>
+        WriteLine($"Git repository authentication ready · {projectCount} project{(projectCount == 1 ? "" : "s")}", ConsoleColor.Green, "✓");
     public void GitHubLabelsReady(int projectCount, int createdCount) =>
         WriteLine($"GitHub labels ready · {projectCount} project{(projectCount == 1 ? "" : "s")}{(createdCount == 0 ? "" : $" · {createdCount} created")}", ConsoleColor.Green, "✓");
     public void GitHubDependenciesReady() => WriteLine("GitHub dependency API ready", ConsoleColor.Green, "✓");
@@ -75,6 +77,11 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
             try { await _idleSpinner; } catch (OperationCanceledException) { }
         }
         _idleTimer?.Stop();
+        if (_interactive && _idleTimer is not null)
+        {
+            var elapsedText = $"⠋ Waiting for work... {FormatElapsedClock(_idleTimer.Elapsed)}";
+            lock (_writer) { _writer.Write('\r'); _writer.Write(elapsedText); _writer.Flush(); _idleLineDrawn = true; }
+        }
         if (_interactive && finalizeLine)
         {
             if (_idleLineDrawn) { lock (_writer) { _writer.WriteLine(); _writer.Flush(); } }

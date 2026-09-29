@@ -69,6 +69,7 @@ public sealed class GitHubDependencyTests
             var command = args.ToArray();
             commands.Add(command);
             var output = command.Contains("--version") ? "gh version 2.45.0" :
+                command.Contains("--jq") ? "{\"push\":true,\"pull\":true}" :
                 command.Contains("number") ? "[{\"number\":7}]" :
                 command.Any(arg => arg.Contains("/dependencies/blocked_by", StringComparison.Ordinal)) ? "[]" : "{}";
             return Task.FromResult(new ProcessResult(0, output, ""));
@@ -93,7 +94,7 @@ public sealed class GitHubDependencyTests
                 dependencyReached = true;
                 return Task.FromResult(new ProcessResult(1, "", "endpoint unavailable"));
             }
-            var output = args.Contains("number") ? "[{\"number\":7}]" : "{}";
+            var output = args.Contains("number") ? "[{\"number\":7}]" : args.Contains("--jq") ? "{\"push\":true}" : "{}";
             return Task.FromResult(new ProcessResult(0, output, ""));
         });
 
@@ -111,13 +112,71 @@ public sealed class GitHubDependencyTests
         {
             var command = args.ToArray();
             commands.Add(command);
-            return Task.FromResult(new ProcessResult(0, command.Contains("number") ? "[]" : "{}", ""));
+            return Task.FromResult(new ProcessResult(0, command.Contains("number") ? "[]" :
+                command.Contains("--jq") ? "{\"push\":true}" : "{}", ""));
         });
 
         await client.ValidateCapabilitiesAsync(CancellationToken.None);
 
         Assert.Contains(commands, command => command.Contains("issue") && command.Contains("list"));
         Assert.DoesNotContain(commands.SelectMany(command => command), argument => argument.Contains("/dependencies/blocked_by", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StartupRejectsGitHubAuthenticationWithoutIssueWritePermission()
+    {
+        var client = new GitHubClient("owner/repo", (args, _) => Task.FromResult(new ProcessResult(0,
+            args.Contains("--jq") ? "{\"pull\":true}" : "[]", "")));
+
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => client.ValidateCapabilitiesAsync(CancellationToken.None));
+
+        Assert.Contains("lacks permission to manage Issues", failure.Message);
+    }
+
+    [Theory]
+    [InlineData("{\"maintain\":true}", true)]
+    [InlineData("{\"push\":true}", true)]
+    [InlineData("{\"triage\":true}", true)]
+    [InlineData("{\"pull\":true}", false)]
+    public void IssueWritePermissionIsCheckedWithoutRequestingSecrets(string permissions, bool ready)
+    {
+        if (ready) GitHubClient.ValidateIssueWritePermission(permissions);
+        else Assert.Throws<WorkerInfrastructureException>(() => GitHubClient.ValidateIssueWritePermission(permissions));
+    }
+
+    [Fact]
+    public async Task ApiCredentialProvisioningSendsSecretOnlyOnStandardInputAndVerifiesAccess()
+    {
+        const string secret = "fake-worker-test-token";
+        string? suppliedInput = null;
+        string[]? suppliedArguments = null;
+        var github = new GitHubClient("team/repo", (args, _) =>
+        {
+            var command = args.ToArray();
+            var output = command.Contains("--version") ? "gh version 2.45.0" :
+                command.Contains("--jq") ? "{\"push\":true}" : "[]";
+            return Task.FromResult(new ProcessResult(0, output, ""));
+        });
+        var provisioner = new GitHubAuthenticationProvisioner(
+            (executable, arguments, _, timeout, _, input) =>
+            {
+                Assert.Equal("gh", executable);
+                Assert.Equal(TimeSpan.FromSeconds(30), timeout);
+                suppliedArguments = arguments.ToArray();
+                suppliedInput = input;
+                return Task.FromResult(new ProcessResult(0, "", ""));
+            },
+            repository => repository == "team/repo" ? github : null,
+            _ => null,
+            (_, _) => Task.FromResult<WorkerCredentialContract?>(new WorkerCredentialContract("credential-id", "github", "api-token", 1, secret)));
+
+        var result = await provisioner.ExecuteAsync(new ProvisioningActionContract("auth", "authentication", "github-api",
+            Operation: "provision", CredentialId: "credential-id", Scope: "team/repo"), CancellationToken.None);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(secret + "\n", suppliedInput);
+        Assert.DoesNotContain(secret, suppliedArguments!);
+        Assert.DoesNotContain(secret, result.Message, StringComparison.Ordinal);
     }
 
     [Fact]

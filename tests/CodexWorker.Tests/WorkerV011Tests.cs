@@ -58,8 +58,11 @@ public sealed class WorkerV011Tests
         await store.InitializeAsync();
         var project = await store.CreateProjectAsync(new CentralProjectDefinition("Test Project", "owner/repo", "main", "", []));
         var workerId = Guid.NewGuid().ToString("N");
-        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "test worker", "test", "test", 1, [new("tool", "git")]));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "test", "running", 0, 1, [new("tool", "git")], []));
+        CodexServer.WorkerCapability[] capabilities = [new("tool", "git"),
+            .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
+                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "test worker", "test", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "test", "running", 0, 1, capabilities, []));
         var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id,
             new WorkReference("github-issue", "17")));
         var assignmentResponse = await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,

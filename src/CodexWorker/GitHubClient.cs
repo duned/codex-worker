@@ -137,7 +137,8 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     {
         await RunCapabilityAsync(["--version"], "GitHub CLI", ct);
         await RunCapabilityAsync(["auth", "status"], "GitHub authentication", ct);
-        await RunCapabilityAsync(["api", $"repos/{repository}"], "GitHub repository access", ct);
+        var permissions = await RunCapabilityAsync(["api", $"repos/{repository}", "--jq", ".permissions"], "GitHub repository access", ct);
+        ValidateIssueWritePermission(permissions.StandardOutput, repository);
         var issues = await RunCapabilityAsync(["issue", "list", "--repo", repository, "--state", "all", "--limit", "1", "--json", "number"], "GitHub Issue access", ct);
         try
         {
@@ -160,13 +161,35 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
+    internal static void ValidateIssueWritePermission(string output, string? repository = null)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            var permissions = document.RootElement;
+            if (permissions.ValueKind != JsonValueKind.Object ||
+                !HasPermission(permissions, "triage") && !HasPermission(permissions, "push") &&
+                !HasPermission(permissions, "maintain") && !HasPermission(permissions, "admin"))
+                throw new WorkerInfrastructureException("GitHub API authentication lacks permission to manage Issues and required repository labels.");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (JsonException ex)
+        {
+            var context = repository is null ? "" : $" for '{repository}'";
+            throw new WorkerInfrastructureException($"Could not determine GitHub Issue permissions{context}: {ex.Message}", ex);
+        }
+    }
+
+    private static bool HasPermission(JsonElement permissions, string name) =>
+        permissions.TryGetProperty(name, out var permission) && permission.ValueKind == JsonValueKind.True;
+
     private async Task<ProcessResult> RunCapabilityAsync(IEnumerable<string> args, string capability, CancellationToken ct)
     {
         try
         {
             var result = await runCommand(args, ct);
             if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"{capability} unavailable for repository '{repository}' (exit {result.ExitCode}). {Tail(result.StandardError)}");
+                throw new WorkerInfrastructureException($"{capability} unavailable for repository '{repository}' (exit {result.ExitCode}). {Sanitize(Tail(result.StandardError), 1000)}");
             return result;
         }
         catch (WorkerInfrastructureException) { throw; }
@@ -249,4 +272,14 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     }
 
     private static string Tail(string value) => value.Length <= 1000 ? value : value[^1000..];
+
+    private static string Sanitize(string value, int maximumLength)
+    {
+        var safe = System.Text.RegularExpressions.Regex.Replace(value,
+            "(?i)(token|password|secret|credential|api[_-]?key)(\\s*[:=]\\s*)[^\\s,;]+", "$1$2[redacted]");
+        safe = System.Text.RegularExpressions.Regex.Replace(safe,
+            "(?i)\\bBearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer [redacted]");
+        safe = new string(safe.Where(character => !char.IsControl(character)).ToArray());
+        return safe[..Math.Min(safe.Length, maximumLength)];
+    }
 }

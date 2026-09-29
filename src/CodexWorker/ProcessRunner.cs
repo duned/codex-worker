@@ -10,13 +10,15 @@ public sealed class ProcessRunner
     private const int CaptureLimit = 160_000;
 
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory,
-        TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null)
+        TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null,
+        string? standardInput = null)
     {
         var start = new ProcessStartInfo(executable)
         {
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -38,7 +40,16 @@ public sealed class ProcessRunner
         using var linked = timeoutCts is null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
             : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-        try { await process.WaitForExitAsync(linked.Token); }
+        try
+        {
+            if (standardInput is not null)
+            {
+                await process.StandardInput.WriteAsync(standardInput.AsMemory(), linked.Token);
+                await process.StandardInput.FlushAsync(linked.Token);
+                process.StandardInput.Close();
+            }
+            await process.WaitForExitAsync(linked.Token);
+        }
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { /* process may have exited */ }

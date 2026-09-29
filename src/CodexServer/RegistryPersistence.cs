@@ -60,7 +60,8 @@ public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assign
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
     WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata, ExecutionLease? Lease = null);
 
-public sealed record ProvisioningAction(string Id, string Type, string Name, string? Version = null, string Operation = "ensure");
+public sealed record ProvisioningAction(string Id, string Type, string Name, string? Version = null, string Operation = "ensure",
+    string? CredentialId = null, string? Scope = null);
 public sealed record CreateProvisioningPlanRequest(string WorkerId, IReadOnlyList<ProvisioningAction> Actions);
 public sealed record ProvisioningPlan(string Id, string WorkerId, DateTimeOffset CreatedAtUtc, string State,
     IReadOnlyList<ProvisioningAction> Actions, string? CurrentActionId = null, DateTimeOffset? StartedAtUtc = null,
@@ -90,6 +91,10 @@ public static class ProvisioningPlanValidation
             if (!Printable(action.Id, 80) || !ActionTypes.Contains(action.Type) || !validOperation || !Printable(action.Name, 200) ||
                 action.Version is { } version && !Printable(version, 100) || ContainsCredentialValue(action.Id) || ContainsCredentialValue(action.Name) || ContainsCredentialValue(action.Version))
                 return "Each provisioning action must have a valid ID, supported type, name, and optional version.";
+            if (action.Type == "authentication" && action.Operation == "provision" &&
+                (!Guid.TryParseExact(action.CredentialId, "N", out _) || action.Scope is null ||
+                 !Regex.IsMatch(action.Scope, "^[^/\\s]+/[^/\\s]+$")))
+                return "Credential provisioning actions require an assigned credential ID and repository scope.";
         }
         return null;
     }
@@ -124,7 +129,7 @@ public sealed record CentralProject(string Id, string Name, string Repository, s
 
 /// <summary>A centrally declared capability required by a project.</summary>
 [JsonConverter(typeof(ProjectRequirementJsonConverter))]
-public sealed record ProjectRequirement(string Type, string Name, string? Version = null);
+public sealed record ProjectRequirement(string Type, string Name, string? Version = null, string? Scope = null);
 
 /// <summary>Reads the previous string form as a runtime while writing the structured contract.</summary>
 public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequirement>
@@ -146,6 +151,8 @@ public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequi
         string? requirementName = null;
         string? version = null;
         var hasVersion = false;
+        string? scope = null;
+        var hasScope = false;
         foreach (var property in root.EnumerateObject())
         {
             switch (property.Name)
@@ -160,13 +167,17 @@ public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequi
                     hasVersion = true;
                     version = property.Value.ValueKind == JsonValueKind.Null ? null : property.Value.GetString();
                     break;
+                case "scope" when !hasScope && property.Value.ValueKind is JsonValueKind.String or JsonValueKind.Null:
+                    hasScope = true;
+                    scope = property.Value.ValueKind == JsonValueKind.Null ? null : property.Value.GetString();
+                    break;
                 default:
                     throw new JsonException($"Project requirement field '{property.Name}' is unknown, duplicated, or has an invalid value.");
             }
         }
         if (string.IsNullOrEmpty(requirementType) || string.IsNullOrEmpty(requirementName))
             throw new JsonException("A project requirement requires string type and name fields.");
-        return new ProjectRequirement(requirementType, requirementName, version);
+        return new ProjectRequirement(requirementType, requirementName, version, scope);
     }
 
     public override void Write(Utf8JsonWriter writer, ProjectRequirement value, JsonSerializerOptions options)
@@ -175,6 +186,7 @@ public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequi
         writer.WriteString("type", value.Type);
         writer.WriteString("name", value.Name);
         if (value.Version is not null) writer.WriteString("version", value.Version);
+        if (value.Scope is not null) writer.WriteString("scope", value.Scope);
         writer.WriteEndObject();
     }
 }
@@ -203,6 +215,9 @@ public static class CentralProjectValidation
             if (!normalized.Add(key)) return $"Requirement '{requirement.Type.Trim()}:{requirement.Name.Trim()}' is duplicated or contradictory.";
             if (requirement.Version is { } version && !ValidVersionConstraint(version))
                 return $"Requirement '{requirement.Name.Trim()}' has an invalid version; use an exact numeric version or >= numeric version (for example 10.0 or >=10.0.0).";
+            if (requirement.Scope is { } scope && (!requirement.Type.Trim().Equals("authentication", StringComparison.OrdinalIgnoreCase) ||
+                !Regex.IsMatch(scope, "^[^/\\s]+/[^/\\s]+$")))
+                return $"Requirement '{requirement.Name.Trim()}' has an invalid scope; authentication scope must be a repository in owner/repository form.";
         }
         return null;
     }
@@ -221,7 +236,8 @@ public static class CentralProjectValidation
             version = ">=" + NormalizeVersion(version[2..]);
         else if (version is not null)
             version = NormalizeVersion(version);
-        return requirement with { Type = requirement.Type.Trim().ToLowerInvariant(), Name = requirement.Name.Trim().ToLowerInvariant(), Version = version };
+        return requirement with { Type = requirement.Type.Trim().ToLowerInvariant(), Name = requirement.Name.Trim().ToLowerInvariant(), Version = version,
+            Scope = requirement.Scope?.Trim().ToLowerInvariant() };
     }
 
     private static string NormalizeVersion(string version) => string.Join('.', version.Split('.').Select(part => int.Parse(part, System.Globalization.CultureInfo.InvariantCulture).ToString(System.Globalization.CultureInfo.InvariantCulture)));
@@ -242,34 +258,19 @@ public sealed class ProjectRevisionConflictException(long currentRevision)
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
-    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
+    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects, IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
+    IReadOnlyList<string> ActiveProjects);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
-    IReadOnlyList<string> ActiveProjects, IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
-
-/// <summary>Sanitized authentication readiness for one configured execution agent.</summary>
-public sealed record WorkerAgentAuthentication(string Provider, string State);
-
-public static class WorkerAgentEligibility
-{
-    public static bool CanExecute(IEnumerable<WorkerAgentAuthentication>? agents)
-    {
-        // Older V2 workers did not report agent authentication. Retain their established behavior.
-        if (agents is null) return true;
-        var codex = agents.FirstOrDefault(agent => string.Equals(agent.Provider, "codex", StringComparison.OrdinalIgnoreCase));
-        return codex is not null && string.Equals(codex.State, "ready", StringComparison.OrdinalIgnoreCase);
-    }
-}
+    IReadOnlyList<string> ActiveProjects);
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
-public sealed record WorkerCapability(string Type, string Name, string? Version = null);
+public sealed record WorkerCapability(string Type, string Name, string? Version = null, string? Scope = null);
 
 /// <summary>Reads legacy string capabilities and the extensible structured capability contract.</summary>
 public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapability>
@@ -286,6 +287,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
         string? type = null;
         string? name = null;
         string? version = null;
+        string? scope = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
         {
@@ -297,12 +299,15 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
                 case "type" when reader.TokenType == JsonTokenType.String: type = reader.GetString(); break;
                 case "name" when reader.TokenType == JsonTokenType.String: name = reader.GetString(); break;
                 case "version" when reader.TokenType == JsonTokenType.String: version = reader.GetString(); break;
+                case "scope" when reader.TokenType is JsonTokenType.String or JsonTokenType.Null:
+                    scope = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
+                    break;
                 default: throw new JsonException($"Capability field '{property}' is unknown or invalid.");
             }
         }
         if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(name))
             throw new JsonException("A capability requires string type and name fields.");
-        return new WorkerCapability(type, name, version);
+        return new WorkerCapability(type, name, version, scope);
     }
 
     public override void Write(Utf8JsonWriter writer, WorkerCapability value, JsonSerializerOptions options)
@@ -311,6 +316,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
         writer.WriteString("type", value.Type);
         writer.WriteString("name", value.Name);
         if (value.Version is not null) writer.WriteString("version", value.Version);
+        if (value.Scope is not null) writer.WriteString("scope", value.Scope);
         writer.WriteEndObject();
     }
 }
@@ -550,8 +556,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
-            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0 ||
-            !WorkerAgentEligibility.CanExecute(heartbeat.Agents))
+            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0)
         {
             await transaction.CommitAsync(cancellationToken);
             return new(false, null);
@@ -590,7 +595,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         foreach (var queuedItem in queued)
         {
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
-                !WorkerEligibility.Evaluate(candidateProject.Requirements, workerCapabilities).IsEligible) continue;
+                !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities).IsEligible) continue;
             command.Parameters.Clear();
             command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND assigned_worker_id = $worker AND state = 'Assigned';";
             command.Parameters.AddWithValue("$project", queuedItem.ProjectId);
@@ -673,7 +678,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
-        var eligible = workers.Where(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).IsEligible).ToArray();
+        var eligible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
         if (eligible.Length == 0) return "no compatible worker";
         var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running").ToArray();
         if (accepting.Length == 0 || accepting.Any(worker => worker.AvailableCapacity > 0)) return "waiting for available worker";
@@ -684,9 +689,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyDictionary<string, CentralProject> projects, IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return [];
-        if (workers.Any(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).IsEligible)) return [];
-        if (workers.Count == 0) return WorkerEligibility.Evaluate(project.Requirements, []).MissingRequirements;
-        return workers.SelectMany(worker => WorkerEligibility.Evaluate(project.Requirements, worker.Capabilities).MissingRequirements)
+        if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible)) return [];
+        if (workers.Count == 0) return WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), []).MissingRequirements;
+        return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).MissingRequirements)
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
     }
 
@@ -1249,14 +1254,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             "stopped" => "offline",
             _ => "online"
         };
-        if (availability == "online" && !WorkerAgentEligibility.CanExecute(heartbeat!.Agents))
-            availability = "not-ready";
         var active = online ? heartbeat!.ActiveExecutions : 0;
         var capacity = online ? heartbeat!.MaximumCapacity : request.Capacity;
         return new(request.ContractVersion, request.WorkerId, request.DisplayName, heartbeat?.WorkerVersion ?? request.WorkerVersion,
             request.Platform, request.Capacity, heartbeat?.Capabilities ?? request.Capabilities, registered, seen,
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
-            online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat?.Agents ?? request.Agents);
+            online ? heartbeat!.ActiveProjects : Array.Empty<string>());
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

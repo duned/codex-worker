@@ -48,6 +48,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             if (!Path.GetFullPath(directory).Equals(top, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 throw new WorkerInfrastructureException($"Configured directory must be the Git checkout root. Git root: {top}");
             await EnsureOriginAsync(ct);
+            await ValidateRemoteAuthenticationAsync(ct);
             await EnsureCleanAsync("before worker startup", ct);
             await ValidateBranchRefAsync(settings.BaseBranch, ct);
             await ValidateBranchRefAsync($"{settings.FeaturePrefix}1-sample", ct);
@@ -58,6 +59,35 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not validate configured checkout without mutation: {ex.Message}", ex); }
+    }
+
+    /// <summary>Checks the configured remote's read and dry-run write authentication without changing remote refs.</summary>
+    public async Task ValidateRemoteAuthenticationAsync(CancellationToken ct)
+    {
+        await GitRemoteAuthenticationProbe.ValidateAsync(async (arguments, token) =>
+        {
+            await GitAsync(arguments, token);
+        }, repository, settings.FeaturePrefix, ct);
+    }
+
+    public async Task ConfigureHttpsCredentialHelperAsync(CancellationToken ct)
+    {
+        try
+        {
+            await EnsureOriginAsync(ct);
+            var origin = (await GitAsync(["config", "--get", "remote.origin.url"], ct)).StandardOutput.Trim();
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
+                !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+                throw new WorkerInfrastructureException($"Git HTTPS credential provisioning requires an HTTPS GitHub origin for '{repository}'.");
+            await AcquireWorkerLockAsync(ct);
+            await GitAsync(["config", "--local", "credential.https://github.com.helper", "!gh auth git-credential"], ct);
+            await ValidateRemoteAuthenticationAsync(ct);
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception)
+        {
+            throw new WorkerInfrastructureException($"Git HTTPS credential provisioning could not be verified for '{repository}'.");
+        }
     }
 
     public static string SanitizeTitle(string title)
@@ -118,9 +148,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             var top = Path.GetFullPath((await GitAsync(["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
             if (!Path.GetFullPath(directory).Equals(top, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 throw new WorkerInfrastructureException($"Configured directory must be the Git checkout root. Git root: {top}");
-            var gitDir = (await GitAsync(["rev-parse", "--absolute-git-dir"], ct)).StandardOutput.Trim();
-            try { _workerLock = new FileStream(Path.Combine(gitDir, "codex-worker.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-            catch (IOException ex) { throw new WorkerInfrastructureException("Another codex-worker process holds the checkout lock; stopping.", ex); }
+            await AcquireWorkerLockAsync(ct);
             await EnsureOriginAsync(ct);
             await EnsureCleanAsync("before worker startup", ct);
             await ValidateBranchRefAsync(settings.BaseBranch, ct);
@@ -488,6 +516,14 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private async Task<string> GetCurrentBranchAsync(CancellationToken ct) =>
         (await GitAsync(["branch", "--show-current"], ct)).StandardOutput.Trim();
 
+    private async Task AcquireWorkerLockAsync(CancellationToken ct)
+    {
+        if (_workerLock is not null) return;
+        var gitDir = (await GitAsync(["rev-parse", "--absolute-git-dir"], ct)).StandardOutput.Trim();
+        try { _workerLock = new FileStream(Path.Combine(gitDir, "codex-worker.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException ex) { throw new WorkerInfrastructureException("Another codex-worker process holds the checkout lock; stopping.", ex); }
+    }
+
     private async Task EnsureBranchAsync(string? branch, CancellationToken ct, string? workingDirectory = null)
     {
         if (branch is null || (await GitAtAsync(workingDirectory ?? directory, ["branch", "--show-current"], ct)).StandardOutput.Trim() != branch)
@@ -567,4 +603,24 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     }
 
     private static string Tail(string value) => value.Length <= 1200 ? value : value[^1200..];
+}
+
+internal static class GitRemoteAuthenticationProbe
+{
+    public static async Task ValidateAsync(Func<IEnumerable<string>, CancellationToken, Task> run,
+        string repository, string featurePrefix, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await run(["ls-remote", "--exit-code", "origin", "HEAD"], cancellationToken);
+            var probeBranch = $"{featurePrefix}auth-check-{Guid.NewGuid():N}";
+            await run(["push", "--dry-run", "--porcelain", "origin", $"HEAD:refs/heads/{probeBranch}"], cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is WorkerInfrastructureException or ProcessTimeoutException or InvalidOperationException)
+        {
+            _ = ex;
+            throw new WorkerInfrastructureException($"Git repository authentication is unavailable for '{repository}' (remote read or dry-run write check failed).");
+        }
+    }
 }

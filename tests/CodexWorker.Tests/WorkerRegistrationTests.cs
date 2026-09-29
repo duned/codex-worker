@@ -76,10 +76,6 @@ public sealed class WorkerRegistrationTests
             var capability = json.RootElement.GetProperty("capabilities")[0];
             Assert.Equal("integration", capability.GetProperty("type").GetString());
             Assert.Equal("github-issues", capability.GetProperty("name").GetString());
-            var agent = json.RootElement.GetProperty("agents")[0];
-            Assert.Equal("codex", agent.GetProperty("provider").GetString());
-            Assert.Contains(agent.GetProperty("state").GetString(),
-                new[] { "ready", "authentication-required", "unsupported", "invalid-or-expired", "unknown" });
             Assert.False(json.RootElement.TryGetProperty("token", out _));
             Assert.False(json.RootElement.TryGetProperty("secrets", out _));
         }

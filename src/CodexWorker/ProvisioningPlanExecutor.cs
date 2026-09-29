@@ -32,13 +32,15 @@ public sealed class ProvisioningPlanExecutor
     private readonly WorkerCapabilityDiscovery _discovery;
     private readonly IReadOnlyList<IDependencyInstaller> _installers;
     private readonly ProvisioningPolicy _policy;
+    private readonly IAuthenticationActionExecutor? _authenticationExecutor;
 
     public ProvisioningPlanExecutor(WorkerCapabilityDiscovery discovery, IEnumerable<IDependencyInstaller>? installers = null,
-        ProvisioningPolicy? policy = null)
+        ProvisioningPolicy? policy = null, IAuthenticationActionExecutor? authenticationExecutor = null)
     {
         _discovery = discovery;
         _installers = (installers ?? [new DebianAptDependencyInstaller()]).ToArray();
         _policy = policy ?? new ProvisioningPolicy();
+        _authenticationExecutor = authenticationExecutor;
     }
 
     public async Task<ProvisioningWorkerReportContract> ExecuteAsync(ProvisioningPlanContract plan, string workerId,
@@ -65,7 +67,7 @@ public sealed class ProvisioningPlanExecutor
                 return await FailedAsync(workerId, action, "denied by Worker provisioning policy because provisioning is disabled", report, cancellationToken);
             if (action.Type == "authentication" && !_policy.AllowCredentials)
                 return await FailedAsync(workerId, action, "denied by Worker provisioning policy because credential provisioning is disabled", report, cancellationToken);
-            if (action.Type != "refresh-capabilities" && action.Operation is not ("ensure" or "install"))
+            if (action.Type != "refresh-capabilities" && action.Type != "authentication" && action.Operation is not ("ensure" or "install"))
             {
                 var unsupported = new ProvisioningWorkerReportContract(workerId, "Failed", action.Id,
                     Failure: $"Action '{action.Id}' could not be completed: no local executor is registered for operation '{action.Operation}'.");
@@ -76,6 +78,20 @@ public sealed class ProvisioningPlanExecutor
             {
                 await _discovery.RefreshAsync(cancellationToken);
                 decisions.Add($"{action.Id}: capability refresh permitted");
+                continue;
+            }
+
+            if (action.Type == "authentication")
+            {
+                var authenticationDecision = ProvisioningPolicyEvaluator.Decide(_policy, action, privileged: false);
+                if (!authenticationDecision.Permitted)
+                    return await FailedAsync(workerId, action, authenticationDecision.Reason!, report, cancellationToken, decisions);
+                if (action.Operation != "provision" || _authenticationExecutor is null)
+                    return await FailedAsync(workerId, action, "no supported authentication provisioning handler is registered", report, cancellationToken, decisions);
+                var provisioned = await _authenticationExecutor.ExecuteAsync(action, cancellationToken);
+                if (!provisioned.Succeeded)
+                    return await FailedAsync(workerId, action, provisioned.Message ?? "authentication provisioning failed", report, cancellationToken, decisions);
+                installedCapabilities.Add($"authentication {action.Name} for {action.Scope}");
                 continue;
             }
 

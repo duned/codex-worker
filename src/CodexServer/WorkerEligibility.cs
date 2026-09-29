@@ -1,5 +1,17 @@
 namespace CodexServer;
 
+public static class WorkerAuthenticationRequirements
+{
+    public static IReadOnlyList<ProjectRequirement> ForRepository(string repository) =>
+    [
+        new("authentication", "github-api", Scope: repository),
+        new("authentication", "git-repository", Scope: repository)
+    ];
+
+    public static IReadOnlyList<ProjectRequirement> ForProject(CentralProject project) =>
+        (project.Requirements ?? []).Concat(ForRepository(project.Repository)).ToArray();
+}
+
 /// <summary>Deterministic matching for centrally declared project requirements.</summary>
 public static class WorkerEligibility
 {
@@ -12,7 +24,8 @@ public static class WorkerEligibility
         {
             var normalized = CentralProjectValidation.Normalize(requirement) with
             { Name = CanonicalName(requirement.Type, requirement.Name) };
-            var matching = available.FirstOrDefault(capability => capability.Type == normalized.Type && capability.Name == normalized.Name);
+            var matching = available.FirstOrDefault(capability => capability.Type == normalized.Type && capability.Name == normalized.Name &&
+                (normalized.Scope is null || string.Equals(capability.Scope, normalized.Scope, StringComparison.OrdinalIgnoreCase)));
             if (matching is null)
             {
                 missing.Add(DescribeRequired(normalized));
@@ -29,7 +42,8 @@ public static class WorkerEligibility
     {
         Type = capability.Type.Trim().ToLowerInvariant(),
         Name = CanonicalName(capability.Type, capability.Name),
-        Version = capability.Version?.Trim()
+        Version = capability.Version?.Trim(),
+        Scope = capability.Scope?.Trim().ToLowerInvariant()
     };
 
     private static string CanonicalName(string type, string name)
@@ -76,7 +90,7 @@ public static class WorkerEligibility
         $"requires {Display(requirement)}; worker reports {DisplayName(requirement.Type, requirement.Name)} {DisplayVersion(actual)}";
 
     private static string Display(ProjectRequirement requirement) =>
-        $"{DisplayName(requirement.Type, requirement.Name)}{(requirement.Version is null ? "" : " " + requirement.Version)}";
+        $"{DisplayName(requirement.Type, requirement.Name)}{(requirement.Scope is null ? "" : " for " + requirement.Scope)}{(requirement.Version is null ? "" : " " + requirement.Version)}";
 
     private static string DisplayName(string type, string name) => type switch
     {

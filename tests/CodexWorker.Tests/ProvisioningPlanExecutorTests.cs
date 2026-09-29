@@ -264,6 +264,25 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("no local executor", result.Failure);
     }
 
+    [Fact]
+    public async Task CredentialProvisioningUsesWorkerHandlerAndReportsOnlySafeOutcomes()
+    {
+        var handler = new FakeAuthenticationExecutor();
+        var action = new ProvisioningActionContract("api-auth", "authentication", "github-api", Operation: "provision",
+            CredentialId: Guid.NewGuid().ToString("N"), Scope: "team/repo");
+        var reports = new List<ProvisioningWorkerReportContract>();
+
+        var result = await new ProvisioningPlanExecutor(
+            new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(1, "", ""))),
+            policy: new ProvisioningPolicy { Enabled = true, AllowCredentials = true, AllowNonPrivileged = true },
+            authenticationExecutor: handler).ExecuteAsync(Plan([action]), "worker-id",
+                (report, _) => { reports.Add(report); return Task.CompletedTask; }, CancellationToken.None);
+
+        Assert.Equal("Completed", result.State);
+        Assert.Equal(action, handler.Action);
+        Assert.DoesNotContain("fake-token", string.Join(" ", reports.Select(report => report.Result + report.Failure)), StringComparison.Ordinal);
+    }
+
     private sealed class FakeInstaller(bool requiresElevation) : IDependencyInstaller
     {
         public int InstallCount { get; private set; }
@@ -274,6 +293,16 @@ public sealed class ProvisioningPlanExecutorTests
         {
             InstallCount++;
             return Task.FromResult(new DependencyInstallResult(true, true, plan.RequiresElevation));
+        }
+    }
+
+    private sealed class FakeAuthenticationExecutor : IAuthenticationActionExecutor
+    {
+        public ProvisioningActionContract? Action { get; private set; }
+        public Task<DependencyInstallResult> ExecuteAsync(ProvisioningActionContract action, CancellationToken cancellationToken)
+        {
+            Action = action;
+            return Task.FromResult(new DependencyInstallResult(true, true, false, Message: "credential installed and verified"));
         }
     }
 

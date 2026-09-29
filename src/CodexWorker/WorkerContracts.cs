@@ -54,3 +54,8 @@ public interface IValidationRunner
 {
     Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct);
 }
+
+public interface IAuthenticationActionExecutor
+{
+    Task<DependencyInstallResult> ExecuteAsync(ProvisioningActionContract action, CancellationToken cancellationToken);
+}

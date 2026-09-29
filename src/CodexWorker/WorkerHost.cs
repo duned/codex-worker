@@ -31,6 +31,8 @@ public sealed class WorkerHost
         var runtimes = new List<ProjectRuntime>();
         var allRuntimes = new List<ProjectRuntime>();
         var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+        var discoveredCapabilities = (IReadOnlyList<WorkerCapabilityContract>)Array.Empty<WorkerCapabilityContract>();
+        var validatedConfigurations = new HashSet<WorkerConfiguration>(ReferenceEqualityComparer.Instance);
         string? activeProject = null;
         var safeToStop = true;
         var operational = false;
@@ -38,15 +40,18 @@ public sealed class WorkerHost
         var leaseRenewals = new Dictionary<Task<IssueProcessingResult?>, (CancellationTokenSource Stop, Task Run)>();
         CancellationTokenSource? executionCancellation = null;
         WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), "starting");
+        IReadOnlyList<WorkerCapabilityContract> heartbeatCapabilities = [];
         WorkerHeartbeatLoop? heartbeat = null;
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
+            discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.GetCachedAsync(ct);
+            heartbeatCapabilities = discoveredCapabilities;
             await new WorkerRegistrationClient().RegisterAsync(_global.Server, _global.Worker.MaxParallelTasks, ct);
             if (_global.Server.Enabled)
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
-                    message => _output.Warning(message));
+                    message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities));
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore();
@@ -74,6 +79,22 @@ public sealed class WorkerHost
                 allRuntimes.Add(project);
             }
 
+            if (_global.Server.Enabled)
+            {
+                var registration = new WorkerRegistrationClient();
+                var initialPlan = await registration.RequestProvisioningPlanAsync(_global.Server, ct);
+                if (initialPlan is not null)
+                {
+                    runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {initialPlan.Id} started.");
+                    var result = await CreateProvisioningExecutor(registration, runtimes).ExecuteAsync(initialPlan,
+                        initialPlan.WorkerId,
+                        (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, initialPlan.Id, report, token), ct);
+                    runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {initialPlan.Id} finished.");
+                    if (result.State != "Completed")
+                        throw new WorkerInfrastructureException($"Provisioning plan {initialPlan.Id} failed at action '{result.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
+                }
+            }
+
             var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
                 project.Path,
                 project.Configuration.Project.Name,
@@ -92,10 +113,18 @@ public sealed class WorkerHost
                 async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
             )).ToArray();
             var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
+            validatedConfigurations.UnionWith(runtimes.Select(project => project.Configuration));
+            Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(runtimes.SelectMany(project =>
+                WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
+                .Distinct().ToArray());
+            if (_global.Server.Enabled)
+                await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
+                    Array.Empty<string>(), "starting", ct, heartbeatCapabilities);
             await ReconcileRecoveryAsync(runtimes, history, runtimeReadModel, ct);
             configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
             _output.GitHubCliReady();
             _output.GitHubAuthenticationReady();
+            _output.GitRepositoryAuthenticationReady(runtimes.Count);
             _output.GitHubLabelsReady(runtimes.Count, createdLabels);
             _output.GitHubDependenciesReady();
 
@@ -157,6 +186,10 @@ public sealed class WorkerHost
                     }
                     runtimes.Clear();
                     runtimes.AddRange(replacement);
+                    Volatile.Write(ref heartbeatCapabilities, discoveredCapabilities.Concat(runtimes
+                        .Where(project => validatedConfigurations.Contains(project.Configuration))
+                        .SelectMany(project => WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
+                        .Distinct().ToArray());
                     scheduler.Reconfigure(runtimes.Count);
                 }
 
@@ -169,8 +202,7 @@ public sealed class WorkerHost
                     if (provisioningPlan is not null)
                     {
                         runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
-                        var provisioningResult = await new ProvisioningPlanExecutor(WorkerCapabilityDiscovery.Shared,
-                            policy: _global.Worker.Provisioning).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
+                        var provisioningResult = await CreateProvisioningExecutor(registration, runtimes).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
                             (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, provisioningPlan.Id, report, token), executionToken);
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")
@@ -500,6 +532,14 @@ public sealed class WorkerHost
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server), codex, github, repositoryGate);
     }
+
+    private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
+        IReadOnlyList<ProjectRuntime> runtimes) => new(WorkerCapabilityDiscovery.Shared,
+        policy: _global.Worker.Provisioning,
+        authenticationExecutor: new GitHubAuthenticationProvisioner(_runner,
+            repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
+            repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.Git,
+            (credentialId, token) => registration.RetrieveCredentialAsync(_global.Server, credentialId, token)));
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
         CodexExecutor Codex, GitHubClient GitHub, SemaphoreSlim RepositoryGate);
