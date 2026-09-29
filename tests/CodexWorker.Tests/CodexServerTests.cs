@@ -8,6 +8,10 @@ using CodexServer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Data.Sqlite;
 
+[CollectionDefinition("ServerTokenEnvironment", DisableParallelization = true)]
+public sealed class ServerTokenEnvironmentCollection { }
+
+[Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
     [Fact]
@@ -18,7 +22,9 @@ public sealed class CodexServerTests
         var port = ReservePort();
         var url = $"http://127.0.0.1:{port}";
         var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
         Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "test-registration-token");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "test-management-token");
         try
         {
             var app = await ServerApplication.BuildAsync(Args(url, database));
@@ -41,6 +47,10 @@ public sealed class CodexServerTests
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
                 Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
                 Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
+                client.DefaultRequestHeaders.Authorization = null;
+                Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/workers")).StatusCode);
+                Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/v1/workers/{workerId}")).StatusCode);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
                 using var list = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.Single(list.RootElement.EnumerateArray());
                 var item = list.RootElement[0];
@@ -53,12 +63,23 @@ public sealed class CodexServerTests
                 Assert.True(item.TryGetProperty("firstRegisteredAtUtc", out _));
                 Assert.True(item.TryGetProperty("lastSeenAtUtc", out _));
                 Assert.DoesNotContain("token", item.ToString(), StringComparison.OrdinalIgnoreCase);
+                using (var streamResponse = await client.GetAsync("/api/v1/events/stream", HttpCompletionOption.ResponseHeadersRead))
+                {
+                    Assert.Equal("text/event-stream", streamResponse.Content.Headers.ContentType?.MediaType);
+                    await using var stream = await streamResponse.Content.ReadAsStreamAsync();
+                    using var reader = new StreamReader(stream);
+                    Assert.Equal("event: workers", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+                    Assert.StartsWith("data: ", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+                }
                 var otherId = Guid.NewGuid().ToString("N");
                 var other = new { contractVersion = 1, workerId = otherId, displayName = "second", workerVersion = "1.2.3",
                     platform = "test", capacity = 1, capabilities = new[] { "git" } };
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
                 Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{otherId}", other)).StatusCode);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
                 using var twoWorkers = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.Equal(2, twoWorkers.RootElement.GetArrayLength());
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
                 Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/v1/workers/{Guid.NewGuid():N}", request)).StatusCode);
             }
             await app.StopAsync();
@@ -66,15 +87,20 @@ public sealed class CodexServerTests
             var restarted = await ServerApplication.BuildAsync(Args(url, database));
             await restarted.StartAsync();
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
-            using (var persisted = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers")))
             {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
+                using var persisted = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.Equal(2, persisted.RootElement.GetArrayLength());
                 Assert.Contains(persisted.RootElement.EnumerateArray(), worker => worker.GetProperty("displayName").GetString() == "renamed worker");
             }
             await restarted.StopAsync();
             await restarted.DisposeAsync();
         }
-        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+        }
     }
 
     [Fact]
@@ -134,12 +160,6 @@ public sealed class CodexServerTests
             Assert.Equal("healthy", health.RootElement.GetProperty("status").GetString());
             Assert.True(health.RootElement.GetProperty("persistenceAvailable").GetBoolean());
 
-            using var streamResponse = await client.GetAsync("/api/v1/events/stream", HttpCompletionOption.ResponseHeadersRead);
-            Assert.Equal("text/event-stream", streamResponse.Content.Headers.ContentType?.MediaType);
-            await using var stream = await streamResponse.Content.ReadAsStreamAsync();
-            using var reader = new StreamReader(stream);
-            Assert.Equal("event: workers", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
-            Assert.StartsWith("data: ", await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3)));
         }
         finally { await app.StopAsync(); }
     }
@@ -212,7 +232,8 @@ public sealed class CodexServerTests
     {
         using var temporary = new TemporaryDirectory();
         var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
-        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "project-test-token");
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "project-test-token");
         var url = $"http://127.0.0.1:{ReservePort()}";
         try
         {
@@ -220,6 +241,8 @@ public sealed class CodexServerTests
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             var definition = new CentralProjectDefinition("Widget", "team/widget", "main", "Portable definition", ["node"]);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", definition)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "registration-only-token");
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", definition)).StatusCode);
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "project-test-token");
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/projects", definition with { Repository = "invalid" })).StatusCode);
@@ -239,7 +262,11 @@ public sealed class CodexServerTests
             using var delete = await client.DeleteAsync($"/api/v1/projects/{project.Id}?expectedRevision=2");
             Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
         }
-        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+        }
     }
 
     [Theory]

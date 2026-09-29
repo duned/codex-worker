@@ -4,6 +4,7 @@ using System.Text.Json;
 
 namespace CodexWorker.Tests;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class WorkerRegistrationTests
 {
     [Fact]

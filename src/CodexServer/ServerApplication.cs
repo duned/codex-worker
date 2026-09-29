@@ -79,27 +79,37 @@ public static class ServerApplication
             catch (InvalidOperationException) { return Results.NotFound(); }
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
-        app.MapGet("/api/v1/workers", async (IRegistryStore store, CancellationToken ct) => Results.Ok(await store.GetWorkersAsync(ct)));
-        app.MapGet("/api/v1/workers/{workerId}", async (string workerId, IRegistryStore store, CancellationToken ct) =>
+        app.MapGet("/api/v1/workers", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            var worker = await store.GetWorkerAsync(workerId, ct);
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Ok(await store.GetWorkersAsync(context.RequestAborted));
+        });
+        app.MapGet("/api/v1/workers/{workerId}", async (string workerId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
-        app.MapGet("/api/v1/events/stream", StreamWorkerUpdatesAsync);
+        app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            await StreamWorkerUpdatesAsync(context, store);
+            return Results.Empty;
+        });
         app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             return Results.Ok(await store.GetProjectsAsync(context.RequestAborted));
         });
         app.MapGet("/api/v1/projects/{projectId}", async (string projectId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var project = await store.GetProjectAsync(projectId, context.RequestAborted);
             return project is null ? Results.NotFound() : Results.Ok(project);
         });
         app.MapPost("/api/v1/projects", async (CentralProjectDefinition definition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var error = CentralProjectValidation.Error(definition);
             if (error is not null) return Results.BadRequest(new { error });
             try { return Results.Created($"/api/v1/projects/{CentralProjectValidation.IdFor(definition.Name)}", await store.CreateProjectAsync(definition, context.RequestAborted)); }
@@ -107,7 +117,7 @@ public static class ServerApplication
         });
         app.MapPut("/api/v1/projects/{projectId}", async (string projectId, ProjectUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var error = CentralProjectValidation.Error(request.Definition);
             if (error is not null || request.ExpectedRevision < 1) return Results.BadRequest(new { error = error ?? "expectedRevision must be positive." });
             try
@@ -120,7 +130,7 @@ public static class ServerApplication
         });
         app.MapDelete("/api/v1/projects/{projectId}", async (string projectId, long expectedRevision, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             if (expectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
             try { return await store.RemoveProjectAsync(projectId, expectedRevision, context.RequestAborted) ? Results.NoContent() : Results.NotFound(); }
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
@@ -156,9 +166,9 @@ public static class ServerApplication
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
     }
 
-    private static bool Authorized(HttpContext context, ServerConfiguration configuration)
+    private static bool Authorized(HttpContext context, ServerConfiguration configuration, bool management = false)
     {
-        var expected = configuration.RegistrationToken;
+        var expected = management ? configuration.ManagementToken : configuration.RegistrationToken;
         var supplied = context.Request.Headers.Authorization.ToString();
         const string prefix = "Bearer ";
         if (string.IsNullOrWhiteSpace(expected) || !supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;

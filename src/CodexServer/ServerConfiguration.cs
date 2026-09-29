@@ -8,6 +8,8 @@ public sealed class ServerConfiguration
     public int WorkerStaleAfterSeconds { get; set; } = 90;
     /// <summary>Registration credential is read from CODEX_SERVER_REGISTRATION_TOKEN, never configuration files.</summary>
     public string? RegistrationToken => Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+    /// <summary>Management credential is read from CODEX_SERVER_MANAGEMENT_TOKEN, never configuration files.</summary>
+    public string? ManagementToken => Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
 
     public void Validate()
     {

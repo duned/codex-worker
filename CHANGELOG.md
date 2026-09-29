@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0
+
+- Add the independently runnable Codex Server with durable SQLite worker and central project registries, a versioned Worker registration/heartbeat API, availability tracking, and a management dashboard.
+- Add durable random Worker identity, opt-in managed registration and heartbeat reporting, while preserving standalone operation with local project YAML as the default.
+- Separate Worker registration/heartbeat credentials from the Server management token for registry reads and project writes; require HTTPS for non-loopback Server exposure and document the V0.8 trust boundary and contract compatibility.
+- Keep central project definitions free of Worker checkout paths and secrets, and keep execution scheduling and ownership in the Worker.
+
 ## 0.7.5
 
 - Preserve useful workspaces from safe failed and blocked executions while cleaning outcomes with no changes.
