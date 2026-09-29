@@ -137,6 +137,9 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     }
 
     public async Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct)
+        => await StartIssueAsync(executionId, issue, null, false, 1, ct);
+
+    public async Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
     {
         try
         {
@@ -148,7 +151,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             _executionId = executionId;
-            _featureBranch = FeatureBranchName(settings, issue);
+            _featureBranch = attemptNumber <= 1 ? FeatureBranchName(settings, issue) : $"{FeatureBranchName(settings, issue)}-retry-{attemptNumber}";
             _completedBranch = CompletedBranchName(settings, issue);
             var root = Path.GetFullPath(worktreeRoot);
             if (IsWithin(Path.GetFullPath(directory), root))
@@ -157,10 +160,73 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             Directory.CreateDirectory(root);
             if (Directory.Exists(_executionDirectory) || File.Exists(_executionDirectory))
                 throw new WorkerInfrastructureException($"Execution worktree path already exists; preserving it: {_executionDirectory}");
+            if (resume)
+            {
+                if (retryOf is null || retryOf.State != "Failed" || retryOf.RecoveryState != "recoverable" ||
+                    string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit))
+                    throw new WorkerInfrastructureException("Retry resume was requested, but the previous failed execution has no complete recoverable-state metadata.");
+                await ValidateRecoveryWorkspaceAsync(Path.Combine(root, retryOf.ExecutionId.ToString("N")), retryOf, ct);
+            }
             await GitAsync(["worktree", "add", "-b", _featureBranch, _executionDirectory, _startingCommit], ct);
+            if (resume) SynchronizeRecoveryFiles(Path.Combine(root, retryOf!.ExecutionId.ToString("N")), _executionDirectory);
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not prepare Git checkout for Issue #{issue.Number}: {ex.Message}", ex); }
+    }
+
+    private async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
+    {
+        if (!Directory.Exists(source)) throw new WorkerInfrastructureException($"Recoverable execution workspace is missing: {source}");
+        var branch = (await GitAtAsync(source, ["branch", "--show-current"], ct)).StandardOutput.Trim();
+        var head = (await GitAtAsync(source, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+        if (branch != recovery.FeatureBranch || head != recovery.RecoveryBaseCommit)
+            throw new WorkerInfrastructureException("Recoverable execution workspace does not match its persisted branch and base commit; refusing to resume it.");
+        var status = (await GitAtAsync(source, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+        if (string.IsNullOrWhiteSpace(status))
+            throw new WorkerInfrastructureException("Persisted recoverable execution workspace has no useful changes; refusing to resume it.");
+        var unmerged = (await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput;
+        if (!string.IsNullOrWhiteSpace(unmerged))
+            throw new WorkerInfrastructureException("Recoverable execution workspace contains unresolved Git index entries; refusing to resume it.");
+        var worktrees = (await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput;
+        var registeredPaths = worktrees.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.StartsWith("worktree ", StringComparison.Ordinal)).Select(line => line[9..].TrimEnd('\r'));
+        if (!registeredPaths.Contains(Path.GetFullPath(source), OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal))
+            throw new WorkerInfrastructureException("Persisted recovery path is not a registered Git worktree; refusing to resume it.");
+    }
+
+    private static void SynchronizeRecoveryFiles(string source, string destination)
+    {
+        var sourceEntries = Directory.EnumerateFileSystemEntries(source)
+            .Where(entry => !Path.GetFileName(entry).Equals(".git", StringComparison.Ordinal))
+            .ToDictionary(entry => Path.GetFileName(entry)!, StringComparer.Ordinal);
+        foreach (var existing in Directory.EnumerateFileSystemEntries(destination))
+        {
+            if (Path.GetFileName(existing).Equals(".git", StringComparison.Ordinal)) continue;
+            if (!sourceEntries.ContainsKey(Path.GetFileName(existing)!))
+            {
+                if ((File.GetAttributes(existing) & FileAttributes.Directory) != 0) Directory.Delete(existing, recursive: true);
+                else File.Delete(existing);
+            }
+        }
+        foreach (var entry in sourceEntries.Values)
+        {
+            var attributes = File.GetAttributes(entry);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+                throw new WorkerInfrastructureException($"Recoverable workspace contains a link that cannot be safely copied: {entry}");
+            var target = Path.Combine(destination, Path.GetFileName(entry)!);
+            if ((attributes & FileAttributes.Directory) != 0)
+            {
+                if (File.Exists(target)) File.Delete(target);
+                Directory.CreateDirectory(target);
+                SynchronizeRecoveryFiles(entry, target);
+            }
+            else
+            {
+                if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+                File.Copy(entry, target, overwrite: true);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(target, File.GetUnixFileMode(entry));
+            }
+        }
     }
 
     public async Task VerifyCodexStateAsync(CancellationToken ct)

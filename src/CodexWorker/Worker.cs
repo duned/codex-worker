@@ -38,7 +38,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
         if (issue is null) return null;
-        var execution = WorkerExecution.Create(config.Project, config.Git, issue);
+        var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
+        var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
+            .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
+        var retryOf = issueHistory.FirstOrDefault()?.State == "Failed" ? issueHistory[0] : null;
+        var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
+        var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
+        if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
+            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but failed execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
+        var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
+            attemptNumber: attemptNumber, resumed: resumed);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -52,7 +61,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             _output.IssueStarted(config.Project.Name, issue);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, ct);
-            return ProcessClaimedAsync(execution, issue, ct);
+            return ProcessClaimedAsync(execution, issue, retryOf, ct);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -66,15 +75,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, CancellationToken ct)
+    private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf, CancellationToken ct)
     {
         try
         {
             var timer = Stopwatch.StartNew();
-            var result = await RunExecutionAsync(new ExecutionContext(execution, issue), ct);
+            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
-            var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId };
+            var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
+                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed };
             await ReportResultAsync(issue, result with { Report = report }, ct);
             await CompleteHistoryAsync(execution, report, result.Kind switch
             {
@@ -204,7 +214,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             report?.Integration?.CommitSha ?? Extract(report?.Integration?.Summary, "Committed as `([^`]+)`"),
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
-            failure ?? report?.Failure ?? report?.HumanInput);
+            failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed);
 
     private static string? Extract(string? text, string pattern)
     {

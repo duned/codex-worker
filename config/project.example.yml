@@ -27,6 +27,9 @@ github:
 # worker.maxParallelTasks limit still caps the entire worker process.
 worker:
   maxParallelTasks: 1
+  # Retries start clean by default. Set to "resume" only when failed work should be reused;
+  # resume stops safely if the prior execution's persisted workspace cannot be verified.
+  retryMode: restart
 
 codex:
   instructionsFile: AGENTS.md

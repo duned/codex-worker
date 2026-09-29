@@ -22,7 +22,8 @@ public sealed class WorkerExecution
         };
 
     private WorkerExecution(string project, string repository, GitHubIssue issue, string baseBranch,
-        string featureBranch, DateTimeOffset startedAtUtc)
+        string featureBranch, DateTimeOffset startedAtUtc, Guid? retryOfExecutionId = null, int attemptNumber = 1,
+        bool resumed = false)
     {
         ExecutionId = Guid.NewGuid();
         Project = project;
@@ -32,6 +33,9 @@ public sealed class WorkerExecution
         BaseBranch = baseBranch;
         FeatureBranch = featureBranch;
         StartedAtUtc = startedAtUtc;
+        RetryOfExecutionId = retryOfExecutionId;
+        AttemptNumber = attemptNumber;
+        Resumed = resumed;
     }
 
     public Guid ExecutionId { get; }
@@ -42,12 +46,20 @@ public sealed class WorkerExecution
     public string BaseBranch { get; }
     public string FeatureBranch { get; }
     public DateTimeOffset StartedAtUtc { get; }
+    public Guid? RetryOfExecutionId { get; }
+    public int AttemptNumber { get; }
+    public bool Resumed { get; }
     public ExecutionState State { get; private set; } = ExecutionState.Created;
     public bool IsTerminal => AllowedTransitions[State].Length == 0;
 
     public static WorkerExecution Create(ProjectSettings project, GitSettings git, GitHubIssue issue,
-        DateTimeOffset? startedAtUtc = null) => new(project.Name, project.Repository, issue,
-        git.BaseBranch, GitRepository.FeatureBranchName(git, issue), startedAtUtc ?? DateTimeOffset.UtcNow);
+        DateTimeOffset? startedAtUtc = null, Guid? retryOfExecutionId = null, int attemptNumber = 1, bool resumed = false)
+    {
+        var featureBranch = GitRepository.FeatureBranchName(git, issue);
+        if (attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
+        return new(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
+        retryOfExecutionId, attemptNumber, resumed);
+    }
 
     public void TransitionTo(ExecutionState next)
     {

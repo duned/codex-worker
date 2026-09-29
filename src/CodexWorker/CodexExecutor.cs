@@ -61,6 +61,25 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         return await RunStructuredAsync(projectDirectory, BuildPrompt(instructions, instructionsFile, issue), ct);
     }
 
+    public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct)
+    {
+        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        var prompt = BuildPrompt(instructions, instructionsFile, issue);
+        if (retryOf is not null)
+            prompt += $"""
+
+                # Retry history
+                This is attempt {attemptNumber}, following failed execution {retryOf.ExecutionId} (attempt {retryOf.AttemptNumber}).
+                Mode: {(resumed ? "resume" : "restart")}.
+                Previous outcome: {retryOf.FailureReason ?? retryOf.State}.
+                Previous Codex summary: {retryOf.ImplementationSummary ?? "(not recorded)"}.
+                Previous recovery state: {retryOf.RecoveryStatus ?? "No recoverable implementation state was recorded."}
+                {(resumed ? "Useful files from the previous attempt are present in this workspace. Inspect them critically; do not assume they are correct. Complete the full original Issue." : "Ignore implementation state from the previous attempt. Start from this attempt's current authoritative base branch and complete the full original Issue.")}
+                """;
+        return await RunStructuredAsync(projectDirectory, prompt, ct);
+    }
+
     public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct)
     {

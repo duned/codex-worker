@@ -55,6 +55,8 @@ public sealed class WorkerConfiguration
         if (Worker.GitHubTimeoutSeconds <= 0) errors.Add("worker.githubTimeoutSeconds must be greater than zero.");
         if (Worker.MaxParallelTasks < 1 || Worker.MaxParallelTasks > 8)
             errors.Add("worker.maxParallelTasks must be between 1 and 8.");
+        if (!new[] { "restart", "resume" }.Contains(Worker.RetryMode, StringComparer.OrdinalIgnoreCase))
+            errors.Add("worker.retryMode must be restart or resume.");
         if (Validation.TimeoutSeconds <= 0) errors.Add("validation.timeoutSeconds must be greater than zero.");
         if (Validation.MaxFixAttempts < 0 || Validation.MaxFixAttempts > 5)
             errors.Add("validation.maxFixAttempts must be between 0 and 5.");
@@ -270,4 +272,6 @@ public sealed class WorkerSettings
     [YamlMember(Alias = "githubTimeoutSeconds")]
     public int GitHubTimeoutSeconds { get; set; } = 60;
     public int MaxParallelTasks { get; set; } = 1;
+    /// <summary>Retry from the authoritative base by default; resume requires verified recoverable state.</summary>
+    public string RetryMode { get; set; } = "restart";
 }

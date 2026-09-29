@@ -26,12 +26,15 @@ public sealed record ExecutionHistoryEntry(
     string? FailureReason,
     string? RecoveryState = null,
     string? RecoveryBaseCommit = null,
-    string? RecoveryStatus = null);
+    string? RecoveryStatus = null,
+    Guid? RetryOfExecutionId = null,
+    int AttemptNumber = 1,
+    bool Resumed = false);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 2;
+    private const int CurrentSchemaVersion = 3;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -54,9 +57,10 @@ public sealed class ExecutionHistoryStore : IDisposable
             INSERT INTO executions (execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch,
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
                 repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
-                recovery_state, recovery_base_commit, recovery_status)
+                recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
-                $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus)
+                $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus,
+                $retryOf,$attempt,$resumed)
             """;
         Bind(command, entry);
         try { await command.ExecuteNonQueryAsync(ct); }
@@ -75,8 +79,11 @@ public sealed class ExecutionHistoryStore : IDisposable
                 commit_sha=COALESCE($sha,commit_sha), integration_branch=COALESCE($integration,integration_branch),
                 completed_branch=COALESCE($completedBranch,completed_branch), failure_reason=COALESCE($failure,failure_reason),
                 recovery_state=COALESCE($recoveryState,recovery_state), recovery_base_commit=COALESCE($recoveryBase,recovery_base_commit),
-                recovery_status=COALESCE($recoveryStatus,recovery_status)
-                WHERE execution_id=$id
+                recovery_status=COALESCE($recoveryStatus,recovery_status),
+                retry_of_execution_id=COALESCE($retryOf,retry_of_execution_id), attempt_number=MAX($attempt,attempt_number),
+                resumed=MAX($resumed,resumed)
+                WHERE execution_id=$id AND completed_at_utc IS NULL
+                    AND state NOT IN ('Completed','Blocked','Failed','InfrastructureFailure','Cancelled')
             """;
         Bind(command, entry);
         try
@@ -91,7 +98,7 @@ public sealed class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status FROM executions ORDER BY started_at_utc";
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed FROM executions ORDER BY started_at_utc";
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -102,7 +109,8 @@ public sealed class ExecutionHistoryStore : IDisposable
                 reader.IsDBNull(10) ? null : reader.GetInt64(10), NullableString(reader, 11), NullableString(reader, 12),
                 reader.GetInt32(13), JsonSerializer.Deserialize<List<ValidationRepairRecord>>(reader.GetString(14)) ?? [],
                 NullableString(reader, 15), NullableString(reader, 16), NullableString(reader, 17), NullableString(reader, 18),
-                NullableString(reader, 19), NullableString(reader, 20), NullableString(reader, 21)));
+                NullableString(reader, 19), NullableString(reader, 20), NullableString(reader, 21),
+                reader.IsDBNull(22) ? null : Guid.Parse(reader.GetString(22)), reader.GetInt32(23), reader.GetBoolean(24)));
         }
         return entries;
     }
@@ -155,6 +163,14 @@ public sealed class ExecutionHistoryStore : IDisposable
                 migration.Transaction = transaction;
                 migration.CommandText = "ALTER TABLE executions ADD COLUMN recovery_state TEXT NULL; ALTER TABLE executions ADD COLUMN recovery_base_commit TEXT NULL; ALTER TABLE executions ADD COLUMN recovery_status TEXT NULL; PRAGMA user_version = 2;";
                 migration.ExecuteNonQuery();
+                schemaVersion = 2;
+            }
+            if (schemaVersion < 3)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN retry_of_execution_id TEXT NULL; ALTER TABLE executions ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 1; ALTER TABLE executions ADD COLUMN resumed INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 3;";
+                migration.ExecuteNonQuery();
             }
             transaction.Commit();
         }
@@ -193,6 +209,9 @@ public sealed class ExecutionHistoryStore : IDisposable
         Add(command, "$recoveryState", entry.RecoveryState);
         Add(command, "$recoveryBase", entry.RecoveryBaseCommit);
         Add(command, "$recoveryStatus", entry.RecoveryStatus);
+        Add(command, "$retryOf", entry.RetryOfExecutionId?.ToString());
+        command.Parameters.AddWithValue("$attempt", entry.AttemptNumber);
+        command.Parameters.AddWithValue("$resumed", entry.Resumed);
     }
 
     private static void Add(SqliteCommand command, string name, object? value) => command.Parameters.AddWithValue(name, value ?? DBNull.Value);

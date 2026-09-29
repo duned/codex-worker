@@ -347,6 +347,40 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Fact]
+    public async Task ResumedRetryKeepsFailedAttemptAndRunsFreshValidationBeforeIntegration()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery.");
+        h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial implementation remains", [], false, null);
+
+        var failed = await h.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Failed, failed!.Kind);
+        var first = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Failed", first.State);
+        h.GitHub.ReadyIssueCount = 2;
+        h.Codex.InitialOutcome = Success("Completed the full task");
+
+        var completed = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, completed!.Kind);
+        Assert.Equal(1, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal(2, entries.Count);
+        var retry = entries.Single(entry => entry.AttemptNumber == 2);
+        Assert.NotEqual(first.ExecutionId, retry.ExecutionId);
+        Assert.Equal(first.ExecutionId, retry.RetryOfExecutionId);
+        Assert.True(retry.Resumed);
+        Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == first.ExecutionId).State);
+        Assert.Equal("Completed", retry.State);
+        Assert.True(h.Git.LastResume);
+        File.Delete(database);
+    }
+
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
@@ -423,7 +457,8 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeGitHub(List<string> events, CancellationTokenSource cancellation) : IGitHubClient
     {
-        private bool _returned;
+        private int _returned;
+        public int ReadyIssueCount { get; set; } = 1;
         public bool ReturnIssueOnFirstQuery { get; set; } = true;
         public bool CancelWhenEmpty { get; set; } = true;
         public bool CancelDuringQuery { get; set; }
@@ -442,7 +477,7 @@ public sealed class WorkerV011Tests
                 cancellation.Cancel();
                 return Task.FromException<GitHubIssue?>(new OperationCanceledException(cancellation.Token));
             }
-            if (ReturnIssueOnFirstQuery && !_returned) { _returned = true; return Task.FromResult<GitHubIssue?>(Issue); }
+            if (ReturnIssueOnFirstQuery && _returned < ReadyIssueCount) { _returned++; return Task.FromResult<GitHubIssue?>(Issue); }
             // End the polling loop without waiting; no real GitHub service is involved.
             if (CancelWhenEmpty) cancellation.Cancel();
             return Task.FromResult<GitHubIssue?>(null);
@@ -471,8 +506,12 @@ public sealed class WorkerV011Tests
         public int Integrations { get; private set; }
         public GitRecoveryInfo? Recovery { get; set; }
         public Guid? LastExecutionId { get; private set; }
+        public bool LastResume { get; private set; }
+        public int LastAttemptNumber { get; private set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
+        public Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
+        { Started++; LastExecutionId = executionId; LastResume = resume; LastAttemptNumber = attemptNumber; return Task.CompletedTask; }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
@@ -502,6 +541,8 @@ public sealed class WorkerV011Tests
         }
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
             RunCoreAsync(projectDirectory);
+        public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory);
         private Task<CodexOutcome> RunCoreAsync(string projectDirectory)
         {
             InitialDirectory = projectDirectory;

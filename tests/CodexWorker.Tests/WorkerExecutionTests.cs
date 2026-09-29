@@ -23,6 +23,10 @@ public sealed class WorkerExecutionTests
         Assert.Equal(Issue.Title, first.IssueTitle);
         Assert.Equal("main", first.BaseBranch);
         Assert.Equal("feature/add-execution-context-17", first.FeatureBranch);
+        var retry = WorkerExecution.Create(Project, Git, Issue, retryOfExecutionId: first.ExecutionId, attemptNumber: 2, resumed: true);
+        Assert.Equal("feature/add-execution-context-17-retry-2", retry.FeatureBranch);
+        Assert.Equal(first.ExecutionId, retry.RetryOfExecutionId);
+        Assert.True(retry.Resumed);
         Assert.True(first.StartedAtUtc <= DateTimeOffset.UtcNow);
     }
 

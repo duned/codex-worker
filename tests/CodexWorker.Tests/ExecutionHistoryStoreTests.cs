@@ -40,6 +40,7 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("recoverable", actual.RecoveryState);
         Assert.Equal("base-sha", actual.RecoveryBaseCommit);
         Assert.Contains("Workspace retained", actual.RecoveryStatus);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => reopened.UpdateAsync(actual with { State = "Failed" }));
     }
 
     [Theory]
@@ -77,6 +78,44 @@ public sealed class ExecutionHistoryStoreTests
     }
 
     [Fact]
+    public async Task RetryAttemptIsPersistedAsSeparateLinkedHistoryRow()
+    {
+        using var database = new TemporaryDatabase();
+        var first = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "Failed", CompletedAtUtc = DateTimeOffset.UtcNow, FailureReason = "Validation failed",
+            RecoveryState = "recoverable", RecoveryBaseCommit = "base", AttemptNumber = 1
+        };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(first);
+        ExecutionHistoryEntry second;
+        using (var reopenedBeforeRetry = new ExecutionHistoryStore(database.Path))
+        {
+            var persistedFailure = Assert.Single(await reopenedBeforeRetry.ReadAllAsync());
+            Assert.Equal(first.ExecutionId, persistedFailure.ExecutionId);
+            second = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(1)) with
+            {
+                State = "Failed", CompletedAtUtc = DateTimeOffset.UtcNow.AddMinutes(2), RecoveryState = "recoverable",
+                RecoveryBaseCommit = "base-2", RetryOfExecutionId = persistedFailure.ExecutionId, AttemptNumber = 2, Resumed = true
+            };
+            await reopenedBeforeRetry.CreateAsync(second);
+            await reopenedBeforeRetry.CreateAsync(Entry(Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(3)) with
+            {
+                RetryOfExecutionId = second.ExecutionId, AttemptNumber = 3, Resumed = true
+            });
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var entries = await reopened.ReadAllAsync();
+        Assert.Equal(3, entries.Count);
+        Assert.Equal("Failed", entries.Single(e => e.ExecutionId == first.ExecutionId).State);
+        var retry = entries.Single(e => e.ExecutionId == second.ExecutionId);
+        Assert.NotEqual(first.ExecutionId, retry.ExecutionId);
+        Assert.Equal(first.ExecutionId, retry.RetryOfExecutionId);
+        Assert.Equal(2, retry.AttemptNumber);
+        Assert.True(retry.Resumed);
+        Assert.Equal(second.ExecutionId, entries.Single(e => e.AttemptNumber == 3).RetryOfExecutionId);
+    }
+
+    [Fact]
     public async Task FreshDatabaseInitializesSchemaAndDoesNotPersistEnvironmentValues()
     {
         using var database = new TemporaryDatabase();
@@ -89,7 +128,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(2L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(3L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

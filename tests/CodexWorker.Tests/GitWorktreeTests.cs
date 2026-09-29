@@ -67,6 +67,78 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task RetryResumeCopiesVerifiedPartialFilesIntoNewOwnedWorktree()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        var previousDirectory = first.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(previousDirectory, "partial.txt"), "useful partial work");
+        File.Delete(Path.Combine(previousDirectory, "base.txt"));
+        var recovery = await first.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        Assert.NotNull(recovery);
+        var previous = new ExecutionHistoryEntry(firstId, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, "partial implementation",
+            null, 0, [], null, null, null, "validation failed", "recoverable", recovery.BaseCommit, recovery.StatusSummary);
+
+        using var retry = first.CreateExecutionRepository();
+        var retryId = Guid.NewGuid();
+        await retry.StartIssueAsync(retryId, fixture.Issue, previous, true, 2, CancellationToken.None);
+
+        Assert.NotEqual(previousDirectory, retry.ExecutionDirectory);
+        Assert.Equal("useful partial work", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "partial.txt")));
+        Assert.False(File.Exists(Path.Combine(retry.ExecutionDirectory, "base.txt")));
+        Assert.Equal("feature/example-task-17-retry-2", await fixture.GitAt(retry.ExecutionDirectory, "branch", "--show-current"));
+        Assert.True(Directory.Exists(previousDirectory));
+        await retry.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task RetryRestartUsesCurrentBaseWithoutCopyingPreviousPartialFiles()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(first.ExecutionDirectory, "partial.txt"), "do not use");
+        var recovery = await first.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        var previous = new ExecutionHistoryEntry(firstId, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery!.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, null,
+            null, 0, [], null, null, null, "failed", "recoverable", recovery.BaseCommit, recovery.StatusSummary);
+
+        using var retry = first.CreateExecutionRepository();
+        await retry.StartIssueAsync(Guid.NewGuid(), fixture.Issue, previous, false, 2, CancellationToken.None);
+
+        Assert.False(File.Exists(Path.Combine(retry.ExecutionDirectory, "partial.txt")));
+        await retry.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ResumeRejectsMissingOrUnsafePersistedRecoveryMetadata()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await first.InitializeAsync(CancellationToken.None);
+        var firstId = Guid.NewGuid();
+        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(first.ExecutionDirectory, "partial.txt"), "useful partial work");
+        var recovery = await first.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        var previous = new ExecutionHistoryEntry(firstId, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery!.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, null,
+            null, 0, [], null, null, null, "failed", "uncertain", recovery.BaseCommit, recovery.StatusSummary);
+
+        using var retry = first.CreateExecutionRepository();
+        var retryId = Guid.NewGuid();
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => retry.StartIssueAsync(retryId, fixture.Issue,
+            previous, true, 2, CancellationToken.None));
+        Assert.False(Directory.Exists(Path.Combine(fixture.WorktreeRoot, retryId.ToString("N"))));
+        Assert.True(Directory.Exists(Path.Combine(fixture.WorktreeRoot, firstId.ToString("N"))));
+    }
+
+    [Fact]
     public async Task ExistingHistoricalNumberFirstBranchDoesNotBlockOrGetRemovedWithNewExecution()
     {
         using var fixture = await RepositoryFixture.CreateAsync();

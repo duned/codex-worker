@@ -10,11 +10,16 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? HumanInput = null,
     GitIntegrationResult? Integration = null,
     TimeSpan Duration = default,
-    Guid? ExecutionId = null)
+    Guid? ExecutionId = null,
+    int AttemptNumber = 1,
+    Guid? RetryOfExecutionId = null,
+    bool Resumed = false)
 {
     public string ToMarkdown(IssueOutcomeKind kind)
     {
         var sections = new List<string>();
+        if (AttemptNumber > 1)
+            sections.Add($"## Attempt history\n\nAttempt {AttemptNumber}{(Resumed ? " resumed from" : " restarted after")} execution `{RetryOfExecutionId}`.");
         if (kind == IssueOutcomeKind.Blocked)
         {
             if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"## Work performed\n\n{ImplementationSummary}");

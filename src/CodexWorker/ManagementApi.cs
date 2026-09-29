@@ -20,7 +20,8 @@ public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool 
 public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, string Repository, int IssueNumber,
     string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
     long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
-    string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus);
+    string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
+    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -153,7 +154,8 @@ public sealed class WorkerRuntimeReadModel
             new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
                 e.StartedAtUtc, e.CompletedAtUtc, e.DurationMilliseconds, e.ValidationOutcome, e.RepairCount,
                 e.Repairs.Select(repair => new ExecutionRepairInfo(repair.Attempt, repair.MaximumAttempts, repair.PassedAfterRepair)).ToArray(),
-                Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus)).ToArray();
+                Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus,
+                e.RetryOfExecutionId, e.AttemptNumber, e.Resumed)).ToArray();
     }
 
     private static string? Outcome(string state) => state switch

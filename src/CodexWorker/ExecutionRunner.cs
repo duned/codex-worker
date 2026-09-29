@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace CodexWorker;
 
 /// <summary>Explicit identity and Issue input for one execution attempt.</summary>
-public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Issue);
+public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Issue, ExecutionHistoryEntry? RetryOf = null);
 
 /// <summary>
 /// Runs the repository workspace, Codex, validation, repair, and integration lifecycle for one execution.
@@ -22,11 +22,12 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
             await _repositoryGate.WaitAsync(ct);
-            try { await git.StartIssueAsync(execution.ExecutionId, issue, ct); }
+            try { await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct); }
             finally { _repositoryGate.Release(); }
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working"), () =>
-                codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, ct),
+                codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
+                    execution.Resumed, execution.AttemptNumber, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
             await git.VerifyCodexStateAsync(ct);
@@ -160,7 +161,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             report?.Integration?.CommitSha ?? Extract(report?.Integration?.Summary, "Committed as `([^`]+)`"),
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
-            failure ?? report?.Failure ?? report?.HumanInput);
+            failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed);
 
     private static string? Extract(string? text, string pattern)
     {
