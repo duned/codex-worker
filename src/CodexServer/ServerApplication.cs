@@ -41,6 +41,7 @@ public static class ServerApplication
         builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
+        builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(configuration.ResolveDatabasePath()));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddHostedService<ExecutionLeaseExpirationService>();
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
@@ -48,8 +49,78 @@ public static class ServerApplication
         var app = builder.Build();
         var persistence = app.Services.GetRequiredService<IRegistryStore>();
         await persistence.InitializeAsync(cancellationToken);
+        await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
+        app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (request is null || request.Secret is null) return Results.BadRequest(new { error = "Credential metadata and secret are required." });
+            try
+            {
+                var metadata = await store.CreateAsync(request, context.RequestAborted);
+                return Results.Created($"/api/v1/credentials/{metadata.Id}", metadata);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException) { return Results.Json(new { error = "Credential encryption is not configured." }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapGet("/api/v1/credentials", async (HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Ok(await store.ListAsync(context.RequestAborted));
+        });
+        app.MapGet("/api/v1/credentials/{credentialId}", async (string credentialId, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var credential = await store.GetAsync(credentialId, context.RequestAborted);
+            return credential is null ? Results.NotFound() : Results.Ok(credential);
+        });
+        app.MapPut("/api/v1/credentials/{credentialId}/assignment", async (string credentialId, CredentialAssignmentRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore registry, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (request is null || !Guid.TryParseExact(request.WorkerId, "N", out _)) return Results.BadRequest(new { error = "Worker identity is invalid." });
+            if (await registry.GetWorkerAsync(request.WorkerId, context.RequestAborted) is null) return Results.NotFound();
+            var credential = await store.AssignAsync(credentialId, request.WorkerId, context.RequestAborted);
+            return credential is null ? Results.NotFound() : Results.Ok(credential);
+        });
+        app.MapPut("/api/v1/workers/{workerId}/credential-access", async (string workerId, CredentialSecretInput token,
+            HttpContext context, ServerConfiguration settings, IRegistryStore registry, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (token is null || await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
+            try { await store.SetWorkerDeliveryTokenAsync(workerId, token, context.RequestAborted); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            return Results.NoContent();
+        });
+        app.MapGet("/api/v1/workers/{workerId}/credentials/{credentialId}", async (string workerId, string credentialId,
+            HttpContext context, ICredentialStore store) =>
+        {
+            if (!await store.IsWorkerDeliveryTokenValidAsync(workerId, context.Request.Headers["X-Worker-Credential-Token"].ToString(), context.RequestAborted))
+                return Results.Unauthorized();
+            var metadata = await store.GetAsync(credentialId, context.RequestAborted);
+            if (metadata is null || metadata.AssignedWorkerId != workerId || metadata.Status != "Ready") return Results.NotFound();
+            var secret = await store.RetrieveForWorkerAsync(credentialId, workerId, context.RequestAborted);
+            return secret is null ? Results.NotFound() : Results.Ok(new CredentialDeliveryResponse(metadata.Id, metadata.Provider, metadata.Type, metadata.Version, secret));
+        });
+        app.MapPost("/api/v1/credentials/{credentialId}/revoke", async (string credentialId, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var credential = await store.RevokeAsync(credentialId, context.RequestAborted);
+            return credential is null ? Results.NotFound() : Results.Ok(credential);
+        });
+        app.MapPut("/api/v1/credentials/{credentialId}/secret", async (string credentialId, CredentialSecretInput secret,
+            HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            try
+            {
+                var credential = await store.ReplaceSecretAsync(credentialId, secret, context.RequestAborted);
+                return credential is null ? Results.NotFound() : Results.Ok(credential);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException) { return Results.Json(new { error = "Credential encryption is not configured." }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
         app.MapGet("/", () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>
         {

@@ -870,12 +870,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     }
 
     private static string SanitizeProvisioningText(string value, int limit)
-    {
-        var safe = Regex.Replace(value, "(?i)(token|password|secret|credential|api[_-]?key)(\\s*[:=]\\s*)[^\\s,;]+", "$1$2[redacted]");
-        safe = Regex.Replace(safe, "(?i)\\bBearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer [redacted]");
-        safe = new string(safe.Where(character => !char.IsControl(character)).ToArray());
-        return safe[..Math.Min(safe.Length, limit)];
-    }
+        => SecretSanitizer.Sanitize(value, limit);
 
     private static ProvisioningPlan ReadProvisioningPlan(SqliteDataReader reader) => new(reader.GetString(0), reader.GetString(1),
         DateTimeOffset.Parse(reader.GetString(2)), reader.GetString(3), JsonSerializer.Deserialize<IReadOnlyList<ProvisioningAction>>(reader.GetString(4)) ?? [],

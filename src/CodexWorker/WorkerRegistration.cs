@@ -47,6 +47,10 @@ public sealed record WorkerExecutionReportContract(string WorkerId, string Assig
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
     string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
 public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generation);
+public sealed record WorkerCredentialContract(string Id, string Provider, string Type, long Version, string Secret)
+{
+    public override string ToString() => $"WorkerCredentialContract {{ Id = {Id}, Provider = {Provider}, Type = {Type}, Version = {Version}, Secret = [redacted] }}";
+}
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
@@ -206,6 +210,31 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Content = JsonContent.Create(report);
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task<WorkerCredentialContract?> RetrieveCredentialAsync(WorkerServerSettings settings, string credentialId,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) throw new InvalidOperationException("Credential delivery requires managed Server mode.");
+        var token = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Credential delivery requires CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN.");
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = CreateClient();
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
+            request.Headers.Add("X-Worker-Credential-Token", token);
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server credential retrieval failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            var credential = await response.Content.ReadFromJsonAsync<WorkerCredentialContract>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Codex Server returned an empty credential response.");
+            if (credential.Id != credentialId || credential.Version < 1 || string.IsNullOrEmpty(credential.Secret))
+                throw new InvalidDataException("Codex Server returned an invalid credential response.");
+            return credential;
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
