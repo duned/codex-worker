@@ -45,6 +45,7 @@ public sealed class AuthenticationReadinessTests
 
         Assert.Contains(capabilities, capability => capability.Type == "authentication" && capability.Name == "github-api" && capability.Scope == "team/repo");
         Assert.Contains(capabilities, capability => capability.Type == "authentication" && capability.Name == "git-repository" && capability.Scope == "team/repo");
+        Assert.Equal(new WorkerCapabilityContract("agent-provider", "codex"), WorkerAgentCapabilities.AuthenticatedProvider("Codex"));
     }
 
     [Fact]

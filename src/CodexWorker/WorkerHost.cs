@@ -140,12 +140,16 @@ public sealed class WorkerHost
 
             _output.GlobalPreflight();
             activeProject = null;
-            var globalPreflight = new CodexExecutor(_runner, new CodexSettings { Model = null });
+            IAgentAuthenticationProvider agentAuthentication = new CodexAgentAuthenticationProvider(
+                new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
             await _output.RunProgressAsync("Codex preflight", async () =>
             {
-                await globalPreflight.PreflightAsync(ct, _global.Worker.PreflightTimeoutSeconds);
+                await agentAuthentication.ValidateAsync(ct);
                 return true;
             }, ct: ct);
+            heartbeatCapabilities = heartbeatCapabilities
+                .Append(WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
+            await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, ct);
             await telegram.StartedAsync(runtimes.Count, ct);
             _output.Started();
             runtimeReadModel.State = "running";

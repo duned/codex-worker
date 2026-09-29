@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+
+- Integrate structured Server-managed provisioning plans with Worker-side policy checks, fixed dependency installers, privileged-operation controls, credential delivery, authentication handlers, and capability refresh.
+- Keep credential values encrypted at rest on Server, scoped to assigned Workers, delivered only for an authorized provisioning action, and excluded from normal metadata and sanitized provisioning history.
+- Advertise repository-scoped GitHub API/Git readiness and Codex agent-provider readiness only after the corresponding Worker checks pass; use these capabilities for project eligibility.
+- Keep provisioning disabled by default, preserve standalone Workers, and document supported actions, trust boundaries, and unsupported operations.
+
 ## 0.11.0
 
 - Add structured requirements to central projects and preserve them through SQLite persistence and project management APIs.

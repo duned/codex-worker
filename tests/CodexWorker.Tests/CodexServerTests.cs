@@ -473,6 +473,21 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public void ProjectEligibilityRequiresCodexAgentReadiness()
+    {
+        var project = new CentralProject("project-id", "Project", "team/compiler", "main", "", [], 1,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var requirements = WorkerAuthenticationRequirements.ForProject(project);
+        var repositoryReady = WorkerAuthenticationRequirements.ForRepository(project.Repository)
+            .Select(requirement => new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)).ToArray();
+
+        var missingAgent = WorkerEligibility.Evaluate(requirements, repositoryReady);
+        Assert.False(missingAgent.IsEligible);
+        Assert.Contains("requires codex; capability unavailable", missingAgent.MissingRequirements);
+        Assert.True(WorkerEligibility.Evaluate(requirements, [.. repositoryReady, new WorkerCapability("agent-provider", "codex")]).IsEligible);
+    }
+
+    [Fact]
     public async Task AssignmentSkipsIncompatibleWorkersKeepsWorkQueuedAndReevaluatesUpdatedCapabilities()
     {
         using var temporary = new TemporaryDirectory();
@@ -966,7 +981,7 @@ public sealed class CodexServerTests
 
     private static WorkerCapability[] AuthenticationCapabilities(string repository) =>
         [.. WorkerAuthenticationRequirements.ForRepository(repository).Select(requirement =>
-            new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+            new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)), new WorkerCapability("agent-provider", "codex")];
 
     private sealed class TemporaryDirectory : IDisposable
     {

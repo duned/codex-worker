@@ -60,7 +60,8 @@ public sealed class WorkerV011Tests
         var workerId = Guid.NewGuid().ToString("N");
         CodexServer.WorkerCapability[] capabilities = [new("tool", "git"),
             .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
-                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)),
+            new("agent-provider", "codex")];
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "test worker", "test", "test", 1, capabilities));
         await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "test", "running", 0, 1, capabilities, []));
         var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id,

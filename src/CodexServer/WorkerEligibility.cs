@@ -9,7 +9,8 @@ public static class WorkerAuthenticationRequirements
     ];
 
     public static IReadOnlyList<ProjectRequirement> ForProject(CentralProject project) =>
-        (project.Requirements ?? []).Concat(ForRepository(project.Repository)).ToArray();
+        (project.Requirements ?? []).Concat(ForRepository(project.Repository))
+            .Append(new ProjectRequirement("agent-provider", "codex")).ToArray();
 }
 
 /// <summary>Deterministic matching for centrally declared project requirements.</summary>

@@ -28,6 +28,13 @@ public static class WorkerAuthenticationCapabilities
     ];
 }
 
+/// <summary>Agent providers whose configured authentication passed the Worker startup preflight.</summary>
+public static class WorkerAgentCapabilities
+{
+    public static WorkerCapabilityContract AuthenticatedProvider(string provider) =>
+        new("agent-provider", provider.Trim().ToLowerInvariant());
+}
+
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
     IReadOnlyList<string> ActiveProjects);
