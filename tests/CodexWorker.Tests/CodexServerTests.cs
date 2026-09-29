@@ -28,7 +28,7 @@ public sealed class CodexServerTests
         Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "test-management-token");
         try
         {
-            var app = await ServerApplication.BuildAsync(Args(url, database));
+            await using var app = await ServerApplication.BuildAsync(Args(url, database));
             await app.StartAsync();
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
             {
@@ -85,7 +85,7 @@ public sealed class CodexServerTests
             }
             await app.StopAsync();
             await app.DisposeAsync();
-            var restarted = await ServerApplication.BuildAsync(Args(url, database));
+            await using var restarted = await ServerApplication.BuildAsync(Args(url, database));
             await restarted.StartAsync();
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
             {
@@ -336,7 +336,7 @@ public sealed class CodexServerTests
         var alphaId = "";
         try
         {
-            var app = await ServerApplication.BuildAsync(Args(url, database));
+            await using var app = await ServerApplication.BuildAsync(Args(url, database));
             await app.StartAsync();
             var store = app.Services.GetRequiredService<IRegistryStore>();
             var alpha = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
@@ -404,7 +404,7 @@ public sealed class CodexServerTests
                 Assert.Equal(alpha.Id, otherWorkerAssignment.Assignment.Project.Id);
 
                 // The uncertain-delivery case is equivalent to dropping the response: server ownership is already durable.
-                var owned = Assert.Single((await store.GetExecutionsAsync()).Where(x => x.AssignmentId == first.Assignment.AssignmentId));
+                var owned = Assert.Single(await store.GetExecutionsAsync(), x => x.AssignmentId == first.Assignment.AssignmentId);
                 Assert.Equal("Assigned", owned.State);
                 Assert.Equal(workerA, owned.AssignedWorkerId);
                 Assert.Equal(first.Assignment.ServerExecutionId, owned.Id);
@@ -412,10 +412,10 @@ public sealed class CodexServerTests
                 await app.DisposeAsync();
             }
 
-            var restarted = await ServerApplication.BuildAsync(Args(url, database));
+            await using var restarted = await ServerApplication.BuildAsync(Args(url, database));
             await restarted.StartAsync();
             var restartedStore = restarted.Services.GetRequiredService<IRegistryStore>();
-            var retained = Assert.Single((await restartedStore.GetExecutionsAsync()).Where(x => x.AssignmentId == firstAssignmentId));
+            var retained = Assert.Single(await restartedStore.GetExecutionsAsync(), x => x.AssignmentId == firstAssignmentId);
             Assert.Equal("Assigned", retained.State);
             Assert.Equal(workerA, retained.AssignedWorkerId);
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
@@ -484,8 +484,19 @@ public sealed class CodexServerTests
         await Assert.ThrowsAsync<InvalidDataException>(() => ServerApplication.BuildAsync(["--Server:ListenUrl=http://127.0.0.1:5090", "--Server:DatabasePath="]));
     }
 
-    private static string[] Args(string url, string databasePath) =>
-        [$"--Server:ListenUrl={url}", $"--Server:DatabasePath={databasePath}"];
+    private static string[] Args(string url, string databasePath)
+    {
+        // Keep successful ASP.NET Core lifetime and request logs out of normal test output.
+        // Setting CODEXSERVER_TEST_LOG_LEVEL to Information or Debug restores verbose diagnostics.
+        var logLevel = Environment.GetEnvironmentVariable("CODEXSERVER_TEST_LOG_LEVEL") ?? "Warning";
+        return
+        [
+            $"--Server:ListenUrl={url}",
+            $"--Server:DatabasePath={databasePath}",
+            $"--Logging:LogLevel:Default={logLevel}",
+            $"--Logging:LogLevel:Microsoft.AspNetCore={logLevel}"
+        ];
+    }
 
     private static int ReservePort()
     {
