@@ -292,6 +292,7 @@ public sealed class CodexServerTests
         Assert.Equal("Assigned", assigned!.State);
         Assert.Equal("worker-a", assigned.AssignedWorkerId);
         Assert.NotNull(assigned.AssignedAtUtc);
+        Assert.Equal(new ExecutionLease(first.Id, "worker-a", 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(5), "Active"), assigned.Lease);
         var started = DateTimeOffset.Parse("2026-02-01T00:00:03Z");
         var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started));
         Assert.Equal("Running", running!.State);
@@ -307,6 +308,8 @@ public sealed class CodexServerTests
         Assert.Equal("passed", completed.ValidationResult);
         Assert.Equal("integrated", completed.IntegrationResult);
         Assert.Equal("Implemented Issue #42.", completed.CompletionSummary);
+        Assert.Equal("Released", completed.Lease!.State);
+        Assert.Equal(1L, completed.Lease.Generation);
         var retry = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work));
         Assert.NotEqual(first.Id, retry.Id);
 
@@ -320,6 +323,64 @@ public sealed class CodexServerTests
         Assert.Equal("Completed", persisted[0].State);
         Assert.Equal(120000, persisted[0].DurationMilliseconds);
         Assert.Equal(started.AddMinutes(2), persisted[0].CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task AssignmentLeaseIsExclusiveDurableAndReleasedOnTerminalReport()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "lease-race.db");
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-03-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(database, timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Lease", "team/lease", "main", "", []));
+        var firstWorker = Guid.NewGuid().ToString("N");
+        var secondWorker = Guid.NewGuid().ToString("N");
+        foreach (var worker in new[] { firstWorker, secondWorker })
+        {
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, ["git"]));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, ["git"], []));
+        }
+        var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "lease-1")));
+        WorkerAssignmentRequest Request(string worker) => new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var attempts = await Task.WhenAll(store.RequestAssignmentAsync(Request(firstWorker)), store.RequestAssignmentAsync(Request(secondWorker)));
+        var acquired = Assert.Single(attempts.Where(x => x.HasWork)).Assignment!;
+        Assert.Equal(execution.Id, acquired.ServerExecutionId);
+        Assert.Equal(1L, acquired.Lease!.Generation);
+        Assert.Equal(clock.GetUtcNow(), acquired.Lease.AcquiredAtUtc);
+        Assert.Equal(clock.GetUtcNow().AddMinutes(5), acquired.Lease.ExpiresAtUtc);
+        Assert.False((await store.RequestAssignmentAsync(Request(firstWorker))).HasWork);
+
+        var restarted = new SqliteRegistryStore(database, timeProvider: clock);
+        await restarted.InitializeAsync();
+        var owned = Assert.Single(await restarted.GetExecutionsAsync());
+        Assert.Equal(acquired.WorkerId, owned.Lease!.WorkerId);
+        Assert.Equal(1L, owned.Lease.Generation);
+        Assert.Equal("Active", owned.Lease.State);
+
+        var staleReport = new WorkerExecutionReport("stale-worker", acquired.AssignmentId, "stale-run", "Completed",
+            CompletedAtUtc: clock.GetUtcNow());
+        var unchanged = await restarted.ReportExecutionAsync(execution.Id, staleReport);
+        Assert.Equal("Assigned", unchanged!.State);
+        Assert.Equal("Active", unchanged.Lease!.State);
+
+        var report = new WorkerExecutionReport(acquired.WorkerId, acquired.AssignmentId, "lease-run", "Completed",
+            CompletedAtUtc: clock.GetUtcNow());
+        var completed = await restarted.ReportExecutionAsync(execution.Id, report);
+        Assert.Equal("Released", completed!.Lease!.State);
+        Assert.Equal(acquired.WorkerId, completed.Lease.WorkerId);
+        Assert.Equal(1L, completed.Lease.Generation);
+        Assert.Equal(1L, await LeaseCountAsync(database, execution.Id));
+    }
+
+    private static async Task<long> LeaseCountAsync(string database, string executionId)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString());
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM execution_leases WHERE execution_id=$id;";
+        command.Parameters.AddWithValue("$id", executionId);
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 
     [Fact]
@@ -376,6 +437,9 @@ public sealed class CodexServerTests
                 Assert.True(first.HasWork);
                 Assert.Equal(workerA, first.Assignment!.WorkerId);
                 Assert.Equal(alpha.Id, first.Assignment.Project.Id);
+                Assert.Equal(workerA, first.Assignment.Lease!.WorkerId);
+                Assert.Equal(first.Assignment.ServerExecutionId, first.Assignment.Lease.ExecutionId);
+                Assert.Equal(1L, first.Assignment.Lease.Generation);
                 Assert.NotEqual(first.Assignment.AssignmentId, first.Assignment.ServerExecutionId);
                 firstAssignmentId = first.Assignment.AssignmentId;
 

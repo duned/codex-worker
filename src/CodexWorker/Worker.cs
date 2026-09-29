@@ -44,6 +44,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     /// <summary>Executes a Server assignment through the same claim, history and ExecutionRunner pipeline as standalone work.</summary>
     public async Task<Task<IssueProcessingResult?>?> ClaimAssignedAsync(WorkerAssignmentContract assignment, CancellationToken ct)
     {
+        if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
+            !string.Equals(lease.ExecutionId, assignment.ServerExecutionId, StringComparison.Ordinal) ||
+            !string.Equals(lease.WorkerId, assignment.WorkerId, StringComparison.Ordinal) ||
+            lease.ExpiresAtUtc <= lease.AcquiredAtUtc ||
+            string.IsNullOrWhiteSpace(assignment.AssignmentId))
+            throw new WorkerInfrastructureException("Server assignment does not contain a valid active execution lease.");
         if (assignment.Work.Type is not ("issue" or "github-issue") ||
             !int.TryParse(assignment.Work.Id, System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)

@@ -14,7 +14,8 @@ public sealed class WorkerV011Tests
         var now = DateTimeOffset.UtcNow;
         var assignment = new WorkerAssignmentContract("assignment-456", "server-request-123",
             new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
-            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>());
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-request-123", "worker-id", 1, now, now.AddMinutes(5), "Active"));
 
         var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
         Assert.NotNull(execution);
@@ -53,7 +54,8 @@ public sealed class WorkerV011Tests
             new ServerProjectContract(project.Id, project.Name, project.Repository, project.DefaultBranch,
                 project.Description, project.Requirements, project.Revision, project.CreatedAtUtc, project.UpdatedAtUtc),
             new ServerWorkReferenceContract(assignment.Work.Type, assignment.Work.Id, assignment.Work.Url), workerId,
-            assignment.Metadata);
+            assignment.Metadata, new ServerExecutionLeaseContract(assignment.Lease!.ExecutionId, assignment.Lease.WorkerId,
+                assignment.Lease.Generation, assignment.Lease.AcquiredAtUtc, assignment.Lease.ExpiresAtUtc, assignment.Lease.State));
 
         var execution = await h.Worker.ClaimAssignedAsync(workerAssignment, h.Cancellation.Token);
         Assert.NotNull(execution);

@@ -34,7 +34,9 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? AssignmentId = null, string? CurrentStage = null, string? WorkerExecutionId = null,
     DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null, long? DurationMilliseconds = null,
     string? ValidationResult = null, string? IntegrationResult = null, string? FailureClassification = null,
-    bool Recoverable = false, string? CompletionSummary = null);
+    bool Recoverable = false, string? CompletionSummary = null, ExecutionLease? Lease = null);
+public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
+    DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State);
 public sealed record ExecutionStateTransition(string State, string? AssignedWorkerId = null, string? ExecutionId = null);
 public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
@@ -43,7 +45,7 @@ public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId,
 public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities);
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment);
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
-    WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata);
+    WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata, ExecutionLease? Lease = null);
 
 public static class ExecutionRequestValidation
 {
@@ -113,7 +115,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
 /// <summary>Creates the server's durable registry schema without coupling APIs to SQLite.</summary>
 public sealed class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null) : IRegistryStore
 {
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -136,7 +138,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 6);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 7);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -165,10 +167,17 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             {
                 command.CommandText = "ALTER TABLE execution_requests ADD COLUMN assignment_id TEXT NULL; UPDATE execution_requests SET assignment_id = id WHERE state IN ('Assigned', 'Running'); UPDATE schema_metadata SET schema_version = 5 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 5;
             }
             if (schemaVersion == 5)
             {
                 command.CommandText = "ALTER TABLE execution_requests ADD COLUMN current_stage TEXT NULL; ALTER TABLE execution_requests ADD COLUMN worker_execution_id TEXT NULL; ALTER TABLE execution_requests ADD COLUMN started_at_utc TEXT NULL; ALTER TABLE execution_requests ADD COLUMN completed_at_utc TEXT NULL; ALTER TABLE execution_requests ADD COLUMN duration_ms INTEGER NULL; ALTER TABLE execution_requests ADD COLUMN validation_result TEXT NULL; ALTER TABLE execution_requests ADD COLUMN integration_result TEXT NULL; ALTER TABLE execution_requests ADD COLUMN failure_classification TEXT NULL; ALTER TABLE execution_requests ADD COLUMN recoverable INTEGER NOT NULL DEFAULT 0; ALTER TABLE execution_requests ADD COLUMN completion_summary TEXT NULL; UPDATE schema_metadata SET schema_version = 6 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 6;
+            }
+            if (schemaVersion == 6)
+            {
+                command.CommandText = "CREATE TABLE execution_leases (execution_id TEXT NOT NULL, generation INTEGER NOT NULL, worker_id TEXT NOT NULL, acquired_at_utc TEXT NOT NULL, expires_at_utc TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('Active', 'Released')), PRIMARY KEY (execution_id, generation)); INSERT INTO execution_leases (execution_id, generation, worker_id, acquired_at_utc, expires_at_utc, state) SELECT id, 1, assigned_worker_id, assigned_at_utc, assigned_at_utc, CASE WHEN state IN ('Assigned', 'Running') THEN 'Active' ELSE 'Released' END FROM execution_requests WHERE assigned_worker_id IS NOT NULL AND assigned_at_utc IS NOT NULL; UPDATE schema_metadata SET schema_version = 7 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
@@ -220,6 +229,15 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     failure_classification TEXT NULL,
                     recoverable INTEGER NOT NULL DEFAULT 0,
                     completion_summary TEXT NULL
+                );
+                CREATE TABLE IF NOT EXISTS execution_leases (
+                    execution_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    acquired_at_utc TEXT NOT NULL,
+                    expires_at_utc TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('Active', 'Released')),
+                    PRIMARY KEY (execution_id, generation)
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
@@ -335,6 +353,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
 
         var now = _timeProvider.GetUtcNow();
+        var expires = now.AddMinutes(5);
         var assignmentId = Guid.NewGuid().ToString("N");
         command.Parameters.Clear();
         command.CommandText = "UPDATE execution_requests SET state = 'Assigned', assigned_worker_id = $worker, assigned_at_utc = $now, assignment_id = $assignment WHERE id = $id AND state = 'Queued';";
@@ -348,6 +367,18 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             return new(false, null);
         }
         command.Parameters.Clear();
+        command.CommandText = "SELECT COALESCE(MAX(generation), 0) + 1 FROM execution_leases WHERE execution_id = $id;";
+        command.Parameters.AddWithValue("$id", candidate.Value.Id);
+        var generation = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
+        command.Parameters.Clear();
+        command.CommandText = "INSERT INTO execution_leases (execution_id, generation, worker_id, acquired_at_utc, expires_at_utc, state) VALUES ($id, $generation, $worker, $acquired, $expires, 'Active');";
+        command.Parameters.AddWithValue("$id", candidate.Value.Id);
+        command.Parameters.AddWithValue("$generation", generation);
+        command.Parameters.AddWithValue("$worker", request.WorkerId);
+        command.Parameters.AddWithValue("$acquired", now.ToString("O"));
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.Clear();
         command.CommandText = "SELECT project_id, configuration_json, created_at_utc FROM projects WHERE project_id = $id;";
         command.Parameters.AddWithValue("$id", candidate.Value.ProjectId);
         await using var projectReader = await command.ExecuteReaderAsync(cancellationToken);
@@ -356,7 +387,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await projectReader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         var metadata = new Dictionary<string, string>(StringComparer.Ordinal) { ["assignedAtUtc"] = now.ToString("O") };
-        return new(true, new WorkAssignment(assignmentId, candidate.Value.Id, project, candidate.Value.Work, request.WorkerId, metadata));
+        return new(true, new WorkAssignment(assignmentId, candidate.Value.Id, project, candidate.Value.Work, request.WorkerId, metadata,
+            new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active")));
     }
 
     public async Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default)
@@ -364,7 +396,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary FROM execution_requests ORDER BY queue_order;";
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1) FROM execution_requests ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ExecutionRequest>();
         while (await reader.ReadAsync(cancellationToken)) result.Add(ReadExecution(reader));
@@ -380,7 +412,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (report.State is not ("Running" or "Completed" or "Failed")) throw new InvalidDataException("Worker execution report state is invalid.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
         command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=COALESCE($stage,current_stage), started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=COALESCE($failure,failure_classification), recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND (state IN ('Assigned','Running') OR (state=$state AND worker_execution_id=$workerExecution));";
         command.Parameters.AddWithValue("$state", report.State);
         command.Parameters.AddWithValue("$workerExecution", report.WorkerExecutionId);
@@ -396,12 +430,24 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.Parameters.AddWithValue("$id", executionRequestId);
         command.Parameters.AddWithValue("$assignment", report.AssignmentId);
         command.Parameters.AddWithValue("$worker", report.WorkerId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated == 1 && report.State is ("Completed" or "Failed"))
+        {
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE execution_leases SET state='Released' WHERE execution_id=$id AND worker_id=$worker AND generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id);";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            command.Parameters.AddWithValue("$worker", report.WorkerId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using var read = connection.CreateCommand();
-        read.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary FROM execution_requests WHERE id=$id;";
+        read.Transaction = (SqliteTransaction)transaction;
+        read.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1) FROM execution_requests WHERE id=$id;";
         read.Parameters.AddWithValue("$id", executionRequestId);
         await using var reader = await read.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        var result = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        await reader.DisposeAsync();
+        await transaction.CommitAsync(cancellationToken);
+        return result;
     }
 
     public async Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default)
@@ -419,7 +465,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (!valid) throw new InvalidDataException("State transition contract is invalid.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
         command.CommandText = "UPDATE execution_requests SET state = $next, assigned_worker_id = COALESCE($worker, assigned_worker_id), assigned_at_utc = CASE WHEN $next = 'Assigned' THEN $now ELSE assigned_at_utc END, assignment_id = CASE WHEN $next = 'Assigned' THEN $assignment ELSE assignment_id END, execution_id = COALESCE($executionId, execution_id) WHERE id = $id AND (state = CASE $next WHEN 'Assigned' THEN 'Queued' WHEN 'Running' THEN 'Assigned' WHEN 'Completed' THEN 'Running' WHEN 'Failed' THEN 'Running' ELSE '' END) AND ($next != 'Running' OR ($workerForRun IS NULL AND assigned_worker_id IS NOT NULL) OR assigned_worker_id = $workerForRun);";
         command.Parameters.AddWithValue("$next", transition.State);
         command.Parameters.AddWithValue("$worker", (object?)transition.AssignedWorkerId ?? DBNull.Value);
@@ -431,16 +479,44 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
         {
             await using var exists = connection.CreateCommand();
+            exists.Transaction = (SqliteTransaction)transaction;
             exists.CommandText = "SELECT 1 FROM execution_requests WHERE id = $id;";
             exists.Parameters.AddWithValue("$id", executionRequestId);
             if (await exists.ExecuteScalarAsync(cancellationToken) is null) return null;
             throw new ExecutionRequestTransitionException();
         }
+        if (transition.State == "Assigned")
+        {
+            command.Parameters.Clear();
+            command.CommandText = "SELECT COALESCE(MAX(generation), 0) + 1 FROM execution_leases WHERE execution_id=$id;";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            var generation = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
+            var acquired = _timeProvider.GetUtcNow();
+            command.Parameters.Clear();
+            command.CommandText = "INSERT INTO execution_leases (execution_id, generation, worker_id, acquired_at_utc, expires_at_utc, state) VALUES ($id, $generation, $worker, $acquired, $expires, 'Active');";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            command.Parameters.AddWithValue("$generation", generation);
+            command.Parameters.AddWithValue("$worker", transition.AssignedWorkerId!);
+            command.Parameters.AddWithValue("$acquired", acquired.ToString("O"));
+            command.Parameters.AddWithValue("$expires", acquired.AddMinutes(5).ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        if (transition.State is "Completed" or "Failed")
+        {
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE execution_leases SET state='Released' WHERE execution_id=$id AND state='Active';";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using var read = connection.CreateCommand();
-        read.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary FROM execution_requests WHERE id = $id;";
+        read.Transaction = (SqliteTransaction)transaction;
+        read.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1) FROM execution_requests WHERE id = $id;";
         read.Parameters.AddWithValue("$id", executionRequestId);
         await using var reader = await read.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        var result = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        await reader.DisposeAsync();
+        await transaction.CommitAsync(cancellationToken);
+        return result;
     }
 
     private static bool Printable(string value, int maxLength) => !string.IsNullOrWhiteSpace(value) && value.Length <= maxLength && !value.Any(char.IsControl);
@@ -454,7 +530,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         reader.IsDBNull(12) ? null : DateTimeOffset.Parse(reader.GetString(12)), reader.IsDBNull(13) ? null : reader.GetInt64(13),
         reader.IsDBNull(14) ? null : reader.GetString(14), reader.IsDBNull(15) ? null : reader.GetString(15),
         reader.IsDBNull(16) ? null : reader.GetString(16), !reader.IsDBNull(17) && reader.GetInt32(17) != 0,
-        reader.IsDBNull(18) ? null : reader.GetString(18));
+        reader.IsDBNull(18) ? null : reader.GetString(18),
+        reader.IsDBNull(19) ? null : new ExecutionLease(reader.GetString(0), reader.GetString(19), reader.GetInt64(20),
+            DateTimeOffset.Parse(reader.GetString(21)), DateTimeOffset.Parse(reader.GetString(22)), reader.GetString(23)));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {

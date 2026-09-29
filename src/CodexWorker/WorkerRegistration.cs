@@ -25,8 +25,11 @@ public sealed record WorkerAssignmentRequestContract(string WorkerId, bool Worke
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<string> Requirements, long Revision, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
 public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
+public sealed record ServerExecutionLeaseContract(string ExecutionId, string WorkerId, long Generation,
+    DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State);
 public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,
-    ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata);
+    ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata,
+    ServerExecutionLeaseContract? Lease = null);
 public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment);
 public sealed record WorkerExecutionReportContract(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
