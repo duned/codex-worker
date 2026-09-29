@@ -1,0 +1,22 @@
+[Unit]
+Description=Codex Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=codex-worker
+Group=codex-worker
+Environment=HOME=/var/lib/codex-worker
+EnvironmentFile=/etc/codex-worker/worker.env
+WorkingDirectory=/var/lib/codex-worker
+ExecStart=/opt/codex-worker/CodexWorker /etc/codex-worker/worker.yml
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=300
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

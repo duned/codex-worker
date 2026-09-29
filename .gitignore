@@ -27,6 +27,7 @@ secrets/
 logs/
 *.log
 !config/project.example.yml
+!packaging/linux/worker.managed.example.yml
 worker.yml
 worker.yaml
 worker-*.yml

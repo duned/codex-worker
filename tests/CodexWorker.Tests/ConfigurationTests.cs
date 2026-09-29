@@ -35,6 +35,24 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void IdentityPathResolvesRelativeToConfigurationAndExpandsHome()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"worker-path-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var path = Path.Combine(folder, "worker.yml");
+            File.WriteAllText(path, "projects:\n  directory: ./projects\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./state/worker-id\n");
+            Assert.Equal(Path.Combine(folder, "state", "worker-id"), GlobalWorkerConfiguration.Load(path).Server.IdentityFile);
+
+            File.WriteAllText(path, "projects:\n  directory: ./projects\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ~/worker-id\n");
+            Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "worker-id"),
+                GlobalWorkerConfiguration.Load(path).Server.IdentityFile);
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
     public void GlobalYamlLoadsWorkerProvisioningPolicyAndDefaultsToDisabled()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"worker-policy-{Guid.NewGuid():N}");

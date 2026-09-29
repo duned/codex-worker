@@ -104,8 +104,8 @@ public sealed class GlobalWorkerConfiguration
                 ?? throw new InvalidDataException("Configuration YAML is empty.");
             if (string.IsNullOrWhiteSpace(value.Projects.Directory)) throw new InvalidDataException("projects.directory is required.");
             if (!Path.IsPathRooted(value.Projects.Directory)) value.Projects.Directory = Path.GetFullPath(value.Projects.Directory, Path.GetDirectoryName(fullPath)!);
-            if (!string.IsNullOrWhiteSpace(value.Server.IdentityFile) && !Path.IsPathRooted(value.Server.IdentityFile))
-                value.Server.IdentityFile = Path.GetFullPath(value.Server.IdentityFile, Path.GetDirectoryName(fullPath)!);
+            if (!string.IsNullOrWhiteSpace(value.Server.IdentityFile))
+                value.Server.IdentityFile = WorkerPath.Resolve(value.Server.IdentityFile, Path.GetDirectoryName(fullPath)!);
             if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
             if (value.Worker.MaxParallelTasks < 1 || value.Worker.MaxParallelTasks > 8)
                 throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
@@ -320,6 +320,19 @@ public sealed class WorkerServerSettings
     private static bool IsLoopback(string host) =>
         System.Net.IPAddress.TryParse(host, out var address) ? System.Net.IPAddress.IsLoopback(address) : host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
 }
+
+internal static class WorkerPath
+{
+    public static string Resolve(string path, string relativeTo)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (path == "~") path = home;
+        else if (path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal))
+            path = Path.Combine(home, path[2..]);
+        return Path.IsPathRooted(path) ? Path.GetFullPath(path) : Path.GetFullPath(path, relativeTo);
+    }
+}
+
 public sealed class WorkerSettings
 {
     public int GitTimeoutSeconds { get; set; } = 120;

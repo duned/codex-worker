@@ -161,6 +161,42 @@ Credential provisioning keeps secret values out of credential metadata and manag
 
 Management clients can create credentials at `POST /api/v1/credentials`, list metadata at `GET /api/v1/credentials`, assign with `PUT /api/v1/credentials/{id}/assignment`, rotate using `PUT /api/v1/credentials/{id}/secret`, and revoke with `POST /api/v1/credentials/{id}/revoke`. These routes require the management token and return metadata only. To enable delivery, provision a distinct random Worker token (at least 32 characters) using `PUT /api/v1/workers/{workerId}/credential-access` with that token as the request body, then set the same value in that Worker’s `CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN` environment. The Server stores only its SHA-256 hash. The Worker retrieves an assigned value through `GET /api/v1/workers/{workerId}/credentials/{credentialId}`; this endpoint requires the Worker-specific token and returns the secret only for that Worker. Keep this token private to its Worker and use HTTPS for remote Server connections. Worker delivery returns the value in memory; provider-specific materialization and zeroing managed strings are responsibilities of the consuming integration and are not provided by the generic foundation.
 
+### Installing and enrolling a Linux Worker
+
+The supported bootstrap package is in `packaging/linux`. It installs a published Worker build and systemd unit without installing project-specific tools or runtimes. A fresh Ubuntu/Linux host needs systemd, .NET 10 runtime for a framework-dependent publish, Git, GitHub CLI (`gh`), Codex CLI with its authentication configured for the service account, outbound HTTPS access to the Server and configured GitHub/Git remotes, and a configured Worker registration token. Git, `gh`, and Codex are required for normal execution readiness; tools such as Node.js, Docker, PostgreSQL, and .NET SDKs used by individual projects are discovered and can be handled by Server provisioning policy. Do not preinstall project-specific dependencies as part of Worker bootstrap.
+
+Publish the Worker for the host architecture with an apphost, then install it:
+
+```sh
+dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self-contained false -o publish
+sudo packaging/linux/install.sh publish
+```
+
+The installer is repeatable and preserves existing configuration and environment files. It creates the `codex-worker` system account and uses these locations:
+
+| Purpose | Location | Owner |
+| --- | --- | --- |
+| Executable and published binaries | `/opt/codex-worker` | root |
+| Global Worker configuration | `/etc/codex-worker/worker.yml` | root, group-readable by Worker |
+| Secret environment variables | `/etc/codex-worker/worker.env` | root, group-readable by Worker |
+| Persistent identity, SQLite execution history, and runtime state | `/var/lib/codex-worker/.codex-worker` | codex-worker |
+| Project configuration and configured checkouts | `/var/lib/codex-worker/projects` or operator-selected paths | codex-worker |
+| Execution worktrees | `/var/lib/codex-worker/.codex-worker/worktrees` | codex-worker |
+
+Edit `/etc/codex-worker/worker.yml`: set `server.url`, retain the persistent `server.identityFile`, and add local project YAML files under `projects.directory`. Each project configuration must identify its checkout and credentials through the supported local authentication setup. Managed enrollment requires `projects.ownership: managed` and `server.enabled: true`; the installed starter configuration selects those values. Put `CODEX_SERVER_REGISTRATION_TOKEN` in `/etc/codex-worker/worker.env` as a systemd environment assignment, for example `CODEX_SERVER_REGISTRATION_TOKEN=<secret>`, and keep the file root-owned with mode `0640`. Do not put credentials in YAML or command-line arguments.
+
+Start and enable the service after configuration:
+
+```sh
+sudo systemctl enable --now codex-worker
+sudo systemctl status codex-worker
+sudo journalctl -u codex-worker
+```
+
+On startup, the Worker loads or atomically creates its random identity at the configured persistent path, then sends an idempotent registration keyed by that ID. Repeated restarts or rerunning registration update that Server Worker record instead of creating another identity. Registration failure stops managed startup; it does not fall back to standalone mode. After registration, the Worker reports discovered capabilities in heartbeats, then reports project-scoped GitHub/Git readiness and the authenticated Codex provider after startup preflight. The Server dashboard shows the Worker and current capabilities; provisioning can fill supported gaps according to Server plans and local Worker policy.
+
+The unit runs as the unprivileged `codex-worker` account, starts after network availability, starts on reboot when enabled, restarts after runtime failures, and maps SIGTERM to graceful shutdown. Exit status 2 prevents a deterministic configuration or startup failure from entering a restart loop. Back up `/var/lib/codex-worker` to preserve identity, history, and recoverable execution state across host replacement; restoring the identity reconnects the replacement to the same Server Worker record.
+
 Managed mode is opt-in in the global Worker YAML:
 
 ```yaml
@@ -188,7 +224,7 @@ dotnet build CodexWorker.sln
 dotnet test CodexWorker.sln
 ```
 
-The application does not daemonize itself. It exits with status `0` for graceful shutdown, `2` for configuration/startup/preflight failures, and `1` for unexpected runtime failures. For a systemd service, use `Restart=on-failure` with `RestartPreventExitStatus=2` so deterministic startup failures are not restarted while runtime failures remain eligible for restart:
+The application does not daemonize itself. It exits with status `0` for graceful shutdown, `2` for configuration/startup/preflight failures, and `1` for unexpected runtime failures. The Linux package includes the systemd unit with `Restart=on-failure` and `RestartPreventExitStatus=2`, so deterministic startup failures are not restarted while runtime failures remain eligible for restart:
 
 ```ini
 [Service]
@@ -196,7 +232,7 @@ Restart=on-failure
 RestartPreventExitStatus=2
 ```
 
-V0.4.1 production startup exposed an invalid `gh api` argument construction despite the REST endpoint and authentication being available. V0.4.2 fixes the invocation and provides the startup exit status needed to prevent a deterministic startup failure from causing a service restart loop. Codex Worker does not install or modify systemd configuration.
+V0.4.1 production startup exposed an invalid `gh api` argument construction despite the REST endpoint and authentication being available. V0.4.2 fixes the invocation and provides the startup exit status needed to prevent a deterministic startup failure from causing a service restart loop. The packaged unit can serve as a starting point for other supported systemd hosts.
 
 ## Safety and limitations
 

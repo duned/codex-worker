@@ -1,0 +1,28 @@
+worker:
+  pollingSeconds: 60
+  preflightTimeoutSeconds: 60
+  maxParallelTasks: 1
+  provisioning:
+    enabled: false
+    allowNonPrivileged: false
+    allowCredentials: false
+    allowedPrivilegedActions: []
+    deniedActions: []
+
+projects:
+  directory: /var/lib/codex-worker/projects
+  ownership: managed
+
+telegram:
+  enabled: false
+
+api:
+  enabled: true
+  listenUrl: http://127.0.0.1:5080
+  eventHistoryLimit: 500
+
+server:
+  enabled: true
+  url: https://codex-server.example
+  heartbeatIntervalSeconds: 20
+  identityFile: /var/lib/codex-worker/.codex-worker/worker-id

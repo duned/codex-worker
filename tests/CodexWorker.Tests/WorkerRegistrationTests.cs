@@ -83,6 +83,38 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public async Task RepeatedBootstrapRegistersTheSamePersistentIdentity()
+    {
+        using var temporary = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "bootstrap-test-token");
+        try
+        {
+            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            using var client = new HttpClient(handler);
+            var settings = new WorkerServerSettings
+            {
+                Enabled = true,
+                Url = "http://127.0.0.1:5090",
+                IdentityFile = Path.Combine(temporary.Path, "state", "worker-id")
+            };
+            var registration = new WorkerRegistrationClient(client);
+
+            await registration.RegisterAsync(settings, 1, CancellationToken.None);
+            var firstIdentity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+            var firstUri = handler.Uri;
+            await registration.RegisterAsync(settings, 1, CancellationToken.None);
+
+            Assert.Equal(firstIdentity, await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile));
+            Assert.Equal(firstUri, handler.Uri);
+            Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{firstIdentity}", handler.Uri);
+            Assert.Equal("PUT", handler.Method);
+            Assert.DoesNotContain("bootstrap-test-token", handler.Body, StringComparison.Ordinal);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
+    }
+
+    [Fact]
     public async Task AssignmentRequestUsesRegisteredIdentityAndDoesNotCallServerWithoutCapacity()
     {
         using var temporary = new TemporaryDirectory();
