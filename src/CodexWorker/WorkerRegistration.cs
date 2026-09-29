@@ -14,14 +14,15 @@ public sealed record WorkerRegistrationContract(
     [property: JsonPropertyName("workerVersion")] string WorkerVersion,
     [property: JsonPropertyName("platform")] string Platform,
     [property: JsonPropertyName("capacity")] int Capacity,
-    [property: JsonPropertyName("capabilities")] IReadOnlyList<WorkerCapabilityContract> Capabilities);
+    [property: JsonPropertyName("capabilities")] IReadOnlyList<WorkerCapabilityContract> Capabilities,
+    [property: JsonPropertyName("agents")] IReadOnlyList<AgentAuthenticationContract>? Agents = null);
 
 /// <summary>A runtime, tool, or service currently available to this worker.</summary>
 public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null);
 
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, IReadOnlyList<AgentAuthenticationContract>? Agents = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities);
@@ -100,6 +101,7 @@ public static class WorkerIdentity
 public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 {
     private static readonly WorkerCapabilityDiscovery CapabilityDiscovery = WorkerCapabilityDiscovery.Shared;
+    private static readonly IAgentProvider CodexProvider = new CodexAgentProvider();
 
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
     {
@@ -114,10 +116,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
+            var agents = new[] { await CodexProvider.CheckAuthenticationAsync(cancellationToken) };
             request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-                capabilities));
+                capabilities, agents));
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
@@ -144,8 +147,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            var agents = new[] { await CodexProvider.CheckAuthenticationAsync(cancellationToken) };
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
-                lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects));
+                lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects, agents));
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");

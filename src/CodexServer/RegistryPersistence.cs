@@ -242,15 +242,30 @@ public sealed class ProjectRevisionConflictException(long currentRevision)
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
-    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities);
+    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
+    IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
-    IReadOnlyList<string> ActiveProjects);
+    IReadOnlyList<string> ActiveProjects, IReadOnlyList<WorkerAgentAuthentication>? Agents = null);
+
+/// <summary>Sanitized authentication readiness for one configured execution agent.</summary>
+public sealed record WorkerAgentAuthentication(string Provider, string State);
+
+public static class WorkerAgentEligibility
+{
+    public static bool CanExecute(IEnumerable<WorkerAgentAuthentication>? agents)
+    {
+        // Older V2 workers did not report agent authentication. Retain their established behavior.
+        if (agents is null) return true;
+        var codex = agents.FirstOrDefault(agent => string.Equals(agent.Provider, "codex", StringComparison.OrdinalIgnoreCase));
+        return codex is not null && string.Equals(codex.State, "ready", StringComparison.OrdinalIgnoreCase);
+    }
+}
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
@@ -535,7 +550,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
-            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0)
+            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0 ||
+            !WorkerAgentEligibility.CanExecute(heartbeat.Agents))
         {
             await transaction.CommitAsync(cancellationToken);
             return new(false, null);
@@ -1233,12 +1249,14 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             "stopped" => "offline",
             _ => "online"
         };
+        if (availability == "online" && !WorkerAgentEligibility.CanExecute(heartbeat!.Agents))
+            availability = "not-ready";
         var active = online ? heartbeat!.ActiveExecutions : 0;
         var capacity = online ? heartbeat!.MaximumCapacity : request.Capacity;
         return new(request.ContractVersion, request.WorkerId, request.DisplayName, heartbeat?.WorkerVersion ?? request.WorkerVersion,
             request.Platform, request.Capacity, heartbeat?.Capabilities ?? request.Capabilities, registered, seen,
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
-            online ? heartbeat!.ActiveProjects : Array.Empty<string>());
+            online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat?.Agents ?? request.Agents);
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
