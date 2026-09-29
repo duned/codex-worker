@@ -3,8 +3,11 @@ namespace CodexServer;
 public sealed class ServerConfiguration
 {
     public string ListenUrl { get; set; } = "http://127.0.0.1:5090";
-    public string DatabasePath { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-server", "codex-server.db");
+    /// <summary>Directory for durable Server state. Relative paths are resolved from the user's home directory.</summary>
+    public string DataDirectory { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "codex-server");
+    /// <summary>Optional legacy override for the SQLite file; relative values are resolved inside DataDirectory.</summary>
+    public string? DatabasePath { get; set; }
     public int WorkerStaleAfterSeconds { get; set; } = 90;
     public int ExecutionLeaseDurationSeconds { get; set; } = 900;
     public int ExecutionLeaseRenewalIntervalSeconds { get; set; } = 60;
@@ -22,8 +25,10 @@ public sealed class ServerConfiguration
         if (uri.Scheme == "http" && !(System.Net.IPAddress.TryParse(uri.Host, out var address)
                 ? System.Net.IPAddress.IsLoopback(address) : uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Server:ListenUrl must use HTTPS unless it binds to loopback.");
-        if (string.IsNullOrWhiteSpace(DatabasePath))
-            throw new InvalidDataException("Server:DatabasePath must not be empty.");
+        if (string.IsNullOrWhiteSpace(DataDirectory))
+            throw new InvalidDataException("Server:DataDirectory must not be empty.");
+        if (DatabasePath is not null && string.IsNullOrWhiteSpace(DatabasePath))
+            throw new InvalidDataException("Server:DatabasePath must not be empty when specified.");
         if (WorkerStaleAfterSeconds is < 10 or > 3600)
             throw new InvalidDataException("Server:WorkerStaleAfterSeconds must be between 10 and 3600.");
         if (ExecutionLeaseDurationSeconds is < 120 or > 86400)
@@ -32,5 +37,9 @@ public sealed class ServerConfiguration
             throw new InvalidDataException("Server:ExecutionLeaseRenewalIntervalSeconds must be at least 10 and less than one third of ExecutionLeaseDurationSeconds.");
     }
 
-    public string ResolveDatabasePath() => Path.GetFullPath(DatabasePath);
+    public string ResolveDataDirectory() => Path.GetFullPath(DataDirectory, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+    public string ResolveDatabasePath() => DatabasePath is null
+        ? Path.Combine(ResolveDataDirectory(), "codex-server.db")
+        : Path.GetFullPath(DatabasePath, ResolveDataDirectory());
 }

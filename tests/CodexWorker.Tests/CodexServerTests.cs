@@ -44,6 +44,17 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public void DataDirectoryAndRelativeDatabasePathResolveOutsideTheWorkingDirectory()
+    {
+        using var temporary = new TemporaryDirectory();
+        var configuration = new ServerConfiguration { DataDirectory = Path.Combine(temporary.Path, "state") };
+        Assert.Equal(Path.Combine(temporary.Path, "state"), configuration.ResolveDataDirectory());
+        Assert.Equal(Path.Combine(temporary.Path, "state", "codex-server.db"), configuration.ResolveDatabasePath());
+        configuration.DatabasePath = "custom/server.db";
+        Assert.Equal(Path.Combine(temporary.Path, "state", "custom", "server.db"), configuration.ResolveDatabasePath());
+    }
+
+    [Fact]
     public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
     {
         using var temporary = new TemporaryDirectory();
@@ -188,6 +199,13 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
             Assert.Equal("healthy", health.RootElement.GetProperty("status").GetString());
             Assert.True(health.RootElement.GetProperty("persistenceAvailable").GetBoolean());
+
+            using var liveResponse = await client.GetAsync("/livez");
+            Assert.Equal(HttpStatusCode.OK, liveResponse.StatusCode);
+            using var readyResponse = await client.GetAsync("/readyz");
+            Assert.Equal(HttpStatusCode.OK, readyResponse.StatusCode);
+            using var ready = JsonDocument.Parse(await readyResponse.Content.ReadAsStringAsync());
+            Assert.Equal("ready", ready.RootElement.GetProperty("status").GetString());
 
         }
         finally { await app.StopAsync(); }
@@ -956,6 +974,13 @@ public sealed class CodexServerTests
     public async Task EmptyPersistenceLocationIsRejected()
     {
         await Assert.ThrowsAsync<InvalidDataException>(() => ServerApplication.BuildAsync(["--Server:ListenUrl=http://127.0.0.1:5090", "--Server:DatabasePath="]));
+    }
+
+    [Fact]
+    public async Task EmptyDataDirectoryIsRejected()
+    {
+        await Assert.ThrowsAsync<InvalidDataException>(() => ServerApplication.BuildAsync(
+            ["--Server:ListenUrl=http://127.0.0.1:5090", "--Server:DataDirectory="]));
     }
 
     private static string[] Args(string url, string databasePath)

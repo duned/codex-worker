@@ -32,7 +32,13 @@ public static class ServerApplication
 {
     public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default)
     {
-        var builder = WebApplication.CreateBuilder(args);
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            Args = args,
+            // Resolve default appsettings and content files beside the published application,
+            // never from whichever directory a service manager happened to select.
+            ContentRootPath = AppContext.BaseDirectory
+        });
         var configuration = new ServerConfiguration();
         builder.Configuration.GetSection("Server").Bind(configuration);
         configuration.Validate();
@@ -50,6 +56,23 @@ public static class ServerApplication
         var persistence = app.Services.GetRequiredService<IRegistryStore>();
         await persistence.InitializeAsync(cancellationToken);
         await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
+        app.Logger.LogInformation("Codex Server {Version} initialized in {RuntimeMode} mode; listening on {ListenUrl}; persistent data directory: {DataDirectory}",
+            DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
+        app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
+        app.MapGet("/readyz", async (IServerHealthService healthService, HttpContext context) =>
+        {
+            try
+            {
+                var health = await healthService.GetHealthAsync(context.RequestAborted);
+                return health.PersistenceAvailable
+                    ? Results.Ok(new { status = "ready", health.PersistenceAvailable })
+                    : Results.Json(new { status = "not-ready", health.PersistenceAvailable }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+            catch (Exception) when (!context.RequestAborted.IsCancellationRequested)
+            {
+                return Results.Json(new { status = "not-ready", persistenceAvailable = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>

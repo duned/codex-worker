@@ -116,13 +116,44 @@ Run the server independently from the worker:
 dotnet run --project src/CodexServer/CodexServer.csproj
 ```
 
-By default it listens on `http://127.0.0.1:5090` and stores its database at `~/.codex-server/codex-server.db`. Configure it through `appsettings.json`, environment variables, or command-line configuration keys. For example:
+By default it listens on `http://127.0.0.1:5090` and stores durable state in `~/.local/share/codex-server/`. Configure it through `appsettings.json`, environment variables, or command-line configuration keys. `Server:ListenUrl` selects the interface and port; `Server:DataDirectory` is the persistent state directory. The optional `Server:DatabasePath` overrides the SQLite file location (relative paths are resolved inside the data directory). ASP.NET Core's `ASPNETCORE_ENVIRONMENT` selects the runtime mode. For example:
 
 ```sh
-dotnet run --project src/CodexServer/CodexServer.csproj -- --Server:ListenUrl=http://127.0.0.1:5091 --Server:DatabasePath=/tmp/codex-server.db
+dotnet run --project src/CodexServer/CodexServer.csproj -- --Server:ListenUrl=http://127.0.0.1:5091 --Server:DataDirectory=/var/lib/codex-server
 ```
 
-The equivalent environment variables are `Server__ListenUrl` and `Server__DatabasePath`. The listen URL must be an absolute HTTP or HTTPS URL with a valid port. The server creates the database directory and initializes its schema before accepting requests. No service manager is required.
+The equivalent environment variables are `Server__ListenUrl` and `Server__DataDirectory`. The listen URL must be an absolute HTTP or HTTPS URL with a valid port. Plain HTTP is accepted only on loopback; use HTTPS directly or terminate TLS at a trusted reverse proxy for remote traffic. Binding to a non-loopback interface exposes the Server to that network. Keep it on a trusted network and protect it with TLS and firewall policy; management and registration tokens do not replace transport security. The Server creates the state directory and initializes persistence before accepting requests. `/livez` reports process liveness, `/readyz` reports initialized persistence readiness, and `/health` retains the detailed persistence health result. SIGTERM and normal service-manager stop requests use the .NET Generic Host graceful shutdown path.
+
+#### Linux service installation
+
+Publish the Server for the target runtime, install the binaries under `/opt/codex-server`, and keep mutable state and secrets outside that directory. For example, create a dedicated `codex-server` service account, use `/etc/codex-server/server.env` for mode-0600 environment settings, and create `/var/lib/codex-server` owned by that account. `server.env` should define `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, `Server__DataDirectory=/var/lib/codex-server`, and the required token/key environment variables described below. Logs go to the systemd journal. Set `TMPDIR` to the service manager's runtime directory for temporary files; this is not durable Server state.
+
+Example `/etc/systemd/system/codex-server.service`:
+
+```ini
+[Unit]
+Description=Codex Server
+After=network.target
+
+[Service]
+Type=exec
+User=codex-server
+Group=codex-server
+WorkingDirectory=/opt/codex-server
+EnvironmentFile=/etc/codex-server/server.env
+ExecStart=/opt/codex-server/CodexServer
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=codex-server
+RuntimeDirectoryMode=0750
+Environment=TMPDIR=/run/codex-server
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+For a framework-dependent publish, set `ExecStart` to `dotnet /opt/codex-server/CodexServer.dll`. Install and start with `systemctl daemon-reload`, `systemctl enable --now codex-server`, then inspect `systemctl status codex-server` and `journalctl -u codex-server`. Startup journal output includes version, runtime mode, endpoint, and state directory, but no credentials. When exposing the service remotely, configure a TLS-terminating proxy and firewall rules at the network boundary.
 
 Workers register with `PUT /api/v1/workers/{workerId}`, send periodic heartbeats to `POST /api/v1/workers/{workerId}/heartbeat`, and can be inspected at `GET /api/v1/workers` or `GET /api/v1/workers/{workerId}`. While an assigned execution runs, its Worker renews ownership through `POST /api/v1/workers/{workerId}/executions/{executionId}/lease/renew`, using the current lease generation. This is distinct from the general Worker heartbeat. Registration, heartbeat, assignment, report, and lease renewal require `CODEX_SERVER_REGISTRATION_TOKEN` on Server and Worker. Registry reads, project management, and execution queue management require a separate `CODEX_SERVER_MANAGEMENT_TOKEN`, which should only be given to trusted operators. Neither token is accepted from YAML. Use long random values for both and HTTPS when traffic crosses a trusted host boundary. Repeat registration updates the existing Worker entry by its stable ID. The public wire contract accepts `contractVersion: 1` for older Workers and `contractVersion: 2` for structured capabilities; unknown contract versions are rejected, and the Server does not depend on Worker persistence types. V0.11 Workers send contract version 2. The registration token grants registration, heartbeat, assignment, execution-report, and lease-renewal access to any Worker identity and is shared across managed Workers; these general APIs do not yet have per-Worker roles or project access rules.
 
