@@ -221,6 +221,12 @@ public static class ManagementApi
             return Results.Ok(new { draining = true, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
                 drainComplete = model.Registry.WorkerDrainComplete });
         });
+        app.MapPost("/api/worker/drain/cancel", (WorkerRuntimeReadModel model) =>
+        {
+            if (!model.Registry.CancelWorkerDrain(() => model.Lifecycle.CancelDrain(0)))
+                return Results.Conflict(new { error = "Worker drain cannot be cancelled while executions are active or no drain is pending." });
+            return Results.Ok(new { draining = false, state = model.Lifecycle.Snapshot.State });
+        });
         app.MapGet("/api/worker/drain", (WorkerRuntimeReadModel model) =>
             Results.Ok(new { draining = model.Registry.WorkerDraining, state = model.Lifecycle.Snapshot.State, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
                 drainComplete = model.Registry.WorkerDrainComplete }));

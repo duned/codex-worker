@@ -117,6 +117,20 @@ public sealed class ProjectRuntimeRegistry
         }
     }
 
+    public bool CancelWorkerDrain(Action cancelLifecycle)
+    {
+        ArgumentNullException.ThrowIfNull(cancelLifecycle);
+        lock (_gate)
+        {
+            if (!_workerDraining || _workerActive != 0) return false;
+            cancelLifecycle();
+            _workerDraining = false;
+            _events?.Publish("worker.drain.cancelled", "Worker drain was cancelled.");
+            SignalChanged();
+            return true;
+        }
+    }
+
     /// <summary>Reserves execution capacity atomically with the eligibility check.</summary>
     public bool TryReserve(string name, WorkerConfiguration? expectedConfiguration = null)
     {

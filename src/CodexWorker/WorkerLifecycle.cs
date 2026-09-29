@@ -12,6 +12,17 @@ public sealed class WorkerLifecycle
 
     public void RequestDrain() => Update("drain-requested", true);
 
+    public void CancelDrain(int activeExecutions)
+    {
+        if (activeExecutions < 0) throw new ArgumentOutOfRangeException(nameof(activeExecutions));
+        lock (_gate)
+        {
+            if (!_snapshot.DrainRequested || activeExecutions != 0)
+                throw new InvalidOperationException("A worker drain can only be cancelled when no executions are active.");
+            _snapshot = _snapshot with { State = "ready", DrainRequested = false, ActiveExecutions = 0 };
+        }
+    }
+
     public void SetDrained(int activeExecutions)
     {
         if (activeExecutions < 0) throw new ArgumentOutOfRangeException(nameof(activeExecutions));

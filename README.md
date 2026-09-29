@@ -1,10 +1,10 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.12.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.13.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
 
 ## V0.7 local control plane
 
-The worker serves a local dashboard and JSON management API at `http://127.0.0.1:5080/` by default. The API can be disabled with `api.enabled: false`; `api.listenUrl` accepts only a loopback IP address. Keep remote access behind an SSH tunnel or another external access mechanism. The dashboard reads and changes state only through the API. Routes provide worker status and capabilities, project and execution views, bounded recent events, a Server-Sent Events stream, project configuration CRUD/reload, project lifecycle controls, and worker drain status.
+The worker serves a local dashboard and JSON management API at `http://127.0.0.1:5080/` by default. The API can be disabled with `api.enabled: false`; `api.listenUrl` accepts only a loopback IP address. Keep remote access behind an SSH tunnel or another external access mechanism. The dashboard reads and changes state only through the API. Routes provide worker status and capabilities, project and execution views, bounded recent events, a Server-Sent Events stream, project configuration CRUD/reload, project lifecycle controls, and worker drain status. `POST /api/worker/drain` stops new claims while active work completes; `POST /api/worker/drain/cancel` resumes scheduling only when no execution is active.
 
 Project ownership is explicit in global Worker YAML: `projects.ownership: standalone` (the default) means the Worker polls GitHub directly; `projects.ownership: managed` requires `server.enabled: true` and makes the Server the source of project identity, repository, default branch, requirements, project revisions, and execution assignments. The Server returns a versioned project snapshot. A Worker validates and applies the whole snapshot atomically and keeps a permission-restricted last-known-good copy beside its persistent identity. A temporary Server outage leaves that applied copy in use; an invalid update leaves the previous valid snapshot active. Worker identity and bootstrap connection, checkout and instruction paths, GitHub labels and credentials, environment files, Codex settings, validation commands, recovery settings, and local provisioning authorization remain Worker-local. Central project definitions contain no checkout paths, dotenv files, or credentials.
 
@@ -108,11 +108,11 @@ Interactive terminals get a spinner, elapsed idle timer, restrained color, and d
 
 ### Codex Server
 
-The Server stores its Worker and project registries, centrally managed project configuration and requirements, execution metadata/history/queue/leases, provisioning plans, and credential metadata in the SQLite database configured by `Server:DatabasePath` (default: `Server:DataDirectory/codex-server.db`). Create a versioned, portable backup with `dotnet run --project src/CodexServer/CodexServer.csproj -- backup export <archive-path> <database-path>`. SQLite's online backup API provides a consistent snapshot while the Server is running. Validate it with `dotnet run --project src/CodexServer/CodexServer.csproj -- backup validate <archive-path>`; validation checks the archive format and version, required tables, schema version, and SQLite integrity.
+The Server stores its Worker and project registries, centrally managed project configuration and requirements, execution metadata/history/queue/leases, provisioning plans, and credential metadata in the SQLite database configured by `Server:DatabasePath` (default: `Server:DataDirectory/codex-server.db`). On the packaged Linux deployment, create a versioned, portable backup with `/opt/codex-server/CodexServer backup export <archive-path> /var/lib/codex-server/codex-server.db`. SQLite's online backup API provides a consistent snapshot while the Server is running. Validate it with `/opt/codex-server/CodexServer backup validate <archive-path>`; validation checks the archive format and version, required tables, schema version, and SQLite integrity. Replace the executable path and database path with the deployed values when using another installation layout.
 
 Backups deliberately exclude secret material. Credential metadata is retained with status `NeedsReprovision`, encrypted credential payloads are erased, and Worker credential delivery-token hashes are omitted. Management and registration tokens come from environment variables and are not stored in the database. Server process configuration (`appsettings.json`, environment assignments, and service-manager settings), Worker-local checkouts and identity, and external secret-provider contents are outside the database archive and must be handled separately. Store configuration backups without credentials; restore secret values from the separately managed secret system or re-enter them. This SQLite backup cannot recover credential values or Worker delivery tokens. Re-enter credentials and provision new per-Worker delivery tokens after restore.
 
-To recover, stop the Server, preserve a copy of its current database, then run `dotnet run --project src/CodexServer/CodexServer.csproj -- backup restore <archive-path> <database-path>` using a compatible Server version. Restore validates and extracts the complete backup before replacing the configured database. Do not restore while the Server is running; restart it after recovery. The artifact records format version 1 and the registry schema version, and incompatible versions are rejected without replacing the destination.
+To recover, stop the Server, preserve a copy of its current database, then run `/opt/codex-server/CodexServer backup restore <archive-path> /var/lib/codex-server/codex-server.db` using a compatible Server version and an account that can write the data directory. Restore validates and extracts the complete backup before replacing the configured database. Do not restore while the Server is running; restart it after recovery. The artifact records format version 1 and the registry schema version, and incompatible versions are rejected without replacing the destination.
 
 The standalone `CodexServer` application hosts the central control plane API and management dashboard at `/`. The dashboard summarizes Server status, registered Workers and capacity, shows Worker details and availability, and supports authenticated central project CRUD through the Server APIs. Worker status updates use an authenticated Server-Sent Events stream at `/api/v1/events/stream`. All Worker and project registry reads and writes require the Server management token; only basic Server status, version, health, and the dashboard shell are public. The dashboard asks an operator for the Server management token, uses it for registry data, and keeps it in page memory without displaying or persisting it. A central project contains a stable ID, name, repository, default branch, description, and structured requirements (`type`, `name`, optional `version`). Requirement types include `runtime`, `tool`, and `service`, and other type names are accepted for future capabilities. Versions support an exact numeric version (`10.0.2`) or a minimum (`>=10.0`); versions have one to four numeric components, and no wildcard, range, or dependency solving is performed. Requirement type and name are trimmed and lowercased; duplicate type/name pairs are rejected even if they specify different versions. Existing projects without requirements remain valid, and the previous string requirement form is read as a runtime requirement for compatibility. The project has no checkout path, dotenv contents, or secret fields. Project updates and removals require the current revision; stale writes return `409 Conflict`. Names and repositories are unique without regard to case. Invalid definitions are rejected before persistence. Registration and project metadata are stored durably in SQLite; normal project responses contain no secrets. The local Worker dashboard remains focused on Worker diagnostics and control.
 
@@ -132,34 +132,24 @@ The equivalent environment variables are `Server__ListenUrl` and `Server__DataDi
 
 #### Linux service installation
 
-Publish the Server for the target runtime, install the binaries under `/opt/codex-server`, and keep mutable state and secrets outside that directory. For example, create a dedicated `codex-server` service account, use `/etc/codex-server/server.env` for mode-0600 environment settings, and create `/var/lib/codex-server` owned by that account. `server.env` should define `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, `Server__DataDirectory=/var/lib/codex-server`, and the required token/key environment variables described below. Logs go to the systemd journal. Set `TMPDIR` to the service manager's runtime directory for temporary files; this is not durable Server state.
+The Linux package in `packaging/linux` creates a dedicated unprivileged service account, installs the published apphost and systemd unit, and preserves the existing environment file on repeat installs. Publish for the target host and install as root:
 
-Example `/etc/systemd/system/codex-server.service`:
-
-```ini
-[Unit]
-Description=Codex Server
-After=network.target
-
-[Service]
-Type=exec
-User=codex-server
-Group=codex-server
-WorkingDirectory=/opt/codex-server
-EnvironmentFile=/etc/codex-server/server.env
-ExecStart=/opt/codex-server/CodexServer
-Restart=on-failure
-RestartSec=5
-RuntimeDirectory=codex-server
-RuntimeDirectoryMode=0750
-Environment=TMPDIR=/run/codex-server
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
+```sh
+dotnet publish src/CodexServer/CodexServer.csproj -c Release -r linux-x64 --self-contained false -o server-publish
+sudo packaging/linux/install-server.sh server-publish
 ```
 
-For a framework-dependent publish, set `ExecStart` to `dotnet /opt/codex-server/CodexServer.dll`. Install and start with `systemctl daemon-reload`, `systemctl enable --now codex-server`, then inspect `systemctl status codex-server` and `journalctl -u codex-server`. Startup journal output includes version, runtime mode, endpoint, and state directory, but no credentials. When exposing the service remotely, configure a TLS-terminating proxy and firewall rules at the network boundary.
+The installer keeps binaries in `/opt/codex-server`, service configuration and secrets in `/etc/codex-server/server.env`, and SQLite state in `/var/lib/codex-server`. The environment file is root-owned and readable by the Server service account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. The Server logs to the systemd journal; temporary files use `/run/codex-server` and are not durable state.
+
+Start and inspect the service with:
+
+```sh
+sudo systemctl enable --now codex-server
+sudo systemctl status codex-server
+sudo journalctl -u codex-server
+```
+
+Startup journal output includes version, runtime mode, endpoint, and state directory, but no credentials. The unit is in [`packaging/linux/codex-server.service`](packaging/linux/codex-server.service). When exposing the service remotely, configure a TLS-terminating proxy and firewall rules at the network boundary.
 
 Workers register with `PUT /api/v1/workers/{workerId}`, send periodic heartbeats to `POST /api/v1/workers/{workerId}/heartbeat`, and can be inspected at `GET /api/v1/workers` or `GET /api/v1/workers/{workerId}`. While an assigned execution runs, its Worker renews ownership through `POST /api/v1/workers/{workerId}/executions/{executionId}/lease/renew`, using the current lease generation. This is distinct from the general Worker heartbeat. Registration, heartbeat, assignment, report, and lease renewal require `CODEX_SERVER_REGISTRATION_TOKEN` on Server and Worker. Registry reads, project management, and execution queue management require a separate `CODEX_SERVER_MANAGEMENT_TOKEN`, which should only be given to trusted operators. Neither token is accepted from YAML. Use long random values for both and HTTPS when traffic crosses a trusted host boundary. Repeat registration updates the existing Worker entry by its stable ID. The public wire contract accepts `contractVersion: 1` for older Workers and `contractVersion: 2` for structured capabilities; unknown contract versions are rejected, and the Server does not depend on Worker persistence types. V0.11 Workers send contract version 2. The registration token grants registration, heartbeat, assignment, execution-report, and lease-renewal access to any Worker identity and is shared across managed Workers; these general APIs do not yet have per-Worker roles or project access rules.
 
@@ -202,6 +192,13 @@ sudo journalctl -u codex-worker
 On startup, the Worker loads or atomically creates its random identity at the configured persistent path, then sends an idempotent registration keyed by that ID. Repeated restarts or rerunning registration update that Server Worker record instead of creating another identity. It then fetches the versioned managed project snapshot and applies it before startup readiness checks. If registration or snapshot retrieval fails, a previously validated snapshot remains available and is selected for local configuration; without one, managed startup stops. The Worker never falls back to standalone mode, and Server-dependent assignment and provisioning remain unavailable during an outage. The Worker refreshes the snapshot while idle. The local API exposes applied and desired versions, synchronization state, last successful update time, and a bounded error through `/api/configuration-sync`. After configuration, the Worker reports discovered capabilities in heartbeats, then reports project-scoped GitHub/Git readiness and the authenticated Codex provider after startup preflight. The Server dashboard shows the Worker and current capabilities; provisioning can fill supported gaps according to Server plans and local Worker policy.
 
 The unit runs as the unprivileged `codex-worker` account, starts after network availability, starts on reboot when enabled, restarts after runtime failures, and maps SIGTERM to graceful shutdown. Exit status 2 prevents a deterministic configuration or startup failure from entering a restart loop. Back up `/var/lib/codex-worker` to preserve identity, history, and recoverable execution state across host replacement; restoring the identity reconnects the replacement to the same Server Worker record.
+
+For a controlled Linux Worker update, publish the next build and use [`packaging/linux/update-worker.sh`](packaging/linux/update-worker.sh) instead of copying files into a running service. The updater stages and checks the new apphost first, requests the loopback API to stop new claims, waits up to five minutes for active executions to finish, then stops systemd and swaps the binaries. It restarts the service and checks `/api/status` for running and ready state; if readiness fails it restores the previous binaries and preserves the failed release for inspection. The prior release is retained at `/opt/codex-worker.previous.*` after a successful update. The script expects the default loopback API URL; pass a different loopback URL as its second argument when configured. If a drain times out it cancels the drain and leaves the service and binaries unchanged.
+
+```sh
+dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self-contained false -o publish
+sudo packaging/linux/update-worker.sh publish
+```
 
 Managed mode is opt-in in the global Worker YAML:
 

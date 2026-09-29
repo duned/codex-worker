@@ -1,0 +1,21 @@
+[Unit]
+Description=Codex Server
+After=network.target
+
+[Service]
+Type=exec
+User=codex-server
+Group=codex-server
+WorkingDirectory=/opt/codex-server
+EnvironmentFile=/etc/codex-server/server.env
+ExecStart=/opt/codex-server/CodexServer
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=codex-server
+RuntimeDirectoryMode=0750
+Environment=TMPDIR=/run/codex-server
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

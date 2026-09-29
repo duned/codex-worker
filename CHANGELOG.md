@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0
+
+- Add repeatable Linux installation for the independently hosted Server and a drain, replace, restart, readiness-check, and rollback path for Worker updates.
+- Support cancelling a timed-out Worker drain only after active executions have finished, allowing update automation to leave the current service usable when draining does not complete.
+- Document the complete Server/Worker deployment, configuration ownership, health, update, recovery, and backup workflows against the packaged units and commands.
+
 ## 0.12.0
 
 - Integrate structured Server-managed provisioning plans with Worker-side policy checks, fixed dependency installers, privileged-operation controls, credential delivery, authentication handlers, and capability refresh.

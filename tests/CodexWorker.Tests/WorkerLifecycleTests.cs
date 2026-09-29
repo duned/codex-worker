@@ -24,6 +24,20 @@ public sealed class WorkerLifecycleTests
     }
 
     [Fact]
+    public void PendingDrainCanBeCancelledAfterDrainTimeout()
+    {
+        var lifecycle = new WorkerLifecycle();
+        lifecycle.SetReady();
+        lifecycle.RequestDrain();
+
+        Assert.Throws<InvalidOperationException>(() => lifecycle.CancelDrain(1));
+        lifecycle.CancelDrain(0);
+
+        Assert.Equal("ready", lifecycle.Snapshot.State);
+        Assert.False(lifecycle.Snapshot.DrainRequested);
+    }
+
+    [Fact]
     public void UpdateAndRestartFailuresNeverReturnWorkerToReady()
     {
         var lifecycle = new WorkerLifecycle();

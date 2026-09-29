@@ -114,6 +114,10 @@ public sealed class ManagementApiTests
             var workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
             Assert.True(workerDrain.GetProperty("draining").GetBoolean());
             Assert.Equal("drain-requested", workerDrain.GetProperty("state").GetString());
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/worker/drain/cancel", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
+            workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
+            Assert.False(workerDrain.GetProperty("draining").GetBoolean());
+            Assert.Equal("ready", workerDrain.GetProperty("state").GetString());
         }
         finally
         {
