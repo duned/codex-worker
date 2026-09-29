@@ -12,7 +12,8 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 /// </summary>
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
-    Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null)
+    Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
+    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null)
 {
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
@@ -44,7 +45,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }
             finally { _repositoryGate.Release(); }
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
-            var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working"), () =>
+            var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
                 codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
                     execution.Resumed, execution.AttemptNumber, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
@@ -62,7 +63,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             while (true)
             {
                 await TransitionAsync(execution, ExecutionState.Validating, ct);
-                var validationResult = await output.RunProgressAsync(TaskLabel(issue, "Validation"), () =>
+                var validationResult = await output.RunProgressAsync(TaskLabel(issue, "Validation", execution), () =>
                     validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
                     x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
                     x => x.Succeeded, ct: ct);
@@ -77,7 +78,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
 
                 repairAttempts++;
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
-                outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}"), () =>
+                outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", execution), () =>
                     codex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
                         failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
                     completion: x => x.Status, succeeded: x => x.Status == "success",
@@ -108,11 +109,30 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 // was lost or could no longer be confirmed. Check after waiting for the shared
                 // repository gate, immediately before integration can mutate shared state.
                 ct.ThrowIfCancellationRequested();
-                integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating"), () => git.CommitAndIntegrateAsync(issue,
-                    token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase"),
-                        () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),
-                        x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token), ct),
-                    completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
+                if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
+                {
+                    var staleReport = new IssueExecutionReport(implementationSummary, repairs,
+                        Failure: "This execution was superseded because the Issue is closed or another attempt completed.");
+                    await SaveHistoryAsync(CreateEntry(execution, staleReport, null, staleReport.Failure) with
+                    {
+                        RecoveryState = "superseded",
+                        RecoveryBaseCommit = null
+                    }, ct);
+                    return new IssueProcessingResult(IssueOutcomeKind.Superseded, staleReport);
+                }
+                try
+                {
+                    integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
+                        token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase", execution),
+                            () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),
+                            x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token), ct),
+                        completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
+                }
+                catch (GitIntegrationConflictException ex)
+                {
+                    return new IssueProcessingResult(IssueOutcomeKind.Failed,
+                        new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message));
+                }
             }
             finally { _repositoryGate.Release(); }
             if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
@@ -203,5 +223,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    private static string TaskLabel(GitHubIssue issue, string stage) => $"{IssueFormatting.OperationalIdentity(issue)} · {stage}";
+    private static string TaskLabel(GitHubIssue issue, string stage, WorkerExecution execution) =>
+        execution.AttemptNumber == 1 ? $"{IssueFormatting.OperationalIdentity(issue)} · {stage}" :
+        $"{IssueFormatting.OperationalIdentity(issue)} · attempt {execution.AttemptNumber} · execution {execution.ExecutionId.ToString("N")[..8]} · {stage}";
 }

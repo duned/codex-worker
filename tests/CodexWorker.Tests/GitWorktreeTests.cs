@@ -258,12 +258,19 @@ public sealed class GitWorktreeTests
         var executionDirectory = git.ExecutionDirectory;
         await fixture.AdvanceBaseAsync("base.txt", "base branch change");
 
-        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+        var conflict = await Assert.ThrowsAsync<GitIntegrationConflictException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
             _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
 
+        Assert.Contains("rebase was aborted", conflict.Message);
         Assert.Equal("base branch change", await fixture.Git("show", "main:base.txt"));
         Assert.True(Directory.Exists(executionDirectory));
-        Assert.Contains("UU base.txt", await fixture.GitAt(executionDirectory, "status", "--short"));
+        Assert.Equal(string.Empty, await fixture.GitAt(executionDirectory, "status", "--short"));
+        Assert.Equal("feature/example-task-17", await fixture.GitAt(executionDirectory, "branch", "--show-current"));
+        Assert.Empty(await fixture.GitAt(executionDirectory, "ls-files", "-u"));
+        var rebaseMerge = (await fixture.GitAt(executionDirectory, "rev-parse", "--git-path", "rebase-merge")).Trim();
+        var rebaseApply = (await fixture.GitAt(executionDirectory, "rev-parse", "--git-path", "rebase-apply")).Trim();
+        Assert.False(Directory.Exists(Path.GetFullPath(rebaseMerge, executionDirectory)));
+        Assert.False(Directory.Exists(Path.GetFullPath(rebaseApply, executionDirectory)));
     }
 
     [Fact]

@@ -1,8 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace CodexWorker;
 
-public enum IssueOutcomeKind { Succeeded, Blocked, Failed }
+public enum IssueOutcomeKind { Succeeded, Blocked, Failed, Superseded }
 public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecutionReport Report)
 {
     public string Summary => Report.ToMarkdown(Kind);
@@ -14,6 +15,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
+    private readonly ConcurrentDictionary<string, byte> _activeIssues = new(StringComparer.OrdinalIgnoreCase);
 
     public WorkerConfiguration Configuration => config;
 
@@ -63,6 +65,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task<Task<IssueProcessingResult?>?> ClaimIssueAsync(GitHubIssue issue, string? serverExecutionId,
         string? assignmentId, long? ownershipGeneration, CancellationToken ct)
     {
+        var issueKey = $"{config.Project.Name}\n{config.Project.Repository}\n{issue.Number}";
+        if (!_activeIssues.TryAdd(issueKey, 0))
+        {
+            if (serverExecutionId is not null)
+                throw new WorkerInfrastructureException($"Server assigned Issue #{issue.Number} while an execution for that Issue is already active in this Worker.");
+            return null;
+        }
+
+        try
+        {
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
             .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
@@ -78,6 +90,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (ct.IsCancellationRequested)
         {
             await TransitionAsync(execution, ExecutionState.Cancelled, CancellationToken.None);
+            _activeIssues.TryRemove(issueKey, out _);
             return null;
         }
         try
@@ -85,9 +98,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
-            _output.IssueStarted(config.Project.Name, issue);
-            await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, ct);
-            return ProcessClaimedAsync(execution, issue, retryOf, ct);
+            _output.IssueStarted(config.Project.Name, issue, execution);
+            await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
+            return ProcessClaimedAsync(execution, issue, retryOf, issueKey, ct);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -97,11 +110,19 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (Exception ex)
         {
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
+            _activeIssues.TryRemove(issueKey, out _);
+            throw;
+        }
+        }
+        catch
+        {
+            _activeIssues.TryRemove(issueKey, out _);
             throw;
         }
     }
 
-    private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf, CancellationToken ct)
+    private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
+        string issueKey, CancellationToken ct)
     {
         try
         {
@@ -111,12 +132,14 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
                 AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed };
-            await ReportResultAsync(issue, result with { Report = report }, ct);
+            if (result.Kind != IssueOutcomeKind.Superseded)
+                await ReportResultAsync(issue, result with { Report = report }, ct);
             await CompleteHistoryAsync(execution, report, result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
                 IssueOutcomeKind.Blocked => ExecutionState.Blocked,
                 IssueOutcomeKind.Failed => ExecutionState.Failed,
+                IssueOutcomeKind.Superseded => ExecutionState.Superseded,
                 _ => throw new ArgumentOutOfRangeException()
             }, CancellationToken.None);
             var finalEntry = history is null ? CreateEntry(execution, report, null, null) :
@@ -134,6 +157,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         {
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
             throw;
+        }
+        finally
+        {
+            _activeIssues.TryRemove(issueKey, out _);
         }
     }
 
@@ -205,8 +232,19 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token));
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync);
         return runner.RunAsync(context, ct);
+    }
+
+    private async Task<bool> IsAuthoritativeAsync(WorkerExecution execution, CancellationToken ct)
+    {
+        if (!await github.IsIssueOpenAsync(execution.IssueNumber, ct)) return false;
+        if (history is null) return true;
+        var sameIssue = (await history.ReadAllAsync(ct)).Where(entry =>
+            entry.Project.Equals(execution.Project, StringComparison.OrdinalIgnoreCase) &&
+            entry.Repository.Equals(execution.Repository, StringComparison.OrdinalIgnoreCase) &&
+            entry.IssueNumber == execution.IssueNumber && entry.ExecutionId != execution.ExecutionId).ToArray();
+        return !sameIssue.Any(entry => entry.State == "Completed" || entry.AttemptNumber > execution.AttemptNumber);
     }
 
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
@@ -225,7 +263,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
     {
         if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
-        var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
+        var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
         if (serverSettings is { Enabled: true } && entry.ServerExecutionId is not null && entry.OwnershipGeneration is null)
             throw new WorkerInfrastructureException("Managed execution is missing its ownership generation.");
         await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
@@ -312,6 +350,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, Limit(message, 1400), ct);
                 _output.IssueFailed(issue, result.Report.Duration);
+                break;
+            case IssueOutcomeKind.Superseded:
                 break;
         }
     }

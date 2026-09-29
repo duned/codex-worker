@@ -52,6 +52,18 @@ public sealed class TelegramNotifier : IDisposable
     public Task StartingAsync(string project, string repository, GitHubIssue issue, CancellationToken ct) =>
         SendTaskAsync(project, repository, issue, $"▶ CW {ApplicationVersion.Display} · {Project(project)} · TAREA INICIADA", null, ct);
 
+    public Task StartingAsync(string project, string repository, GitHubIssue issue, WorkerExecution execution,
+        CancellationToken ct)
+    {
+        if (execution.AttemptNumber <= 1) return StartingAsync(project, repository, issue, ct);
+        var action = execution.Resumed ? "TAREA REANUDADA" : "REINTENTO INICIADO";
+        var mode = execution.Resumed ? "resume" : "restart";
+        var previous = execution.RetryOfExecutionId is { } id ? $"\nEjecución anterior: {id.ToString("N")[..8]}" : "";
+        return SendTaskAsync(project, repository, issue,
+            $"▶ CW {ApplicationVersion.Display} · {Project(project)} · {action}",
+            $"Intento {execution.AttemptNumber} · {mode} · ejecución {execution.ExecutionId.ToString("N")[..8]}{previous}", ct);
+    }
+
     public Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string summary, CancellationToken ct)
     {
         var lines = new List<string> { $"✅ CW {ApplicationVersion.Display} · {Project(project)} · TAREA COMPLETADA", IssueLink(repository, issue), "",

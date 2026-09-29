@@ -109,6 +109,20 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine(IssueFormatting.OperationalIdentity(issue), ConsoleColor.Cyan, "▶");
     }
 
+    public void IssueStarted(string project, GitHubIssue issue, WorkerExecution execution)
+    {
+        IssueStarted(project, issue);
+        if (execution.AttemptNumber > 1)
+        {
+            var mode = execution.Resumed ? "resume" : "restart";
+            var previous = execution.RetryOfExecutionId is { } previousId ? $" · previous {ShortId(previousId)}" : "";
+            WriteLine($"Attempt {execution.AttemptNumber} · {mode} · execution {ShortId(execution.ExecutionId)}{previous}",
+                ConsoleColor.DarkGray, "↳");
+        }
+    }
+
+    private static string ShortId(Guid id) => id.ToString("N")[..8];
+
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>
         IssueCompletedCore(issue, elapsed);
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) => IssueCompleted(issue, elapsed);

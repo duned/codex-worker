@@ -5,6 +5,7 @@ namespace CodexWorker;
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary);
+public sealed class GitIntegrationConflictException(string message) : Exception(message);
 
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
@@ -445,7 +446,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                     ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
                 if (featureContainsBase.ExitCode != 0)
                 {
-                    await GitAtAsync(ExecutionDirectory, ["rebase", settings.BaseBranch], ct);
+                    await RebaseForIntegrationAsync(issue.Number, ct);
                     var validation = await validateAfterRebase(ct);
                     if (!validation.Succeeded)
                         throw new WorkerInfrastructureException($"Validation failed after rebasing Issue #{issue.Number}; integration was stopped. {validation.Failure!.ToSummary()}");
@@ -487,8 +488,41 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             return new GitIntegrationResult(true, summary, commit, settings.AutoMerge ? settings.BaseBranch : null,
                 completedBranch);
         }
+        catch (GitIntegrationConflictException) { throw; }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git commit/integration for Issue #{issue.Number} failed; checkout state is preserved for diagnosis: {ex.Message}", ex); }
+    }
+
+    private async Task RebaseForIntegrationAsync(int issueNumber, CancellationToken ct)
+    {
+        var before = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+        var result = await runner.RunAsync("git", ["rebase", settings.BaseBranch], ExecutionDirectory,
+            TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct);
+        if (result.ExitCode == 0) return;
+
+        var unmerged = (await GitAtAsync(ExecutionDirectory, ["ls-files", "-u"], ct)).StandardOutput;
+        if (string.IsNullOrWhiteSpace(unmerged))
+            throw new WorkerInfrastructureException($"Git rebase for Issue #{issueNumber} failed without a confirmed merge conflict; repository state is preserved for inspection.");
+
+        try
+        {
+            await GitAtAsync(ExecutionDirectory, ["rebase", "--abort"], ct);
+            var after = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+            var gitPath = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "--git-path", "rebase-merge"], ct)).StandardOutput.Trim();
+            var applyPath = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "--git-path", "rebase-apply"], ct)).StandardOutput.Trim();
+            if (after != before || !string.IsNullOrWhiteSpace(status) ||
+                Directory.Exists(Path.GetFullPath(gitPath, ExecutionDirectory)) ||
+                Directory.Exists(Path.GetFullPath(applyPath, ExecutionDirectory)))
+                throw new WorkerInfrastructureException($"Could not verify clean recovery after the Issue #{issueNumber} rebase conflict.");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex)
+        {
+            throw new WorkerInfrastructureException($"Could not safely abort the Issue #{issueNumber} rebase conflict: {ex.Message}", ex);
+        }
+        var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+        throw new GitIntegrationConflictException($"Integration conflict for Issue #{issueNumber}; the rebase was aborted and its worktree was preserved. {Tail(detail)}");
     }
 
     private async Task EnsureOriginAsync(CancellationToken ct)

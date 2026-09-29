@@ -5,6 +5,7 @@ public interface IGitHubClient
     Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken);
     Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
         throw new WorkerInfrastructureException("This GitHub client cannot load a specifically assigned Issue.");
+    Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
     Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct);
     Task CommentAsync(int issueNumber, string comment, CancellationToken ct);
     Task CloseAsync(int issueNumber, CancellationToken ct);

@@ -72,6 +72,26 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
+    public async Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken)
+    {
+        if (issueNumber <= 0) throw new WorkerInfrastructureException("GitHub Issue number must be positive.");
+        var result = await RunGhAsync(["issue", "view", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--repo", repository, "--json", "state"], cancellationToken, allowGracefulCancellation: true);
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var state = document.RootElement.GetProperty("state").GetString();
+            if (string.Equals(state, "OPEN", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase)) return false;
+            throw new InvalidDataException($"Unexpected GitHub Issue state '{state}'.");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or InvalidDataException)
+        {
+            throw new WorkerInfrastructureException($"Could not read state for GitHub Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
+    }
+
     private async Task<JsonDocument> GetBlockingDependenciesAsync(int issueNumber, CancellationToken ct)
     {
         ProcessResult result;

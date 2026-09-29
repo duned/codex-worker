@@ -206,6 +206,10 @@ public sealed class OperabilityTests
         await telegram.BlockedAsync("Codex Worker Test", "duned/codex-worker", issue, TimeSpan.FromMinutes(1), "Which endpoint path?", CancellationToken.None);
         await telegram.FailedAsync("Codex Worker Test", "duned/codex-worker", issue, TimeSpan.FromMinutes(2), "Validation failed", CancellationToken.None);
         await telegram.CriticalAsync("Codex Worker Test", "Git integration state is uncertain", CancellationToken.None);
+        var retry = WorkerExecution.Create(new ProjectSettings { Name = "Codex Worker Test", Repository = "duned/codex-worker" },
+            new GitSettings(), issue, retryOfExecutionId: Guid.Parse("0b3fdff5-0000-0000-0000-000000000000"),
+            attemptNumber: 2, resumed: true);
+        await telegram.StartingAsync("Codex Worker Test", "duned/codex-worker", issue, retry, CancellationToken.None);
 
         Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
         Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA INICIADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(1));
@@ -214,6 +218,10 @@ public sealed class OperabilityTests
         Assert.StartsWith($"❌ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA FALLIDA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
         Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
+        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA REANUDADA\n", MessageAt(5));
+        Assert.Contains("Intento 2 · resume · ejecución", MessageAt(5));
+        Assert.Contains("Ejecución anterior: 0b3fdff5", MessageAt(5));
+        Assert.DoesNotContain(retry.ExecutionId.ToString(), MessageAt(5));
         Assert.All(handler.Bodies, body =>
         {
             Assert.DoesNotContain("════════════", body);

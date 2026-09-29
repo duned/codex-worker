@@ -6,6 +6,77 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Fact]
+    public async Task ConcurrentPollingDoesNotDispatchAnIssueWhileItsExecutionIsActive()
+    {
+        using var historyDatabase = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(historyDatabase.Path);
+        using var h = new Harness(history: history);
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "1 changed path(s); 0 staged path(s). Workspace retained for recovery.");
+        h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial work", [], false, null);
+        Assert.Equal(IssueOutcomeKind.Failed, (await h.ProcessOneAsync())!.Kind);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.Codex.InitialOutcome = new CodexOutcome("success", "Resumed work", [], false, null);
+        h.GitHub.ReadyIssueCount = 3;
+        h.Codex.BlockRuns = true;
+
+        var firstClaim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(firstClaim);
+        await h.Codex.BlockedRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var duplicateClaim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.Null(duplicateClaim);
+        Assert.Equal(2, h.Git.Started);
+        Assert.Equal(2, h.GitHub.Labels.Count(label => label == "ready->working"));
+        Assert.Single(await history.ReadAllAsync(), entry => entry.AttemptNumber == 2);
+
+        h.Codex.ReleaseRuns.TrySetResult();
+        Assert.NotNull(await firstClaim);
+        Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
+    [Fact]
+    public async Task RecoverableIntegrationConflictFailsOnlyItsExecutionAndSchedulerCanContinue()
+    {
+        using var historyDatabase = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(historyDatabase.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.ReadyIssueCount = 2;
+        h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted");
+
+        var failed = await h.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Failed, failed!.Kind);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal("Failed", Assert.Single(await history.ReadAllAsync()).State);
+
+        h.Git.IntegrationFailure = null;
+        var succeeded = await h.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Succeeded, succeeded!.Kind);
+        Assert.Equal(2, h.Git.Integrations);
+        Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
+    [Fact]
+    public async Task CompletedIssueIsMarkedSupersededBeforeIntegration()
+    {
+        using var historyDatabase = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(historyDatabase.Path);
+        var oldId = Guid.NewGuid();
+        var started = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await history.CreateAsync(new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", started, started.AddMinutes(1), "Completed", 60_000, "done",
+            "passed", 0, [], null, null, null, null, AttemptNumber: 1));
+        using var h = new Harness(history: history);
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Superseded, result!.Kind);
+        Assert.Equal(0, h.Git.Integrations);
+        Assert.DoesNotContain("working->done", h.GitHub.Labels);
+        Assert.Empty(h.GitHub.Comments);
+        Assert.Equal("Superseded", (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != oldId).State);
+    }
+
+    [Fact]
     public async Task ServerAssignmentCreatesLinkedExecutionAndUsesNormalRunnerAndGitHubLifecycle()
     {
         using var database = new TempHistoryDatabase();
@@ -499,6 +570,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == first.ExecutionId).State);
         Assert.Equal("Completed", retry.State);
         Assert.True(h.Git.LastResume);
+        Assert.Contains($"Attempt 2 · resume · execution {retry.ExecutionId.ToString("N")[..8]}", h.Output.ToString());
+        Assert.Contains($"previous {first.ExecutionId.ToString("N")[..8]}", h.Output.ToString());
         File.Delete(database);
     }
 
@@ -640,6 +713,7 @@ public sealed class WorkerV011Tests
         public Guid? LastExecutionId { get; private set; }
         public bool LastResume { get; private set; }
         public int LastAttemptNumber { get; private set; }
+        public GitIntegrationConflictException? IntegrationFailure { get; set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
@@ -653,9 +727,13 @@ public sealed class WorkerV011Tests
         }
         public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
             Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
-        { Integrations++; return Task.FromResult(new GitIntegrationResult(true,
+        {
+            Integrations++;
+            if (IntegrationFailure is not null) return Task.FromException<GitIntegrationResult>(IntegrationFailure);
+            return Task.FromResult(new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
-            "0123456789abcdef0123456789abcdef01234567", "main", "completed/17")); }
+            "0123456789abcdef0123456789abcdef01234567", "main", "completed/17"));
+        }
     }
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
@@ -666,6 +744,10 @@ public sealed class WorkerV011Tests
         public Queue<CodexOutcome> Repairs { get; } = new();
         public List<int> RepairAttempts { get; } = [];
         public List<ValidationFailure> RepairFailures { get; } = [];
+        public bool BlockRuns { get; set; }
+        public TaskCompletionSource RunStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource BlockedRunStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseRuns { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task PreflightAsync(CancellationToken ct)
         {
             events.Add("preflight");
@@ -675,10 +757,17 @@ public sealed class WorkerV011Tests
             RunCoreAsync(projectDirectory);
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
             ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory);
-        private Task<CodexOutcome> RunCoreAsync(string projectDirectory)
+        private async Task<CodexOutcome> RunCoreAsync(string projectDirectory)
         {
             InitialDirectory = projectDirectory;
-            return InitialException is null ? Task.FromResult(InitialOutcome) : Task.FromException<CodexOutcome>(InitialException);
+            RunStarted.TrySetResult();
+            if (BlockRuns)
+            {
+                BlockedRunStarted.TrySetResult();
+                await ReleaseRuns.Task;
+            }
+            if (InitialException is not null) throw InitialException;
+            return InitialOutcome;
         }
         public string? InitialDirectory { get; private set; }
         public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,

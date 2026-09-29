@@ -13,12 +13,13 @@ public sealed class WorkerExecution
             [ExecutionState.Validating] = [ExecutionState.Repairing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Repairing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Integrating] = [ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
-            [ExecutionState.Reporting] = [ExecutionState.Completed, ExecutionState.Blocked, ExecutionState.Failed, ExecutionState.InfrastructureFailure],
+            [ExecutionState.Reporting] = [ExecutionState.Completed, ExecutionState.Blocked, ExecutionState.Failed, ExecutionState.Superseded, ExecutionState.InfrastructureFailure],
             [ExecutionState.Completed] = [],
             [ExecutionState.Blocked] = [],
             [ExecutionState.Failed] = [],
             [ExecutionState.InfrastructureFailure] = [],
-            [ExecutionState.Cancelled] = []
+            [ExecutionState.Cancelled] = [],
+            [ExecutionState.Superseded] = []
         };
 
     private WorkerExecution(string project, string repository, GitHubIssue issue, string baseBranch,
@@ -90,5 +91,6 @@ public enum ExecutionState
     Blocked,
     Failed,
     InfrastructureFailure,
-    Cancelled
+    Cancelled,
+    Superseded
 }
