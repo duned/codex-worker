@@ -209,12 +209,15 @@ public sealed class CodexServerTests
         using var temporary = new TemporaryDirectory();
         var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "projects.db"));
         await store.InitializeAsync();
-        Assert.Null(CentralProjectValidation.Error(new CentralProjectDefinition("Compiler", "team/compiler", "main", "", ["dotnet:10", "postgresql"])));
+        Assert.Null(CentralProjectValidation.Error(new CentralProjectDefinition("Compiler", "team/compiler", "main", "", [new("runtime", ".NET", ">=10.0"), new("service", "postgresql")])));
         Assert.NotNull(CentralProjectValidation.Error(new CentralProjectDefinition("", "bad", "", "", [])));
-        var definition = new CentralProjectDefinition("Compiler", "team/compiler", "main", "Compiler source", ["dotnet:10"]);
+        var requirements = new ProjectRequirement[] { new("runtime", ".NET", " >=010.0 "), new("tool", "Git"), new("service", "PostgreSQL") };
+        var definition = new CentralProjectDefinition("Compiler", "team/compiler", "main", "Compiler source", requirements);
         var created = await store.CreateProjectAsync(definition);
         Assert.Equal("compiler", created.Id);
         Assert.Equal(1, created.Revision);
+        ProjectRequirement[] normalizedRequirements = [new("runtime", ".net", ">=10.0"), new("tool", "git"), new("service", "postgresql")];
+        Assert.Equal(normalizedRequirements, created.Requirements);
         Assert.False(JsonSerializer.Serialize(created).Contains("directory", StringComparison.OrdinalIgnoreCase));
         Assert.False(JsonSerializer.Serialize(created).Contains("secret", StringComparison.OrdinalIgnoreCase));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.CreateProjectAsync(definition with { Name = "Other" }));
@@ -229,6 +232,7 @@ public sealed class CodexServerTests
         await restarted.InitializeAsync();
         var persisted = Assert.Single(await restarted.GetProjectsAsync());
         Assert.Equal(2, persisted.Revision);
+        Assert.Equal(created.Requirements, persisted.Requirements);
         Assert.Contains(persisted.Description, new[] { "Updated A", "Updated B" });
         Assert.True(await restarted.RemoveProjectAsync(created.Id, 2));
         Assert.Empty(await restarted.GetProjectsAsync());
@@ -253,7 +257,7 @@ public sealed class CodexServerTests
             await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
-            var definition = new CentralProjectDefinition("Widget", "team/widget", "main", "Portable definition", ["node"]);
+            var definition = new CentralProjectDefinition("Widget", "team/widget", "main", "Portable definition", [new("runtime", "node", "20.1")]);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", definition)).StatusCode);
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "registration-only-token");
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", definition)).StatusCode);
@@ -262,8 +266,9 @@ public sealed class CodexServerTests
             using var create = await client.PostAsJsonAsync("/api/v1/projects", definition);
             Assert.Equal(HttpStatusCode.Created, create.StatusCode);
             var project = (await create.Content.ReadFromJsonAsync<CentralProject>())!;
+            Assert.Equal(new ProjectRequirement("runtime", "node", "20.1"), Assert.Single(project.Requirements));
             using var list = await client.GetAsync("/api/v1/projects");
-            Assert.Single(await list.Content.ReadFromJsonAsync<CentralProject[]>() ?? []);
+            Assert.Equal(project.Requirements, Assert.Single(await list.Content.ReadFromJsonAsync<CentralProject[]>() ?? []).Requirements);
             using var invalidUpdate = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}", new ProjectUpdateRequest(definition with { Repository = "invalid" }, 1));
             Assert.Equal(HttpStatusCode.BadRequest, invalidUpdate.StatusCode);
             using var beforeValidUpdate = await client.GetAsync($"/api/v1/projects/{project.Id}");
@@ -280,6 +285,33 @@ public sealed class CodexServerTests
             Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior);
             Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
         }
+    }
+
+    [Fact]
+    public async Task CentralProjectsWithoutRequirementsRemainValidAndPersistAsAnEmptyList()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "empty-requirements.db"));
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Minimal", "team/minimal", "main", "", null);
+        Assert.Null(CentralProjectValidation.Error(definition));
+        var created = await store.CreateProjectAsync(definition);
+        Assert.Empty(created.Requirements);
+        Assert.Empty((await store.GetProjectAsync(created.Id))!.Requirements);
+    }
+
+    [Fact]
+    public void CentralProjectRequirementsRejectMalformedVersionsAndContradictionsAndReadLegacyValues()
+    {
+        static CentralProjectDefinition Definition(params ProjectRequirement[] requirements) =>
+            new("Compiler", "team/compiler", "main", "", requirements);
+
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet", "~10"))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet"), new ProjectRequirement("Runtime", "Dotnet", ">=10"))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new ProjectRequirement("runtime", "dotnet", ">=10..1"))));
+        var legacy = JsonSerializer.Deserialize<ProjectRequirement>("\"dotnet:10\"");
+        Assert.Equal(new ProjectRequirement("runtime", "dotnet", "10"), legacy);
+        Assert.Equal("{\"type\":\"runtime\",\"name\":\"dotnet\",\"version\":\"10\"}", JsonSerializer.Serialize(legacy));
     }
 
     [Fact]

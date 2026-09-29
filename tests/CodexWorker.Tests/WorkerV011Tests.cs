@@ -70,7 +70,9 @@ public sealed class WorkerV011Tests
         using var h = new Harness(history: history);
         var workerAssignment = new WorkerAssignmentContract(assignment.AssignmentId, assignment.ServerExecutionId,
             new ServerProjectContract(project.Id, project.Name, project.Repository, project.DefaultBranch,
-                project.Description, project.Requirements, project.Revision, project.CreatedAtUtc, project.UpdatedAtUtc),
+                project.Description, project.Requirements.Select(requirement => new ServerProjectRequirementContract(
+                    requirement.Type, requirement.Name, requirement.Version)).ToArray(), project.Revision,
+                project.CreatedAtUtc, project.UpdatedAtUtc),
             new ServerWorkReferenceContract(assignment.Work.Type, assignment.Work.Id, assignment.Work.Url), workerId,
             assignment.Metadata, new ServerExecutionLeaseContract(assignment.Lease!.ExecutionId, assignment.Lease.WorkerId,
                 assignment.Lease.Generation, assignment.Lease.AcquiredAtUtc, assignment.Lease.ExpiresAtUtc, assignment.Lease.State));

@@ -22,8 +22,10 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities);
+public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null);
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
-    string Description, IReadOnlyList<string> Requirements, long Revision, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+    string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
 public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
 public sealed record ServerExecutionLeaseContract(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Hosting;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 /// <summary>Persistence boundary for future worker and project registry services.</summary>
@@ -73,10 +74,67 @@ public sealed class ExecutionRequestOwnershipException() : Exception("Execution 
 
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
-    string Description, IReadOnlyList<string> Requirements);
+    string Description, IReadOnlyList<ProjectRequirement>? Requirements = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
-    string Description, IReadOnlyList<string> Requirements, long Revision,
+    string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+
+/// <summary>A centrally declared capability required by a project.</summary>
+[JsonConverter(typeof(ProjectRequirementJsonConverter))]
+public sealed record ProjectRequirement(string Type, string Name, string? Version = null);
+
+/// <summary>Reads the previous string form as a runtime while writing the structured contract.</summary>
+public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequirement>
+{
+    public override ProjectRequirement Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var legacy = reader.GetString() ?? string.Empty;
+            var separator = legacy.IndexOf(':');
+            return separator < 0
+                ? new ProjectRequirement("runtime", legacy)
+                : new ProjectRequirement("runtime", legacy[..separator], legacy[(separator + 1)..]);
+        }
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("A project requirement must be an object.");
+        using var document = JsonDocument.ParseValue(ref reader);
+        var root = document.RootElement;
+        string? requirementType = null;
+        string? requirementName = null;
+        string? version = null;
+        var hasVersion = false;
+        foreach (var property in root.EnumerateObject())
+        {
+            switch (property.Name)
+            {
+                case "type" when requirementType is null && property.Value.ValueKind == JsonValueKind.String:
+                    requirementType = property.Value.GetString();
+                    break;
+                case "name" when requirementName is null && property.Value.ValueKind == JsonValueKind.String:
+                    requirementName = property.Value.GetString();
+                    break;
+                case "version" when !hasVersion && property.Value.ValueKind is JsonValueKind.String or JsonValueKind.Null:
+                    hasVersion = true;
+                    version = property.Value.ValueKind == JsonValueKind.Null ? null : property.Value.GetString();
+                    break;
+                default:
+                    throw new JsonException($"Project requirement field '{property.Name}' is unknown, duplicated, or has an invalid value.");
+            }
+        }
+        if (string.IsNullOrEmpty(requirementType) || string.IsNullOrEmpty(requirementName))
+            throw new JsonException("A project requirement requires string type and name fields.");
+        return new ProjectRequirement(requirementType, requirementName, version);
+    }
+
+    public override void Write(Utf8JsonWriter writer, ProjectRequirement value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", value.Type);
+        writer.WriteString("name", value.Name);
+        if (value.Version is not null) writer.WriteString("version", value.Version);
+        writer.WriteEndObject();
+    }
+}
 
 public static class CentralProjectValidation
 {
@@ -88,10 +146,42 @@ public static class CentralProjectValidation
         if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[^/\\s]+/[^/\\s]+$")) return "repository must be in owner/repository form.";
         if (string.IsNullOrWhiteSpace(value.DefaultBranch) || value.DefaultBranch.Length > 200 || value.DefaultBranch.Any(char.IsControl)) return "defaultBranch must contain 1 to 200 printable characters.";
         if (value.Description is null || value.Description.Length > 4000) return "description must contain at most 4000 characters.";
-        if (value.Requirements is null || value.Requirements.Count > 64 || value.Requirements.Any(x => string.IsNullOrWhiteSpace(x) || x.Length > 100 || x.Any(char.IsControl))) return "requirements must contain at most 64 non-empty values of at most 100 characters.";
-        if (value.Requirements.Distinct(StringComparer.OrdinalIgnoreCase).Count() != value.Requirements.Count) return "requirements must be unique.";
+        if (value.Requirements is null) return null;
+        if (value.Requirements.Count > 64) return "requirements must contain at most 64 entries.";
+        var normalized = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var requirement in value.Requirements)
+        {
+            if (requirement is null || string.IsNullOrWhiteSpace(requirement.Type) || string.IsNullOrWhiteSpace(requirement.Name) ||
+                requirement.Type.Length > 40 || requirement.Name.Length > 100 || requirement.Type.Any(char.IsControl) || requirement.Name.Any(char.IsControl) ||
+                !Regex.IsMatch(requirement.Type.Trim(), "^[a-zA-Z][a-zA-Z0-9_-]*$") ||
+                !Regex.IsMatch(requirement.Name.Trim(), "^[\\p{L}\\p{N}.][\\p{L}\\p{N}._+-]*$"))
+                return "Each requirement must have a valid type and name.";
+            var key = requirement.Type.Trim().ToLowerInvariant() + ":" + requirement.Name.Trim().ToLowerInvariant();
+            if (!normalized.Add(key)) return $"Requirement '{requirement.Type.Trim()}:{requirement.Name.Trim()}' is duplicated or contradictory.";
+            if (requirement.Version is { } version && !ValidVersionConstraint(version))
+                return $"Requirement '{requirement.Name.Trim()}' has an invalid version; use an exact numeric version or >= numeric version (for example 10.0 or >=10.0.0).";
+        }
         return null;
     }
+
+    private static bool ValidVersionConstraint(string value)
+    {
+        var match = Regex.Match(value.Trim(), "^(?:>=)?([0-9]+(?:\\.[0-9]+){0,3})$");
+        return match.Success && match.Groups[1].Value.Split('.').All(part => int.TryParse(part,
+            System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _));
+    }
+
+    public static ProjectRequirement Normalize(ProjectRequirement requirement)
+    {
+        var version = requirement.Version?.Trim();
+        if (version is not null && version.StartsWith(">=", StringComparison.Ordinal))
+            version = ">=" + NormalizeVersion(version[2..]);
+        else if (version is not null)
+            version = NormalizeVersion(version);
+        return requirement with { Type = requirement.Type.Trim().ToLowerInvariant(), Name = requirement.Name.Trim().ToLowerInvariant(), Version = version };
+    }
+
+    private static string NormalizeVersion(string version) => string.Join('.', version.Split('.').Select(part => int.Parse(part, System.Globalization.CultureInfo.InvariantCulture).ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
     public static string IdFor(string name)
     {
@@ -698,7 +788,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var id = CentralProjectValidation.IdFor(definition.Name);
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
-            definition.Description.Trim(), definition.Requirements.Select(x => x.Trim()).ToArray(), 1, now, now);
+            definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -725,7 +815,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
         write.Parameters.AddWithValue("$description", definition.Description.Trim());
-        write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize(definition.Requirements.Select(x => x.Trim()).ToArray()));
+        write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize((definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), ProjectJson));
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         write.Parameters.AddWithValue("$updated", now.ToString("O"));
         write.Parameters.AddWithValue("$id", projectId);
@@ -752,7 +842,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     }
 
     private static CentralProject ToProject(string id, string json, string created) =>
-        JsonSerializer.Deserialize<CentralProject>(json, ProjectJson) is { } value ? value with { Id = id, CreatedAtUtc = DateTimeOffset.Parse(created) } :
+        JsonSerializer.Deserialize<CentralProject>(json, ProjectJson) is { } value ? value with { Id = id, Requirements = value.Requirements ?? [], CreatedAtUtc = DateTimeOffset.Parse(created) } :
         throw new InvalidDataException($"Stored project '{id}' is invalid.");
 
     public async Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default)
