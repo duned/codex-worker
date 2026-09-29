@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- Add a durable Server execution queue and outbound Worker assignment requests with global and per-project capacity checks.
+- Execute Server assignments through the existing Worker claim, execution history, worktree, Codex, validation, repair, Git integration, and GitHub reporting pipeline.
+- Link Server execution and assignment IDs to Worker execution history, report structured lifecycle and terminal outcome details, and expose queue state in the Server API and dashboard.
+- Keep assigned work owned by its Worker across restarts; V0.9 does not expire leases or automatically reassign uncertain work.
+- Preserve standalone polling as the default and add explicit Server-managed project ownership mode.
+
 ## 0.8.0
 
 - Add the independently runnable Codex Server with durable SQLite worker and central project registries, a versioned Worker registration/heartbeat API, availability tracking, and a management dashboard.

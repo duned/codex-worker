@@ -1,4 +1,5 @@
 using CodexWorker;
+using CodexServer;
 
 namespace CodexWorker.Tests;
 
@@ -28,6 +29,50 @@ public sealed class WorkerV011Tests
         Assert.Equal("server-request-123", persisted.ServerExecutionId);
         Assert.Equal("assignment-456", persisted.AssignmentId);
         Assert.Equal("Completed", persisted.State);
+    }
+
+    [Fact]
+    public async Task QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState()
+    {
+        using var directory = new TempHistoryDatabase();
+        var store = new SqliteRegistryStore(Path.Combine(Path.GetDirectoryName(directory.Path)!, "server.db"));
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Test Project", "owner/repo", "main", "", []));
+        var workerId = Guid.NewGuid().ToString("N");
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "test worker", "test", "test", 1, ["git"]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "test", "running", 0, 1, ["git"], []));
+        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id,
+            new WorkReference("github-issue", "17")));
+        var assignmentResponse = await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }));
+        var assignment = Assert.IsType<WorkAssignment>(assignmentResponse.Assignment);
+
+        using var history = new ExecutionHistoryStore(Path.Combine(Path.GetDirectoryName(directory.Path)!, "worker.db"));
+        using var h = new Harness(history: history);
+        var workerAssignment = new WorkerAssignmentContract(assignment.AssignmentId, assignment.ServerExecutionId,
+            new ServerProjectContract(project.Id, project.Name, project.Repository, project.DefaultBranch,
+                project.Description, project.Requirements, project.Revision, project.CreatedAtUtc, project.UpdatedAtUtc),
+            new ServerWorkReferenceContract(assignment.Work.Type, assignment.Work.Id, assignment.Work.Url), workerId,
+            assignment.Metadata);
+
+        var execution = await h.Worker.ClaimAssignedAsync(workerAssignment, h.Cancellation.Token);
+        Assert.NotNull(execution);
+        Assert.NotNull(await execution);
+        var workerEntry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(queued.Id, workerEntry.ServerExecutionId);
+        Assert.Equal(assignment.AssignmentId, workerEntry.AssignmentId);
+        Assert.Equal("Completed", workerEntry.State);
+
+        var reported = await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(workerId,
+            assignment.AssignmentId, workerEntry.ExecutionId.ToString(), "Completed", StartedAtUtc: workerEntry.StartedAtUtc,
+            CompletedAtUtc: workerEntry.CompletedAtUtc, DurationMilliseconds: workerEntry.DurationMilliseconds,
+            ValidationResult: workerEntry.ValidationOutcome, IntegrationResult: "passed", Recoverable: false,
+            Summary: workerEntry.ImplementationSummary));
+        Assert.NotNull(reported);
+        Assert.Equal("Completed", reported.State);
+        Assert.Equal(workerEntry.ExecutionId.ToString(), reported.WorkerExecutionId);
+        Assert.Equal(workerId, reported.AssignedWorkerId);
+        Assert.False(reported.Recoverable);
     }
 
     [Fact]
