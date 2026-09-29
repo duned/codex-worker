@@ -199,15 +199,63 @@ public sealed class ProjectRevisionConflictException(long currentRevision)
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
-    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<string> Capabilities);
+    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
-    string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<string> Capabilities,
+    string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
     IReadOnlyList<string> ActiveProjects);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
-    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<string> Capabilities,
+    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
     IReadOnlyList<string> ActiveProjects);
+
+/// <summary>A runtime, tool, or service currently available to a worker.</summary>
+[JsonConverter(typeof(WorkerCapabilityJsonConverter))]
+public sealed record WorkerCapability(string Type, string Name, string? Version = null);
+
+/// <summary>Reads legacy string capabilities and the extensible structured capability contract.</summary>
+public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapability>
+{
+    public override WorkerCapability Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var legacy = reader.GetString();
+            if (string.IsNullOrWhiteSpace(legacy)) throw new JsonException("Capability names cannot be empty.");
+            return new WorkerCapability("tool", legacy);
+        }
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("A capability must be an object.");
+        string? type = null;
+        string? name = null;
+        string? version = null;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName) throw new JsonException("Invalid capability object.");
+            var property = reader.GetString()!;
+            if (!seen.Add(property) || !reader.Read()) throw new JsonException("Capability fields cannot be duplicated.");
+            switch (property)
+            {
+                case "type" when reader.TokenType == JsonTokenType.String: type = reader.GetString(); break;
+                case "name" when reader.TokenType == JsonTokenType.String: name = reader.GetString(); break;
+                case "version" when reader.TokenType == JsonTokenType.String: version = reader.GetString(); break;
+                default: throw new JsonException($"Capability field '{property}' is unknown or invalid.");
+            }
+        }
+        if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(name))
+            throw new JsonException("A capability requires string type and name fields.");
+        return new WorkerCapability(type, name, version);
+    }
+
+    public override void Write(Utf8JsonWriter writer, WorkerCapability value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("type", value.Type);
+        writer.WriteString("name", value.Name);
+        if (value.Version is not null) writer.WriteString("version", value.Version);
+        writer.WriteEndObject();
+    }
+}
 
 /// <summary>Creates the server's durable registry schema without coupling APIs to SQLite.</summary>
 public sealed class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null,

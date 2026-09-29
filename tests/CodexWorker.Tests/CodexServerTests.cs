@@ -8,6 +8,7 @@ using CodexServer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using ServerWorkerCapability = CodexServer.WorkerCapability;
 
 [CollectionDefinition("ServerTokenEnvironment", DisableParallelization = true)]
 public sealed class ServerTokenEnvironmentCollection { }
@@ -15,6 +16,21 @@ public sealed class ServerTokenEnvironmentCollection { }
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
+    [Fact]
+    public void CapabilityContractSupportsLegacyStringsAndUnknownFutureTypes()
+    {
+        Assert.Equal(new ServerWorkerCapability("tool", "git"), JsonSerializer.Deserialize<ServerWorkerCapability>("\"git\""));
+        Assert.Equal(new ServerWorkerCapability("future-runtime", "specialized", "4.2"),
+            JsonSerializer.Deserialize<ServerWorkerCapability>("{\"type\":\"future-runtime\",\"name\":\"specialized\",\"version\":\"4.2\"}"));
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"tool\",\"name\":\"git\",\"extra\":true}")]
+    [InlineData("{\"type\":\"tool\",\"name\":7}")]
+    [InlineData("{\"type\":\"tool\"}")]
+    public void MalformedCapabilityDataIsRejected(string json) =>
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ServerWorkerCapability>(json));
+
     [Fact]
     public void ServerLeaseTimingDefaultsAreConservativeAndRenewalMustPrecedeExpiry()
     {
@@ -124,19 +140,19 @@ public sealed class CodexServerTests
         var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), 30, clock);
         await store.InitializeAsync();
         var workerId = Guid.NewGuid().ToString("N");
-        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, ["git"]));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 2, 2, ["git"], ["one", "two"]));
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, [new("tool", "git")]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 2, 2, [new("tool", "git")], ["one", "two"]));
         Assert.Equal("online", (await store.GetWorkerAsync(workerId))!.Availability);
         Assert.Equal(0, (await store.GetWorkerAsync(workerId))!.AvailableCapacity);
         clock.Advance(TimeSpan.FromSeconds(31));
         var stale = (await store.GetWorkerAsync(workerId))!;
         Assert.Equal("stale", stale.Availability);
         Assert.Equal(0, stale.ActiveExecutions);
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.1", "running", 1, 3, ["git", "new-capability"], ["three"]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.1", "running", 1, 3, [new("tool", "git"), new("runtime", "new-capability")], ["three"]));
         var reconnected = (await store.GetWorkerAsync(workerId))!;
         Assert.Equal("online", reconnected.Availability);
         Assert.Equal(2, reconnected.AvailableCapacity);
-        Assert.Contains("new-capability", reconnected.Capabilities);
+        Assert.Contains(reconnected.Capabilities, capability => capability.Name == "new-capability");
     }
 
     [Fact]
@@ -382,8 +398,8 @@ public sealed class CodexServerTests
         var secondWorker = Guid.NewGuid().ToString("N");
         foreach (var worker in new[] { firstWorker, secondWorker })
         {
-            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, ["git"]));
-            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, ["git"], []));
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, [new("tool", "git")]));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, [new("tool", "git")], []));
         }
         var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "lease-1")));
         WorkerAssignmentRequest Request(string worker) => new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
@@ -433,8 +449,8 @@ public sealed class CodexServerTests
         var other = Guid.NewGuid().ToString("N");
         foreach (var worker in new[] { owner, other })
         {
-            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, ["git"]));
-            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, ["git"], []));
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, [new("tool", "git")]));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, [new("tool", "git")], []));
         }
         var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-1")));
         var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-2")));
@@ -469,7 +485,7 @@ public sealed class CodexServerTests
         Assert.Null(await restarted.RenewExecutionLeaseAsync(second.Id,
             new ExecutionLeaseRenewal(owner, secondAssignment.Lease!.Generation)));
         Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, 0)));
-        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, other, "1.0", "running", 0, 2, ["git"], []));
+        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, other, "1.0", "running", 0, 2, [new("tool", "git")], []));
         var laterAssignment = (await restarted.RequestAssignmentAsync(Request(other))).Assignment;
         Assert.Equal(queued.Id, laterAssignment!.ServerExecutionId);
         Assert.Equal("Failed", (await restarted.GetExecutionsAsync()).Single(x => x.Id == second.Id).State);
@@ -490,8 +506,8 @@ public sealed class CodexServerTests
         await store.InitializeAsync();
         var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery", "team/recovery", "main", "", []));
         var workerId = Guid.NewGuid().ToString("N");
-        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, ["git"]));
-        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, ["git"], []));
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, [new("tool", "git")]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, [new("tool", "git")], []));
         var safe = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "safe")));
         var implementing = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "implementing")));
         var validating = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "validating")));
@@ -585,12 +601,12 @@ public sealed class CodexServerTests
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
                 foreach (var id in new[] { workerA, workerB })
                 {
-                    var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, ["git"]);
+                    var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, [new("tool", "git")]);
                     Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{id}", registration)).StatusCode);
                 }
                 async Task Heartbeat(string id, string state) => Assert.Equal(HttpStatusCode.OK,
                     (await client.PostAsJsonAsync($"/api/v1/workers/{id}/heartbeat",
-                        new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, ["git"], []))).StatusCode);
+                        new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, [new("tool", "git")], []))).StatusCode);
                 await Heartbeat(workerA, "running");
                 await Heartbeat(workerB, "draining");
 

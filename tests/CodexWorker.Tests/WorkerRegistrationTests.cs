@@ -71,8 +71,11 @@ public sealed class WorkerRegistrationTests
             Assert.Equal("Bearer secret-test-value", handler.Authorization);
             Assert.DoesNotContain("secret-test-value", handler.Body, StringComparison.Ordinal);
             using var json = JsonDocument.Parse(handler.Body!);
-            Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+            Assert.Equal(2, json.RootElement.GetProperty("contractVersion").GetInt32());
             Assert.Equal(2, json.RootElement.GetProperty("capacity").GetInt32());
+            var capability = json.RootElement.GetProperty("capabilities")[0];
+            Assert.Equal("integration", capability.GetProperty("type").GetString());
+            Assert.Equal("github-issues", capability.GetProperty("name").GetString());
             Assert.False(json.RootElement.TryGetProperty("token", out _));
             Assert.False(json.RootElement.TryGetProperty("secrets", out _));
         }

@@ -14,10 +14,13 @@ public sealed record WorkerRegistrationContract(
     [property: JsonPropertyName("workerVersion")] string WorkerVersion,
     [property: JsonPropertyName("platform")] string Platform,
     [property: JsonPropertyName("capacity")] int Capacity,
-    [property: JsonPropertyName("capabilities")] IReadOnlyList<string> Capabilities);
+    [property: JsonPropertyName("capabilities")] IReadOnlyList<WorkerCapabilityContract> Capabilities);
+
+/// <summary>A runtime, tool, or service currently available to this worker.</summary>
+public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null);
 
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
-    string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<string> Capabilities,
+    string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
     IReadOnlyList<string> ActiveProjects);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
@@ -86,6 +89,8 @@ public static class WorkerIdentity
 
 public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 {
+    private static readonly WorkerCapabilityDiscovery CapabilityDiscovery = WorkerCapabilityDiscovery.Shared;
+
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return;
@@ -98,10 +103,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Content = JsonContent.Create(new WorkerRegistrationContract(1, identity,
+            var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
+            request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-                ["codex-cli", "github-issues", "git"]));
+                capabilities));
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
@@ -116,7 +122,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
     }
 
     public async Task HeartbeatAsync(WorkerServerSettings settings, int capacity, int activeExecutions,
-        IReadOnlyList<string> activeProjects, string lifecycleState, CancellationToken cancellationToken)
+        IReadOnlyList<string> activeProjects, string lifecycleState, CancellationToken cancellationToken,
+        IReadOnlyList<WorkerCapabilityContract>? capabilities = null)
     {
         if (!settings.Enabled) return;
         var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
@@ -127,8 +134,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Content = JsonContent.Create(new WorkerHeartbeatContract(1, identity, ApplicationVersion.Display,
-                lifecycleState, activeExecutions, capacity, ["codex-cli", "github-issues", "git"], activeProjects));
+            request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
+                lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects));
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
@@ -239,7 +246,8 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
             try
             {
                 var current = snapshot();
-                await _client.HeartbeatAsync(settings, capacity, current.ActiveExecutions, current.Projects, current.State, _stop.Token);
+                await _client.HeartbeatAsync(settings, capacity, current.ActiveExecutions, current.Projects, current.State,
+                    _stop.Token);
                 if (_degraded) report?.Invoke("Codex Server heartbeat connectivity recovered.");
                 _degraded = false;
             }

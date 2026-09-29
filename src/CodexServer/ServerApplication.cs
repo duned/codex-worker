@@ -247,21 +247,27 @@ public static class ServerApplication
         return actualBytes.Length == expectedBytes.Length && CryptographicOperations.FixedTimeEquals(actualBytes, expectedBytes);
     }
 
-    private static bool Valid(WorkerRegistrationRequest request) => request.ContractVersion == 1 &&
+    private static bool Valid(WorkerRegistrationRequest request) => request.ContractVersion is 1 or 2 &&
         Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.DisplayName) &&
         request.DisplayName.Length <= 200 && !string.IsNullOrWhiteSpace(request.WorkerVersion) && request.WorkerVersion.Length <= 100 &&
         !string.IsNullOrWhiteSpace(request.Platform) && request.Platform.Length <= 300 && request.Capacity is >= 1 and <= 8 &&
         request.Capabilities is not null && request.Capabilities.Count <= 32 &&
-        request.Capabilities.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 100);
+        request.Capabilities.All(ValidCapability);
 
-    private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion == 1 &&
+    private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion is 1 or 2 &&
         Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
         request.WorkerVersion.Length <= 100 && (request.LifecycleState is "starting" or "running" or "draining" or "stopped") &&
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
-        request.Capabilities.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 100) &&
+        request.Capabilities.All(ValidCapability) &&
         request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
         request.ActiveProjects.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 200);
+
+    private static bool ValidCapability(WorkerCapability value) => value is not null &&
+        !string.IsNullOrWhiteSpace(value.Type) && value.Type.Length <= 40 &&
+        !string.IsNullOrWhiteSpace(value.Name) && value.Name.Length <= 100 &&
+        !value.Type.Any(char.IsControl) && !value.Name.Any(char.IsControl) &&
+        (value.Version is null || (value.Version.Length <= 100 && !value.Version.Any(char.IsControl)));
 
     public static string DisplayVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
 }
