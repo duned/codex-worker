@@ -93,6 +93,62 @@ public static class ServerApplication
             try { return Results.Ok(await store.RequestAssignmentAsync(request, context.RequestAborted)); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
+        app.MapPost("/api/v1/workers/{workerId}/provisioning/request", async (string workerId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!Guid.TryParseExact(workerId, "N", out _)) return Results.BadRequest(new { error = "Worker identity is invalid." });
+            var plan = await store.AcceptProvisioningPlanAsync(workerId, context.RequestAborted);
+            return plan is null ? Results.NoContent() : Results.Ok(plan);
+        });
+        app.MapPost("/api/v1/workers/{workerId}/provisioning/{planId}/report", async (string workerId, string planId, ProvisioningWorkerReport report,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
+                return Results.BadRequest(new { error = "Worker provisioning report identity is invalid." });
+            try
+            {
+                var updated = await store.ReportProvisioningPlanAsync(planId, report, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapGet("/api/v1/provisioning", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Ok(await store.GetProvisioningPlansAsync(context.RequestAborted));
+        });
+        app.MapGet("/api/v1/provisioning/{planId}", async (string planId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var plan = await store.GetProvisioningPlanAsync(planId, context.RequestAborted);
+            return plan is null ? Results.NotFound() : Results.Ok(plan);
+        });
+        app.MapPost("/api/v1/provisioning/{planId}/state", async (string planId, ProvisioningStateTransition transition,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            try
+            {
+                var updated = await store.TransitionProvisioningPlanAsync(planId, transition, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/provisioning", async (CreateProvisioningPlanRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var error = ProvisioningPlanValidation.Error(request);
+            if (error is not null) return Results.BadRequest(new { error });
+            try
+            {
+                var plan = await store.CreateProvisioningPlanAsync(request, context.RequestAborted);
+                return Results.Created($"/api/v1/provisioning/{plan.Id}", plan);
+            }
+            catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+        });
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionRequestId}/report", async (string workerId, string executionRequestId,
             WorkerExecutionReport report, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {

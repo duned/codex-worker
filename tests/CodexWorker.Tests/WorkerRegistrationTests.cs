@@ -147,6 +147,40 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Fact]
+    public async Task ProvisioningProtocolAcceptsStructuredPlansAndReportsProgressWithoutSecrets()
+    {
+        using var temporary = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "provisioning-secret");
+        try
+        {
+            var workerId = await WorkerIdentity.LoadOrCreateAsync(Path.Combine(temporary.Path, "worker-id"));
+            var planId = Guid.NewGuid().ToString("N");
+            var plan = new ProvisioningPlanContract(planId, workerId, DateTimeOffset.UtcNow, "Accepted",
+                [new ProvisioningActionContract("git", "tool", "git", Operation: "ensure")]);
+            var requestHandler = new CaptureHandler(HttpStatusCode.OK, JsonSerializer.Serialize(plan));
+            using var requestClient = new HttpClient(requestHandler);
+            var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+            var registration = new WorkerRegistrationClient(requestClient);
+            var received = await registration.RequestProvisioningPlanAsync(settings, CancellationToken.None);
+            Assert.Equal(planId, received!.Id);
+            Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/request", requestHandler.Uri);
+            Assert.Equal("Bearer provisioning-secret", requestHandler.Authorization);
+
+            var reportHandler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            using var reportClient = new HttpClient(reportHandler);
+            await new WorkerRegistrationClient(reportClient).ReportProvisioningPlanAsync(settings, planId,
+                new ProvisioningWorkerReportContract(workerId, "Running", "git"), CancellationToken.None);
+            Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/{planId}/report", reportHandler.Uri);
+            using var report = JsonDocument.Parse(reportHandler.Body!);
+            Assert.Equal("Running", report.RootElement.GetProperty("state").GetString());
+            Assert.Equal("git", report.RootElement.GetProperty("currentActionId").GetString());
+            Assert.DoesNotContain("provisioning-secret", reportHandler.Body!, StringComparison.Ordinal);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

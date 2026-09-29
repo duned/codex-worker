@@ -29,6 +29,12 @@ public interface IRegistryStore
     Task<ExecutionRequest?> ReportExecutionAsync(string executionRequestId, WorkerExecutionReport report, CancellationToken cancellationToken = default);
     Task<ExecutionLease?> RenewExecutionLeaseAsync(string executionId, ExecutionLeaseRenewal renewal, CancellationToken cancellationToken = default);
     Task ExpireLeasesAsync(CancellationToken cancellationToken = default);
+    Task<ProvisioningPlan> CreateProvisioningPlanAsync(CreateProvisioningPlanRequest request, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default);
+    Task<ProvisioningPlan?> GetProvisioningPlanAsync(string planId, CancellationToken cancellationToken = default);
+    Task<ProvisioningPlan?> AcceptProvisioningPlanAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<ProvisioningPlan?> ReportProvisioningPlanAsync(string planId, ProvisioningWorkerReport report, CancellationToken cancellationToken = default);
+    Task<ProvisioningPlan?> TransitionProvisioningPlanAsync(string planId, ProvisioningStateTransition transition, CancellationToken cancellationToken = default);
 }
 
 public sealed record WorkReference(string Type, string Id, string? Url = null);
@@ -53,6 +59,43 @@ public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment);
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
     WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata, ExecutionLease? Lease = null);
+
+public sealed record ProvisioningAction(string Id, string Type, string Name, string? Version = null, string Operation = "ensure");
+public sealed record CreateProvisioningPlanRequest(string WorkerId, IReadOnlyList<ProvisioningAction> Actions);
+public sealed record ProvisioningPlan(string Id, string WorkerId, DateTimeOffset CreatedAtUtc, string State,
+    IReadOnlyList<ProvisioningAction> Actions, string? CurrentActionId = null, DateTimeOffset? StartedAtUtc = null,
+    DateTimeOffset? CompletedAtUtc = null, string? Result = null, string? Failure = null);
+public sealed record ProvisioningWorkerReport(string WorkerId, string State, string? CurrentActionId = null,
+    string? Result = null, string? Failure = null);
+public sealed record ProvisioningStateTransition(string State);
+
+public static class ProvisioningPlanValidation
+{
+    private static readonly HashSet<string> ActionTypes = new(StringComparer.Ordinal) { "runtime", "tool", "service", "authentication", "refresh-capabilities" };
+    public static string? Error(CreateProvisioningPlanRequest? request)
+    {
+        if (request is null || !Guid.TryParseExact(request.WorkerId, "N", out _)) return "workerId must be a valid Worker identity.";
+        if (request.Actions is null || request.Actions.Count > 100) return "actions must contain at most 100 provisioning actions.";
+        if (request.Actions.Any(action => action is null)) return "Provisioning actions cannot be null.";
+        if (request.Actions.Select(action => action.Id).Distinct(StringComparer.Ordinal).Count() != request.Actions.Count) return "Provisioning action IDs must be unique.";
+        foreach (var action in request.Actions)
+        {
+            var validOperation = action.Type switch
+            {
+                "runtime" or "tool" or "service" => action.Operation is "ensure" or "install" or "configure",
+                "authentication" => action.Operation is "ensure" or "provision",
+                "refresh-capabilities" => action.Operation == "refresh",
+                _ => false
+            };
+            if (!Printable(action.Id, 80) || !ActionTypes.Contains(action.Type) || !validOperation || !Printable(action.Name, 200) ||
+                action.Version is { } version && !Printable(version, 100) || ContainsCredentialValue(action.Id) || ContainsCredentialValue(action.Name) || ContainsCredentialValue(action.Version))
+                return "Each provisioning action must have a valid ID, supported type, name, and optional version.";
+        }
+        return null;
+    }
+    private static bool Printable(string? value, int limit) => !string.IsNullOrWhiteSpace(value) && value.Length <= limit && !value.Any(char.IsControl);
+    private static bool ContainsCredentialValue(string? value) => value is not null && Regex.IsMatch(value, "(?i)(token|password|secret|credential|api[_-]?key)\\s*[:=]");
+}
 
 public static class ExecutionRequestValidation
 {
@@ -262,7 +305,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     int leaseDurationSeconds = 900, int leaseRenewalIntervalSeconds = 60) : IRegistryStore
 {
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery FROM execution_requests";
-    public const int CurrentSchemaVersion = 10;
+    public const int CurrentSchemaVersion = 11;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -287,7 +330,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 10);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 11);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -345,6 +388,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             if (schemaVersion == 9)
             {
                 command.CommandText = "ALTER TABLE execution_requests ADD COLUMN workspace_recovery TEXT NULL; UPDATE schema_metadata SET schema_version = 10 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 10;
+            }
+            if (schemaVersion == 10)
+            {
+                command.CommandText = "UPDATE schema_metadata SET schema_version = 11 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
@@ -411,6 +460,19 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     state TEXT NOT NULL CHECK (state IN ('Active', 'Released', 'Expired')),
                     PRIMARY KEY (execution_id, generation)
                 );
+                CREATE TABLE IF NOT EXISTS provisioning_plans (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('Pending', 'Accepted', 'Running', 'Completed', 'Failed', 'Cancelled', 'Rejected')),
+                    actions_json TEXT NOT NULL,
+                    current_action_id TEXT NULL,
+                    started_at_utc TEXT NULL,
+                    completed_at_utc TEXT NULL,
+                    result TEXT NULL,
+                    failure TEXT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_provisioning_plans_worker_state ON provisioning_plans (worker_id, state, created_at_utc);
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -668,9 +730,158 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await ReconcileExpiredLeasesAsync(connection, (SqliteTransaction)transaction, _timeProvider.GetUtcNow(), cancellationToken);
+        var now = _timeProvider.GetUtcNow();
+        await ReconcileExpiredLeasesAsync(connection, (SqliteTransaction)transaction, now, cancellationToken);
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = "UPDATE provisioning_plans SET state='Failed', completed_at_utc=$now, failure='Worker heartbeat expired while provisioning was active.' WHERE state IN ('Accepted','Running') AND worker_id IN (SELECT worker_id FROM workers WHERE last_seen_at_utc IS NULL OR last_seen_at_utc <= $stale);";
+            command.Parameters.AddWithValue("$now", now.ToString("O"));
+            command.Parameters.AddWithValue("$stale", (now - _staleAfter).ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
     }
+
+    public async Task<ProvisioningPlan> CreateProvisioningPlanAsync(CreateProvisioningPlanRequest request, CancellationToken cancellationToken = default)
+    {
+        var error = ProvisioningPlanValidation.Error(request);
+        if (error is not null) throw new InvalidDataException(error);
+        var worker = await GetWorkerAsync(request.WorkerId, cancellationToken);
+        if (worker is null) throw new KeyNotFoundException("Worker is not registered.");
+        var plan = new ProvisioningPlan(Guid.NewGuid().ToString("N"), request.WorkerId, _timeProvider.GetUtcNow(), "Pending", request.Actions);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO provisioning_plans (id, worker_id, created_at_utc, state, actions_json) VALUES ($id,$worker,$created,$state,$actions);";
+        command.Parameters.AddWithValue("$id", plan.Id);
+        command.Parameters.AddWithValue("$worker", plan.WorkerId);
+        command.Parameters.AddWithValue("$created", plan.CreatedAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("$state", plan.State);
+        command.Parameters.AddWithValue("$actions", JsonSerializer.Serialize(plan.Actions));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return plan;
+    }
+
+    public async Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, worker_id, created_at_utc, state, actions_json, current_action_id, started_at_utc, completed_at_utc, result, failure FROM provisioning_plans ORDER BY created_at_utc, id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var plans = new List<ProvisioningPlan>();
+        while (await reader.ReadAsync(cancellationToken)) plans.Add(ReadProvisioningPlan(reader));
+        return plans;
+    }
+
+    public async Task<ProvisioningPlan?> GetProvisioningPlanAsync(string planId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, worker_id, created_at_utc, state, actions_json, current_action_id, started_at_utc, completed_at_utc, result, failure FROM provisioning_plans WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", planId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadProvisioningPlan(reader) : null;
+    }
+
+    public async Task<ProvisioningPlan?> AcceptProvisioningPlanAsync(string workerId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        // Reissuing Accepted or Running plans to the same Worker makes process interruption recoverable.
+        // Worker actions are required to be idempotent, and the plan identity remains stable.
+        command.CommandText = "SELECT id FROM provisioning_plans WHERE worker_id=$worker AND state IN ('Pending','Accepted','Running') AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND last_seen_at_utc > $stale) ORDER BY created_at_utc, id LIMIT 1;";
+        command.Parameters.AddWithValue("$worker", workerId);
+        command.Parameters.AddWithValue("$stale", (_timeProvider.GetUtcNow() - _staleAfter).ToString("O"));
+        var id = await command.ExecuteScalarAsync(cancellationToken) as string;
+        if (id is null) return null;
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE provisioning_plans SET state='Accepted' WHERE id=$id AND state IN ('Pending','Accepted','Running');";
+        command.Parameters.AddWithValue("$id", id);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return null;
+        await transaction.CommitAsync(cancellationToken);
+        return await GetProvisioningPlanAsync(id, cancellationToken);
+    }
+
+    public async Task<ProvisioningPlan?> ReportProvisioningPlanAsync(string planId, ProvisioningWorkerReport report, CancellationToken cancellationToken = default)
+    {
+        if (report is null || !Guid.TryParseExact(report.WorkerId, "N", out _) || report.State is not ("Running" or "Completed" or "Failed") ||
+            report.Result is { Length: > 1000 } || report.Failure is { Length: > 500 } || report.CurrentActionId is { Length: > 80 })
+            throw new InvalidDataException("Worker provisioning report contract is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "SELECT worker_id, state, actions_json FROM provisioning_plans WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", planId);
+        string workerId; string state; string actionsJson;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken)) return null;
+            workerId = reader.GetString(0); state = reader.GetString(1); actionsJson = reader.GetString(2);
+        }
+        if (!string.Equals(workerId, report.WorkerId, StringComparison.Ordinal) || state is not ("Accepted" or "Running"))
+            throw new InvalidOperationException("Provisioning plan is not owned by this Worker or its lifecycle has advanced.");
+        var actions = JsonSerializer.Deserialize<IReadOnlyList<ProvisioningAction>>(actionsJson) ?? [];
+        if (report.CurrentActionId is not null && !actions.Any(action => action.Id == report.CurrentActionId))
+            throw new InvalidDataException("Worker provisioning report references an unknown action.");
+        if (report.State == "Running" && report.CurrentActionId is null) throw new InvalidDataException("A running provisioning report requires a current action.");
+        var now = _timeProvider.GetUtcNow();
+        var failure = report.Failure is null ? null : SanitizeProvisioningText(report.Failure, 500);
+        var result = report.Result is null ? null : SanitizeProvisioningText(report.Result, 1000);
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE provisioning_plans SET state=$state, current_action_id=$action, started_at_utc=COALESCE(started_at_utc,$now), completed_at_utc=$completed, result=$result, failure=$failure WHERE id=$id AND state IN ('Accepted','Running');";
+        command.Parameters.AddWithValue("$state", report.State);
+        command.Parameters.AddWithValue("$action", (object?)report.CurrentActionId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$completed", report.State is "Completed" or "Failed" ? now.ToString("O") : DBNull.Value);
+        command.Parameters.AddWithValue("$result", (object?)result ?? DBNull.Value);
+        command.Parameters.AddWithValue("$failure", (object?)failure ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", planId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return null;
+        await transaction.CommitAsync(cancellationToken);
+        return await GetProvisioningPlanAsync(planId, cancellationToken);
+    }
+
+    public async Task<ProvisioningPlan?> TransitionProvisioningPlanAsync(string planId, ProvisioningStateTransition transition, CancellationToken cancellationToken = default)
+    {
+        if (transition is null || transition.State is not ("Cancelled" or "Rejected"))
+            throw new InvalidDataException("Provisioning state transition must be Cancelled or Rejected.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE provisioning_plans SET state=$state, completed_at_utc=$now WHERE id=$id AND state='Pending';";
+        command.Parameters.AddWithValue("$state", transition.State);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", planId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            var existing = await GetProvisioningPlanAsync(planId, cancellationToken);
+            if (existing is not null) throw new InvalidOperationException("Only a pending provisioning plan can be cancelled or rejected.");
+            return null;
+        }
+        return await GetProvisioningPlanAsync(planId, cancellationToken);
+    }
+
+    private static string SanitizeProvisioningText(string value, int limit)
+    {
+        var safe = Regex.Replace(value, "(?i)(token|password|secret|credential|api[_-]?key)(\\s*[:=]\\s*)[^\\s,;]+", "$1$2[redacted]");
+        safe = Regex.Replace(safe, "(?i)\\bBearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer [redacted]");
+        safe = new string(safe.Where(character => !char.IsControl(character)).ToArray());
+        return safe[..Math.Min(safe.Length, limit)];
+    }
+
+    private static ProvisioningPlan ReadProvisioningPlan(SqliteDataReader reader) => new(reader.GetString(0), reader.GetString(1),
+        DateTimeOffset.Parse(reader.GetString(2)), reader.GetString(3), JsonSerializer.Deserialize<IReadOnlyList<ProvisioningAction>>(reader.GetString(4)) ?? [],
+        reader.IsDBNull(5) ? null : reader.GetString(5), reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6)),
+        reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7)), reader.IsDBNull(8) ? null : reader.GetString(8),
+        reader.IsDBNull(9) ? null : reader.GetString(9));
 
     private static async Task ReconcileExpiredLeasesAsync(SqliteConnection connection, SqliteTransaction transaction, DateTimeOffset now, CancellationToken cancellationToken)
     {

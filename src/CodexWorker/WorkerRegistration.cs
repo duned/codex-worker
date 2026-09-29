@@ -36,6 +36,12 @@ public sealed record WorkerAssignmentContract(string AssignmentId, string Server
     ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata,
     ServerExecutionLeaseContract? Lease = null);
 public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment);
+public sealed record ProvisioningActionContract(string Id, string Type, string Name, string? Version = null, string Operation = "ensure");
+public sealed record ProvisioningPlanContract(string Id, string WorkerId, DateTimeOffset CreatedAtUtc, string State,
+    IReadOnlyList<ProvisioningActionContract> Actions, string? CurrentActionId = null, DateTimeOffset? StartedAtUtc = null,
+    DateTimeOffset? CompletedAtUtc = null, string? Result = null, string? Failure = null);
+public sealed record ProvisioningWorkerReportContract(string WorkerId, string State, string? CurrentActionId = null,
+    string? Result = null, string? Failure = null);
 public sealed record WorkerExecutionReportContract(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
@@ -168,6 +174,51 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 ?? throw new InvalidDataException("Codex Server returned an empty assignment response.");
         }
         finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task<ProvisioningPlanContract?> RequestProvisioningPlanAsync(WorkerServerSettings settings, CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) return null;
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = CreateClient();
+        try
+        {
+            using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/request");
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            var plan = await response.Content.ReadFromJsonAsync<ProvisioningPlanContract>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Codex Server returned an empty provisioning plan.");
+            if (plan.WorkerId != workerId || plan.State != "Accepted" || !Guid.TryParseExact(plan.Id, "N", out _))
+                throw new InvalidDataException("Codex Server returned a provisioning plan with an invalid identity or lifecycle state.");
+            return plan;
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task ReportProvisioningPlanAsync(WorkerServerSettings settings, string planId, ProvisioningWorkerReportContract report,
+        CancellationToken cancellationToken)
+    {
+        var client = CreateClient();
+        try
+        {
+            using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{report.WorkerId}/provisioning/{planId}/report");
+            request.Content = JsonContent.Create(report);
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    private HttpClient CreateClient() => httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+
+    private static HttpRequestMessage CreateAuthorizedRequest(HttpMethod method, WorkerServerSettings settings, string path)
+    {
+        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
+        var request = new HttpRequestMessage(method, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), path));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return request;
     }
 
     public async Task ReportExecutionAsync(WorkerServerSettings settings, ExecutionHistoryEntry entry, string state,

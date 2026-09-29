@@ -85,6 +85,18 @@ public sealed class WorkerCapabilityDiscovery
         finally { _cacheLock.Release(); }
     }
 
+    public async Task<IReadOnlyList<WorkerCapabilityContract>> RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        await _cacheLock.WaitAsync(cancellationToken);
+        try
+        {
+            _cachedCapabilities = await DiscoverAsync(cancellationToken);
+            _cachedAtUtc = DateTimeOffset.UtcNow;
+            return _cachedCapabilities;
+        }
+        finally { _cacheLock.Release(); }
+    }
+
     private static bool IsUnavailableToolFailure(Exception exception) => exception is
         System.ComponentModel.Win32Exception or FileNotFoundException or DirectoryNotFoundException or ProcessTimeoutException ||
         exception is InvalidOperationException && exception.Message.StartsWith("Could not start", StringComparison.Ordinal);

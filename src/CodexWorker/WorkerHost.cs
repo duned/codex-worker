@@ -161,6 +161,24 @@ public sealed class WorkerHost
                 }
 
                 var foundWork = false;
+                if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
+                {
+                    safeToStop = false;
+                    var registration = new WorkerRegistrationClient();
+                    var provisioningPlan = await registration.RequestProvisioningPlanAsync(_global.Server, executionToken);
+                    if (provisioningPlan is not null)
+                    {
+                        runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
+                        var provisioningResult = await new ProvisioningPlanExecutor(WorkerCapabilityDiscovery.Shared).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
+                            (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, provisioningPlan.Id, report, token), executionToken);
+                        runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
+                        if (provisioningResult.State != "Completed")
+                            throw new WorkerInfrastructureException($"Provisioning plan {provisioningPlan.Id} failed at action '{provisioningResult.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
+                        safeToStop = true;
+                        continue;
+                    }
+                    safeToStop = true;
+                }
                 while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
                     if (_global.Projects.Ownership == "managed")
