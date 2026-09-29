@@ -36,7 +36,7 @@ public static class ServerApplication
         configuration.Validate();
         builder.WebHost.UseUrls(configuration.ListenUrl);
         builder.Services.AddSingleton(configuration);
-        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath()));
+        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
 
@@ -66,6 +66,16 @@ public static class ServerApplication
             await store.RegisterWorkerAsync(request, context.RequestAborted);
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
+        app.MapPost("/api/v1/workers/{workerId}/heartbeat", async (string workerId, WorkerHeartbeatRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
+                return Results.BadRequest(new { error = "Invalid worker heartbeat contract." });
+            try { await store.HeartbeatWorkerAsync(request, context.RequestAborted); }
+            catch (InvalidOperationException) { return Results.NotFound(); }
+            return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
+        });
         app.MapGet("/api/v1/workers", async (IRegistryStore store, CancellationToken ct) => Results.Ok(await store.GetWorkersAsync(ct)));
         app.MapGet("/api/v1/workers/{workerId}", async (string workerId, IRegistryStore store, CancellationToken ct) =>
         {
@@ -92,6 +102,15 @@ public static class ServerApplication
         !string.IsNullOrWhiteSpace(request.Platform) && request.Platform.Length <= 300 && request.Capacity is >= 1 and <= 8 &&
         request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 100);
+
+    private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion == 1 &&
+        Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
+        request.WorkerVersion.Length <= 100 && (request.LifecycleState is "starting" or "running" or "draining" or "stopped") &&
+        request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
+        request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
+        request.Capabilities.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 100) &&
+        request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
+        request.ActiveProjects.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 200);
 
     public static string DisplayVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
 }

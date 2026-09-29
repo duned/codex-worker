@@ -33,10 +33,18 @@ public sealed class WorkerHost
         var operational = false;
         var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
         CancellationTokenSource? executionCancellation = null;
+        WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), "starting");
+        WorkerHeartbeatLoop? heartbeat = null;
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
             await new WorkerRegistrationClient().RegisterAsync(_global.Server, _global.Worker.MaxParallelTasks, ct);
+            if (_global.Server.Enabled)
+            {
+                heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
+                    message => _output.Warning(message));
+                heartbeat.Start();
+            }
             history = new ExecutionHistoryStore();
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
             runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);
@@ -86,6 +94,7 @@ public sealed class WorkerHost
             await telegram.StartedAsync(runtimes.Count, ct);
             _output.Started();
             runtimeReadModel.State = "running";
+            Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "running" });
             runtimeReadModel.Events.Publish("worker.started", "Worker is ready.");
             operational = true;
 
@@ -103,6 +112,7 @@ public sealed class WorkerHost
                     active.Remove(completed);
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
                     runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
+                    Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                 }
 
                 // Rebuild schedulable project runtimes from one atomically installed configuration snapshot.
@@ -147,6 +157,7 @@ public sealed class WorkerHost
                         safeToStop = true;
                         if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }
                         active.Add(execution, project);
+                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", "Execution claimed.", project.Configuration.Project.Name);
                         scheduler.Selected(index);
                         selected = true;
@@ -177,6 +188,7 @@ public sealed class WorkerHost
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 }
             }
+            Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "draining" });
             // Cancellation has already reached active executions. Await them so no child process is orphaned.
             if (active.Count > 0) await Task.WhenAll(active.Keys);
             await _output.StopWaitingAsync(finalizeLine: true);
@@ -220,6 +232,7 @@ public sealed class WorkerHost
         }
         finally
         {
+            if (heartbeat is not null) await heartbeat.StopAsync();
             if (configurationWatcher is not null) await configurationWatcher.DisposeAsync();
             if (managementApi is not null) await managementApi.DisposeAsync();
             await _output.StopWaitingAsync();

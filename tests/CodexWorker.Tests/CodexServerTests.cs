@@ -34,11 +34,22 @@ public sealed class CodexServerTests
                 request = new { contractVersion = 1, workerId, displayName = "renamed worker", workerVersion = "1.2.4",
                     platform = "test", capacity = 3, capabilities = new[] { "git", "updated" } };
                 Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
+                var heartbeat = new { contractVersion = 1, workerId, workerVersion = "1.2.4", lifecycleState = "running",
+                    activeExecutions = 1, maximumCapacity = 3, capabilities = new[] { "git", "updated" }, activeProjects = new[] { "project-a" } };
+                client.DefaultRequestHeaders.Authorization = null;
+                Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
+                Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
+                Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
                 using var list = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.Single(list.RootElement.EnumerateArray());
                 var item = list.RootElement[0];
                 Assert.Equal("renamed worker", item.GetProperty("displayName").GetString());
                 Assert.Equal(3, item.GetProperty("capacity").GetInt32());
+                Assert.Equal("online", item.GetProperty("availability").GetString());
+                Assert.Equal(1, item.GetProperty("activeExecutions").GetInt32());
+                Assert.Equal(2, item.GetProperty("availableCapacity").GetInt32());
+                Assert.Equal("project-a", item.GetProperty("activeProjects")[0].GetString());
                 Assert.True(item.TryGetProperty("firstRegisteredAtUtc", out _));
                 Assert.True(item.TryGetProperty("lastSeenAtUtc", out _));
                 Assert.DoesNotContain("token", item.ToString(), StringComparison.OrdinalIgnoreCase);
@@ -64,6 +75,29 @@ public sealed class CodexServerTests
             await restarted.DisposeAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
+    }
+
+    [Fact]
+    public async Task HeartbeatAvailabilityTransitionsStaleAndReconnectsWithDeterministicClock()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), 30, clock);
+        await store.InitializeAsync();
+        var workerId = Guid.NewGuid().ToString("N");
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, ["git"]));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 2, 2, ["git"], ["one", "two"]));
+        Assert.Equal("online", (await store.GetWorkerAsync(workerId))!.Availability);
+        Assert.Equal(0, (await store.GetWorkerAsync(workerId))!.AvailableCapacity);
+        clock.Advance(TimeSpan.FromSeconds(31));
+        var stale = (await store.GetWorkerAsync(workerId))!;
+        Assert.Equal("stale", stale.Availability);
+        Assert.Equal(0, stale.ActiveExecutions);
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.1", "running", 1, 3, ["git", "new-capability"], ["three"]));
+        var reconnected = (await store.GetWorkerAsync(workerId))!;
+        Assert.Equal("online", reconnected.Availability);
+        Assert.Equal(2, reconnected.AvailableCapacity);
+        Assert.Contains("new-capability", reconnected.Capabilities);
     }
 
     [Fact]
@@ -155,5 +189,12 @@ public sealed class CodexServerTests
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"codex-server-test-{Guid.NewGuid():N}");
         public void Dispose() { if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true); }
+    }
+
+    private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan amount) => _now += amount;
     }
 }

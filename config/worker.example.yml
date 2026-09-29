@@ -18,4 +18,5 @@ api:
 # server:
 #   enabled: true
 #   url: http://127.0.0.1:5090
+#   heartbeatIntervalSeconds: 20
 #   identityFile: ~/.codex-worker/worker-id

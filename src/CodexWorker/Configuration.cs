@@ -276,6 +276,7 @@ public sealed class WorkerServerSettings
 {
     public bool Enabled { get; set; }
     public string Url { get; set; } = "";
+    public int HeartbeatIntervalSeconds { get; set; } = 20;
     /// <summary>Optional override for the durable identity file (defaults under the user's home directory).</summary>
     public string? IdentityFile { get; set; }
 
@@ -287,6 +288,8 @@ public sealed class WorkerServerSettings
             throw new InvalidDataException("server.url must be an absolute HTTP or HTTPS URL without credentials, query, or fragment.");
         if (uri.Scheme == "http" && !IsLoopback(uri.Host))
             throw new InvalidDataException("server.url must use HTTPS unless it points to loopback.");
+        if (HeartbeatIntervalSeconds is < 5 or > 300)
+            throw new InvalidDataException("server.heartbeatIntervalSeconds must be between 5 and 300.");
     }
 
     private static bool IsLoopback(string host) =>
