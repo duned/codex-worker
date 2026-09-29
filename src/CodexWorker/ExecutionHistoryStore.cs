@@ -23,12 +23,15 @@ public sealed record ExecutionHistoryEntry(
     string? CommitSha,
     string? IntegrationBranch,
     string? CompletedBranch,
-    string? FailureReason);
+    string? FailureReason,
+    string? RecoveryState = null,
+    string? RecoveryBaseCommit = null,
+    string? RecoveryStatus = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 2;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -50,9 +53,10 @@ public sealed class ExecutionHistoryStore : IDisposable
         command.CommandText = """
             INSERT INTO executions (execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch,
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
-                repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason)
+                repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
+                recovery_state, recovery_base_commit, recovery_status)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
-                $repairCount,$repairs,$sha,$integration,$completedBranch,$failure)
+                $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus)
             """;
         Bind(command, entry);
         try { await command.ExecuteNonQueryAsync(ct); }
@@ -69,7 +73,9 @@ public sealed class ExecutionHistoryStore : IDisposable
                 validation_outcome=COALESCE($validation,validation_outcome),
                 repair_count=MAX($repairCount,repair_count), repairs_json=CASE WHEN $repairCount > 0 THEN $repairs ELSE repairs_json END,
                 commit_sha=COALESCE($sha,commit_sha), integration_branch=COALESCE($integration,integration_branch),
-                completed_branch=COALESCE($completedBranch,completed_branch), failure_reason=COALESCE($failure,failure_reason)
+                completed_branch=COALESCE($completedBranch,completed_branch), failure_reason=COALESCE($failure,failure_reason),
+                recovery_state=COALESCE($recoveryState,recovery_state), recovery_base_commit=COALESCE($recoveryBase,recovery_base_commit),
+                recovery_status=COALESCE($recoveryStatus,recovery_status)
                 WHERE execution_id=$id
             """;
         Bind(command, entry);
@@ -85,7 +91,7 @@ public sealed class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason FROM executions ORDER BY started_at_utc";
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status FROM executions ORDER BY started_at_utc";
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -95,7 +101,8 @@ public sealed class ExecutionHistoryStore : IDisposable
                 DateTimeOffset.Parse(reader.GetString(7)), NullableDate(reader, 8), reader.GetString(9),
                 reader.IsDBNull(10) ? null : reader.GetInt64(10), NullableString(reader, 11), NullableString(reader, 12),
                 reader.GetInt32(13), JsonSerializer.Deserialize<List<ValidationRepairRecord>>(reader.GetString(14)) ?? [],
-                NullableString(reader, 15), NullableString(reader, 16), NullableString(reader, 17), NullableString(reader, 18)));
+                NullableString(reader, 15), NullableString(reader, 16), NullableString(reader, 17), NullableString(reader, 18),
+                NullableString(reader, 19), NullableString(reader, 20), NullableString(reader, 21)));
         }
         return entries;
     }
@@ -140,6 +147,14 @@ public sealed class ExecutionHistoryStore : IDisposable
                     PRAGMA user_version = 1;
                     """;
                 migration.ExecuteNonQuery();
+                schemaVersion = 1;
+            }
+            if (schemaVersion < 2)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN recovery_state TEXT NULL; ALTER TABLE executions ADD COLUMN recovery_base_commit TEXT NULL; ALTER TABLE executions ADD COLUMN recovery_status TEXT NULL; PRAGMA user_version = 2;";
+                migration.ExecuteNonQuery();
             }
             transaction.Commit();
         }
@@ -175,6 +190,9 @@ public sealed class ExecutionHistoryStore : IDisposable
         Add(command, "$integration", entry.IntegrationBranch);
         Add(command, "$completedBranch", entry.CompletedBranch);
         Add(command, "$failure", entry.FailureReason);
+        Add(command, "$recoveryState", entry.RecoveryState);
+        Add(command, "$recoveryBase", entry.RecoveryBaseCommit);
+        Add(command, "$recoveryStatus", entry.RecoveryStatus);
     }
 
     private static void Add(SqliteCommand command, string name, object? value) => command.Parameters.AddWithValue(name, value ?? DBNull.Value);

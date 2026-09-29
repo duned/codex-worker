@@ -322,6 +322,31 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Fact]
+    public async Task StructuredFailurePersistsRecoverableWorkspaceMetadata()
+    {
+        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
+        using var history = new ExecutionHistoryStore(database);
+        using (var h = new Harness(history: history))
+        {
+            h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery.");
+            h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial implementation remains", [], false, null);
+
+            await h.RunAsync();
+
+            Assert.Equal(0, h.Git.Cleanups);
+            Assert.Equal(0, h.Git.Integrations);
+        }
+
+        using var reopened = new ExecutionHistoryStore(database);
+        var execution = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal("Failed", execution.State);
+        Assert.Equal("recoverable", execution.RecoveryState);
+        Assert.Equal("base-sha", execution.RecoveryBaseCommit);
+        Assert.Contains("2 changed path(s)", execution.RecoveryStatus);
+        File.Delete(database);
+    }
+
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
@@ -444,11 +469,17 @@ public sealed class WorkerV011Tests
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
         public int Integrations { get; private set; }
+        public GitRecoveryInfo? Recovery { get; set; }
         public Guid? LastExecutionId { get; private set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
+        public Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
+        {
+            if (Recovery is null) Cleanups++;
+            return Task.FromResult(Recovery);
+        }
         public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
             Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
         { Integrations++; return Task.FromResult(new GitIntegrationResult(true,

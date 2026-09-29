@@ -30,8 +30,9 @@ public sealed class ManagementApiTests
         model.State = "running";
         var executionId = Guid.NewGuid();
         await history.Store.CreateAsync(new ExecutionHistoryEntry(executionId, "sample", "owner/repo", 4, "Example issue",
-            "feature/4", "main", DateTimeOffset.UtcNow, null, "Implementing", null, null, null, 1,
-            [new ValidationRepairRecord("dotnet test", 1, 2, "private repair output", false)], null, null, null, null));
+            "feature/4", "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1200, null, "failed", 1,
+            [new ValidationRepairRecord("dotnet test", 1, 2, "private repair output", false)], null, null, null, "failed",
+            "recoverable", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery."));
         model.Events.Publish("one", "one");
         model.Events.Publish("two", "two");
         model.Events.Publish("three", "three");
@@ -49,17 +50,20 @@ public sealed class ManagementApiTests
             var status = JsonDocument.Parse(await client.GetStringAsync("/api/status")).RootElement;
             Assert.Equal(ApplicationVersion.Display, status.GetProperty("version").GetString());
             Assert.Equal(3, status.GetProperty("maxParallelTasks").GetInt32());
-            Assert.Equal(1, status.GetProperty("activeExecutionCount").GetInt32());
-            Assert.Equal(2, status.GetProperty("availableExecutionCapacity").GetInt32());
+            Assert.Equal(0, status.GetProperty("activeExecutionCount").GetInt32());
+            Assert.Equal(3, status.GetProperty("availableExecutionCapacity").GetInt32());
             Assert.Equal("running", status.GetProperty("state").GetString());
 
             var projects = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement;
             Assert.Equal("owner/repo", projects[0].GetProperty("repository").GetString());
-            Assert.Equal(1, projects[0].GetProperty("activeExecutionCount").GetInt32());
+            Assert.Equal(0, projects[0].GetProperty("activeExecutionCount").GetInt32());
             Assert.Equal(2, projects[0].GetProperty("maxParallelTasks").GetInt32());
             var executions = JsonDocument.Parse(await client.GetStringAsync("/api/executions")).RootElement;
             Assert.Equal(executionId.ToString(), executions[0].GetProperty("executionId").GetString());
-            Assert.Equal("Implementing", executions[0].GetProperty("state").GetString());
+            Assert.Equal("Failed", executions[0].GetProperty("state").GetString());
+            Assert.Equal("recoverable", executions[0].GetProperty("recoveryState").GetString());
+            Assert.Equal("base-sha", executions[0].GetProperty("recoveryBaseCommit").GetString());
+            Assert.Contains("Workspace retained", executions[0].GetProperty("recoveryStatus").GetString());
             Assert.DoesNotContain("private repair output", executions.GetRawText());
             Assert.DoesNotContain("secret-value", status.GetRawText() + projects.GetRawText() + executions.GetRawText());
 

@@ -23,6 +23,11 @@ public interface IGitRepository
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct);
     Task VerifyCodexStateAsync(CancellationToken ct);
     Task DiscardUncommittedIssueChangesAsync(CancellationToken ct);
+    async Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
+    {
+        await DiscardUncommittedIssueChangesAsync(ct);
+        return null;
+    }
     Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct);
 }

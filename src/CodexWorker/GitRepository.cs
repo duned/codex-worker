@@ -4,6 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null);
+public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary);
 
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
@@ -196,6 +197,36 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely clean the task branch: {ex.Message}", ex); }
+    }
+
+    public async Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (_featureBranch is null || _startingCommit is null)
+                throw new WorkerInfrastructureException("No worker-owned feature branch is available for safe failure cleanup.");
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
+            var currentCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            if (currentCommit != _startingCommit)
+                throw new WorkerInfrastructureException("Refusing failed-workspace preservation because Git history changed during the Issue.");
+            var status = (await GitAtAsync(ExecutionDirectory,
+                ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+            if (string.IsNullOrWhiteSpace(status))
+            {
+                await DiscardUncommittedIssueChangesAsync(ct);
+                return null;
+            }
+
+            var entries = status.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var changed = entries.Length;
+            var staged = entries.Count(line => line.Length >= 2 &&
+                (line[0] != ' ' && line[0] != '?' || line[1] != ' ' && line[1] != '?'));
+            return new GitRecoveryInfo(_featureBranch, _startingCommit,
+                $"{changed} changed path(s); {staged} staged path(s). Workspace retained for recovery.");
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely preserve failed execution work: {ex.Message}", ex); }
     }
 
     public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,

@@ -27,6 +27,46 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task FailedExecutionWithChangesRetainsOwnedWorktreeAndNeverIntegratesOrPushes()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true });
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var directory = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(directory, "partial.txt"), "useful partial work");
+
+        var recovery = await git.PreserveFailedIssueChangesAsync(CancellationToken.None);
+
+        Assert.NotNull(recovery);
+        Assert.Equal("feature/example-task-17", recovery.Branch);
+        Assert.Equal("main", await fixture.Git("branch", "--show-current"));
+        Assert.True(Directory.Exists(directory));
+        Assert.Equal("useful partial work", await File.ReadAllTextAsync(Path.Combine(directory, "partial.txt")));
+        Assert.DoesNotContain("partial.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "completed/example-task-17"));
+        Assert.Contains($"worktree {directory}", await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
+    [Fact]
+    public async Task FailedExecutionWithoutChangesRemovesWorktreeAndBranch()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var directory = git.ExecutionDirectory;
+
+        var recovery = await git.PreserveFailedIssueChangesAsync(CancellationToken.None);
+
+        Assert.Null(recovery);
+        Assert.False(Directory.Exists(directory));
+        Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
+    }
+
+    [Fact]
     public async Task ExistingHistoricalNumberFirstBranchDoesNotBlockOrGetRemovedWithNewExecution()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
@@ -222,6 +262,33 @@ public sealed class GitWorktreeTests
         Assert.DoesNotContain(secondId.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/second-task-18"));
+    }
+
+    [Fact]
+    public async Task PreservingOneFailedExecutionLeavesConcurrentExecutionUntouched()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var failed = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        using var active = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await failed.InitializeAsync(CancellationToken.None);
+        var failedId = Guid.NewGuid();
+        var activeId = Guid.NewGuid();
+        await failed.StartIssueAsync(failedId, fixture.Issue, CancellationToken.None);
+        await active.StartIssueAsync(activeId, fixture.Issue with { Number = 18, Title = "Active task" }, CancellationToken.None);
+        var failedDirectory = failed.ExecutionDirectory;
+        var activeDirectory = active.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(failedDirectory, "partial.txt"), "partial");
+        await File.WriteAllTextAsync(Path.Combine(activeDirectory, "active.txt"), "active");
+
+        var recovery = await failed.PreserveFailedIssueChangesAsync(CancellationToken.None);
+
+        Assert.NotNull(recovery);
+        Assert.True(Directory.Exists(failedDirectory));
+        Assert.True(Directory.Exists(activeDirectory));
+        Assert.Equal("active", await File.ReadAllTextAsync(Path.Combine(activeDirectory, "active.txt")));
+        var worktrees = await fixture.Git("worktree", "list", "--porcelain");
+        Assert.Contains($"worktree {failedDirectory}", worktrees);
+        Assert.Contains($"worktree {activeDirectory}", worktrees);
     }
 
     [Fact]

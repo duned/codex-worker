@@ -20,7 +20,9 @@ public sealed class ExecutionHistoryStoreTests
             State = "Completed", CompletedAtUtc = started.AddMinutes(3), DurationMilliseconds = 180_000,
             ImplementationSummary = "Implemented the requested change.", ValidationOutcome = "passed",
             RepairCount = 1, Repairs = [repair], CommitSha = "0123456789abcdef0123456789abcdef01234567",
-            IntegrationBranch = "main", CompletedBranch = "done/feature/8-example"
+            IntegrationBranch = "main", CompletedBranch = "done/feature/8-example",
+            RecoveryState = "recoverable", RecoveryBaseCommit = "base-sha",
+            RecoveryStatus = "2 changed path(s); 1 staged path(s). Workspace retained for recovery."
         };
         using (var store = new ExecutionHistoryStore(database.Path))
             await store.UpdateAsync(completed);
@@ -35,6 +37,9 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(completed.CommitSha, actual.CommitSha);
         Assert.Equal("main", actual.IntegrationBranch);
         Assert.Equal("done/feature/8-example", actual.CompletedBranch);
+        Assert.Equal("recoverable", actual.RecoveryState);
+        Assert.Equal("base-sha", actual.RecoveryBaseCommit);
+        Assert.Contains("Workspace retained", actual.RecoveryStatus);
     }
 
     [Theory]
@@ -84,7 +89,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(2L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

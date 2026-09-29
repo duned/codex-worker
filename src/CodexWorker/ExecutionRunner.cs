@@ -105,10 +105,22 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task<IssueProcessingResult> CleanupOutcomeAsync(ExecutionContext context, IssueOutcomeKind kind,
         IssueExecutionReport report, CancellationToken ct)
     {
+        GitRecoveryInfo? recovery = null;
         await _repositoryGate.WaitAsync(ct);
-        try { await git.DiscardUncommittedIssueChangesAsync(ct); }
+        try
+        {
+            if (kind == IssueOutcomeKind.Failed)
+                recovery = await git.PreserveFailedIssueChangesAsync(ct);
+            else
+                await git.DiscardUncommittedIssueChangesAsync(ct);
+        }
         finally { _repositoryGate.Release(); }
-        await SaveHistoryAsync(CreateEntry(context.Execution, report, null, null), ct);
+        await SaveHistoryAsync(CreateEntry(context.Execution, report, null, null) with
+        {
+            RecoveryState = recovery is not null ? "recoverable" : kind == IssueOutcomeKind.Failed ? "cleaned-no-changes" : null,
+            RecoveryBaseCommit = recovery?.BaseCommit,
+            RecoveryStatus = recovery?.StatusSummary
+        }, ct);
         return new IssueProcessingResult(kind, report);
     }
 
@@ -126,7 +138,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
             !PathEquals(workspace, checkout) && Directory.Exists(workspace))
             reason += $" Preserved execution workspace: {Path.GetFullPath(workspace)}";
-        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason), CancellationToken.None); }
+        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = "uncertain" }, CancellationToken.None); }
         catch (WorkerInfrastructureException) { /* Preserve the original failure; the existing row remains incomplete. */ }
     }
 
