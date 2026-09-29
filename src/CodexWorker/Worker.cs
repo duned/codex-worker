@@ -15,7 +15,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
-    private readonly ConcurrentDictionary<string, byte> _activeIssues = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<int, byte> _activeIssues = new();
 
     public WorkerConfiguration Configuration => config;
 
@@ -36,11 +36,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     /// <summary>Claims the next eligible Issue and returns its independent execution task, if one was claimed.</summary>
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
-        GitHubIssue? issue;
-        try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
-        if (issue is null) return null;
-        return await ClaimIssueAsync(issue, null, null, null, ct);
+        var excluded = new HashSet<int>();
+        while (true)
+        {
+            GitHubIssue? issue;
+            try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, excluded, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
+            if (issue is null || !excluded.Add(issue.Number)) return null;
+            var execution = await ClaimIssueAsync(issue, null, null, null, ct);
+            if (execution is not null) return execution;
+        }
     }
 
     /// <summary>Executes a Server assignment through the same claim, history and ExecutionRunner pipeline as standalone work.</summary>
@@ -65,7 +70,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task<Task<IssueProcessingResult?>?> ClaimIssueAsync(GitHubIssue issue, string? serverExecutionId,
         string? assignmentId, long? ownershipGeneration, CancellationToken ct)
     {
-        var issueKey = $"{config.Project.Name}\n{config.Project.Repository}\n{issue.Number}";
+        var issueKey = issue.Number;
         if (!_activeIssues.TryAdd(issueKey, 0))
         {
             if (serverExecutionId is not null)
@@ -98,6 +103,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+            Trace.WriteLine($"Scheduler · #{issue.Number} claimed · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}]");
             _output.IssueStarted(config.Project.Name, issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, retryOf, issueKey, ct);
@@ -122,7 +128,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     }
 
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
-        string issueKey, CancellationToken ct)
+        int issueKey, CancellationToken ct)
     {
         try
         {

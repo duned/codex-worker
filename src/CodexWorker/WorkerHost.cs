@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace CodexWorker;
 
 /// <summary>Global host with bounded execution concurrency across independently configured projects.</summary>
@@ -317,6 +319,7 @@ public sealed class WorkerHost
                 }
                 while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
+                    Trace.WriteLine($"Scheduler · global {active.Count}/{_global.Worker.MaxParallelTasks}");
                     if (_global.Projects.Ownership == "managed")
                     {
                         var projectLifecycles = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
@@ -397,6 +400,7 @@ public sealed class WorkerHost
                         var project = runtimes[index];
                         var projectActive = active.Values.Count(activeProject => string.Equals(activeProject.Configuration.Project.Name,
                             project.Configuration.Project.Name, StringComparison.OrdinalIgnoreCase));
+                        Trace.WriteLine($"Scheduler · global {active.Count}/{_global.Worker.MaxParallelTasks} · {project.Configuration.Project.Name} {projectActive}/{project.Configuration.Worker.MaxParallelTasks}");
                         if (projectActive >= project.Configuration.Worker.MaxParallelTasks) continue;
                         if (!runtimeReadModel.Registry.TryReserve(project.Configuration.Project.Name, project.Configuration)) continue;
                         activeProject = project.Configuration.Project.Name;

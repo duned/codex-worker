@@ -17,6 +17,7 @@ public sealed class WorkerV011Tests
         h.Worker.Configuration.Worker.RetryMode = "resume";
         h.Codex.InitialOutcome = new CodexOutcome("success", "Resumed work", [], false, null);
         h.GitHub.ReadyIssueCount = 3;
+        h.GitHub.CancelWhenEmpty = false;
         h.Codex.BlockRuns = true;
 
         var firstClaim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
@@ -32,6 +33,31 @@ public sealed class WorkerV011Tests
         h.Codex.ReleaseRuns.TrySetResult();
         Assert.NotNull(await firstClaim);
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
+    [Fact]
+    public async Task ActiveOldestIssueDoesNotPreventDispatchOfAnotherReadyIssue()
+    {
+        using var h = new Harness();
+        h.GitHub.ReadyIssueCount = 3;
+        h.GitHub.ReturnDistinctIssues = true;
+        h.Codex.BlockRuns = true;
+
+        var first = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(first);
+        await h.Codex.BlockedRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var second = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(second);
+        Assert.Equal(2, h.Git.Started);
+        Assert.Equal(2, h.GitHub.Labels.Count(label => label == "ready->working"));
+
+        h.Codex.ReleaseRuns.TrySetResult();
+        await first!;
+        var replacement = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(replacement);
+        Assert.Equal(3, h.Git.Started);
+        await Task.WhenAll(second!, replacement!);
     }
 
     [Fact]
@@ -665,12 +691,17 @@ public sealed class WorkerV011Tests
         public bool CancelWhenEmpty { get; set; } = true;
         public bool CancelDuringQuery { get; set; }
         public bool CancelDuringClaim { get; set; }
+        public bool ReturnDistinctIssues { get; set; }
         public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
         public List<string> Comments { get; } = [];
 
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
+            => FindOldestReadyAsync(label, new HashSet<int>(), cancellationToken);
+
+        public Task<GitHubIssue?> FindOldestReadyAsync(string label, IReadOnlySet<int> excludedIssueNumbers,
+            CancellationToken cancellationToken)
         {
             FindCalls++;
             events.Add("find");
@@ -679,7 +710,16 @@ public sealed class WorkerV011Tests
                 cancellation.Cancel();
                 return Task.FromException<GitHubIssue?>(new OperationCanceledException(cancellation.Token));
             }
-            if (ReturnIssueOnFirstQuery && _returned < ReadyIssueCount) { _returned++; return Task.FromResult<GitHubIssue?>(Issue); }
+            if (ReturnIssueOnFirstQuery)
+            {
+                while (_returned < ReadyIssueCount)
+                {
+                    var number = Issue.Number + (ReturnDistinctIssues ? _returned : 0);
+                    _returned++;
+                    if (!excludedIssueNumbers.Contains(number))
+                        return Task.FromResult<GitHubIssue?>(Issue with { Number = number });
+                }
+            }
             // End the polling loop without waiting; no real GitHub service is involved.
             if (CancelWhenEmpty) cancellation.Cancel();
             return Task.FromResult<GitHubIssue?>(null);

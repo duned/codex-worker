@@ -35,6 +35,18 @@ public sealed class GitHubDependencyTests
         Assert.Equal(2, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
     }
 
+    [Fact]
+    public async Task ReadyIssueLookupSkipsIssuesAlreadyActiveOnThisWorker()
+    {
+        var fixture = new Fixture([Issue(1, "2025-01-01T00:00:00Z"), Issue(2, "2025-01-02T00:00:00Z")]);
+
+        var issue = await fixture.Client.FindOldestReadyAsync("ready", new HashSet<int> { 1 }, CancellationToken.None);
+
+        Assert.Equal(2, issue?.Number);
+        Assert.DoesNotContain(fixture.Commands, args => args.SequenceEqual([
+            "api", "--paginate", "repos/owner/repo/issues/1/dependencies/blocked_by"]));
+    }
+
     [Theory]
     [InlineData("OPEN")]
     [InlineData("CLOSED", "OPEN")]

@@ -21,7 +21,11 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         this.runCommand = runCommand;
     }
 
-    public async Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
+    public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
+        FindOldestReadyAsync(label, new HashSet<int>(), cancellationToken);
+
+    public async Task<GitHubIssue?> FindOldestReadyAsync(string label, IReadOnlySet<int> excludedIssueNumbers,
+        CancellationToken cancellationToken)
     {
         var result = await RunGhAsync(["issue", "list", "--repo", repository, "--state", "open", "--label", label,
             "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt"], cancellationToken,
@@ -38,6 +42,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
             foreach (var candidate in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (excludedIssueNumbers.Contains(candidate.Number)) continue;
                 using var dependencies = await GetBlockingDependenciesAsync(candidate.Number, cancellationToken);
                 if (DependenciesAreClosed(dependencies)) return candidate;
             }

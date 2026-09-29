@@ -3,6 +3,8 @@ namespace CodexWorker;
 public interface IGitHubClient
 {
     Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken);
+    Task<GitHubIssue?> FindOldestReadyAsync(string label, IReadOnlySet<int> excludedIssueNumbers, CancellationToken cancellationToken) =>
+        FindOldestReadyAsync(label, cancellationToken);
     Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
         throw new WorkerInfrastructureException("This GitHub client cannot load a specifically assigned Issue.");
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
