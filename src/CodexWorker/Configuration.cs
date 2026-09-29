@@ -92,6 +92,7 @@ public sealed class GlobalWorkerConfiguration
     public ProjectsSettings Projects { get; set; } = new();
     public TelegramSettings Telegram { get; set; } = new();
     public ManagementApiSettings Api { get; set; } = new();
+    public WorkerServerSettings Server { get; set; } = new();
 
     public static GlobalWorkerConfiguration Load(string path)
     {
@@ -103,6 +104,8 @@ public sealed class GlobalWorkerConfiguration
                 ?? throw new InvalidDataException("Configuration YAML is empty.");
             if (string.IsNullOrWhiteSpace(value.Projects.Directory)) throw new InvalidDataException("projects.directory is required.");
             if (!Path.IsPathRooted(value.Projects.Directory)) value.Projects.Directory = Path.GetFullPath(value.Projects.Directory, Path.GetDirectoryName(fullPath)!);
+            if (!string.IsNullOrWhiteSpace(value.Server.IdentityFile) && !Path.IsPathRooted(value.Server.IdentityFile))
+                value.Server.IdentityFile = Path.GetFullPath(value.Server.IdentityFile, Path.GetDirectoryName(fullPath)!);
             if (value.Worker.PollingSeconds <= 0) throw new InvalidDataException("worker.pollingSeconds must be greater than zero.");
             if (value.Worker.MaxParallelTasks < 1 || value.Worker.MaxParallelTasks > 8)
                 throw new InvalidDataException("worker.maxParallelTasks must be between 1 and 8.");
@@ -114,6 +117,7 @@ public sealed class GlobalWorkerConfiguration
                 throw new InvalidDataException("api.listenUrl must be an absolute HTTP URL bound to a loopback IP address.");
             if (value.Api.EventHistoryLimit < 1 || value.Api.EventHistoryLimit > 10000)
                 throw new InvalidDataException("api.eventHistoryLimit must be between 1 and 10000.");
+            value.Server.Validate();
             return value;
         }
         catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid global worker configuration '{fullPath}': {ex.Message}", ex); }
@@ -267,6 +271,26 @@ public sealed class ManagementApiSettings
     public bool Enabled { get; set; } = true;
     public string ListenUrl { get; set; } = "http://127.0.0.1:5080";
     public int EventHistoryLimit { get; set; } = 500;
+}
+public sealed class WorkerServerSettings
+{
+    public bool Enabled { get; set; }
+    public string Url { get; set; } = "";
+    /// <summary>Optional override for the durable identity file (defaults under the user's home directory).</summary>
+    public string? IdentityFile { get; set; }
+
+    internal void Validate()
+    {
+        if (!Enabled) return;
+        if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") ||
+            string.IsNullOrWhiteSpace(uri.Host) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw new InvalidDataException("server.url must be an absolute HTTP or HTTPS URL without credentials, query, or fragment.");
+        if (uri.Scheme == "http" && !IsLoopback(uri.Host))
+            throw new InvalidDataException("server.url must use HTTPS unless it points to loopback.");
+    }
+
+    private static bool IsLoopback(string host) =>
+        System.Net.IPAddress.TryParse(host, out var address) ? System.Net.IPAddress.IsLoopback(address) : host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
 }
 public sealed class WorkerSettings
 {

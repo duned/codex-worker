@@ -36,6 +36,7 @@ public sealed class WorkerHost
         try
         {
             if (_projects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
+            await new WorkerRegistrationClient().RegisterAsync(_global.Server, _global.Worker.MaxParallelTasks, ct);
             history = new ExecutionHistoryStore();
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
             runtimeReadModel = new WorkerRuntimeReadModel(_global, _projects, history);

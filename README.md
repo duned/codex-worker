@@ -108,7 +108,7 @@ Interactive terminals get a spinner, elapsed idle timer, restrained color, and d
 
 ### Codex Server
 
-The standalone `CodexServer` application hosts the central control plane API. It currently exposes `/api/status`, `/api/version`, and `/health`; registry persistence is initialized in SQLite at startup. The schema is versioned and the store sits behind `IRegistryStore` so future worker and project services can depend on a persistence contract.
+The standalone `CodexServer` application hosts the central control plane API. It exposes `/api/status`, `/api/version`, `/health`, and versioned Worker registry endpoints. Registration metadata is stored durably in SQLite using a versioned schema. The registry API returns public operational metadata only; it never stores or returns Worker secrets.
 
 Run the server independently from the worker:
 
@@ -123,6 +123,19 @@ dotnet run --project src/CodexServer/CodexServer.csproj -- --Server:ListenUrl=ht
 ```
 
 The equivalent environment variables are `Server__ListenUrl` and `Server__DatabasePath`. The listen URL must be an absolute HTTP or HTTPS URL with a valid port. The server creates the database directory and initializes its schema before accepting requests. No service manager is required.
+
+Workers register with `PUT /api/v1/workers/{workerId}` and can be inspected at `GET /api/v1/workers` or `GET /api/v1/workers/{workerId}`. Registration requires the same `CODEX_SERVER_REGISTRATION_TOKEN` environment variable on Server and Worker; the token is never accepted from YAML. Use a long random token and HTTPS when traffic crosses a trusted host boundary. Without a configured Server token, registrations are rejected. Repeat registration updates the existing Worker entry by its stable ID.
+
+Managed mode is opt-in in the global Worker YAML:
+
+```yaml
+server:
+  enabled: true
+  url: https://server.example:5090
+  # identityFile: /var/lib/codex-worker/worker-id
+```
+
+The Worker creates its identity automatically at `~/.codex-worker/worker-id` (mode 0600 on Unix). Set `server.identityFile` to choose another durable path. The random identity is stable across restarts; it is not derived from the hostname. Startup makes one registration request before GitHub queue access. Registration failure stops managed startup safely with no claim attempted; the Worker does not silently execute in standalone mode. With no `server` configuration, the default standalone behavior is unchanged. Registration sends only the Worker ID, display name, Worker version, platform, configured global capacity, and capability names. It does not send project settings, credentials, environment variables, or secrets.
 
 ```sh
 dotnet restore CodexWorker.sln

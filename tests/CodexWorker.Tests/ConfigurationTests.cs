@@ -5,6 +5,18 @@ namespace CodexWorker.Tests;
 public sealed class ConfigurationTests
 {
     [Fact]
+    public void ManagedServerRequiresSecureRemoteTransport()
+    {
+        var server = new WorkerServerSettings { Enabled = true, Url = "http://server.example:5090" };
+        var error = Assert.Throws<InvalidDataException>(server.Validate);
+        Assert.Contains("must use HTTPS", error.Message);
+        server.Url = "http://127.0.0.1:5090";
+        server.Validate();
+        server.Url = "https://server.example:5090";
+        server.Validate();
+    }
+
+    [Fact]
     public void LoadsYamlAndResolvesProjectAndInstructionPaths()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"worker-config-{Guid.NewGuid():N}");

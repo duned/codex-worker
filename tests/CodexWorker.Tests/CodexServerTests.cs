@@ -1,6 +1,7 @@
 namespace CodexWorker.Tests;
 
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using CodexServer;
@@ -9,6 +10,62 @@ using Microsoft.Data.Sqlite;
 
 public sealed class CodexServerTests
 {
+    [Fact]
+    public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "registry.db");
+        var port = ReservePort();
+        var url = $"http://127.0.0.1:{port}";
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "test-registration-token");
+        try
+        {
+            var app = await ServerApplication.BuildAsync(Args(url, database));
+            await app.StartAsync();
+            using (var client = new HttpClient { BaseAddress = new Uri(url) })
+            {
+                var workerId = Guid.NewGuid().ToString("N");
+                var request = new { contractVersion = 1, workerId, displayName = "test worker", workerVersion = "1.2.3",
+                    platform = "test", capacity = 2, capabilities = new[] { "git", "codex-cli" } };
+                Assert.Equal(HttpStatusCode.Unauthorized, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
+                Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
+                request = new { contractVersion = 1, workerId, displayName = "renamed worker", workerVersion = "1.2.4",
+                    platform = "test", capacity = 3, capabilities = new[] { "git", "updated" } };
+                Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
+                using var list = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
+                Assert.Single(list.RootElement.EnumerateArray());
+                var item = list.RootElement[0];
+                Assert.Equal("renamed worker", item.GetProperty("displayName").GetString());
+                Assert.Equal(3, item.GetProperty("capacity").GetInt32());
+                Assert.True(item.TryGetProperty("firstRegisteredAtUtc", out _));
+                Assert.True(item.TryGetProperty("lastSeenAtUtc", out _));
+                Assert.DoesNotContain("token", item.ToString(), StringComparison.OrdinalIgnoreCase);
+                var otherId = Guid.NewGuid().ToString("N");
+                var other = new { contractVersion = 1, workerId = otherId, displayName = "second", workerVersion = "1.2.3",
+                    platform = "test", capacity = 1, capabilities = new[] { "git" } };
+                Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{otherId}", other)).StatusCode);
+                using var twoWorkers = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
+                Assert.Equal(2, twoWorkers.RootElement.GetArrayLength());
+                Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/v1/workers/{Guid.NewGuid():N}", request)).StatusCode);
+            }
+            await app.StopAsync();
+            await app.DisposeAsync();
+            var restarted = await ServerApplication.BuildAsync(Args(url, database));
+            await restarted.StartAsync();
+            using (var client = new HttpClient { BaseAddress = new Uri(url) })
+            using (var persisted = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers")))
+            {
+                Assert.Equal(2, persisted.RootElement.GetArrayLength());
+                Assert.Contains(persisted.RootElement.EnumerateArray(), worker => worker.GetProperty("displayName").GetString() == "renamed worker");
+            }
+            await restarted.StopAsync();
+            await restarted.DisposeAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
+    }
+
     [Fact]
     public async Task ServerStartsAndExposesStatusHealthAndVersion()
     {
@@ -71,6 +128,7 @@ public sealed class CodexServerTests
     [InlineData("file:///tmp/server")]
     [InlineData("http://user:pass@127.0.0.1:5090")]
     [InlineData("http://127.0.0.1:0")]
+    [InlineData("http://0.0.0.0:5090")]
     public async Task InvalidListenConfigurationIsRejected(string listenUrl)
     {
         using var temporary = new TemporaryDirectory();

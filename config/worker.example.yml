@@ -13,3 +13,9 @@ api:
   enabled: true
   listenUrl: http://127.0.0.1:5080
   eventHistoryLimit: 500
+
+# Optional managed registration. Set CODEX_SERVER_REGISTRATION_TOKEN in the worker environment.
+# server:
+#   enabled: true
+#   url: http://127.0.0.1:5090
+#   identityFile: ~/.codex-worker/worker-id

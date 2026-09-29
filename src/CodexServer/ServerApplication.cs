@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using System.Security.Cryptography;
+using System.Text;
 
 public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc);
 public sealed record ServerVersion(string Version, string Product);
@@ -55,8 +57,41 @@ public static class ServerApplication
                 return Results.Json(new ServerHealth("unhealthy", false), statusCode: StatusCodes.Status503ServiceUnavailable);
             }
         });
+        app.MapPut("/api/v1/workers/{workerId}", async (string workerId, WorkerRegistrationRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
+                return Results.BadRequest(new { error = "Invalid worker registration contract." });
+            await store.RegisterWorkerAsync(request, context.RequestAborted);
+            return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
+        });
+        app.MapGet("/api/v1/workers", async (IRegistryStore store, CancellationToken ct) => Results.Ok(await store.GetWorkersAsync(ct)));
+        app.MapGet("/api/v1/workers/{workerId}", async (string workerId, IRegistryStore store, CancellationToken ct) =>
+        {
+            var worker = await store.GetWorkerAsync(workerId, ct);
+            return worker is null ? Results.NotFound() : Results.Ok(worker);
+        });
         return app;
     }
+
+    private static bool Authorized(HttpContext context, ServerConfiguration configuration)
+    {
+        var expected = configuration.RegistrationToken;
+        var supplied = context.Request.Headers.Authorization.ToString();
+        const string prefix = "Bearer ";
+        if (string.IsNullOrWhiteSpace(expected) || !supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+        var actualBytes = Encoding.UTF8.GetBytes(supplied[prefix.Length..]);
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        return actualBytes.Length == expectedBytes.Length && CryptographicOperations.FixedTimeEquals(actualBytes, expectedBytes);
+    }
+
+    private static bool Valid(WorkerRegistrationRequest request) => request.ContractVersion == 1 &&
+        Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.DisplayName) &&
+        request.DisplayName.Length <= 200 && !string.IsNullOrWhiteSpace(request.WorkerVersion) && request.WorkerVersion.Length <= 100 &&
+        !string.IsNullOrWhiteSpace(request.Platform) && request.Platform.Length <= 300 && request.Capacity is >= 1 and <= 8 &&
+        request.Capabilities is not null && request.Capabilities.Count <= 32 &&
+        request.Capabilities.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 100);
 
     public static string DisplayVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
 }

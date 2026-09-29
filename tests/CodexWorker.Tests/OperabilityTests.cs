@@ -139,8 +139,9 @@ public sealed class OperabilityTests
         var writer = new StringWriter();
         var output = new WorkerConsole(writer, interactive: true);
         output.Waiting();
-        for (var i = 0; i < 30 && !writer.ToString().Contains("00:01", StringComparison.Ordinal); i++)
-            await Task.Delay(100);
+        // Let the spinner cross the one-second display boundary without reading
+        // StringWriter concurrently with its background writer task.
+        await Task.Delay(1_300);
         await output.StopWaitingAsync();
         Assert.Contains("Waiting for work... 00:01", writer.ToString());
 
