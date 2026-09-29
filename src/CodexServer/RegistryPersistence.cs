@@ -47,7 +47,7 @@ public sealed record ExecutionStateTransition(string State, string? AssignedWork
 public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
-    string? FailureClassification = null, bool Recoverable = false, string? Summary = null);
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
 public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities);
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment);
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
@@ -69,6 +69,7 @@ public static class ExecutionRequestValidation
 
 public sealed class ExecutionRequestConflictException() : Exception("An active execution request already exists for this project and work reference.") { }
 public sealed class ExecutionRequestTransitionException() : Exception("The requested execution state transition is invalid.") { }
+public sealed class ExecutionRequestOwnershipException() : Exception("Execution report was rejected because its lease is stale or lifecycle state has advanced.") { }
 
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
@@ -509,17 +510,19 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
 
     public async Task<ExecutionRequest?> ReportExecutionAsync(string executionRequestId, WorkerExecutionReport report, CancellationToken cancellationToken = default)
     {
-        if (report is null || !Printable(report.WorkerId, 128) || !Printable(report.AssignmentId, 200) ||
+        if (report is null || !Printable(report.WorkerId, 128) || !Printable(report.AssignmentId, 200) || report.Generation <= 0 ||
             !Printable(report.WorkerExecutionId, 200) || report.Summary is { Length: > 4000 } ||
             report.Stage is { Length: > 80 } || report.ValidationResult is { Length: > 1000 } || report.IntegrationResult is { Length: > 1000 } ||
             report.FailureClassification is { Length: > 100 }) throw new InvalidDataException("Worker execution report contract is invalid.");
         if (report.State is not ("Running" or "Completed" or "Failed")) throw new InvalidDataException("Worker execution report state is invalid.");
+        if (report.State == "Running" && report.Stage is not ("Claiming" or "Preparing" or "Codex" or "Implementing" or "Validation" or "Integration" or "Reporting"))
+            throw new InvalidDataException("Worker lifecycle stage is invalid.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=COALESCE($stage,current_stage), started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=COALESCE($failure,failure_classification), recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND ((state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id))) OR (state=$state AND worker_execution_id=$workerExecution));";
+        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=COALESCE($stage,current_stage), started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=COALESCE($failure,failure_classification), recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND ((state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id)) AND ($state!='Running' OR CASE $stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE -1 END >= CASE current_stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE 0 END)));";
         command.Parameters.AddWithValue("$state", report.State);
         command.Parameters.AddWithValue("$workerExecution", report.WorkerExecutionId);
         command.Parameters.AddWithValue("$stage", (object?)report.Stage ?? DBNull.Value);
@@ -534,8 +537,31 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.Parameters.AddWithValue("$id", executionRequestId);
         command.Parameters.AddWithValue("$assignment", report.AssignmentId);
         command.Parameters.AddWithValue("$worker", report.WorkerId);
+        command.Parameters.AddWithValue("$generation", report.Generation);
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
         var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated == 0)
+        {
+            // A retry after a lost final acknowledgement returns the already committed result.
+            // The generation check prevents an old worker from treating a newer owner's state as its own.
+            await using var duplicateRead = connection.CreateCommand();
+            duplicateRead.Transaction = (SqliteTransaction)transaction;
+            duplicateRead.CommandText = ExecutionSelect + " WHERE id=$id;";
+            duplicateRead.Parameters.AddWithValue("$id", executionRequestId);
+            await using var duplicateReader = await duplicateRead.ExecuteReaderAsync(cancellationToken);
+            var duplicate = await duplicateReader.ReadAsync(cancellationToken) ? ReadExecution(duplicateReader) : null;
+            await duplicateReader.DisposeAsync();
+            if (duplicate is null) return null;
+            if (report.State is ("Completed" or "Failed") && duplicate.State == report.State && duplicate.WorkerExecutionId == report.WorkerExecutionId &&
+                duplicate.AssignmentId == report.AssignmentId && duplicate.Lease?.WorkerId == report.WorkerId &&
+                duplicate.Lease?.Generation == report.Generation)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return duplicate;
+            }
+            await transaction.CommitAsync(cancellationToken);
+            throw new ExecutionRequestOwnershipException();
+        }
         if (updated == 1 && report.State is ("Completed" or "Failed"))
         {
             command.Parameters.Clear();

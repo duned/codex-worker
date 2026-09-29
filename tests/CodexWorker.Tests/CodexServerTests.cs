@@ -306,11 +306,11 @@ public sealed class CodexServerTests
         Assert.NotNull(assigned.AssignedAtUtc);
         Assert.Equal(new ExecutionLease(first.Id, "worker-a", 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(15), "Active"), assigned.Lease);
         var started = DateTimeOffset.Parse("2026-02-01T00:00:03Z");
-        var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started));
+        var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started, Generation: assigned.Lease!.Generation));
         Assert.Equal("Running", running!.State);
         Assert.Equal("run-a", running.ExecutionId);
         var finalReport = new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Completed", null,
-            started, started.AddMinutes(2), 120000, "passed", "integrated", null, false, "Implemented Issue #42.");
+            started, started.AddMinutes(2), 120000, "passed", "integrated", null, false, "Implemented Issue #42.", assigned.Lease!.Generation);
         var completed = await store.ReportExecutionAsync(first.Id, finalReport);
         var duplicate = await store.ReportExecutionAsync(first.Id, finalReport);
         Assert.Equal("Completed", completed!.State);
@@ -371,13 +371,16 @@ public sealed class CodexServerTests
         Assert.Equal("Active", owned.Lease.State);
 
         var staleReport = new WorkerExecutionReport("stale-worker", acquired.AssignmentId, "stale-run", "Completed",
-            CompletedAtUtc: clock.GetUtcNow());
-        var unchanged = await restarted.ReportExecutionAsync(execution.Id, staleReport);
-        Assert.Equal("Assigned", unchanged!.State);
-        Assert.Equal("Active", unchanged.Lease!.State);
+            CompletedAtUtc: clock.GetUtcNow(), Generation: acquired.Lease!.Generation);
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => restarted.ReportExecutionAsync(execution.Id, staleReport));
+        var unchanged = await restarted.GetExecutionsAsync();
+        Assert.Equal("Assigned", Assert.Single(unchanged).State);
+        Assert.Equal("Active", Assert.Single(unchanged).Lease!.State);
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => restarted.ReportExecutionAsync(execution.Id, new WorkerExecutionReport(
+            acquired.WorkerId, acquired.AssignmentId, "old-run", "Running", "Codex", Generation: acquired.Lease.Generation + 1)));
 
         var report = new WorkerExecutionReport(acquired.WorkerId, acquired.AssignmentId, "lease-run", "Completed",
-            CompletedAtUtc: clock.GetUtcNow());
+            CompletedAtUtc: clock.GetUtcNow(), Generation: acquired.Lease!.Generation);
         var completed = await restarted.ReportExecutionAsync(execution.Id, report);
         Assert.Equal("Released", completed!.Lease!.State);
         Assert.Equal(acquired.WorkerId, completed.Lease.WorkerId);
@@ -440,7 +443,7 @@ public sealed class CodexServerTests
         Assert.Equal("Failed", (await restarted.GetExecutionsAsync()).Single(x => x.Id == second.Id).State);
 
         var final = await restarted.ReportExecutionAsync(first.Id, new WorkerExecutionReport(owner,
-            firstAssignment.AssignmentId, "run-renew-1", "Completed", CompletedAtUtc: clock.GetUtcNow()));
+            firstAssignment.AssignmentId, "run-renew-1", "Completed", CompletedAtUtc: clock.GetUtcNow(), Generation: firstAssignment.Lease!.Generation));
         Assert.Equal("Released", final!.Lease!.State);
         Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, lease.Generation)));
     }
@@ -469,13 +472,13 @@ public sealed class CodexServerTests
         var claimingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var uncertainAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         await store.ReportExecutionAsync(implementing.Id, new WorkerExecutionReport(workerId, implementingAssignment.AssignmentId,
-            "worker-implementation", "Running", Stage: "Codex", StartedAtUtc: clock.GetUtcNow()));
+            "worker-implementation", "Running", Stage: "Codex", StartedAtUtc: clock.GetUtcNow(), Generation: implementingAssignment.Lease!.Generation));
         await store.ReportExecutionAsync(validating.Id, new WorkerExecutionReport(workerId, validatingAssignment.AssignmentId,
-            "worker-validation", "Running", Stage: "Validation", StartedAtUtc: clock.GetUtcNow()));
+            "worker-validation", "Running", Stage: "Validation", StartedAtUtc: clock.GetUtcNow(), Generation: validatingAssignment.Lease!.Generation));
         await store.ReportExecutionAsync(uncertain.Id, new WorkerExecutionReport(workerId, uncertainAssignment.AssignmentId,
-            "worker-execution", "Running", Stage: "Integration", StartedAtUtc: clock.GetUtcNow()));
+            "worker-execution", "Running", Stage: "Integration", StartedAtUtc: clock.GetUtcNow(), Generation: uncertainAssignment.Lease!.Generation));
         await store.ReportExecutionAsync(claiming.Id, new WorkerExecutionReport(workerId, claimingAssignment.AssignmentId,
-            "worker-claiming", "Running", Stage: "Claiming", StartedAtUtc: clock.GetUtcNow()));
+            "worker-claiming", "Running", Stage: "Claiming", StartedAtUtc: clock.GetUtcNow(), Generation: claimingAssignment.Lease!.Generation));
 
         clock.Advance(TimeSpan.FromSeconds(11));
         var afterRestart = new SqliteRegistryStore(database, timeProvider: clock, leaseDurationSeconds: 10, leaseRenewalIntervalSeconds: 2);
@@ -588,7 +591,7 @@ public sealed class CodexServerTests
                 Assert.True(second.HasWork);
                 Assert.Equal(beta.Id, second.Assignment!.Project.Id);
                 var report = new WorkerExecutionReport(workerA, second.Assignment.AssignmentId, "worker-run-2", "Running", "Validation",
-                    DateTimeOffset.UtcNow);
+                    DateTimeOffset.UtcNow, Generation: second.Assignment.Lease!.Generation);
                 using var lifecycle = await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/executions/{second.Assignment.ServerExecutionId}/report", report);
                 Assert.Equal(HttpStatusCode.OK, lifecycle.StatusCode);
                 report = report with { State = "Failed", Stage = null, CompletedAtUtc = DateTimeOffset.UtcNow,

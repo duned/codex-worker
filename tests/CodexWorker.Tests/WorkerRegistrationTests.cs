@@ -125,7 +125,7 @@ public sealed class WorkerRegistrationTests
             var lease = new ServerExecutionLeaseContract("execution-123", "worker-456", 7,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(15), "Active", 60);
             var renewed = await new WorkerRegistrationClient(client).RenewExecutionLeaseAsync(settings, lease, CancellationToken.None);
-            Assert.False(renewed);
+            Assert.Null(renewed);
             Assert.Equal("POST", handler.Method);
             Assert.Equal("http://127.0.0.1:5090/api/v1/workers/worker-456/executions/execution-123/lease/renew", handler.Uri);
             Assert.Equal("Bearer lease-secret", handler.Authorization);
@@ -133,6 +133,13 @@ public sealed class WorkerRegistrationTests
             Assert.Equal("worker-456", payload.RootElement.GetProperty("workerId").GetString());
             Assert.Equal(7, payload.RootElement.GetProperty("generation").GetInt64());
             Assert.DoesNotContain("lease-secret", handler.Body!, StringComparison.Ordinal);
+
+            var renewedExpiry = DateTimeOffset.UtcNow.AddMinutes(15);
+            var successHandler = new CaptureHandler(HttpStatusCode.OK,
+                JsonSerializer.Serialize(lease with { ExpiresAtUtc = renewedExpiry }));
+            using var successClient = new HttpClient(successHandler);
+            Assert.Equal(renewedExpiry, await new WorkerRegistrationClient(successClient)
+                .RenewExecutionLeaseAsync(settings, lease, CancellationToken.None));
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }

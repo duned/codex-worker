@@ -33,6 +33,24 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task AssignmentCancellationBeforeIntegrationStopsAtTheSharedRepositoryBoundary()
+    {
+        using var h = new Harness();
+        h.Validation.CancelOnCall = 1;
+        h.Validation.OnRun = h.Cancellation.Cancel;
+        var now = DateTimeOffset.UtcNow;
+        var assignment = new WorkerAssignmentContract("assignment-fence", "server-fence",
+            new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-fence", "worker-id", 4, now, now.AddMinutes(5), "Active"));
+
+        var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+        Assert.NotNull(execution);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => execution!);
+        Assert.Equal(0, h.Git.Integrations);
+    }
+
+    [Fact]
     public async Task QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState()
     {
         using var directory = new TempHistoryDatabase();
@@ -69,7 +87,7 @@ public sealed class WorkerV011Tests
             assignment.AssignmentId, workerEntry.ExecutionId.ToString(), "Completed", StartedAtUtc: workerEntry.StartedAtUtc,
             CompletedAtUtc: workerEntry.CompletedAtUtc, DurationMilliseconds: workerEntry.DurationMilliseconds,
             ValidationResult: workerEntry.ValidationOutcome, IntegrationResult: "passed", Recoverable: false,
-            Summary: workerEntry.ImplementationSummary));
+            Summary: workerEntry.ImplementationSummary, Generation: assignment.Lease.Generation));
         Assert.NotNull(reported);
         Assert.Equal("Completed", reported.State);
         Assert.Equal(workerEntry.ExecutionId.ToString(), reported.WorkerExecutionId);
@@ -671,10 +689,13 @@ public sealed class WorkerV011Tests
         public Queue<ValidationResult> Results { get; } = new();
         public int Calls { get; private set; }
         public string? LastDirectory { get; private set; }
+        public int? CancelOnCall { get; set; }
+        public Action? OnRun { get; set; }
         public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
         {
             Calls++;
             LastDirectory = directory;
+            if (Calls == CancelOnCall) OnRun?.Invoke();
             return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : ValidationResult.Success);
         }
     }

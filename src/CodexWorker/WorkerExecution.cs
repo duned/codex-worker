@@ -23,7 +23,7 @@ public sealed class WorkerExecution
 
     private WorkerExecution(string project, string repository, GitHubIssue issue, string baseBranch,
         string featureBranch, DateTimeOffset startedAtUtc, Guid? retryOfExecutionId = null, int attemptNumber = 1,
-        bool resumed = false, string? serverExecutionId = null, string? assignmentId = null)
+        bool resumed = false, string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null)
     {
         ExecutionId = Guid.NewGuid();
         Project = project;
@@ -38,6 +38,7 @@ public sealed class WorkerExecution
         Resumed = resumed;
         ServerExecutionId = serverExecutionId;
         AssignmentId = assignmentId;
+        OwnershipGeneration = ownershipGeneration;
     }
 
     public Guid ExecutionId { get; }
@@ -53,17 +54,18 @@ public sealed class WorkerExecution
     public bool Resumed { get; }
     public string? ServerExecutionId { get; }
     public string? AssignmentId { get; }
+    public long? OwnershipGeneration { get; }
     public ExecutionState State { get; private set; } = ExecutionState.Created;
     public bool IsTerminal => AllowedTransitions[State].Length == 0;
 
     public static WorkerExecution Create(ProjectSettings project, GitSettings git, GitHubIssue issue,
         DateTimeOffset? startedAtUtc = null, Guid? retryOfExecutionId = null, int attemptNumber = 1, bool resumed = false,
-        string? serverExecutionId = null, string? assignmentId = null)
+        string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null)
     {
         var featureBranch = GitRepository.FeatureBranchName(git, issue);
         if (attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
         return new(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
-        retryOfExecutionId, attemptNumber, resumed, serverExecutionId, assignmentId);
+        retryOfExecutionId, attemptNumber, resumed, serverExecutionId, assignmentId, ownershipGeneration);
     }
 
     public void TransitionTo(ExecutionState next)

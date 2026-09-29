@@ -34,7 +34,7 @@ public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssign
 public sealed record WorkerExecutionReportContract(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
-    string? FailureClassification = null, bool Recoverable = false, string? Summary = null);
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
 public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generation);
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
@@ -162,7 +162,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
     }
 
     public async Task ReportExecutionAsync(WorkerServerSettings settings, ExecutionHistoryEntry entry, string state,
-        string? stage, CancellationToken cancellationToken)
+        string? stage, long generation, CancellationToken cancellationToken)
     {
         if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
         var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
@@ -177,7 +177,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
                 state == "Completed" ? "passed" : null,
                 state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState == "recoverable",
-                Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000));
+                Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation);
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"),
                 $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -189,10 +189,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         finally { if (httpClient is null) client.Dispose(); }
     }
 
-    public async Task<bool> RenewExecutionLeaseAsync(WorkerServerSettings settings, ServerExecutionLeaseContract lease,
+    public async Task<DateTimeOffset?> RenewExecutionLeaseAsync(WorkerServerSettings settings, ServerExecutionLeaseContract lease,
         CancellationToken cancellationToken)
     {
-        if (!settings.Enabled) return false;
+        if (!settings.Enabled) return null;
         var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
         if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to renew an execution lease.");
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -203,10 +203,14 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new ExecutionLeaseRenewalContract(lease.WorkerId, lease.Generation));
             using var response = await client.SendAsync(request, cancellationToken);
-            if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return false;
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return null;
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server execution lease renewal failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
-            return true;
+            var renewed = await response.Content.ReadFromJsonAsync<ServerExecutionLeaseContract>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Codex Server returned an empty lease renewal response.");
+            if (renewed.Generation != lease.Generation || renewed.WorkerId != lease.WorkerId || renewed.ExecutionId != lease.ExecutionId || renewed.State != "Active")
+                throw new InvalidDataException("Codex Server returned a lease renewal for a different ownership generation.");
+            return renewed.ExpiresAtUtc;
         }
         finally { if (httpClient is null) client.Dispose(); }
     }

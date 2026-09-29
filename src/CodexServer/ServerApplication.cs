@@ -105,6 +105,7 @@ public static class ServerApplication
                 return updated is null ? Results.NotFound() : Results.Ok(updated);
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (ExecutionRequestOwnershipException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionId}/lease/renew", async (string workerId, string executionId,
             ExecutionLeaseRenewal renewal, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>

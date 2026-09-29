@@ -104,6 +104,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             GitIntegrationResult integration;
             try
             {
+                // Managed execution cancellation is also the local signal that lease ownership
+                // was lost or could no longer be confirmed. Check after waiting for the shared
+                // repository gate, immediately before integration can mutate shared state.
+                ct.ThrowIfCancellationRequested();
                 integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating"), () => git.CommitAndIntegrateAsync(issue,
                     token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase"),
                         () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),

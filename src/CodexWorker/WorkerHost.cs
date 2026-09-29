@@ -54,10 +54,10 @@ public sealed class WorkerHost
             {
                 foreach (var entry in await history.ReadAllAsync(ct))
                 {
-                    if (entry.ServerExecutionId is null || entry.AssignmentId is null ||
+                    if (entry.ServerExecutionId is null || entry.AssignmentId is null || entry.OwnershipGeneration is null ||
                         entry.State is not ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")) continue;
                     var serverState = entry.State == "Completed" ? "Completed" : "Failed";
-                    try { await new WorkerRegistrationClient().ReportExecutionAsync(_global.Server, entry, serverState, null, ct); }
+                    try { await new WorkerRegistrationClient().ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                     { _output.Warning($"Codex Server result reporting remains pending for execution {entry.ExecutionId}: {ex.Message}"); }
                 }
@@ -203,18 +203,34 @@ public sealed class WorkerHost
                         }
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
-                        var lease = assignment.Lease!;
+                        if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
+                            lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
+                            lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
+                            lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
                         var leaseStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+                        // Start guarding the assignment before any GitHub label/comment work in
+                        // ClaimAssignedAsync; that work can itself outlive a short lease.
+                        var leaseRenewal = RenewLeaseWhileActiveAsync(lease, leaseStop);
                         try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token); }
-                        catch { leaseStop.Dispose(); runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name); throw; }
+                        catch
+                        {
+                            leaseStop.Cancel();
+                            try { await leaseRenewal; } catch (OperationCanceledException) { }
+                            leaseStop.Dispose();
+                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            throw;
+                        }
                         if (assignedExecution is null)
                         {
+                            leaseStop.Cancel();
+                            try { await leaseRenewal; } catch (OperationCanceledException) { }
                             leaseStop.Dispose();
                             runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
                         }
                         active.Add(assignedExecution, assignedProject);
-                        leaseRenewals.Add(assignedExecution, (leaseStop, RenewLeaseWhileActiveAsync(lease, leaseStop)));
+                        leaseRenewals.Add(assignedExecution, (leaseStop, leaseRenewal));
                         Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
                         foundWork = true;
@@ -341,21 +357,46 @@ public sealed class WorkerHost
         var cancellationToken = leaseStop.Token;
         var client = new WorkerRegistrationClient();
         var interval = TimeSpan.FromSeconds(Math.Clamp(lease.RenewalIntervalSeconds, 10, 3600));
+        var expiresAtUtc = lease.ExpiresAtUtc;
+        var renewalRetryDue = false;
         while (!cancellationToken.IsCancellationRequested)
         {
-            try { await Task.Delay(interval, _timeProvider, cancellationToken); }
+            var remaining = expiresAtUtc - _timeProvider.GetUtcNow();
+            if (remaining <= TimeSpan.Zero)
+            {
+                _output.Warning($"Execution lease {lease.ExecutionId} expired before ownership could be renewed; cancelling work to prevent stale authoritative operations.");
+                leaseStop.Cancel();
+                return;
+            }
+            var wait = renewalRetryDue ? TimeSpan.Zero : remaining < interval ? remaining : interval;
+            renewalRetryDue = false;
+            try { await Task.Delay(wait, _timeProvider, cancellationToken); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             try
             {
-                if (!await client.RenewExecutionLeaseAsync(_global.Server, lease, cancellationToken))
+                var renewedExpiry = await client.RenewExecutionLeaseAsync(_global.Server, lease, cancellationToken);
+                if (renewedExpiry is null)
                 {
-                    _output.Warning($"Execution lease {lease.ExecutionId} is no longer owned by this Worker; Server will not reassign it automatically.");
+                    _output.Warning($"Execution lease {lease.ExecutionId} is no longer owned by this Worker; cancelling work before any further authoritative operations.");
                     leaseStop.Cancel();
                     return;
                 }
+                expiresAtUtc = renewedExpiry.Value;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
-            catch (Exception ex) { _output.Warning($"Execution lease renewal for {lease.ExecutionId} failed temporarily: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                _output.Warning($"Execution lease renewal for {lease.ExecutionId} failed temporarily: {ex.Message}");
+                var untilExpiry = expiresAtUtc - _timeProvider.GetUtcNow();
+                if (untilExpiry <= TimeSpan.Zero)
+                {
+                    leaseStop.Cancel();
+                    return;
+                }
+                try { await Task.Delay(untilExpiry < TimeSpan.FromSeconds(2) ? untilExpiry : TimeSpan.FromSeconds(2), _timeProvider, cancellationToken); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+                renewalRetryDue = true;
+            }
         }
     }
 

@@ -38,7 +38,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
         if (issue is null) return null;
-        return await ClaimIssueAsync(issue, null, null, ct);
+        return await ClaimIssueAsync(issue, null, null, null, ct);
     }
 
     /// <summary>Executes a Server assignment through the same claim, history and ExecutionRunner pipeline as standalone work.</summary>
@@ -57,11 +57,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} does not identify a supported GitHub Issue.");
         var issue = await github.GetIssueAsync(issueNumber, ct)
             ?? throw new WorkerInfrastructureException($"Assigned GitHub Issue #{issueNumber} could not be found.");
-        return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, ct);
+        return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct);
     }
 
     private async Task<Task<IssueProcessingResult?>?> ClaimIssueAsync(GitHubIssue issue, string? serverExecutionId,
-        string? assignmentId, CancellationToken ct)
+        string? assignmentId, long? ownershipGeneration, CancellationToken ct)
     {
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
@@ -72,7 +72,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
             throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
-            attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId);
+            attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
+            ownershipGeneration: ownershipGeneration);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -225,6 +226,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
         var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
+        if (serverSettings is { Enabled: true } && entry.ServerExecutionId is not null && entry.OwnershipGeneration is null)
+            throw new WorkerInfrastructureException("Managed execution is missing its ownership generation.");
         await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
             stateName == "Running" ? (state switch
             {
@@ -235,7 +238,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 ExecutionState.Integrating => "Integration",
                 ExecutionState.Reporting => "Reporting",
                 _ => state.ToString()
-            }) : null, ct);
+            }) : null, entry.OwnershipGeneration ?? 0, ct);
     }
 
     private async Task CompleteHistoryAsync(WorkerExecution execution, IssueExecutionReport report, ExecutionState state,
@@ -275,7 +278,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
-            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId);
+            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId,
+            OwnershipGeneration: execution.OwnershipGeneration);
 
     private static string? Extract(string? text, string pattern)
     {
