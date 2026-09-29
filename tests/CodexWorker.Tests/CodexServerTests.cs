@@ -16,6 +16,18 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public void ServerLeaseTimingDefaultsAreConservativeAndRenewalMustPrecedeExpiry()
+    {
+        var configuration = new ServerConfiguration();
+        configuration.Validate();
+        Assert.Equal(900, configuration.ExecutionLeaseDurationSeconds);
+        Assert.Equal(60, configuration.ExecutionLeaseRenewalIntervalSeconds);
+        configuration.ExecutionLeaseDurationSeconds = 120;
+        configuration.ExecutionLeaseRenewalIntervalSeconds = 40;
+        Assert.Throws<InvalidDataException>(configuration.Validate);
+    }
+
+    [Fact]
     public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
     {
         using var temporary = new TemporaryDirectory();
@@ -292,7 +304,7 @@ public sealed class CodexServerTests
         Assert.Equal("Assigned", assigned!.State);
         Assert.Equal("worker-a", assigned.AssignedWorkerId);
         Assert.NotNull(assigned.AssignedAtUtc);
-        Assert.Equal(new ExecutionLease(first.Id, "worker-a", 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(5), "Active"), assigned.Lease);
+        Assert.Equal(new ExecutionLease(first.Id, "worker-a", 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(15), "Active"), assigned.Lease);
         var started = DateTimeOffset.Parse("2026-02-01T00:00:03Z");
         var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started));
         Assert.Equal("Running", running!.State);
@@ -348,7 +360,7 @@ public sealed class CodexServerTests
         Assert.Equal(execution.Id, acquired.ServerExecutionId);
         Assert.Equal(1L, acquired.Lease!.Generation);
         Assert.Equal(clock.GetUtcNow(), acquired.Lease.AcquiredAtUtc);
-        Assert.Equal(clock.GetUtcNow().AddMinutes(5), acquired.Lease.ExpiresAtUtc);
+        Assert.Equal(clock.GetUtcNow().AddMinutes(15), acquired.Lease.ExpiresAtUtc);
         Assert.False((await store.RequestAssignmentAsync(Request(firstWorker))).HasWork);
 
         var restarted = new SqliteRegistryStore(database, timeProvider: clock);
@@ -371,6 +383,61 @@ public sealed class CodexServerTests
         Assert.Equal(acquired.WorkerId, completed.Lease.WorkerId);
         Assert.Equal(1L, completed.Lease.Generation);
         Assert.Equal(1L, await LeaseCountAsync(database, execution.Id));
+    }
+
+    [Fact]
+    public async Task LeaseRenewalIsGenerationAndOwnerBoundAndExpiryDoesNotRequeue()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "lease-renewal.db");
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-04-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(database, timeProvider: clock, leaseDurationSeconds: 120, leaseRenewalIntervalSeconds: 20);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Renewal", "team/renewal", "main", "", []));
+        var owner = Guid.NewGuid().ToString("N");
+        var other = Guid.NewGuid().ToString("N");
+        foreach (var worker in new[] { owner, other })
+        {
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, ["git"]));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, ["git"], []));
+        }
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-1")));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-2")));
+        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-3")));
+        WorkerAssignmentRequest Request(string worker) => new(worker, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var firstAssignment = (await store.RequestAssignmentAsync(Request(owner))).Assignment!;
+        var secondAssignment = (await store.RequestAssignmentAsync(Request(owner))).Assignment!;
+        Assert.Equal(3, (await store.GetExecutionsAsync()).Count); // both leases and the queued request persist across reads
+        var lease = firstAssignment.Lease!;
+        Assert.Equal(clock.GetUtcNow().AddSeconds(120), lease.ExpiresAtUtc);
+        Assert.Null(await store.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(other, lease.Generation)));
+        Assert.Null(await store.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, lease.Generation + 1)));
+        clock.Advance(TimeSpan.FromSeconds(30)); // a missed scheduled renewal still leaves ample safety margin
+        var renewed = await store.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, lease.Generation));
+        Assert.Equal(clock.GetUtcNow().AddSeconds(120), renewed!.ExpiresAtUtc);
+
+        var restarted = new SqliteRegistryStore(database, timeProvider: clock, leaseDurationSeconds: 120, leaseRenewalIntervalSeconds: 20);
+        await restarted.InitializeAsync();
+        var afterRestart = await restarted.GetExecutionsAsync();
+        Assert.Equal(renewed.ExpiresAtUtc, afterRestart.Single(x => x.Id == first.Id).Lease!.ExpiresAtUtc);
+        Assert.Equal("Active", afterRestart.Single(x => x.Id == second.Id).Lease!.State);
+
+        clock.Advance(TimeSpan.FromSeconds(91));
+        var expired = await restarted.GetExecutionsAsync();
+        Assert.Equal("Expired", expired.Single(x => x.Id == second.Id).Lease!.State);
+        Assert.Equal("Assigned", expired.Single(x => x.Id == second.Id).State);
+        Assert.Null(await restarted.RenewExecutionLeaseAsync(second.Id,
+            new ExecutionLeaseRenewal(owner, secondAssignment.Lease!.Generation)));
+        Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, 0)));
+        await restarted.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, other, "1.0", "running", 0, 2, ["git"], []));
+        var laterAssignment = (await restarted.RequestAssignmentAsync(Request(other))).Assignment;
+        Assert.Equal(queued.Id, laterAssignment!.ServerExecutionId);
+        Assert.Equal("Assigned", (await restarted.GetExecutionsAsync()).Single(x => x.Id == second.Id).State);
+
+        var final = await restarted.ReportExecutionAsync(first.Id, new WorkerExecutionReport(owner,
+            firstAssignment.AssignmentId, "run-renew-1", "Completed", CompletedAtUtc: clock.GetUtcNow()));
+        Assert.Equal("Released", final!.Lease!.State);
+        Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, lease.Generation)));
     }
 
     private static async Task<long> LeaseCountAsync(string database, string executionId)

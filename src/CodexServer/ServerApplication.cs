@@ -38,8 +38,11 @@ public static class ServerApplication
         configuration.Validate();
         builder.WebHost.UseUrls(configuration.ListenUrl);
         builder.Services.AddSingleton(configuration);
-        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds));
+        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
+            leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
+            leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
+        builder.Services.AddHostedService<ExecutionLeaseExpirationService>();
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
 
         var app = builder.Build();
@@ -100,6 +103,19 @@ public static class ServerApplication
             {
                 var updated = await store.ReportExecutionAsync(executionRequestId, report, context.RequestAborted);
                 return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/workers/{workerId}/executions/{executionId}/lease/renew", async (string workerId, string executionId,
+            ExecutionLeaseRenewal renewal, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (renewal is null || !string.Equals(workerId, renewal.WorkerId, StringComparison.Ordinal))
+                return Results.BadRequest(new { error = "Execution lease renewal identity is invalid." });
+            try
+            {
+                var lease = await store.RenewExecutionLeaseAsync(executionId, renewal, context.RequestAborted);
+                return lease is null ? Results.Conflict(new { error = "Execution lease is stale or no longer owned by this Worker." }) : Results.Ok(lease);
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });

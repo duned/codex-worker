@@ -6,6 +6,8 @@ public sealed class ServerConfiguration
     public string DatabasePath { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-server", "codex-server.db");
     public int WorkerStaleAfterSeconds { get; set; } = 90;
+    public int ExecutionLeaseDurationSeconds { get; set; } = 900;
+    public int ExecutionLeaseRenewalIntervalSeconds { get; set; } = 60;
     /// <summary>Registration credential is read from CODEX_SERVER_REGISTRATION_TOKEN, never configuration files.</summary>
     public string? RegistrationToken => Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
     /// <summary>Management credential is read from CODEX_SERVER_MANAGEMENT_TOKEN, never configuration files.</summary>
@@ -24,6 +26,10 @@ public sealed class ServerConfiguration
             throw new InvalidDataException("Server:DatabasePath must not be empty.");
         if (WorkerStaleAfterSeconds is < 10 or > 3600)
             throw new InvalidDataException("Server:WorkerStaleAfterSeconds must be between 10 and 3600.");
+        if (ExecutionLeaseDurationSeconds is < 120 or > 86400)
+            throw new InvalidDataException("Server:ExecutionLeaseDurationSeconds must be between 120 and 86400.");
+        if (ExecutionLeaseRenewalIntervalSeconds is < 10 or > 3600 || ExecutionLeaseRenewalIntervalSeconds * 3 >= ExecutionLeaseDurationSeconds)
+            throw new InvalidDataException("Server:ExecutionLeaseRenewalIntervalSeconds must be at least 10 and less than one third of ExecutionLeaseDurationSeconds.");
     }
 
     public string ResolveDatabasePath() => Path.GetFullPath(DatabasePath);

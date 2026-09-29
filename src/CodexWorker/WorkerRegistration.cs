@@ -26,7 +26,7 @@ public sealed record ServerProjectContract(string Id, string Name, string Reposi
     string Description, IReadOnlyList<string> Requirements, long Revision, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
 public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
 public sealed record ServerExecutionLeaseContract(string ExecutionId, string WorkerId, long Generation,
-    DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State);
+    DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,
     ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata,
     ServerExecutionLeaseContract? Lease = null);
@@ -35,6 +35,7 @@ public sealed record WorkerExecutionReportContract(string WorkerId, string Assig
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
     string? FailureClassification = null, bool Recoverable = false, string? Summary = null);
+public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generation);
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
@@ -184,6 +185,28 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    public async Task<bool> RenewExecutionLeaseAsync(WorkerServerSettings settings, ServerExecutionLeaseContract lease,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) return false;
+        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to renew an execution lease.");
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"),
+                $"api/v1/workers/{lease.WorkerId}/executions/{lease.ExecutionId}/lease/renew"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Content = JsonContent.Create(new ExecutionLeaseRenewalContract(lease.WorkerId, lease.Generation));
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return false;
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Codex Server execution lease renewal failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            return true;
         }
         finally { if (httpClient is null) client.Dispose(); }
     }

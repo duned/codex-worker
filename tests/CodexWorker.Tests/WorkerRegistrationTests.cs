@@ -112,6 +112,31 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Fact]
+    public async Task LeaseRenewalUsesExecutionWorkerAndGenerationAndSurfacesStaleOwnership()
+    {
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "lease-secret");
+        try
+        {
+            var handler = new CaptureHandler(HttpStatusCode.Conflict, "{\"error\":\"stale\"}");
+            using var client = new HttpClient(handler);
+            var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090" };
+            var lease = new ServerExecutionLeaseContract("execution-123", "worker-456", 7,
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(15), "Active", 60);
+            var renewed = await new WorkerRegistrationClient(client).RenewExecutionLeaseAsync(settings, lease, CancellationToken.None);
+            Assert.False(renewed);
+            Assert.Equal("POST", handler.Method);
+            Assert.Equal("http://127.0.0.1:5090/api/v1/workers/worker-456/executions/execution-123/lease/renew", handler.Uri);
+            Assert.Equal("Bearer lease-secret", handler.Authorization);
+            using var payload = JsonDocument.Parse(handler.Body!);
+            Assert.Equal("worker-456", payload.RootElement.GetProperty("workerId").GetString());
+            Assert.Equal(7, payload.RootElement.GetProperty("generation").GetInt64());
+            Assert.DoesNotContain("lease-secret", handler.Body!, StringComparison.Ordinal);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

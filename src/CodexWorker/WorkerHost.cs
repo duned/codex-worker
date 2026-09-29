@@ -6,14 +6,17 @@ public sealed class WorkerHost
     private readonly GlobalWorkerConfiguration _global;
     private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
     private readonly WorkerConsole _output;
+    private readonly TimeProvider _timeProvider;
     private readonly ProcessRunner _runner = new();
 
     public WorkerHost(GlobalWorkerConfiguration global,
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null)
+        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
+        TimeProvider? timeProvider = null)
     {
         _global = global;
         _projects = projects;
         _output = output ?? new WorkerConsole();
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -32,6 +35,7 @@ public sealed class WorkerHost
         var safeToStop = true;
         var operational = false;
         var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
+        var leaseRenewals = new Dictionary<Task<IssueProcessingResult?>, (CancellationTokenSource Stop, Task Run)>();
         CancellationTokenSource? executionCancellation = null;
         WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), "starting");
         WorkerHeartbeatLoop? heartbeat = null;
@@ -120,6 +124,12 @@ public sealed class WorkerHost
                 {
                     var project = active[completed];
                     activeProject = project.Configuration.Project.Name;
+                    if (leaseRenewals.Remove(completed, out var renewal))
+                    {
+                        renewal.Stop.Cancel();
+                        try { await renewal.Run; } catch (OperationCanceledException) { }
+                        renewal.Stop.Dispose();
+                    }
                     await completed;
                     active.Remove(completed);
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
@@ -193,14 +203,18 @@ public sealed class WorkerHost
                         }
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
-                        try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, executionToken); }
-                        catch { runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name); throw; }
+                        var lease = assignment.Lease!;
+                        var leaseStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+                        try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token); }
+                        catch { leaseStop.Dispose(); runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name); throw; }
                         if (assignedExecution is null)
                         {
+                            leaseStop.Dispose();
                             runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
                         }
                         active.Add(assignedExecution, assignedProject);
+                        leaseRenewals.Add(assignedExecution, (leaseStop, RenewLeaseWhileActiveAsync(lease, leaseStop)));
                         Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
                         foundWork = true;
@@ -276,7 +290,14 @@ public sealed class WorkerHost
         }
         catch (Exception ex)
         {
+            foreach (var renewal in leaseRenewals.Values) renewal.Stop.Cancel();
             executionCancellation?.Cancel();
+            foreach (var renewal in leaseRenewals.Values)
+            {
+                try { await renewal.Run; } catch (OperationCanceledException) { } catch (Exception) { }
+                renewal.Stop.Dispose();
+            }
+            leaseRenewals.Clear();
             if (active.Count > 0)
             {
                 try { await Task.WhenAll(active.Keys); }
@@ -298,6 +319,12 @@ public sealed class WorkerHost
         }
         finally
         {
+            foreach (var renewal in leaseRenewals.Values) renewal.Stop.Cancel();
+            foreach (var renewal in leaseRenewals.Values)
+            {
+                try { await renewal.Run; } catch (OperationCanceledException) { } catch (Exception) { }
+                renewal.Stop.Dispose();
+            }
             if (heartbeat is not null) await heartbeat.StopAsync();
             if (configurationWatcher is not null) await configurationWatcher.DisposeAsync();
             if (managementApi is not null) await managementApi.DisposeAsync();
@@ -306,6 +333,29 @@ public sealed class WorkerHost
             foreach (var gate in repositoryGates.Values) gate.Dispose();
             history?.Dispose();
             executionCancellation?.Dispose();
+        }
+    }
+
+    private async Task RenewLeaseWhileActiveAsync(ServerExecutionLeaseContract lease, CancellationTokenSource leaseStop)
+    {
+        var cancellationToken = leaseStop.Token;
+        var client = new WorkerRegistrationClient();
+        var interval = TimeSpan.FromSeconds(Math.Clamp(lease.RenewalIntervalSeconds, 10, 3600));
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try { await Task.Delay(interval, _timeProvider, cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+            try
+            {
+                if (!await client.RenewExecutionLeaseAsync(_global.Server, lease, cancellationToken))
+                {
+                    _output.Warning($"Execution lease {lease.ExecutionId} is no longer owned by this Worker; Server will not reassign it automatically.");
+                    leaseStop.Cancel();
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+            catch (Exception ex) { _output.Warning($"Execution lease renewal for {lease.ExecutionId} failed temporarily: {ex.Message}"); }
         }
     }
 

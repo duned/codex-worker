@@ -47,7 +47,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
             !string.Equals(lease.ExecutionId, assignment.ServerExecutionId, StringComparison.Ordinal) ||
             !string.Equals(lease.WorkerId, assignment.WorkerId, StringComparison.Ordinal) ||
-            lease.ExpiresAtUtc <= lease.AcquiredAtUtc ||
+            lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
+            lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
             string.IsNullOrWhiteSpace(assignment.AssignmentId))
             throw new WorkerInfrastructureException("Server assignment does not contain a valid active execution lease.");
         if (assignment.Work.Type is not ("issue" or "github-issue") ||
