@@ -155,12 +155,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task SaveAndReportAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
     {
         if (history is not null) await history.UpdateAsync(entry, ct);
-        if (reportServer is not null)
-        {
-            try { await reportServer(entry, state, ct); }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            { output.Warning($"Codex Server execution reporting is pending: {ex.Message}"); }
-        }
+        if (reportServer is not null) await reportServer(entry, state, ct);
     }
 
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)

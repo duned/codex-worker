@@ -82,8 +82,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         try
         {
             await _output.StopWaitingAsync();
-            await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
+            await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
             _output.IssueStarted(config.Project.Name, issue);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, ct);
             return ProcessClaimedAsync(execution, issue, retryOf, ct);
@@ -224,23 +224,18 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
     {
         if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
-        try
-        {
-            var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
-            await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
-                stateName == "Running" ? (state switch
-                {
-                    ExecutionState.Claimed => "Assigned",
-                    ExecutionState.Preparing => "Preparing",
-                    ExecutionState.Implementing => "Codex",
-                    ExecutionState.Validating or ExecutionState.Repairing => "Validation",
-                    ExecutionState.Integrating => "Integration",
-                    ExecutionState.Reporting => "Reporting",
-                    _ => state.ToString()
-                }) : null, ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-        { _output.Warning($"Codex Server execution reporting is pending: {ex.Message}"); }
+        var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
+        await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
+            stateName == "Running" ? (state switch
+            {
+                ExecutionState.Claimed => "Claiming",
+                ExecutionState.Preparing => "Preparing",
+                ExecutionState.Implementing => "Codex",
+                ExecutionState.Validating or ExecutionState.Repairing => "Validation",
+                ExecutionState.Integrating => "Integration",
+                ExecutionState.Reporting => "Reporting",
+                _ => state.ToString()
+            }) : null, ct);
     }
 
     private async Task CompleteHistoryAsync(WorkerExecution execution, IssueExecutionReport report, ExecutionState state,
