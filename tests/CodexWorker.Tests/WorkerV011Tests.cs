@@ -5,6 +5,32 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Fact]
+    public async Task ServerAssignmentCreatesLinkedExecutionAndUsesNormalRunnerAndGitHubLifecycle()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var now = DateTimeOffset.UtcNow;
+        var assignment = new WorkerAssignmentContract("assignment-456", "server-request-123",
+            new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>());
+
+        var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+        Assert.NotNull(execution);
+        var result = await execution;
+
+        Assert.NotNull(result);
+        Assert.Equal(1, h.Git.Started);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Contains("ready->working", h.GitHub.Labels);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        var persisted = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("server-request-123", persisted.ServerExecutionId);
+        Assert.Equal("assignment-456", persisted.AssignmentId);
+        Assert.Equal("Completed", persisted.State);
+    }
+
+    [Fact]
     public async Task SchedulerDispatchesExplicitExecutionAndReceivesSafeTerminalOutcome()
     {
         using var h = new Harness();
@@ -479,6 +505,14 @@ public sealed class WorkerV011Tests
         }
     }
 
+    private sealed class TempHistoryDatabase : IDisposable
+    {
+        private readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"codex-worker-assignment-{Guid.NewGuid():N}");
+        public string Path => System.IO.Path.Combine(_directory, "history.db");
+        public TempHistoryDatabase() => Directory.CreateDirectory(_directory);
+        public void Dispose() { if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true); }
+    }
+
     private sealed class FakeGitHub(List<string> events, CancellationTokenSource cancellation) : IGitHubClient
     {
         private int _returned;
@@ -506,6 +540,9 @@ public sealed class WorkerV011Tests
             if (CancelWhenEmpty) cancellation.Cancel();
             return Task.FromResult<GitHubIssue?>(null);
         }
+
+        public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
+            Task.FromResult<GitHubIssue?>(issueNumber == Issue.Number ? Issue : null);
 
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
         {

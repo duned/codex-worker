@@ -37,6 +37,23 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public void AssignmentProjectMustMatchKnownWorkerConfiguration()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var configuration = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "Compiler Tools", Repository = "owner/compiler", Directory = "/tmp/compiler" },
+            Git = new GitSettings { BaseBranch = "main" }
+        };
+        var known = new ServerProjectContract("compiler-tools", "Compiler Tools", "owner/compiler", "main", "untrusted description", [], 2, now, now);
+
+        Assert.True(WorkerHost.MatchesServerProject(configuration, known));
+        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { Repository = "attacker/repository" }));
+        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { DefaultBranch = "attacker-branch" }));
+        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { Id = "other-project" }));
+    }
+
+    [Fact]
     public async Task RegistrationFailureIsStartupFailureAndPayloadContainsNoSecrets()
     {
         using var temporary = new TemporaryDirectory();

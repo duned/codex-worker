@@ -31,6 +31,18 @@ public sealed class WorkerExecutionTests
     }
 
     [Fact]
+    public void ServerAssignmentIsLinkedToTheNormalWorkerExecutionIdentity()
+    {
+        var execution = WorkerExecution.Create(Project, Git, Issue,
+            serverExecutionId: "server-request-123", assignmentId: "assignment-456");
+
+        Assert.NotEqual(Guid.Empty, execution.ExecutionId);
+        Assert.Equal("server-request-123", execution.ServerExecutionId);
+        Assert.Equal("assignment-456", execution.AssignmentId);
+        Assert.Equal("feature/add-execution-context-17", execution.FeatureBranch);
+    }
+
+    [Fact]
     public void GitRepositoryCreatesSeparateMutableRepositoryStatePerExecution()
     {
         using var repository = new GitRepository(new ProcessRunner(), Path.GetTempPath(), "owner/repo",

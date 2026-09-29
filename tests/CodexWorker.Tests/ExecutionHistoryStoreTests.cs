@@ -170,13 +170,29 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(4L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(5L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);
             Assert.DoesNotContain("TEST_SECRET_SENTINEL", raw, StringComparison.Ordinal);
         }
         finally { Environment.SetEnvironmentVariable("CODEX_WORKER_HISTORY_TEST_SECRET", null); }
+    }
+
+    [Fact]
+    public async Task ServerAssignmentRelationshipSurvivesHistoryReopen()
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            ServerExecutionId = "server-request-123", AssignmentId = "assignment-456"
+        };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(entry);
+
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var actual = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal("server-request-123", actual.ServerExecutionId);
+        Assert.Equal("assignment-456", actual.AssignmentId);
     }
 
     private static ExecutionHistoryEntry Entry(Guid id, DateTimeOffset started) => new(

@@ -5,7 +5,8 @@ worker:
 
 projects:
   directory: ./projects
-  # standalone keeps local project YAML authoritative; managed declares Codex Server authoritative.
+  # standalone polls configured GitHub queues; managed requests Server assignments for configured projects.
+  # In either mode the Worker owns GitHub labels, comments, and Issue closure.
   ownership: standalone
 
 telegram:

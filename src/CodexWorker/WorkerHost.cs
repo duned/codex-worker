@@ -141,6 +141,60 @@ public sealed class WorkerHost
                 var foundWork = false;
                 while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
+                    if (_global.Projects.Ownership == "managed")
+                    {
+                        var lifecycle = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+                        var projectCapacities = new Dictionary<string, int>(StringComparer.Ordinal);
+                        foreach (var candidate in runtimes)
+                        {
+                            var name = candidate.Configuration.Project.Name;
+                            var activeForProject = active.Values.Count(value => string.Equals(value.Configuration.Project.Name, name, StringComparison.OrdinalIgnoreCase));
+                            if (lifecycle.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
+                                activeForProject < candidate.Configuration.Worker.MaxParallelTasks)
+                            {
+                                if (!projectCapacities.TryAdd(ServerProjectId(name), candidate.Configuration.Worker.MaxParallelTasks - activeForProject))
+                                    throw new WorkerInfrastructureException($"Managed project names produce a duplicate Server project identity near '{name}'.");
+                            }
+                        }
+                        if (projectCapacities.Count == 0) break;
+                        activeProject = null;
+                        // The Server may accept the assignment before a cancelled request returns.
+                        // Treat interruption here as uncertain so shutdown preserves that state for inspection.
+                        safeToStop = false;
+                        var assignmentResponse = await new WorkerRegistrationClient().RequestAssignmentAsync(_global.Server,
+                            !runtimeReadModel.Registry.WorkerDraining, _global.Worker.MaxParallelTasks - active.Count,
+                            projectCapacities, executionToken);
+                        if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { safeToStop = true; break; }
+                        if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
+                            throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
+                        var assignment = assignmentResponse.Assignment!;
+                        var assignedProject = runtimes.FirstOrDefault(candidate => MatchesServerProject(candidate.Configuration, assignment.Project));
+                        if (assignedProject is null)
+                        {
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
+                        }
+                        if (!runtimeReadModel.Registry.TryReserve(assignedProject.Configuration.Project.Name, assignedProject.Configuration))
+                        {
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} arrived while project '{assignment.Project.Name}' was draining; assignment remains owned by this Worker for inspection.");
+                        }
+                        activeProject = assignedProject.Configuration.Project.Name;
+                        Task<IssueProcessingResult?>? assignedExecution;
+                        try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, executionToken); }
+                        catch { runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name); throw; }
+                        if (assignedExecution is null)
+                        {
+                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
+                        }
+                        active.Add(assignedExecution, assignedProject);
+                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
+                        runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
+                        foundWork = true;
+                        safeToStop = false;
+                        continue;
+                    }
                     var selected = false;
                     foreach (var index in scheduler.ScanOrder())
                     {
@@ -242,6 +296,19 @@ public sealed class WorkerHost
             executionCancellation?.Dispose();
         }
     }
+
+    private static string ServerProjectId(string name)
+    {
+        var id = new string(name.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
+        if (id.Length == 0) id = "project-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name)))[..12].ToLowerInvariant();
+        return id.Length > 80 ? id[..80].TrimEnd('-') : id;
+    }
+
+    internal static bool MatchesServerProject(WorkerConfiguration configuration, ServerProjectContract project) =>
+        string.Equals(ServerProjectId(configuration.Project.Name), project.Id, StringComparison.Ordinal) &&
+        string.Equals(configuration.Project.Name, project.Name, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(configuration.Project.Repository, project.Repository, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(configuration.Git.BaseBranch, project.DefaultBranch, StringComparison.Ordinal);
 
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct)

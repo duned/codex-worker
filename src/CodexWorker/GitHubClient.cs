@@ -51,6 +51,27 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
+    public async Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken)
+    {
+        if (issueNumber <= 0) throw new WorkerInfrastructureException("Assigned GitHub Issue number must be positive.");
+        var result = await RunGhAsync(["issue", "view", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--repo", repository, "--json", "number,title,body,createdAt,state"], cancellationToken, allowGracefulCancellation: true);
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var issue = document.RootElement;
+            if (!string.Equals(issue.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
+                throw new WorkerInfrastructureException($"Assigned Issue #{issueNumber} in '{repository}' is not open.");
+            return new GitHubIssue(issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString() ?? "",
+                issue.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "", issue.GetProperty("createdAt").GetDateTimeOffset());
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw new WorkerInfrastructureException($"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
+    }
+
     private async Task<JsonDocument> GetBlockingDependenciesAsync(int issueNumber, CancellationToken ct)
     {
         ProcessResult result;

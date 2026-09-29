@@ -181,7 +181,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
-            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed);
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
+            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId);
 
     private static string? Extract(string? text, string pattern)
     {

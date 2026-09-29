@@ -38,6 +38,24 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
         if (issue is null) return null;
+        return await ClaimIssueAsync(issue, null, null, ct);
+    }
+
+    /// <summary>Executes a Server assignment through the same claim, history and ExecutionRunner pipeline as standalone work.</summary>
+    public async Task<Task<IssueProcessingResult?>?> ClaimAssignedAsync(WorkerAssignmentContract assignment, CancellationToken ct)
+    {
+        if (assignment.Work.Type is not ("issue" or "github-issue") ||
+            !int.TryParse(assignment.Work.Id, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)
+            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} does not identify a supported GitHub Issue.");
+        var issue = await github.GetIssueAsync(issueNumber, ct)
+            ?? throw new WorkerInfrastructureException($"Assigned GitHub Issue #{issueNumber} could not be found.");
+        return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, ct);
+    }
+
+    private async Task<Task<IssueProcessingResult?>?> ClaimIssueAsync(GitHubIssue issue, string? serverExecutionId,
+        string? assignmentId, CancellationToken ct)
+    {
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
             .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
@@ -47,7 +65,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
             throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {retryOf.ExecutionId} has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
-            attemptNumber: attemptNumber, resumed: resumed);
+            attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -215,7 +233,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
-            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed);
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
+            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId);
 
     private static string? Extract(string? text, string pattern)
     {
