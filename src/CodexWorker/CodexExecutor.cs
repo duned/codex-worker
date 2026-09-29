@@ -301,7 +301,7 @@ internal sealed class CodexEnvironment : IDisposable
 }
 
 public sealed record ValidationFailure(int CommandNumber, string Command, int? ExitCode, string StandardOutput,
-    string StandardError, bool TimedOut)
+    string StandardError, bool TimedOut, IReadOnlyList<string>? SecretValues = null)
 {
     public string ToRepairDiagnostics(int maximumCharacters = 6000)
     {
@@ -320,7 +320,27 @@ public sealed record ValidationFailure(int CommandNumber, string Command, int? E
         return header + prefix + Tail(StandardOutput, stdoutLength) + separator + Tail(StandardError, stderrLength);
     }
 
-    public string ToSummary() => $"Validation command {CommandNumber} failed (exit {ExitCode?.ToString() ?? "timeout"}): {Command}\n{ToRepairDiagnostics(1200)}";
+    public string ToSummary(int maximumCharacters = 800)
+    {
+        var lines = (StandardError + "\n" + StandardOutput).Split('\n')
+            .Select(line => FailureDiagnosticRedactor.Redact(line.Trim(), SecretValues))
+            .Where(IsActionable)
+            .Distinct(StringComparer.Ordinal)
+            .Take(6)
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            var fallback = FailureDiagnosticRedactor.Redact((StandardError + "\n" + StandardOutput).Trim(), SecretValues);
+            lines = string.IsNullOrWhiteSpace(fallback) ? ["No diagnostic output was produced."] : [fallback];
+        }
+        var summary = $"Command {CommandNumber}: {FailureDiagnosticRedactor.Redact(Command, SecretValues)} (exit {ExitCode?.ToString() ?? "unavailable; timed out"})\n" +
+                      string.Join("\n", lines);
+        return summary.Length <= maximumCharacters ? summary : summary[..Math.Max(0, maximumCharacters - 15)] + " [truncated]";
+    }
+
+    private static bool IsActionable(string line) =>
+        line.Length > 0 && (System.Text.RegularExpressions.Regex.IsMatch(line,
+            @"(?i)(error\s+[A-Z]+\d+|warning\s+[A-Z]+\d+|failed\s+(?:test|tests|to\b)|^failed\s+\S+|\bassert(?:ion)?\b|expected\b|actual\b|exception|timed?\s*out|\bCS\d{4}\b)") || line.Contains(':'));
 
     private static string Tail(string value, int length) => length <= 0 ? "" : value.Length <= length ? value : value[^length..];
 }
@@ -347,10 +367,12 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds,
             try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct, environment); }
             catch (ProcessTimeoutException ex)
             {
-                return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true));
+                return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true,
+                    projectEnvironment?.Values.ToArray()));
             }
             if (result.ExitCode != 0)
-                return new ValidationResult(new ValidationFailure(index, command, result.ExitCode, result.StandardOutput, result.StandardError, false));
+                return new ValidationResult(new ValidationFailure(index, command, result.ExitCode, result.StandardOutput, result.StandardError, false,
+                    projectEnvironment?.Values.ToArray()));
         }
         return ValidationResult.Success;
     }

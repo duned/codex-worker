@@ -60,7 +60,7 @@ public sealed class ExecutionReportTests
         var markdown = report.ToMarkdown(IssueOutcomeKind.Failed);
         Assert.True(markdown.IndexOf("Corrected the mapping.", StringComparison.Ordinal) <
                     markdown.IndexOf("Updated the schema test.", StringComparison.Ordinal));
-        Assert.Contains("Validation failed after all repair attempts: `dotnet test`.", markdown);
+        Assert.Contains("Validation failed after 2 repair attempt(s): `dotnet test`.", markdown);
         Assert.Contains("## Implementation attempt", markdown);
         Assert.DoesNotContain("stdout", markdown);
     }
@@ -77,5 +77,69 @@ public sealed class ExecutionReportTests
         Assert.Contains("Which API should own this behavior?", markdown);
         Assert.DoesNotContain("TELEGRAM_BOT_TOKEN", markdown);
         Assert.DoesNotContain("GITHUB_TOKEN", markdown);
+    }
+
+    [Fact]
+    public void FailedValidationReportIncludesCompilerAndTestDiagnosticsAndRecoveryMetadata()
+    {
+        var id = Guid.NewGuid();
+        var report = new IssueExecutionReport("Implemented the feature.",
+            [new("dotnet test", 1, 1, "Updated the failing test.", false,
+                "error CS1002: ; expected", "Failed Example.Tests.ParserTests.ReadsHeader\nExpected: 1\nActual: 0")],
+            FinalValidationFailure: "dotnet test", Failure: "Validation failed after 1 repair attempt(s).",
+            ExecutionId: id, FinalValidationDiagnostics: "Failed Example.Tests.ParserTests.ReadsHeader\nExpected: 1\nActual: 0",
+            FinalValidationExitCode: 1, RecoveryBranch: "feature/example-59", WorkspacePreserved: true, RetryAvailable: true,
+            SecretValues: ["private-value"]);
+
+        var markdown = report.ToMarkdown(IssueOutcomeKind.Failed);
+
+        Assert.Contains("Final validation command: `dotnet test` (exit 1).", markdown);
+        Assert.Contains("Failed Example.Tests.ParserTests.ReadsHeader", markdown);
+        Assert.Contains("## Recovery", markdown);
+        Assert.Contains($"Execution: `{id}`", markdown);
+        Assert.Contains("Branch: `feature/example-59`", markdown);
+        Assert.Contains("Workspace: preserved", markdown);
+        Assert.Contains("Retry/resume: available", markdown);
+        Assert.DoesNotContain("/home/", markdown);
+
+        var secretReport = report with { ValidationRepairs = [new("dotnet test", 1, 1, "Output private-value", false)] };
+        Assert.DoesNotContain("private-value", secretReport.ToMarkdown(IssueOutcomeKind.Failed));
+    }
+
+    [Fact]
+    public void ValidationDiagnosticSummarySelectsActionableLinesRedactsSecretsAndBoundsOutput()
+    {
+        var failure = new ValidationFailure(2, "dotnet test", 1,
+            string.Join('\n', Enumerable.Repeat("noise output", 500)) + "\nFailed Example.Tests.ParserTests.ReadsHeader\nExpected: token=supersecret\nActual: hidden-value",
+            "error CS1002: ; expected", false, ["hidden-value"]);
+
+        var summary = failure.ToSummary();
+
+        Assert.Contains("error CS1002: ; expected", summary);
+        Assert.Contains("Failed Example.Tests.ParserTests.ReadsHeader", summary);
+        Assert.Contains("[redacted]", summary);
+        Assert.DoesNotContain("supersecret", summary);
+        Assert.DoesNotContain("hidden-value", summary);
+        Assert.True(summary.Length <= 800);
+        Assert.DoesNotContain("noise output", summary);
+    }
+
+    [Fact]
+    public void NoRepairFailureIncludesFinalDiagnosticAndSuccessfulReportHasNoRecoverySection()
+    {
+        var failed = new IssueExecutionReport("Implementation summary", [], FinalValidationFailure: "dotnet build",
+            Failure: "Validation failed after 0 repair attempt(s).", FinalValidationDiagnostics: "error CS1002: ; expected",
+            FinalValidationExitCode: 1, ExecutionId: Guid.NewGuid());
+        var succeeded = new IssueExecutionReport("Implementation summary", [],
+            Integration: new GitIntegrationResult(false, "No changes."), ExecutionId: Guid.NewGuid());
+
+        var failedMarkdown = failed.ToMarkdown(IssueOutcomeKind.Failed);
+        var succeededMarkdown = succeeded.ToMarkdown(IssueOutcomeKind.Succeeded);
+
+        Assert.Contains("error CS1002: ; expected", failedMarkdown);
+        Assert.Contains("exit 1", failedMarkdown);
+        Assert.DoesNotContain("## Recovery", failedMarkdown);
+        Assert.DoesNotContain("## Recovery", succeededMarkdown);
+        Assert.Contains("## Validation\n\nValidation passed successfully.", succeededMarkdown);
     }
 }

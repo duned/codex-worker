@@ -348,8 +348,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
-                await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration, Limit(message, 1400), ct);
-                _output.IssueFailed(issue, result.Report.Duration);
+                await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
+                    $"Execution {result.Report.ExecutionId}; see the Issue report for validation diagnostics and recovery details.", ct);
+                var recoveryDetails = $"execution {result.Report.ExecutionId}" +
+                    (result.Report.RecoveryBranch is null ? " · workspace not preserved · retry/resume unavailable" :
+                        $" · workspace preserved on {result.Report.RecoveryBranch} · retry/resume {(result.Report.RetryAvailable ? "available" : "unavailable")}");
+                _output.IssueFailed(issue, result.Report.Duration, recoveryDetails);
                 break;
             case IssueOutcomeKind.Superseded:
                 break;

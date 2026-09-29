@@ -131,7 +131,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) => IssueBlocked(issue, elapsed);
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed) =>
         IssueFailedCore(issue, elapsed);
-    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) => IssueFailed(issue, elapsed);
+    public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
+        IssueFailedCore(issue, elapsed, details);
 
     public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed) => IssueCompleted(issue, elapsed);
     public void IssueCompleted(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
@@ -141,7 +142,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         IssueBlocked(issue, elapsed);
     public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed) => IssueFailed(issue, elapsed);
     public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
-        IssueFailed(issue, elapsed);
+        IssueFailed(issue, elapsed, details);
 
     private void IssueCompletedCore(GitHubIssue issue, TimeSpan elapsed) =>
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · completed · {FormatDuration(elapsed)}", ConsoleColor.Green, "✓");
@@ -149,6 +150,10 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · blocked · {FormatDuration(elapsed)}", ConsoleColor.Yellow, "⚠");
     private void IssueFailedCore(GitHubIssue issue, TimeSpan elapsed) =>
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · failed · {FormatDuration(elapsed)}", ConsoleColor.Red, "✗", _errorWriter);
+    private void IssueFailedCore(GitHubIssue issue, TimeSpan elapsed, string details) =>
+        WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · failed · {FormatDuration(elapsed)}" +
+            (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {details}"),
+            ConsoleColor.Red, "✗", _errorWriter);
 
     public async Task<T> RunProgressAsync<T>(string label, Func<Task<T>> operation, Func<T, string>? completion = null,
         Func<T, bool>? succeeded = null, Func<T, bool>? warning = null,

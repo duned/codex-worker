@@ -71,10 +71,14 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
 
                 await git.VerifyCodexStateAsync(ct);
                 var failure = validationResult.Failure!;
+                var failureSummary = failure.ToSummary();
+                if (repairs.Count > 0)
+                    repairs[^1] = repairs[^1] with { ValidationAfterRepair = failureSummary };
                 if (repairAttempts >= config.Validation.MaxFixAttempts)
                     return await CleanupOutcomeAsync(context, IssueOutcomeKind.Failed,
                         new IssueExecutionReport(implementationSummary, repairs, FinalValidationFailure: failure.Command,
-                            Failure: $"Validation failed after {repairAttempts} repair attempt(s)."), ct);
+                            Failure: $"Validation failed after {repairAttempts} repair attempt(s).",
+                            FinalValidationDiagnostics: failureSummary, FinalValidationExitCode: failure.ExitCode), ct);
 
                 repairAttempts++;
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
@@ -87,7 +91,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 if (outcome.Status is "blocked" or "failed")
                 {
                     repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                        outcome.Summary, false));
+                        outcome.Summary, false, failureSummary));
                     return await CleanupOutcomeAsync(context,
                         outcome.Status == "blocked" ? IssueOutcomeKind.Blocked : IssueOutcomeKind.Failed,
                         new IssueExecutionReport(implementationSummary, repairs,
@@ -95,7 +99,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                             Failure: outcome.Status == "failed" ? outcome.Summary : null), ct);
                 }
                 repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                    outcome.Summary, false));
+                    outcome.Summary, false, failureSummary));
                 await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
             }
 
@@ -159,14 +163,23 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 await git.DiscardUncommittedIssueChangesAsync(ct);
         }
         finally { _repositoryGate.Release(); }
-        await SaveHistoryAsync(CreateEntry(context.Execution, report, null, null) with
+        var completedReport = report with
+        {
+            RecoveryBranch = recovery?.Branch,
+            WorkspacePreserved = recovery is not null,
+            RetryAvailable = recovery is not null,
+            SecretValues = config.Environment.Variables.Values.ToArray()
+        };
+        var historyFailure = completedReport.FinalValidationDiagnostics is null ? null :
+            $"{completedReport.Failure}\n{completedReport.FinalValidationDiagnostics}";
+        await SaveHistoryAsync(CreateEntry(context.Execution, completedReport, null, historyFailure) with
         {
             RecoveryState = recovery is not null ? "recoverable" : kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked ? "cleaned-no-changes" : null,
             RecoveryBaseCommit = recovery?.BaseCommit,
             RecoveryStatus = recovery?.StatusSummary,
             RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)
         }, ct);
-        return new IssueProcessingResult(kind, report);
+        return new IssueProcessingResult(kind, completedReport);
     }
 
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
