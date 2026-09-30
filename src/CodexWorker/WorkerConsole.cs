@@ -113,16 +113,10 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     {
         _waiting = false;
         WriteLine(ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId), ConsoleColor.Cyan, "▶");
-        if (execution.AttemptNumber > 1)
+        if (execution.AttemptNumber > 1 && execution.RetryOfExecutionId is { } previousId)
         {
             var mode = execution.Resumed ? "resume" : "restart";
-            var previous = execution.RetryOfExecutionId is { } previousId
-                ? $" · {(execution.Resumed ? "resuming" : "after")} execution {ExecutionFormatting.Display(previousId)}"
-                : "";
-            var history = execution.RetryOfExecutionId is { } historyId
-                ? $" · Attempt {execution.AttemptNumber} · {mode} · execution {ExecutionFormatting.ShortId(execution.ExecutionId)} · previous {ExecutionFormatting.ShortId(historyId)}"
-                : "";
-            WriteLine($"Retry {execution.AttemptNumber} · {mode}{previous}{history}",
+            WriteLine($"Attempt {execution.AttemptNumber} · {mode} from [{ExecutionFormatting.ShortId(previousId)}]",
                 ConsoleColor.DarkGray, "↳");
         }
     }
@@ -130,7 +124,14 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>
         IssueCompletedCore(issue, elapsed);
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, Guid executionId) =>
-        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · completed · {FormatDuration(elapsed)} (Issue · {IssueFormatting.Display(issue)} · completed)", ConsoleColor.Green, "✓");
+        IssueCompleted(issue, elapsed, executionId, 1, null);
+    public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, Guid executionId, int attemptNumber, Guid? retryOfExecutionId)
+    {
+        var lineage = attemptNumber > 1 && retryOfExecutionId is { } previousId
+            ? $" (Attempt {attemptNumber} · from [{ExecutionFormatting.ShortId(previousId)}])"
+            : "";
+        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · completed · {FormatDuration(elapsed)}{lineage}", ConsoleColor.Green, "✓");
+    }
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) => IssueCompleted(issue, elapsed);
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed) =>
         IssueBlockedCore(issue, elapsed);

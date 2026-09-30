@@ -11,9 +11,10 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
-    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null)
+    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null)
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
+    private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     private readonly ConcurrentDictionary<int, byte> _activeIssues = new();
 
@@ -103,7 +104,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
-            Trace.WriteLine($"Scheduler · #{issue.Number} claimed · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}]");
+            _operationalLog($"Scheduler · #{issue.Number} claimed · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}]");
             _output.IssueStarted(config.Project.Name, issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, retryOf, issueKey, ct);
@@ -343,7 +344,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.CloseAsync(issue.Number, ct);
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, TelegramCompletion(result.Report), ct);
-                _output.IssueCompleted(issue, result.Report.Duration, result.Report.ExecutionId!.Value);
+                _output.IssueCompleted(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
+                    result.Report.AttemptNumber, result.Report.RetryOfExecutionId);
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);

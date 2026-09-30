@@ -333,7 +333,7 @@ public sealed class OperabilityTests
             new GitSettings { BaseBranch = "main" }, firstIssue, retryOfExecutionId: previousId, attemptNumber: 2, resumed: true);
         console.IssueStarted("Example", firstIssue, retry);
         Assert.Contains($"▶ Issue · [{ExecutionFormatting.ShortId(retry.ExecutionId)}] · Worker installation #62", writer.ToString());
-        Assert.Contains($"↳ Retry 2 · resume · resuming execution {ExecutionFormatting.Display(previousId)}", writer.ToString());
+        Assert.Contains($"↳ Attempt 2 · resume from {ExecutionFormatting.Display(previousId)}", writer.ToString());
 
         var report = new IssueExecutionReport(null, [], ExecutionId: retry.ExecutionId, AttemptNumber: 2,
             RetryOfExecutionId: previousId, Resumed: true).ToMarkdown(IssueOutcomeKind.Failed);

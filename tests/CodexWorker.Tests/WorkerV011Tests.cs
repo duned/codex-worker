@@ -6,6 +6,17 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Fact]
+    public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()
+    {
+        using var h = new Harness();
+
+        Assert.NotNull(await h.ProcessOneAsync());
+
+        Assert.Contains(h.OperationalMessages, message => message.StartsWith("Scheduler · #17 claimed · execution [", StringComparison.Ordinal));
+        Assert.DoesNotContain("Scheduler · #17 claimed", h.Output.ToString());
+    }
+
+    [Fact]
     public async Task ConcurrentPollingDoesNotDispatchAnIssueWhileItsExecutionIsActive()
     {
         using var historyDatabase = new TempHistoryDatabase();
@@ -440,13 +451,13 @@ public sealed class WorkerV011Tests
         h.GitHub.CancelWhenEmpty = false;
         var workerTask = h.Worker.RunAsync(h.Cancellation.Token);
 
-        await WaitForOutputAsync(h.Output, "Issue · Example task #17 · completed");
+        await WaitForOutputAsync(h.Output, "Example task #17 · completed");
         await WaitForOutputAsync(h.Output, "Waiting for work... 00:00");
         h.Cancellation.Cancel();
         await workerTask;
 
         var output = h.Output.ToString();
-        var completed = output.IndexOf("Issue · Example task #17 · completed", StringComparison.Ordinal);
+        var completed = output.IndexOf("Example task #17 · completed", StringComparison.Ordinal);
         var idle = output.IndexOf("Waiting for work...", completed, StringComparison.Ordinal);
         var stopped = output.IndexOf("■ Worker stopped.", StringComparison.Ordinal);
         Assert.True(completed >= 0 && idle > completed && stopped > idle, output);
@@ -596,8 +607,9 @@ public sealed class WorkerV011Tests
         Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == first.ExecutionId).State);
         Assert.Equal("Completed", retry.State);
         Assert.True(h.Git.LastResume);
-        Assert.Contains($"Attempt 2 · resume · execution {retry.ExecutionId.ToString("N")[..8]}", h.Output.ToString());
-        Assert.Contains($"previous {first.ExecutionId.ToString("N")[..8]}", h.Output.ToString());
+        Assert.Contains($"↳ Attempt 2 · resume from [{first.ExecutionId.ToString("N")[..8]}]", h.Output.ToString());
+        Assert.Contains($"(Attempt 2 · from [{first.ExecutionId.ToString("N")[..8]}])", h.Output.ToString());
+        Assert.DoesNotContain($"execution {retry.ExecutionId.ToString("N")[..8]}", h.Output.ToString());
         File.Delete(database);
     }
 
@@ -618,6 +630,7 @@ public sealed class WorkerV011Tests
         public Worker Worker { get; }
         public StringWriter Output { get; } = new();
         public StringWriter ErrorOutput { get; } = new();
+        public List<string> OperationalMessages { get; } = [];
         private readonly TelegramNotifier _telegram;
         private readonly HttpClient? _telegramClient;
         private readonly StubTelegramHandler? _telegramHandler;
@@ -646,7 +659,8 @@ public sealed class WorkerV011Tests
                 _telegram = new TelegramNotifier(true, "fake-token", "fake-chat", _telegramClient, output);
             }
             else _telegram = new TelegramNotifier(false, output);
-            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history);
+            Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history,
+                operationalLog: OperationalMessages.Add);
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];

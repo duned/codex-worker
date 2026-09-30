@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace CodexWorker;
 
 /// <summary>Global host with bounded execution concurrency across independently configured projects.</summary>
@@ -9,16 +7,18 @@ public sealed class WorkerHost
     private readonly IReadOnlyList<(string Path, WorkerConfiguration Configuration)> _projects;
     private readonly WorkerConsole _output;
     private readonly TimeProvider _timeProvider;
+    private readonly Action<string> _operationalLog;
     private readonly ProcessRunner _runner = new();
 
     public WorkerHost(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null, Action<string>? operationalLog = null)
     {
         _global = global;
         _projects = projects;
         _output = output ?? new WorkerConsole();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _operationalLog = operationalLog ?? (_ => { });
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -219,6 +219,14 @@ public sealed class WorkerHost
             executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var executionToken = executionCancellation.Token;
             var scheduler = new ProjectScheduler(runtimes.Count);
+            var capacityLog = new SchedulerCapacityLog(_global.Worker.MaxParallelTasks, _operationalLog);
+            void ReportCapacity() => capacityLog.Report(active.Count, runtimes.Select(project =>
+                (project.Configuration.Project.Name,
+                    active.Values.Count(value => string.Equals(value.Configuration.Project.Name,
+                        project.Configuration.Project.Name, StringComparison.OrdinalIgnoreCase)),
+                    project.Configuration.Worker.MaxParallelTasks)));
+            ReportCapacity();
+            var idleHeartbeat = new IdleWorkerHeartbeat(_timeProvider.GetUtcNow());
             while (!ct.IsCancellationRequested)
             {
                 var runtimeVersion = runtimeReadModel.Registry.Version;
@@ -242,6 +250,7 @@ public sealed class WorkerHost
                     await completed;
                     active.Remove(completed);
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
+                    ReportCapacity();
                     runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
                     Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                 }
@@ -296,6 +305,8 @@ public sealed class WorkerHost
                         .SelectMany(project => WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
                         .Distinct().ToArray());
                     scheduler.Reconfigure(runtimes.Count);
+                    capacityLog.Reconfigure(_global.Worker.MaxParallelTasks);
+                    ReportCapacity();
                 }
 
                 var foundWork = false;
@@ -319,7 +330,6 @@ public sealed class WorkerHost
                 }
                 while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
-                    Trace.WriteLine($"Scheduler · global {active.Count}/{_global.Worker.MaxParallelTasks}");
                     if (_global.Projects.Ownership == "managed")
                     {
                         var projectLifecycles = runtimeReadModel.Registry.Status().ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
@@ -387,6 +397,7 @@ public sealed class WorkerHost
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
                         }
                         active.Add(assignedExecution, assignedProject);
+                        ReportCapacity();
                         leaseRenewals.Add(assignedExecution, (leaseStop, leaseRenewal));
                         Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
@@ -400,7 +411,6 @@ public sealed class WorkerHost
                         var project = runtimes[index];
                         var projectActive = active.Values.Count(activeProject => string.Equals(activeProject.Configuration.Project.Name,
                             project.Configuration.Project.Name, StringComparison.OrdinalIgnoreCase));
-                        Trace.WriteLine($"Scheduler · global {active.Count}/{_global.Worker.MaxParallelTasks} · {project.Configuration.Project.Name} {projectActive}/{project.Configuration.Worker.MaxParallelTasks}");
                         if (projectActive >= project.Configuration.Worker.MaxParallelTasks) continue;
                         if (!runtimeReadModel.Registry.TryReserve(project.Configuration.Project.Name, project.Configuration)) continue;
                         activeProject = project.Configuration.Project.Name;
@@ -411,6 +421,7 @@ public sealed class WorkerHost
                         safeToStop = true;
                         if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }
                         active.Add(execution, project);
+                        ReportCapacity();
                         Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", "Execution claimed.", project.Configuration.Project.Name);
                         scheduler.Selected(index);
@@ -436,6 +447,7 @@ public sealed class WorkerHost
                 }
                 safeToStop = true;
                 _output.Waiting();
+                idleHeartbeat.EmitIfDue(_timeProvider.GetUtcNow(), _operationalLog);
                 if (!foundWork)
                 {
                     try { await Task.Delay(TimeSpan.FromSeconds(_global.Worker.PollingSeconds), ct); }
@@ -654,7 +666,7 @@ public sealed class WorkerHost
         if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
             repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
-            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server), codex, github, repositoryGate);
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog), codex, github, repositoryGate);
     }
 
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,

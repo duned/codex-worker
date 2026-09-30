@@ -1,6 +1,7 @@
 namespace CodexWorker;
 
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 public static class Program
 {
@@ -43,7 +44,7 @@ public static class Program
             context.Cancel = true;
             shutdown.Cancel();
         });
-        try { await new WorkerHost(global, projects, output).RunAsync(shutdown.Token); return ProcessExitCodes.Success; }
+        try { await new WorkerHost(global, projects, output, operationalLog: message => Trace.WriteLine(message)).RunAsync(shutdown.Token); return ProcessExitCodes.Success; }
         catch (Exception ex) { return ExitCodeFor(ex); }
     }
 
