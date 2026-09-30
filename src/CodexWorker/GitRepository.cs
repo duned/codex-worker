@@ -17,6 +17,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private string? _startingCommit;
     private Guid? _executionId;
     private FileStream? _workerLock;
+    private bool _implementationAlreadyCommitted;
+    private bool _forcePostRebaseValidation;
 
     public void Dispose() => _workerLock?.Dispose();
     public string ExecutionDirectory => _executionDirectory ?? directory;
@@ -201,6 +203,33 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not prepare Git checkout for Issue #{issue.Number}: {ex.Message}", ex); }
+    }
+
+    public async Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+    {
+        try
+        {
+            if (source.State != "IntegrationConflict" || source.RecoveryState != "integration-conflict" ||
+                string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
+                throw new WorkerInfrastructureException("Integration recovery requires a completed integration-conflict execution with preserved commit metadata.");
+            await EnsureOriginAsync(ct);
+            await EnsureCleanAsync("before integration recovery", ct);
+            await ValidateBranchRefAsync(settings.BaseBranch, ct);
+            await GitAsync(["switch", "--", settings.BaseBranch], ct);
+            await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
+            await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
+            var sourcePath = Path.Combine(Path.GetFullPath(worktreeRoot), source.ExecutionId.ToString("N"));
+            await ValidateRecoveryWorkspaceAsync(sourcePath, source, ct);
+            _executionDirectory = sourcePath;
+            _featureBranch = source.FeatureBranch;
+            _completedBranch = CompletedBranchName(settings, new GitHubIssue(source.IssueNumber, source.IssueTitle, "", source.StartedAtUtc));
+            _startingCommit = source.RecoveryBaseCommit;
+            _executionId = source.ExecutionId;
+            _implementationAlreadyCommitted = true;
+            _forcePostRebaseValidation = true;
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely prepare integration recovery for Issue #{source.IssueNumber}: {ex.Message}", ex); }
     }
 
     public async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
@@ -452,21 +481,23 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await EnsureWorktreeOwnedAsync(ct);
             var currentCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (currentCommit != _startingCommit) throw new WorkerInfrastructureException("Codex changed Git history; worker requires the original feature branch history.");
-            await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
-            var staged = await GitAtAsync(ExecutionDirectory, ["diff", "--cached", "--quiet"], ct, [0, 1]);
-            if (staged.ExitCode == 0)
+            if (!_implementationAlreadyCommitted)
             {
-                var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
-                if (!string.IsNullOrWhiteSpace(status)) throw new WorkerInfrastructureException("Unexpected unstaged or untracked changes remain after staging; preserving checkout.");
-                await RemoveExecutionWorktreeAsync(ct);
-                await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
-                _featureBranch = null;
-                _executionDirectory = null;
-                _executionId = null;
-                return new GitIntegrationResult(false, "No code changes were required; the Issue was completed without a commit or integration.");
+                await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
+                var staged = await GitAtAsync(ExecutionDirectory, ["diff", "--cached", "--quiet"], ct, [0, 1]);
+                if (staged.ExitCode == 0)
+                {
+                    var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+                    if (!string.IsNullOrWhiteSpace(status)) throw new WorkerInfrastructureException("Unexpected unstaged or untracked changes remain after staging; preserving checkout.");
+                    await RemoveExecutionWorktreeAsync(ct);
+                    await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
+                    _featureBranch = null;
+                    _executionDirectory = null;
+                    _executionId = null;
+                    return new GitIntegrationResult(false, "No code changes were required; the Issue was completed without a commit or integration.");
+                }
+                await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
             }
-
-            await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Implement #{issue.Number}: {issue.Title}"], ct);
             var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (settings.AutoMerge)
             {
@@ -480,7 +511,17 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                     await RebaseForIntegrationAsync(issue.Number, resolveConflict, ct);
                     var validation = await validateAfterRebase(ct);
                     if (!validation.Succeeded)
-                        throw new WorkerInfrastructureException($"Validation failed after rebasing Issue #{issue.Number}; integration was stopped. {validation.Failure!.ToSummary()}");
+                    {
+                        var message = $"Validation failed after rebasing Issue #{issue.Number}; integration was stopped. {validation.Failure!.ToSummary()}";
+                        if (_forcePostRebaseValidation) throw new GitIntegrationConflictException(message);
+                        throw new WorkerInfrastructureException(message);
+                    }
+                }
+                else if (_forcePostRebaseValidation)
+                {
+                    var validation = await validateAfterRebase(ct);
+                    if (!validation.Succeeded)
+                        throw new GitIntegrationConflictException($"Validation failed during Issue #{issue.Number} integration recovery; integration was stopped. {validation.Failure!.ToSummary()}");
                 }
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);

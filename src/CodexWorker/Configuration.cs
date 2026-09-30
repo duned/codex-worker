@@ -44,8 +44,9 @@ public sealed class WorkerConfiguration
         Required(GitHub.BlockedLabel, "github.blockedLabel", errors);
         Required(GitHub.FailedLabel, "github.failedLabel", errors);
         Required(GitHub.IntegrationConflictLabel, "github.integrationConflictLabel", errors);
+        Required(GitHub.IntegrationRecoveryLabel, "github.integrationRecoveryLabel", errors);
         Required(GitHub.DoneLabel, "github.doneLabel", errors);
-        var labels = new[] { GitHub.ReadyLabel, GitHub.WorkingLabel, GitHub.BlockedLabel, GitHub.FailedLabel, GitHub.IntegrationConflictLabel, GitHub.DoneLabel };
+        var labels = new[] { GitHub.ReadyLabel, GitHub.WorkingLabel, GitHub.BlockedLabel, GitHub.FailedLabel, GitHub.IntegrationConflictLabel, GitHub.IntegrationRecoveryLabel, GitHub.DoneLabel };
         if (labels.Distinct(StringComparer.OrdinalIgnoreCase).Count() != labels.Length)
             errors.Add("github labels must be distinct.");
         Required(Codex.InstructionsFile, "codex.instructionsFile", errors);
@@ -269,6 +270,7 @@ public sealed class GitHubSettings
     public string BlockedLabel { get; set; } = "";
     public string FailedLabel { get; set; } = "";
     public string IntegrationConflictLabel { get; set; } = "integration-conflict";
+    public string IntegrationRecoveryLabel { get; set; } = "integration-recovery";
     public string DoneLabel { get; set; } = "";
 
     [YamlIgnore]
@@ -280,6 +282,7 @@ public sealed class GitHubSettings
         new(BlockedLabel, "D93F0B", "Issue is blocked and needs human input"),
         new(FailedLabel, "B60205", "Codex Worker could not complete the Issue"),
         new(IntegrationConflictLabel, "D4C5F9", "Implementation is complete; Git integration needs recovery"),
+        new(IntegrationRecoveryLabel, "5319E7", "Request integration recovery for a preserved implementation"),
         new(DoneLabel, "0E8A16", "Issue completed by Codex Worker")
     ];
 }

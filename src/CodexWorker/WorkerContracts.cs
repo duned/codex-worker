@@ -43,6 +43,8 @@ public interface IGitRepository : IDisposable
     Task InitializeAsync(CancellationToken ct);
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct);
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct) => StartIssueAsync(executionId, issue, ct);
+    Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
     Task VerifyCodexStateAsync(CancellationToken ct);
     Task DiscardUncommittedIssueChangesAsync(CancellationToken ct);
     async Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)

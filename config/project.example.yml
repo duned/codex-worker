@@ -22,6 +22,8 @@ github:
   blockedLabel: codex-blocked
   failedLabel: codex-failed
   integrationConflictLabel: codex-integration-conflict
+  # Apply this label to an integration-conflict Issue to resume integration only.
+  integrationRecoveryLabel: codex-integration-recovery
   doneLabel: codex-done
 
 # Maximum Issues this project may execute at once. Defaults to 1; the global

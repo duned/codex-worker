@@ -33,11 +33,11 @@ public sealed class GitHubLabelTests
     }
 
     [Fact]
-    public async Task CreatesAllSixCustomizedLabelsWhenNoneExist()
+    public async Task CreatesAllSevenCustomizedLabelsWhenNoneExist()
     {
         var fixture = new LabelCommandFixture();
         await fixture.EnsureAsync();
-        Assert.Equal(new[] { "custom-ready", "custom-working", "custom-blocked", "custom-failed", "custom-integration-conflict", "custom-done" }, fixture.Created);
+        Assert.Equal(new[] { "custom-ready", "custom-working", "custom-blocked", "custom-failed", "custom-integration-conflict", "custom-integration-recovery", "custom-done" }, fixture.Created);
         Assert.All(fixture.Created, name => Assert.Contains(name, fixture.Required.Select(x => x.Name)));
     }
 
@@ -83,6 +83,7 @@ public sealed class GitHubLabelTests
         new("custom-ready", "1D76DB", "ready"), new("custom-working", "FBCA04", "working"),
         new("custom-blocked", "D93F0B", "blocked"), new("custom-failed", "B60205", "failed"),
         new("custom-integration-conflict", "D4C5F9", "integration conflict"),
+        new("custom-integration-recovery", "5319E7", "integration recovery"),
         new("custom-done", "0E8A16", "done")
     ];
 

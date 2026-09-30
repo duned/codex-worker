@@ -274,6 +274,49 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task IntegrationRecoveryReusesPreservedImplementationAndValidatesBeforeCompleting()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var executionId = Guid.NewGuid();
+        await original.StartIssueAsync(executionId, fixture.Issue, CancellationToken.None);
+        var directory = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(directory, "base.txt"), "implemented result");
+        await fixture.AdvanceBaseAsync("base.txt", "new base value");
+        await Assert.ThrowsAsync<GitIntegrationConflictException>(() => original.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        var preserved = await original.PreserveIntegrationConflictAsync(CancellationToken.None);
+        Assert.NotNull(preserved);
+        var source = new ExecutionHistoryEntry(executionId, "demo", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "implementation complete", "passed", 0, [], preserved.BaseCommit, null, null, null,
+            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit,
+            RecoveryStatus: preserved.StatusSummary);
+
+        using var recovery = original.CreateExecutionRepository();
+        await recovery.StartIntegrationRecoveryAsync(source, CancellationToken.None);
+        var resolverCalled = false;
+        var validationCalled = false;
+        var result = await recovery.CommitAndIntegrateAsync(fixture.Issue, _ =>
+        {
+            validationCalled = true;
+            return Task.FromResult(ValidationResult.Success);
+        }, async (_, _) =>
+        {
+            resolverCalled = true;
+            await File.WriteAllTextAsync(Path.Combine(directory, "base.txt"), "implemented result");
+            return true;
+        }, CancellationToken.None);
+
+        Assert.True(result.HasChanges);
+        Assert.True(resolverCalled);
+        Assert.True(validationCalled);
+        Assert.Equal("implemented result", await fixture.Git("show", "main:base.txt"));
+        Assert.False(Directory.Exists(directory));
+    }
+
+    [Fact]
     public async Task CodexResolvedRebaseConflictContinuesAndValidatesBeforeIntegration()
     {
         using var fixture = await RepositoryFixture.CreateAsync();

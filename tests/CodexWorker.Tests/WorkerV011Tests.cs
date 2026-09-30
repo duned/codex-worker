@@ -542,7 +542,7 @@ public sealed class WorkerV011Tests
 
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.RunAsync(h.Cancellation.Token));
 
-        Assert.Equal(1, h.GitHub.FindCalls);
+        Assert.Equal(2, h.GitHub.FindCalls);
         Assert.Contains("ready->working", h.GitHub.Labels);
         Assert.DoesNotContain("working->failed", h.GitHub.Labels);
         Assert.Equal(0, h.Git.Cleanups);
@@ -769,6 +769,7 @@ public sealed class WorkerV011Tests
         {
             FindCalls++;
             events.Add("find");
+            if (label != "ready") return Task.FromResult<GitHubIssue?>(null);
             if (CancelDuringQuery)
             {
                 cancellation.Cancel();

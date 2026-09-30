@@ -178,7 +178,9 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
             GitHub = new GitHubSettings
             {
                 ReadyLabel = local.GitHub.ReadyLabel, WorkingLabel = local.GitHub.WorkingLabel,
-                BlockedLabel = local.GitHub.BlockedLabel, FailedLabel = local.GitHub.FailedLabel, DoneLabel = local.GitHub.DoneLabel
+                BlockedLabel = local.GitHub.BlockedLabel, FailedLabel = local.GitHub.FailedLabel,
+                IntegrationConflictLabel = local.GitHub.IntegrationConflictLabel,
+                IntegrationRecoveryLabel = local.GitHub.IntegrationRecoveryLabel, DoneLabel = local.GitHub.DoneLabel
             },
             Codex = new CodexSettings
             {

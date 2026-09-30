@@ -37,6 +37,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     /// <summary>Claims the next eligible Issue and returns its independent execution task, if one was claimed.</summary>
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
+        var recoveryExcluded = new HashSet<int>();
+        while (true)
+        {
+            GitHubIssue? recoveryIssue;
+            try { recoveryIssue = await github.FindOldestReadyAsync(config.GitHub.IntegrationRecoveryLabel, recoveryExcluded, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
+            if (recoveryIssue is null || !recoveryExcluded.Add(recoveryIssue.Number)) break;
+            var recovery = await ClaimIntegrationRecoveryAsync(recoveryIssue, ct);
+            if (recovery is not null) return recovery;
+        }
         var excluded = new HashSet<int>();
         while (true)
         {
@@ -46,6 +56,49 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             if (issue is null || !excluded.Add(issue.Number)) return null;
             var execution = await ClaimIssueAsync(issue, null, null, null, ct);
             if (execution is not null) return execution;
+        }
+    }
+
+    private async Task<Task<IssueProcessingResult?>?> ClaimIntegrationRecoveryAsync(GitHubIssue issue, CancellationToken ct)
+    {
+        var issueKey = issue.Number;
+        if (!_activeIssues.TryAdd(issueKey, 0)) return null;
+        try
+        {
+            ExecutionHistoryEntry[] prior = history is null ? [] : (await history.ReadAllAsync(ct)).Where(entry =>
+                entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number &&
+                entry.State == "IntegrationConflict" && entry.RecoveryState == "integration-conflict")
+                .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
+            if (prior.Length == 0)
+            {
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                return null;
+            }
+            var allHistory = await history!.ReadAllAsync(ct);
+            var source = prior[0];
+            while (source.RetryOfExecutionId is { } parentId)
+            {
+                var parent = allHistory.FirstOrDefault(entry => entry.ExecutionId == parentId);
+                if (parent is null || parent.RecoveryState != "integration-conflict") break;
+                source = parent;
+            }
+            var execution = WorkerExecution.Create(config.Project, config.Git, issue,
+                retryOfExecutionId: source.ExecutionId, attemptNumber: allHistory.Where(entry =>
+                    entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)
+                    .Select(entry => entry.AttemptNumber).DefaultIfEmpty(0).Max() + 1,
+                featureBranchOverride: source.FeatureBranch);
+            await CreateHistoryAsync(execution, ct);
+            await _output.StopWaitingAsync();
+            await TransitionAsync(execution, ExecutionState.Claimed, ct);
+            await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
+            await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
+            _output.IssueStarted(config.Project.Name, issue, execution);
+            return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true);
+        }
+        catch
+        {
+            _activeIssues.TryRemove(issueKey, out _);
+            throw;
         }
     }
 
@@ -129,12 +182,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     }
 
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
-        int issueKey, CancellationToken ct)
+        int issueKey, CancellationToken ct, bool integrationRecovery = false)
     {
         try
         {
             var timer = Stopwatch.StartNew();
-            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf), ct);
+            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,

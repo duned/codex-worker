@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 namespace CodexWorker;
 
 /// <summary>Explicit identity and Issue input for one execution attempt.</summary>
-public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Issue, ExecutionHistoryEntry? RetryOf = null);
+public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Issue, ExecutionHistoryEntry? RetryOf = null,
+    bool IntegrationRecovery = false);
 
 /// <summary>
 /// Runs the repository workspace, Codex, validation, repair, and integration lifecycle for one execution.
@@ -23,6 +24,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         try
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
+            if (context.IntegrationRecovery)
+                return await RunIntegrationRecoveryAsync(context, ct);
             await _repositoryGate.WaitAsync(ct);
             try
             {
@@ -189,6 +192,63 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 ex is PreExecutionInfrastructureException ? null : "uncertain");
             throw;
         }
+    }
+
+    private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, CancellationToken ct)
+    {
+        var execution = context.Execution;
+        var issue = context.Issue;
+        var source = context.RetryOf ?? throw new WorkerInfrastructureException("Integration recovery has no source execution history.");
+        await _repositoryGate.WaitAsync(ct);
+        try { await git.StartIntegrationRecoveryAsync(source, ct); }
+        finally { _repositoryGate.Release(); }
+        await TransitionAsync(execution, ExecutionState.Integrating, ct);
+        await _repositoryGate.WaitAsync(ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
+                return new IssueProcessingResult(IssueOutcomeKind.Superseded,
+                    new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} was superseded because the Issue is closed or a later attempt completed.", []));
+            var integration = await output.RunProgressAsync(TaskLabel(issue, "Integration recovery", execution), () =>
+                git.CommitAndIntegrateAsync(issue,
+                    token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase", execution),
+                        () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),
+                        x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token),
+                    async (details, token) =>
+                    {
+                        var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
+                            () => codex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
+                            x => x.Status, x => x.Status == "success", ct: token);
+                        return resolved.Status == "success";
+                    }, ct), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
+            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.", [], Integration: integration);
+            if (history is not null) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
+            return new IssueProcessingResult(IssueOutcomeKind.Succeeded, report);
+        }
+        catch (GitIntegrationConflictException ex)
+        {
+            var recovery = await git.PreserveIntegrationConflictAsync(ct);
+            if (history is not null && recovery is not null)
+                await history.UpdateIntegrationRecoverySnapshotAsync(source.ExecutionId, recovery.BaseCommit,
+                    recovery.StatusSummary, DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays), ct);
+            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} did not complete.", [],
+                Failure: ex.Message, FailureCategory: "Integration recovery conflict", RecoveryBranch: recovery?.Branch,
+                WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
+                SecretValues: config.Environment.Variables.Values.ToArray());
+            await SaveHistoryAsync(CreateEntry(execution, report, null, ex.Message) with
+            {
+                ValidationOutcome = "not run: integration recovery conflict",
+                CommitSha = recovery?.BaseCommit,
+                IntegrationBranch = config.Git.BaseBranch,
+                RecoveryState = recovery is null ? "integration-conflict-unavailable" : "integration-conflict",
+                RecoveryBaseCommit = recovery?.BaseCommit,
+                RecoveryStatus = recovery?.StatusSummary,
+                RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)
+            }, ct);
+            return new IssueProcessingResult(IssueOutcomeKind.IntegrationConflict, report);
+        }
+        finally { _repositoryGate.Release(); }
     }
 
     private async Task<IssueProcessingResult> CleanupOutcomeAsync(ExecutionContext context, IssueOutcomeKind kind,

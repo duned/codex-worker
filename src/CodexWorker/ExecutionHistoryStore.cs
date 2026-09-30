@@ -117,6 +117,24 @@ public sealed class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update execution recovery metadata", ex); }
     }
 
+    public async Task UpdateIntegrationRecoverySnapshotAsync(Guid executionId, string commit, string status,
+        DateTimeOffset expiresAtUtc, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE executions SET recovery_state='integration-conflict', recovery_base_commit=$commit, recovery_status=$status, recovery_expires_at_utc=$expires WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$commit", commit);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$expires", expiresAtUtc.ToString("O"));
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException($"Execution history row was not found for {executionId}.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("update integration recovery snapshot", ex); }
+    }
+
     public async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);

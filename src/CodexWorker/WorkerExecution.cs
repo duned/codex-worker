@@ -8,7 +8,7 @@ public sealed class WorkerExecution
         {
             [ExecutionState.Created] = [ExecutionState.Claimed, ExecutionState.Cancelled, ExecutionState.InfrastructureFailure],
             [ExecutionState.Claimed] = [ExecutionState.Preparing, ExecutionState.InfrastructureFailure],
-            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.InfrastructureFailure],
+            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.Integrating, ExecutionState.InfrastructureFailure],
             [ExecutionState.Implementing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Validating] = [ExecutionState.Repairing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Repairing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
@@ -62,10 +62,11 @@ public sealed class WorkerExecution
 
     public static WorkerExecution Create(ProjectSettings project, GitSettings git, GitHubIssue issue,
         DateTimeOffset? startedAtUtc = null, Guid? retryOfExecutionId = null, int attemptNumber = 1, bool resumed = false,
-        string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null)
+        string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null,
+        string? featureBranchOverride = null)
     {
-        var featureBranch = GitRepository.FeatureBranchName(git, issue);
-        if (attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
+        var featureBranch = featureBranchOverride ?? GitRepository.FeatureBranchName(git, issue);
+        if (featureBranchOverride is null && attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
         return new(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
         retryOfExecutionId, attemptNumber, resumed, serverExecutionId, assignmentId, ownershipGeneration);
     }
