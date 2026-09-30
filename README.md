@@ -161,14 +161,15 @@ Management clients can create credentials at `POST /api/v1/credentials`, list me
 
 ### Installing and enrolling a Linux Worker
 
-The supported bootstrap package is in `packaging/linux`. It installs a published Worker build and systemd unit without installing project-specific tools or runtimes. A fresh Ubuntu/Linux host needs systemd, .NET 10 runtime for a framework-dependent publish, Git, GitHub CLI (`gh`), Codex CLI with its authentication configured for the service account, outbound HTTPS access to the Server and configured GitHub/Git remotes, and a configured Worker registration token. Git, `gh`, and Codex are required for normal execution readiness; tools such as Node.js, Docker, PostgreSQL, and .NET SDKs used by individual projects are discovered and can be handled by Server provisioning policy. Do not preinstall project-specific dependencies as part of Worker bootstrap.
-
-Publish the Worker for the host architecture with an apphost, then install it:
+The supported installer downloads a checksum-verified, self-contained Linux x64 Worker release and installs its systemd unit. It supports Ubuntu 24.04 x86_64 and does not need a source checkout, .NET SDK, or .NET runtime. Install the latest release or pin an explicit version:
 
 ```sh
-dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self-contained false -o publish
-sudo packaging/linux/install.sh publish
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-worker.sh | sudo bash
+# Or pin a release:
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-worker.sh | sudo bash -s -- --version 0.13.0
 ```
+
+This installs only the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are discovered and can be handled through Server provisioning policy; they are not installer prerequisites.
 
 The installer is repeatable and preserves existing configuration and environment files. It creates the `codex-worker` system account and uses these locations:
 
@@ -195,12 +196,16 @@ On startup, the Worker loads or atomically creates its random identity at the co
 
 The unit runs as the unprivileged `codex-worker` account, starts after network availability, starts on reboot when enabled, restarts after runtime failures, and maps SIGTERM to graceful shutdown. Exit status 2 prevents a deterministic configuration or startup failure from entering a restart loop. Back up `/var/lib/codex-worker` to preserve identity, history, and recoverable execution state across host replacement; restoring the identity reconnects the replacement to the same Server Worker record.
 
-For a controlled Linux Worker update, publish the next build and use [`packaging/linux/update-worker.sh`](packaging/linux/update-worker.sh) instead of copying files into a running service. The updater stages and checks the new apphost first, requests the loopback API to stop new claims, waits up to five minutes for active executions to finish, then stops systemd and swaps the binaries. It restarts the service and checks `/api/status` for running and ready state; if readiness fails it restores the previous binaries and preserves the failed release for inspection. The prior release is retained at `/opt/codex-worker.previous.*` after a successful update. The script expects the default loopback API URL; pass a different loopback URL as its second argument when configured. If a drain times out it cancels the drain and leaves the service and binaries unchanged.
+For a controlled Linux Worker update, use the installer with `--version VERSION`; it verifies the new release before switching binaries and preserves the previous release under `/opt/codex-worker.previous.*`. The local [`packaging/linux/update-worker.sh`](packaging/linux/update-worker.sh) remains available for operators publishing from a local build; it stages and checks the new apphost, requests the loopback API to stop new claims, waits up to five minutes for active executions to finish, and preserves the old binaries if readiness fails.
 
 ```sh
-dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self-contained false -o publish
+dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self-contained true -o publish
 sudo packaging/linux/update-worker.sh publish
 ```
+
+To uninstall, stop and disable the service, then remove `/etc/systemd/system/codex-worker.service` and run `systemctl daemon-reload`. Remove `/opt/codex-worker` and `/etc/codex-worker` only when the binaries and configuration are no longer needed. `/var/lib/codex-worker` contains the persistent Worker identity, execution history, project checkouts, and recovery state; back it up or remove it explicitly according to your retention needs. The installer does not delete backups or state.
+
+For troubleshooting, inspect `systemctl status codex-worker` and `journalctl -u codex-worker`. Installer failures identify the unsupported OS/architecture, missing utility, download, checksum, or extraction step. A failed update preserves the previous binaries and attempts to restore the prior service. Check release availability and outbound HTTPS access if downloads fail.
 
 Managed mode is opt-in in the global Worker YAML:
 

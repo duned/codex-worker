@@ -10,6 +10,8 @@ Group=codex-worker
 Environment=HOME=/var/lib/codex-worker
 EnvironmentFile=/etc/codex-worker/worker.env
 WorkingDirectory=/var/lib/codex-worker
+RuntimeDirectory=codex-worker
+RuntimeDirectoryMode=0750
 ExecStart=/opt/codex-worker/CodexWorker /etc/codex-worker/worker.yml
 Restart=on-failure
 RestartPreventExitStatus=2
