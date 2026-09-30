@@ -1,6 +1,6 @@
 namespace CodexWorker;
 
-/// <summary>A project execution failed before an execution workspace existed and was safely released.</summary>
+/// <summary>Issue preparation was safely rejected before an execution workspace was mutated.</summary>
 public sealed class PreExecutionInfrastructureException(string project, int issueNumber, Guid executionId, string reason, Exception? inner = null)
     : WorkerInfrastructureException(reason, inner)
 {
@@ -10,6 +10,9 @@ public sealed class PreExecutionInfrastructureException(string project, int issu
 }
 
 public sealed class ProjectCheckoutDirtyException(string message) : WorkerInfrastructureException(message);
+
+/// <summary>A deterministic Issue preparation rejection; no execution workspace was mutated.</summary>
+public sealed class IssuePreparationRejectedException(string message) : WorkerInfrastructureException(message);
 
 public interface IGitHubClient
 {

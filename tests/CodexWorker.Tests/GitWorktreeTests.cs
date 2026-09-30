@@ -132,7 +132,7 @@ public sealed class GitWorktreeTests
 
         using var retry = first.CreateExecutionRepository();
         var retryId = Guid.NewGuid();
-        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => retry.StartIssueAsync(retryId, fixture.Issue,
+        await Assert.ThrowsAsync<IssuePreparationRejectedException>(() => retry.StartIssueAsync(retryId, fixture.Issue,
             previous, true, 2, CancellationToken.None));
         Assert.False(Directory.Exists(Path.Combine(fixture.WorktreeRoot, retryId.ToString("N"))));
         Assert.True(Directory.Exists(Path.Combine(fixture.WorktreeRoot, firstId.ToString("N"))));

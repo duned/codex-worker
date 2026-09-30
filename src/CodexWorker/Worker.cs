@@ -86,6 +86,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue,
                     missingHistoryReason, ct);
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
             while (source.RetryOfExecutionId is { } parentId)
@@ -97,11 +98,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             var rejectionReason = await git.ValidateIntegrationRecoveryAsync(source, ct);
             if (rejectionReason is not null)
             {
-                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · integration recovery rejected · {rejectionReason}.";
+                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution {source.ExecutionId} · integration recovery rejected · {FailureDiagnosticRedactor.Redact(rejectionReason, config.Environment.Variables.Values.ToArray())}.";
                 _operationalLog(diagnostic);
                 _output.Warning(diagnostic);
                 await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue, rejectionReason, ct);
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
             source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
@@ -160,11 +162,14 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
             .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
-        var retryOf = issueHistory.FirstOrDefault()?.State is "Failed" or "Blocked" ? issueHistory[0] : null;
+        var latest = issueHistory.FirstOrDefault();
+        // Ready is an explicit request for new implementation after an integration conflict,
+        // including older rows that recorded the conflict as a failed task.
+        var freshAfterConflict = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
+            latest is not null && (latest.State == "IntegrationConflict" || latest.RecoveryState == "integration-conflict");
+        var retryOf = !freshAfterConflict && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
-        if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
-            throw new WorkerInfrastructureException($"Issue #{issue.Number} is configured to resume, but previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.");
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
             ownershipGeneration: ownershipGeneration);
@@ -177,6 +182,15 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         try
         {
+            if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
+            {
+                await RejectPreparationAsync(execution, issue, config.GitHub.ReadyLabel,
+                    $"Previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.", ct);
+                _activeIssues.TryRemove(issueKey, out _);
+                return serverExecutionId is null ? null : Task.FromResult<IssueProcessingResult?>(null);
+            }
+            if (freshAfterConflict)
+                _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · explicit ready after integration conflict starts a fresh execution; previous execution {latest!.ExecutionId} is preserved.");
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
@@ -219,8 +233,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
                 AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed };
-            if (result.Kind != IssueOutcomeKind.Superseded)
-                await ReportResultAsync(issue, result with { Report = report }, ct);
+            await ReportResultAsync(issue, result with { Report = report }, ct);
             await CompleteHistoryAsync(execution, report, result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
@@ -238,33 +251,59 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
-            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, "Cancellation interrupted execution.");
+            await ReportInterruptedExecutionAsync(execution, issue, "Cancellation interrupted execution.");
             throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
         }
-        catch (PreExecutionInfrastructureException)
+        catch (PreExecutionInfrastructureException ex)
         {
-            try
-            {
-                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.ReadyLabel, CancellationToken.None);
-            }
-            catch (Exception releaseError)
-            {
-                throw new WorkerInfrastructureException($"Project '{config.Project.Name}' failed preparing Issue #{issue.Number} before workspace creation, and the claimed Issue could not be safely released: {releaseError.Message}", releaseError);
-            }
-            var message = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] released to '{config.GitHub.ReadyLabel}' after pre-execution infrastructure failure.";
-            _operationalLog(message);
-            _output.Warning(message);
-            throw;
+            await RejectPreparationAsync(execution, issue, config.GitHub.WorkingLabel, ex.Message, CancellationToken.None);
+            return null;
         }
         catch (Exception ex)
         {
-            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
+            await ReportInterruptedExecutionAsync(execution, issue, ex.Message);
             throw;
         }
         finally
         {
             _activeIssues.TryRemove(issueKey, out _);
         }
+    }
+
+    private async Task ReportInterruptedExecutionAsync(WorkerExecution execution, GitHubIssue issue, string reason)
+    {
+        var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
+        if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, safeReason);
+        var diagnostic = $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · infrastructure failure · {safeReason}";
+        _operationalLog(diagnostic);
+        _output.Warning(diagnostic);
+        // Do not release the scheduler as a safe task failure. Remote reporting failure also
+        // propagates so the host stops with its capacity reservation intact.
+        await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
+        await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
+            $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
+            "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n", CancellationToken.None);
+        if (history is not null)
+        {
+            var entry = (await history.ReadAllAsync(CancellationToken.None)).Single(row => row.ExecutionId == execution.ExecutionId);
+            await ReportServerAsync(entry, execution.State, CancellationToken.None);
+        }
+    }
+
+    private async Task RejectPreparationAsync(WorkerExecution execution, GitHubIssue issue, string claimedLabel,
+        string reason, CancellationToken ct)
+    {
+        var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
+        await RecordInfrastructureFailureAsync(execution, safeReason);
+        var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · preparation rejected · {safeReason}";
+        _operationalLog(diagnostic);
+        _output.Warning(diagnostic);
+        // Remove eligibility before reporting so this Issue cannot repeatedly consume capacity.
+        // A failed GitHub update remains infrastructure failure: its remote state is uncertain.
+        await github.ReplaceLabelAsync(issue.Number, claimedLabel, config.GitHub.BlockedLabel, ct);
+        await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
+            $"### Preparation rejected\n\nExecution `{execution.ExecutionId}` could not start.\n\n{safeReason}\n\n### Recovery\n\n" +
+            $"- Inspect the previous execution and preserved workspace.\n- Correct the preparation problem or select `worker.retryMode: restart`.\n- Apply `{config.GitHub.ReadyLabel}` for a new attempt, or `{config.GitHub.IntegrationRecoveryLabel}` to recover a preserved integration conflict.\n", ct);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -347,7 +386,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             entry.Project.Equals(execution.Project, StringComparison.OrdinalIgnoreCase) &&
             entry.Repository.Equals(execution.Repository, StringComparison.OrdinalIgnoreCase) &&
             entry.IssueNumber == execution.IssueNumber && entry.ExecutionId != execution.ExecutionId).ToArray();
-        return !sameIssue.Any(entry => entry.State == "Completed" || entry.AttemptNumber > execution.AttemptNumber);
+        return !sameIssue.Any(entry => entry.AttemptNumber > execution.AttemptNumber ||
+            entry.State == "Completed" && entry.AttemptNumber >= execution.AttemptNumber);
     }
 
     private Task TransitionAsync(WorkerExecution execution, ExecutionState state, CancellationToken ct)
@@ -472,6 +512,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, conflictDetails);
                 break;
             case IssueOutcomeKind.Superseded:
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
+                    $"### Execution superseded\n\nExecution `{result.Report.ExecutionId}` did not integrate.\n\n{result.Report.Failure}\n\n" +
+                    "### Recovery\n\n- Inspect the later execution or closed Issue before requesting another attempt.\n", ct);
+                _operationalLog($"Execution {result.Report.ExecutionId} · Issue #{issue.Number} · superseded; integration skipped and workspace retained.");
+                _output.Warning($"Execution {result.Report.ExecutionId} · Issue #{issue.Number} · superseded; integration skipped and workspace retained.");
                 break;
         }
     }

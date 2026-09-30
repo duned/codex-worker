@@ -195,7 +195,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             {
                 if (retryOf is null || retryOf.State is not ("Failed" or "Blocked") || retryOf.RecoveryState != "recoverable" ||
                     string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit))
-                    throw new WorkerInfrastructureException("Retry resume was requested, but the previous failed execution has no complete recoverable-state metadata.");
+                    throw new IssuePreparationRejectedException("Retry resume was requested, but the previous failed execution has no complete recoverable-state metadata.");
                 await ValidateRecoveryWorkspaceAsync(Path.Combine(root, retryOf.ExecutionId.ToString("N")), retryOf, ct);
             }
             await GitAsync(["worktree", "add", "-b", _featureBranch, _executionDirectory, _startingCommit], ct);
@@ -258,33 +258,33 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         var root = Path.GetFullPath(worktreeRoot);
         var expectedPath = Path.GetFullPath(Path.Combine(root, recovery.ExecutionId.ToString("N")));
         if (!PathEquals(Path.GetFullPath(source), expectedPath))
-            throw new WorkerInfrastructureException("Persisted recovery path does not match its execution ID.");
+            throw new IssuePreparationRejectedException("Persisted recovery path does not match its execution ID.");
         var expectedBranch = FeatureBranchName(settings, new GitHubIssue(recovery.IssueNumber, recovery.IssueTitle, "", recovery.StartedAtUtc));
         if (recovery.AttemptNumber > 1) expectedBranch += $"-retry-{recovery.AttemptNumber}";
         if (recovery.FeatureBranch != expectedBranch)
-            throw new WorkerInfrastructureException("Persisted recovery branch does not match its Issue identity.");
-        if (!Directory.Exists(source)) throw new WorkerInfrastructureException($"Recoverable execution workspace is missing: {source}");
+            throw new IssuePreparationRejectedException("Persisted recovery branch does not match its Issue identity.");
+        if (!Directory.Exists(source)) throw new IssuePreparationRejectedException($"Recoverable execution workspace is missing: {source}");
         var branch = (await GitAtAsync(source, ["branch", "--show-current"], ct)).StandardOutput.Trim();
         var head = (await GitAtAsync(source, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
         if (branch != recovery.FeatureBranch || head != recovery.RecoveryBaseCommit)
-            throw new WorkerInfrastructureException("Recoverable execution workspace does not match its persisted branch and base commit; refusing to resume it.");
+            throw new IssuePreparationRejectedException("Recoverable execution workspace does not match its persisted branch and base commit; refusing to resume it.");
         var status = (await GitAtAsync(source, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
         if (recovery.State == "IntegrationConflict" || recovery.RecoveryState == "integration-conflict" ||
             recovery.RecoveryState == "cleanup-pending" && recovery.RecoveryStatus?.StartsWith("Implementation commit ", StringComparison.Ordinal) == true)
         {
             if (!string.IsNullOrWhiteSpace(status) || !string.IsNullOrWhiteSpace((await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput))
-                throw new WorkerInfrastructureException("Integration-conflict recovery workspace is not clean; refusing to reconcile it.");
+                throw new IssuePreparationRejectedException("Integration-conflict recovery workspace is not clean; refusing to reconcile it.");
         }
         else if (string.IsNullOrWhiteSpace(status))
-            throw new WorkerInfrastructureException("Persisted recoverable execution workspace has no useful changes; refusing to resume it.");
+            throw new IssuePreparationRejectedException("Persisted recoverable execution workspace has no useful changes; refusing to resume it.");
         var unmerged = (await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput;
         if (!string.IsNullOrWhiteSpace(unmerged))
-            throw new WorkerInfrastructureException("Recoverable execution workspace contains unresolved Git index entries; refusing to resume it.");
+            throw new IssuePreparationRejectedException("Recoverable execution workspace contains unresolved Git index entries; refusing to resume it.");
         var worktrees = (await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput;
         var registeredPaths = worktrees.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Where(line => line.StartsWith("worktree ", StringComparison.Ordinal)).Select(line => line[9..].TrimEnd('\r'));
         if (!registeredPaths.Contains(Path.GetFullPath(source), OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal))
-            throw new WorkerInfrastructureException("Persisted recovery path is not a registered Git worktree; refusing to resume it.");
+            throw new IssuePreparationRejectedException("Persisted recovery path is not a registered Git worktree; refusing to resume it.");
     }
 
     private static void SynchronizeRecoveryFiles(string source, string destination)

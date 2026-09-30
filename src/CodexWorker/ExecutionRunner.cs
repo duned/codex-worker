@@ -30,7 +30,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             try
             {
                 try { await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct); }
-                catch (ProjectCheckoutDirtyException ex) when (!WorkspaceExists())
+                catch (Exception ex) when (ex is ProjectCheckoutDirtyException or IssuePreparationRejectedException &&
+                    !ct.IsCancellationRequested && !WorkspaceExists())
                 {
                     throw new PreExecutionInfrastructureException(execution.Project, issue.Number, execution.ExecutionId,
                         $"Project '{execution.Project}' failed preparing Issue #{issue.Number} before an execution workspace was created: {ex.Message}", ex);
@@ -79,7 +80,14 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
                     x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
                     x => x.Succeeded, ct: ct);
-                if (validationResult.Succeeded) break;
+                if (validationResult.Succeeded)
+                {
+                    // Durably record the validation handoff before verification, cancellation,
+                    // authority checks, or integration can interrupt it.
+                    await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null)
+                        with { ValidationOutcome = "passed" }, CancellationToken.None);
+                    break;
+                }
 
                 await git.VerifyCodexStateAsync(ct);
                 var failure = validationResult.Failure!;
@@ -200,7 +208,15 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var issue = context.Issue;
         var source = context.RetryOf ?? throw new WorkerInfrastructureException("Integration recovery has no source execution history.");
         await _repositoryGate.WaitAsync(ct);
-        try { await git.StartIntegrationRecoveryAsync(source, ct); }
+        try
+        {
+            try { await git.StartIntegrationRecoveryAsync(source, ct); }
+            catch (Exception ex) when (ex is ProjectCheckoutDirtyException or IssuePreparationRejectedException && !ct.IsCancellationRequested)
+            {
+                throw new PreExecutionInfrastructureException(execution.Project, issue.Number, execution.ExecutionId,
+                    $"Integration recovery preparation was rejected; the preserved execution was not changed: {ex.Message}", ex);
+            }
+        }
         finally { _repositoryGate.Release(); }
         await TransitionAsync(execution, ExecutionState.Integrating, ct);
         await _repositoryGate.WaitAsync(ct);
@@ -299,6 +315,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain")
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
+        reason = FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray());
+        output.Warning($"Execution {execution.ExecutionId} · infrastructure failure · {reason}");
         var workspace = git.ExecutionDirectory;
         var checkout = config.Project.Directory;
         if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&

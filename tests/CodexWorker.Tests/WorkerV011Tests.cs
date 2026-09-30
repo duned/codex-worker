@@ -23,6 +23,24 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task RejectedIntegrationRecoveryReleasesIssueReservationForExplicitReady()
+    {
+        using var h = new Harness();
+        h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+        h.GitHub.ReadyIssueCount = 0;
+        h.GitHub.CancelWhenEmpty = false;
+
+        Assert.Null(await h.Worker.ClaimNextAsync(h.Cancellation.Token));
+        h.GitHub.ReadyIssueCount = 1;
+        h.GitHub.IssueLabels = ["ready"];
+        var claim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+
+        Assert.NotNull(claim);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await claim!)!.Kind);
+        Assert.Equal(1, h.Git.Started);
+    }
+
+    [Fact]
     public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()
     {
         using var h = new Harness();
@@ -109,12 +127,16 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
     }
 
-    [Fact]
-    public async Task ExplicitReadyLabelStartsFreshExecutionDespitePriorIntegrationConflict()
+    [Theory]
+    [InlineData("IntegrationConflict", null)]
+    [InlineData("IntegrationConflict", "integration-conflict")]
+    [InlineData("Failed", "integration-conflict")]
+    public async Task ExplicitReadyLabelStartsFreshExecutionDespitePriorIntegrationConflict(string state, string? recoveryState)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
         var config = h.Worker.Configuration.GitHub;
         config.ReadyLabel = "team-ready";
         config.IntegrationRecoveryLabel = "team-recover";
@@ -127,8 +149,8 @@ public sealed class WorkerV011Tests
         var oldId = Guid.NewGuid();
         var oldEntry = new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
             "feature/17-example-task", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
-            "IntegrationConflict", 1000, "Prior implementation", "passed", 0, [], "old-commit", "main",
-            "completed/17", null, "integration-conflict", "base-commit", "preserved");
+            state, 1000, "Prior implementation", "passed", 0, [], "old-commit", "main",
+            "completed/17", null, recoveryState, null, "preserved");
         await history.CreateAsync(oldEntry);
 
         var claim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
@@ -139,18 +161,77 @@ public sealed class WorkerV011Tests
         var entries = await history.ReadAllAsync();
         Assert.Equal(2, entries.Count);
         var preserved = entries.Single(entry => entry.ExecutionId == oldId);
-        Assert.Equal("IntegrationConflict", preserved.State);
+        Assert.Equal(state, preserved.State);
         Assert.Equal("old-commit", preserved.CommitSha);
-        Assert.Equal("base-commit", preserved.RecoveryBaseCommit);
+        Assert.Null(preserved.RecoveryBaseCommit);
+        Assert.Equal(oldEntry.RecoveryState, preserved.RecoveryState);
+        Assert.Equal(oldEntry.StartedAtUtc, preserved.StartedAtUtc);
         var fresh = entries.Single(entry => entry.ExecutionId != oldId);
         Assert.NotEqual(oldId, fresh.ExecutionId);
         Assert.Null(fresh.RetryOfExecutionId);
         Assert.False(fresh.Resumed);
         Assert.Equal(2, fresh.AttemptNumber);
         Assert.Equal(1, h.Git.Started);
+        Assert.False(h.Git.LastResume);
+        Assert.Equal(0, h.Git.RecoveryStarted);
         Assert.Contains("team-recover", h.GitHub.RemovedLabels);
         Assert.Contains("team-conflict", h.GitHub.RemovedLabels);
         Assert.Contains(h.OperationalMessages, message => message.Contains("explicit ready label takes precedence", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.ReturnDistinctIssues = true;
+        var oldId = Guid.NewGuid();
+        await history.CreateAsync(new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
+            "Failed", 1000, "Partial work", null, 0, [], null, null, null, "failed"));
+
+        await h.RunAsync();
+
+        Assert.Contains("ready->blocked", h.GitHub.Labels);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Equal(1, h.Git.Started);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == oldId).State);
+        var rejected = entries.Single(entry => entry.IssueNumber == 17 && entry.ExecutionId != oldId);
+        Assert.Equal("InfrastructureFailure", rejected.State);
+        Assert.Equal("Completed", entries.Single(entry => entry.IssueNumber == 18).State);
+        Assert.Contains(h.OperationalMessages, message => message.Contains(rejected.ExecutionId.ToString(), StringComparison.Ordinal) &&
+            message.Contains(oldId.ToString(), StringComparison.Ordinal));
+        Assert.DoesNotContain("Infrastructure failure", h.ErrorOutput.ToString());
+        Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SafePreparationRejectionAllowsNextReadyIssueToExecute(bool missingRecovery)
+    {
+        using var h = new Harness();
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.ReturnDistinctIssues = true;
+        h.Git.FailIssueNumber = 17;
+        h.Git.StartFailure = missingRecovery
+            ? new IssuePreparationRejectedException("Previous execution workspace is missing.")
+            : new ProjectCheckoutDirtyException("Checkout is dirty; refusing preparation.");
+
+        var rejected = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(rejected);
+        Assert.Null(await rejected!);
+        await h.RunAsync();
+
+        Assert.Equal(2, h.Git.Started);
+        Assert.Contains("working->blocked", h.GitHub.Labels);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Single(h.GitHub.Comments, comment => comment.Contains("### Preparation rejected", StringComparison.Ordinal));
+        Assert.DoesNotContain("Infrastructure failure", h.ErrorOutput.ToString());
     }
 
     [Fact]
@@ -178,22 +259,22 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
-    public async Task DirtyCheckoutPreparationReleasesClaimWithoutResumeMetadata()
+    public async Task DirtyCheckoutPreparationIsBlockedWithoutResumeMetadata()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
         using var h = new Harness(history: history);
         h.Git.StartFailure = new ProjectCheckoutDirtyException("Project checkout is dirty before Issue #17; refusing to proceed.");
 
-        var failure = await Assert.ThrowsAsync<PreExecutionInfrastructureException>(() => h.ProcessOneAsync());
+        Assert.Null(await h.ProcessOneAsync());
 
-        Assert.Equal("Test Project", failure.Project);
-        Assert.Equal(new[] { "ready->working", "working->ready" }, h.GitHub.Labels);
+        Assert.Equal(new[] { "ready->working", "working->blocked" }, h.GitHub.Labels);
         Assert.Null(h.Codex.InitialDirectory);
         var entry = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("InfrastructureFailure", entry.State);
         Assert.Null(entry.RecoveryState);
-        Assert.Contains(h.OperationalMessages, message => message.Contains("released to 'ready'", StringComparison.Ordinal));
+        Assert.Contains(h.OperationalMessages, message => message.Contains("preparation rejected", StringComparison.Ordinal));
+        Assert.Contains("### Recovery\n\n", Assert.Single(h.GitHub.Comments));
     }
 
     [Fact]
@@ -211,17 +292,17 @@ public sealed class WorkerV011Tests
         var dirty = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
 
         Assert.NotNull(dirty);
-        await Assert.ThrowsAsync<PreExecutionInfrastructureException>(() => dirty!);
+        Assert.Null(await dirty!);
         Assert.False(h.Cancellation.IsCancellationRequested);
         Assert.True(independent is { IsCompleted: false });
-        Assert.Equal("working->ready", h.GitHub.Labels[^1]);
+        Assert.Equal("working->blocked", h.GitHub.Labels[^1]);
 
         h.Codex.ReleaseRuns.TrySetResult();
         Assert.NotNull(await independent!);
     }
 
     [Fact]
-    public async Task CompletedIssueIsMarkedSupersededBeforeIntegration()
+    public async Task ExplicitNewAttemptAfterOlderCompletionProceedsToIntegration()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
@@ -234,11 +315,147 @@ public sealed class WorkerV011Tests
 
         var result = await h.ProcessOneAsync();
 
+        Assert.Equal(IssueOutcomeKind.Succeeded, result!.Kind);
+        Assert.Equal(1, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Single(h.GitHub.Comments);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal("Completed", entries.Single(entry => entry.ExecutionId == oldId).State);
+        var attempt = entries.Single(entry => entry.ExecutionId != oldId);
+        Assert.Equal("Completed", attempt.State);
+        Assert.Equal("passed", attempt.ValidationOutcome);
+        Assert.Equal(2, attempt.AttemptNumber);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterruptionImmediatelyAfterValidationIsPersistedReportedAndStopsQueue(bool cancel)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.CancelWhenEmpty = false;
+        h.Git.VerifyAfterValidation = async ct =>
+        {
+            Assert.Equal("passed", Assert.Single(await history.ReadAllAsync()).ValidationOutcome);
+            // The claimed Issue still occupies worker capacity during the handoff.
+            Assert.Null(await h.Worker.ClaimNextAsync(ct));
+            Assert.Equal(1, h.Git.Started);
+            if (cancel)
+            {
+                h.Cancellation.Cancel();
+                throw new OperationCanceledException(ct);
+            }
+            throw new WorkerInfrastructureException("verification interrupted after validation");
+        };
+
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.RunAsync());
+
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.Equal("passed", entry.ValidationOutcome);
+        Assert.Equal("uncertain", entry.RecoveryState);
+        Assert.NotNull(entry.CompletedAtUtc);
+        Assert.Equal(0, h.Git.Integrations);
+        Assert.Equal(0, h.Git.Cleanups);
+        Assert.Contains("working->blocked", h.GitHub.Labels);
+        Assert.DoesNotContain("working->failed", h.GitHub.Labels);
+        Assert.Contains(entry.ExecutionId.ToString(), Assert.Single(h.GitHub.Comments));
+        Assert.Contains(h.OperationalMessages, message => message.Contains(entry.ExecutionId.ToString(), StringComparison.Ordinal));
+        Assert.Equal(1, h.Git.Started);
+    }
+
+    [Fact]
+    public async Task ValidatedExecutionKeepsActiveClaimUntilTerminalReportingFinishes()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.ReadyIssueCount = 3;
+        h.GitHub.CancelWhenEmpty = false;
+        var releaseReport = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.GitHub.CommentAction = () => releaseReport.Task;
+
+        var execution = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+
+        Assert.NotNull(execution);
+        Assert.False(execution.IsCompleted);
+        Assert.Equal(1, h.Git.Integrations);
+        var active = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Reporting", active.State);
+        Assert.Equal("passed", active.ValidationOutcome);
+        Assert.Null(active.CompletedAtUtc);
+        Assert.Null(await h.Worker.ClaimNextAsync(h.Cancellation.Token));
+        Assert.Equal(1, h.Git.Started);
+
+        releaseReport.TrySetResult();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await execution)!.Kind);
+        Assert.Equal("Completed", Assert.Single(await history.ReadAllAsync()).State);
+        h.GitHub.CommentAction = null;
+        h.GitHub.ReadyIssueCount++;
+        var next = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(next);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await next)!.Kind);
+        Assert.Equal(2, h.Git.Started);
+    }
+
+    [Fact]
+    public async Task LaterAttemptSupersedesValidatedExecutionWithExplicitReport()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var laterId = Guid.NewGuid();
+        h.Git.VerifyAfterValidation = async _ =>
+        {
+            var current = Assert.Single(await history.ReadAllAsync());
+            await history.CreateAsync(current with
+            {
+                ExecutionId = laterId, AttemptNumber = 2, State = "Completed",
+                CompletedAtUtc = DateTimeOffset.UtcNow
+            });
+        };
+
+        var result = await h.ProcessOneAsync();
+
         Assert.Equal(IssueOutcomeKind.Superseded, result!.Kind);
         Assert.Equal(0, h.Git.Integrations);
-        Assert.DoesNotContain("working->done", h.GitHub.Labels);
-        Assert.Empty(h.GitHub.Comments);
-        Assert.Equal("Superseded", (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != oldId).State);
+        Assert.Contains("working->blocked", h.GitHub.Labels);
+        Assert.Contains("### Execution superseded", Assert.Single(h.GitHub.Comments));
+        var entry = (await history.ReadAllAsync()).Single(row => row.ExecutionId != laterId);
+        Assert.Equal("Superseded", entry.State);
+        Assert.Equal("passed", entry.ValidationOutcome);
+        Assert.Equal("superseded", entry.RecoveryState);
+    }
+
+    [Fact]
+    public async Task AssignedUnrecoverableResumeReturnsCompletedRejectionTaskInsteadOfFailingClaim()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        var now = DateTimeOffset.UtcNow;
+        await history.CreateAsync(new ExecutionHistoryEntry(Guid.NewGuid(), "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task", "main", now.AddMinutes(-5), now,
+            "Failed", 1000, "Partial work", null, 0, [], null, null, null, "failed"));
+        var assignment = new WorkerAssignmentContract("assignment-rejected", "server-rejected",
+            new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-rejected", "worker-id", 1, now, now.AddMinutes(5), "Active"));
+
+        var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+
+        Assert.NotNull(execution);
+        Assert.Null(await execution!);
+        Assert.Equal(0, h.Git.Started);
+        Assert.Contains("ready->blocked", h.GitHub.Labels);
+        var rejected = (await history.ReadAllAsync()).Single(entry => entry.ServerExecutionId == "server-rejected");
+        Assert.Equal("InfrastructureFailure", rejected.State);
+        Assert.Equal("assignment-rejected", rejected.AssignmentId);
     }
 
     [Fact]
@@ -850,6 +1067,7 @@ public sealed class WorkerV011Tests
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
         public List<string> Comments { get; } = [];
+        public Func<Task>? CommentAction { get; set; }
 
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
             => FindOldestReadyAsync(label, new HashSet<int>(), cancellationToken);
@@ -901,7 +1119,7 @@ public sealed class WorkerV011Tests
         public Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct)
         { RemovedLabels.Add(label); return Task.CompletedTask; }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
-        { Comments.Add(comment); return Task.CompletedTask; }
+        { Comments.Add(comment); return CommentAction?.Invoke() ?? Task.CompletedTask; }
         public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
     }
 
@@ -917,7 +1135,7 @@ public sealed class WorkerV011Tests
         public bool LastResume { get; private set; }
         public int LastAttemptNumber { get; private set; }
         public GitIntegrationConflictException? IntegrationFailure { get; set; }
-        public ProjectCheckoutDirtyException? StartFailure { get; set; }
+        public WorkerInfrastructureException? StartFailure { get; set; }
         public int? FailIssueNumber { get; set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
@@ -929,7 +1147,10 @@ public sealed class WorkerV011Tests
         { RecoveryStarted++; return Task.CompletedTask; }
         public Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
             Task.FromResult<string?>(null);
-        public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
+        private int _verifications;
+        public Func<CancellationToken, Task>? VerifyAfterValidation { get; set; }
+        public Task VerifyCodexStateAsync(CancellationToken ct) =>
+            ++_verifications == 2 && VerifyAfterValidation is not null ? VerifyAfterValidation(ct) : Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
         {
