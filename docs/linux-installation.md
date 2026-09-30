@@ -153,6 +153,8 @@ Purge removes the installer's `/opt/codex-worker` releases and upgrade backups, 
 For troubleshooting, inspect `systemctl status codex-worker` and `journalctl -u codex-worker`. Installer failures identify the unsupported OS/architecture, missing utility, download, checksum, or extraction step. A failed update preserves the previous binaries and attempts to restore the prior service. Check release availability and outbound HTTPS access if downloads fail.
 
 
+Both uninstallers can be rerun after an interrupted removal or against an already-uninstalled machine. They stop cached/running services even if the unit file is missing, clear retained failures before removing the unit, remove enablement links, reload systemd, and verify that the unit is absent and inactive. Missing files, directories, accounts, and groups are reported as already absent; unexpected systemd, filesystem, or account lookup/removal errors still fail the command. Normal uninstall removes logs and runtime files but preserves configuration, persistent data, and service identities. Purge also removes persistent data and installer-standard service identities; an account with a nonstandard home or primary group and its group are retained together. Worker release backups are removed in both modes.
+
 ## Manual local-build installation
 
 For an operator-built self-contained Worker publish directory, use the local installer from the same checkout:
