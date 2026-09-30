@@ -160,6 +160,74 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task CleanWorkerBootstrapRegistersVisibleWorkerAndEstablishesHeartbeatAuthentication()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "bootstrap.db");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "bootstrap-management-secret");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, database));
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
+            var identityPath = Path.Combine(temporary.Path, "worker-id");
+            var settings = new WorkerServerSettings { Enabled = true, Url = url, IdentityFile = identityPath };
+            using var client = new HttpClient();
+
+            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
+            // Replaying after a lost success response recovers through the durable Worker credential.
+            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
+
+            var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath);
+            Assert.Single(await store.GetWorkersAsync());
+            Assert.True(await store.IsWorkerTokenValidAsync(identity, WorkerAuthentication.GetToken(settings)));
+            await new WorkerRegistrationClient(client).HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
+            Assert.False(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, identity, WorkerAuthentication.GetToken(settings)));
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "bootstrap-management-secret");
+            using var workers = JsonDocument.Parse(await management.GetStringAsync("/api/v1/workers"));
+            Assert.Single(workers.RootElement.EnumerateArray());
+            Assert.Equal(identity, workers.RootElement[0].GetProperty("workerId").GetString());
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
+    }
+
+    [Fact]
+    public async Task InvalidBootstrapCredentialIsActionableAndDoesNotCreateWorker()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        var priorRegistration = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "bootstrap-management-secret");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", null);
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "bootstrap.db")));
+            await app.StartAsync();
+            using var client = new HttpClient();
+            var settings = new WorkerServerSettings { Enabled = true, Url = url, IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+            var failure = await Assert.ThrowsAsync<WorkerStartupException>(() =>
+                new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "invalid-bootstrap-token", CancellationToken.None));
+            Assert.Contains("invalid, expired, or already used", failure.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("invalid-bootstrap-token", failure.Message, StringComparison.Ordinal);
+            Assert.Empty(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
+            var freshBootstrap = await app.Services.GetRequiredService<IRegistryStore>()
+                .CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
+            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, freshBootstrap, CancellationToken.None);
+            Assert.Single(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", priorRegistration);
+        }
+    }
+
+    [Fact]
     public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
     {
         using var temporary = new TemporaryDirectory();

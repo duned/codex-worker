@@ -206,9 +206,21 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                // A prior request may have redeemed the one-time token before its response was lost.
-                await RegisterAsync(settings, capacity, cancellationToken);
-                return;
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    // A prior request may have committed registration before its response was lost.
+                    try
+                    {
+                        await RegisterAsync(settings, capacity, cancellationToken);
+                        return;
+                    }
+                    catch (WorkerStartupException)
+                    {
+                        throw new WorkerStartupException("Codex Server rejected the bootstrap token as invalid, expired, or already used. Create a fresh registration token and retry. Local worker credentials were retained so a completed registration can be recovered safely.");
+                    }
+                }
+                var detail = await ReadSafeServerErrorAsync(response, cancellationToken);
+                throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).{detail}");
             }
         }
         catch (WorkerStartupException) { throw; }
@@ -218,6 +230,26 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             throw new WorkerStartupException($"Codex Server bootstrap failed: {ex.Message}", ex);
         }
         finally { if (httpClient is null) client.Dispose(); }
+    }
+
+    private static async Task<string> ReadSafeServerErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = await System.Text.Json.JsonDocument.ParseAsync(
+                await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            if (document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var message = error.GetString();
+                if (!string.IsNullOrWhiteSpace(message) && message.Length <= 300) return " " + message;
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException)
+        {
+            // Do not surface unstructured server response bodies in worker diagnostics.
+        }
+        return string.Empty;
     }
 
     public async Task HeartbeatAsync(WorkerServerSettings settings, int capacity, int activeExecutions,

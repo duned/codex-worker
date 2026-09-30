@@ -81,9 +81,9 @@ public static class ServerApplication
             var authorization = context.Request.Headers.Authorization.ToString();
             if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return Results.Unauthorized();
             var workerToken = context.Request.Headers["X-Codex-Worker-Token"].ToString();
-            var accepted = await store.RedeemWorkerBootstrapTokenAsync(authorization[7..], request.WorkerId, workerToken, context.RequestAborted);
-            if (!accepted) return Results.Unauthorized();
-            await store.RegisterWorkerAsync(request, context.RequestAborted);
+            var accepted = await store.BootstrapWorkerAsync(authorization[7..], request, workerToken, context.RequestAborted);
+            if (!accepted) return Results.Json(new { error = "Worker bootstrap token is invalid, expired, or has already been used. Create a fresh registration token and retry." },
+                statusCode: StatusCodes.Status401Unauthorized);
             return Results.Ok(new { workerId = request.WorkerId });
         });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>

@@ -16,6 +16,7 @@ public interface IRegistryStore
     Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default);
     Task<bool> RevokeWorkerBootstrapTokenAsync(string token, CancellationToken cancellationToken = default);
     Task<bool> RedeemWorkerBootstrapTokenAsync(string token, string workerId, string workerToken, CancellationToken cancellationToken = default);
+    Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default);
     Task<bool> IsWorkerTokenValidAsync(string workerId, string token, CancellationToken cancellationToken = default);
     Task<bool> RevokeWorkerTokenAsync(string workerId, CancellationToken cancellationToken = default);
     Task RegisterWorkerAsync(WorkerRegistrationRequest worker, CancellationToken cancellationToken = default);
@@ -304,7 +305,9 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
             {
                 case "type" when reader.TokenType == JsonTokenType.String: type = reader.GetString(); break;
                 case "name" when reader.TokenType == JsonTokenType.String: name = reader.GetString(); break;
-                case "version" when reader.TokenType == JsonTokenType.String: version = reader.GetString(); break;
+                case "version" when reader.TokenType is JsonTokenType.String or JsonTokenType.Null:
+                    version = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
+                    break;
                 case "scope" when reader.TokenType is JsonTokenType.String or JsonTokenType.Null:
                     scope = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
                     break;
@@ -1322,6 +1325,36 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.Parameters.AddWithValue("$worker", workerId);
         command.Parameters.AddWithValue("$token", HashToken(workerToken));
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(worker.WorkerId, "N", out _) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(workerToken)) return false;
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        var now = _timeProvider.GetUtcNow();
+        command.CommandText = "DELETE FROM worker_bootstrap_tokens WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$hash", HashToken(token));
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return false;
+        command.CommandText = "INSERT INTO worker_auth_tokens (worker_id, token_hash, created_at_utc, revoked_at_utc) VALUES ($worker,$token,$now,NULL) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash, created_at_utc=excluded.created_at_utc, revoked_at_utc=NULL;";
+        command.Parameters.Clear();
+        command.Parameters.AddWithValue("$worker", worker.WorkerId);
+        command.Parameters.AddWithValue("$token", HashToken(workerToken));
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.CommandText = "INSERT INTO workers (worker_id, display_name, registered_at_utc, status_json, registration_json, last_seen_at_utc) VALUES ($id,$name,$now,NULL,$metadata,$now) ON CONFLICT(worker_id) DO UPDATE SET display_name=excluded.display_name, registration_json=excluded.registration_json, last_seen_at_utc=excluded.last_seen_at_utc, heartbeat_json=NULL;";
+        command.Parameters.Clear();
+        command.Parameters.AddWithValue("$id", worker.WorkerId);
+        command.Parameters.AddWithValue("$name", worker.DisplayName);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(worker));
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return true;
