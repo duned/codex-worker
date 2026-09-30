@@ -65,23 +65,40 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (!_activeIssues.TryAdd(issueKey, 0)) return null;
         try
         {
-            ExecutionHistoryEntry[] prior = history is null ? [] : (await history.ReadAllAsync(ct)).Where(entry =>
+            IReadOnlyList<ExecutionHistoryEntry> allHistory = history is null ? [] : await history.ReadAllAsync(ct);
+            ExecutionHistoryEntry[] prior = allHistory.Where(entry =>
                 entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number &&
-                entry.State == "IntegrationConflict" && entry.RecoveryState == "integration-conflict")
+                entry.State == "IntegrationConflict" && entry.RecoveryState is (null or "integration-conflict"))
                 .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
-            if (prior.Length == 0)
+            var source = prior.FirstOrDefault();
+            if (source is null)
             {
+                const string missingHistoryReason = "no recoverable integration-conflict execution history";
+                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · integration recovery rejected · {missingHistoryReason}.";
+                _operationalLog(diagnostic);
+                _output.Warning(diagnostic);
+                await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue,
+                    missingHistoryReason, ct);
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
                 return null;
             }
-            var allHistory = await history!.ReadAllAsync(ct);
-            var source = prior[0];
             while (source.RetryOfExecutionId is { } parentId)
             {
                 var parent = allHistory.FirstOrDefault(entry => entry.ExecutionId == parentId);
-                if (parent is null || parent.RecoveryState != "integration-conflict") break;
+                if (parent is null || parent.State != "IntegrationConflict" || parent.RecoveryState is not (null or "integration-conflict")) break;
                 source = parent;
             }
+            var rejectionReason = await git.ValidateIntegrationRecoveryAsync(source, ct);
+            if (rejectionReason is not null)
+            {
+                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · integration recovery rejected · {rejectionReason}.";
+                _operationalLog(diagnostic);
+                _output.Warning(diagnostic);
+                await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue, rejectionReason, ct);
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                return null;
+            }
+            source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
             var execution = WorkerExecution.Create(config.Project, config.Git, issue,
                 retryOfExecutionId: source.ExecutionId, attemptNumber: allHistory.Where(entry =>
                     entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)

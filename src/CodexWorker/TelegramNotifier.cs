@@ -109,6 +109,9 @@ public sealed class TelegramNotifier : IDisposable
     public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string details, CancellationToken ct) =>
         FailedAsync(project, repository, issue, duration, $"Ejecución {ExecutionFormatting.Display(executionId)}\n{details}", ct);
 
+    public Task IntegrationRecoveryRejectedAsync(string project, string repository, GitHubIssue issue, string reason, CancellationToken ct) =>
+        SendTaskAsync(project, repository, issue, "⚠️", "RECUPERACIÓN DE INTEGRACIÓN RECHAZADA", reason, ct);
+
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
         SendAsync(Format($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
 

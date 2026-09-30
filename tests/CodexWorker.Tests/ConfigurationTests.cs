@@ -211,6 +211,22 @@ public sealed class ConfigurationTests
         Assert.Equal(2, new ValidationSettings().MaxFixAttempts);
     }
 
+    [Fact]
+    public void IntegrationLabelDefaultsUseCodexPrefixAndAllowCustomNames()
+    {
+        var defaults = new GitHubSettings();
+        Assert.Equal("codex-integration-conflict", defaults.IntegrationConflictLabel);
+        Assert.Equal("codex-integration-recovery", defaults.IntegrationRecoveryLabel);
+
+        var configured = new GitHubSettings
+        {
+            IntegrationConflictLabel = "team-conflict",
+            IntegrationRecoveryLabel = "team-recover"
+        };
+        Assert.Equal("team-conflict", configured.IntegrationConflictLabel);
+        Assert.Equal("team-recover", configured.IntegrationRecoveryLabel);
+    }
+
     private static WorkerConfiguration ValidConfig() => new()
     {
         Project = new ProjectSettings { Name = "Example", Repository = "owner/repo", Directory = "/tmp/project" },

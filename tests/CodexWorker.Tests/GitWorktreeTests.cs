@@ -317,6 +317,51 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task LegacyIntegrationConflictUsesPersistedCommitWhenRecoveryStateIsMissing()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var executionId = Guid.NewGuid();
+        await original.StartIssueAsync(executionId, fixture.Issue, CancellationToken.None);
+        var directory = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(directory, "base.txt"), "implemented result");
+        await fixture.AdvanceBaseAsync("base.txt", "new base value");
+        await Assert.ThrowsAsync<GitIntegrationConflictException>(() => original.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        var preserved = await original.PreserveIntegrationConflictAsync(CancellationToken.None);
+        Assert.NotNull(preserved);
+        var legacy = new ExecutionHistoryEntry(executionId, "demo", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "implementation complete", "passed", 0, [], preserved.BaseCommit, null, null, null,
+            RecoveryBaseCommit: null, RecoveryStatus: null);
+
+        var reason = await original.ValidateIntegrationRecoveryAsync(legacy, CancellationToken.None);
+        Assert.Null(reason);
+        using var recovery = original.CreateExecutionRepository();
+        await recovery.StartIntegrationRecoveryAsync(legacy, CancellationToken.None);
+        Assert.Equal(directory, recovery.ExecutionDirectory);
+        Assert.Equal("feature/example-task-17", await fixture.GitAt(directory, "branch", "--show-current"));
+    }
+
+    [Fact]
+    public async Task LegacyIntegrationConflictIsRejectedWhenPreservedWorktreeIsMissing()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        var source = new ExecutionHistoryEntry(id, "demo", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            "feature/example-task-17", "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "implementation complete", "passed", 0, [], "0123456789abcdef", null, null, null);
+
+        var reason = await git.ValidateIntegrationRecoveryAsync(source, CancellationToken.None);
+
+        Assert.NotNull(reason);
+        Assert.Contains("missing", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task CodexResolvedRebaseConflictContinuesAndValidatesBeforeIntegration()
     {
         using var fixture = await RepositoryFixture.CreateAsync();

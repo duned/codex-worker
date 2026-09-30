@@ -269,8 +269,8 @@ public sealed class GitHubSettings
     public string WorkingLabel { get; set; } = "";
     public string BlockedLabel { get; set; } = "";
     public string FailedLabel { get; set; } = "";
-    public string IntegrationConflictLabel { get; set; } = "integration-conflict";
-    public string IntegrationRecoveryLabel { get; set; } = "integration-recovery";
+    public string IntegrationConflictLabel { get; set; } = "codex-integration-conflict";
+    public string IntegrationRecoveryLabel { get; set; } = "codex-integration-recovery";
     public string DoneLabel { get; set; } = "";
 
     [YamlIgnore]

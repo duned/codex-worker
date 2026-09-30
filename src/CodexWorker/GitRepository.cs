@@ -209,8 +209,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         try
         {
-            if (source.State != "IntegrationConflict" || source.RecoveryState != "integration-conflict" ||
-                string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
+            source = NormalizeIntegrationRecoverySource(source);
+            if (source.State != "IntegrationConflict" || string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
                 throw new WorkerInfrastructureException("Integration recovery requires a completed integration-conflict execution with preserved commit metadata.");
             await EnsureOriginAsync(ct);
             await EnsureCleanAsync("before integration recovery", ct);
@@ -232,6 +232,27 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely prepare integration recovery for Issue #{source.IssueNumber}: {ex.Message}", ex); }
     }
 
+    public async Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+    {
+        try
+        {
+            source = NormalizeIntegrationRecoverySource(source);
+            if (source.State != "IntegrationConflict" || string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
+                return "recovery state invalid: implementation commit metadata is missing";
+            await ValidateRecoveryWorkspaceAsync(Path.Combine(Path.GetFullPath(worktreeRoot), source.ExecutionId.ToString("N")), source, ct);
+            return null;
+        }
+        catch (WorkerInfrastructureException ex) { return ex.Message; }
+    }
+
+    private static ExecutionHistoryEntry NormalizeIntegrationRecoverySource(ExecutionHistoryEntry source)
+    {
+        if (source.RecoveryState is "integration-conflict" or "cleanup-pending") return source;
+        if (source.RecoveryState is not null) return source;
+        // Older history rows stored the preserved implementation HEAD in CommitSha.
+        return source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
+    }
+
     public async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
     {
         var root = Path.GetFullPath(worktreeRoot);
@@ -248,7 +269,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         if (branch != recovery.FeatureBranch || head != recovery.RecoveryBaseCommit)
             throw new WorkerInfrastructureException("Recoverable execution workspace does not match its persisted branch and base commit; refusing to resume it.");
         var status = (await GitAtAsync(source, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
-        if (recovery.RecoveryState == "integration-conflict" ||
+        if (recovery.State == "IntegrationConflict" || recovery.RecoveryState == "integration-conflict" ||
             recovery.RecoveryState == "cleanup-pending" && recovery.RecoveryStatus?.StartsWith("Implementation commit ", StringComparison.Ordinal) == true)
         {
             if (!string.IsNullOrWhiteSpace(status) || !string.IsNullOrWhiteSpace((await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput))

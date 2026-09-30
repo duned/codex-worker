@@ -6,6 +6,23 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Fact]
+    public async Task RejectedIntegrationRecoveryIsJournaledAndReported()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(telegramEnabled: true, history: history);
+        h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+        h.GitHub.ReadyIssueCount = 0;
+
+        await h.ProcessOneAsync();
+
+        Assert.Contains(h.OperationalMessages, message => message.Contains("integration recovery rejected", StringComparison.Ordinal) &&
+            message.Contains("no recoverable integration-conflict execution history", StringComparison.Ordinal));
+        Assert.Contains(h.TelegramMessages, message => message.Contains("RECUPERACIÓN DE INTEGRACIÓN RECHAZADA", StringComparison.Ordinal));
+        Assert.Contains("codex-integration-recovery->codex-integration-conflict", h.GitHub.Labels);
+    }
+
+    [Fact]
     public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()
     {
         using var h = new Harness();
@@ -756,6 +773,7 @@ public sealed class WorkerV011Tests
         public bool CancelDuringQuery { get; set; }
         public bool CancelDuringClaim { get; set; }
         public bool ReturnDistinctIssues { get; set; }
+        public bool ReturnRecoveryIssueOnFirstQuery { get; set; }
         public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
@@ -769,6 +787,11 @@ public sealed class WorkerV011Tests
         {
             FindCalls++;
             events.Add("find");
+            if (label == "codex-integration-recovery" && ReturnRecoveryIssueOnFirstQuery)
+            {
+                ReturnRecoveryIssueOnFirstQuery = false;
+                return Task.FromResult<GitHubIssue?>(Issue);
+            }
             if (label != "ready") return Task.FromResult<GitHubIssue?>(null);
             if (CancelDuringQuery)
             {

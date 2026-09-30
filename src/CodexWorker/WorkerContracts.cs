@@ -45,6 +45,8 @@ public interface IGitRepository : IDisposable
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct) => StartIssueAsync(executionId, issue, ct);
     Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
+    Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        Task.FromResult<string?>("recovery state invalid: this Git repository cannot verify preserved integration resources");
     Task VerifyCodexStateAsync(CancellationToken ct);
     Task DiscardUncommittedIssueChangesAsync(CancellationToken ct);
     async Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
