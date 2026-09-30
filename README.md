@@ -200,6 +200,15 @@ curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/l
 
 Both commands run the installer from standard input; it also supports downloading the script and running it directly with `sudo bash install-worker.sh`. The installer reports success only after the verified binaries, configuration permissions, systemd unit, and required service operations have completed.
 
+On a clean interactive install, the installer can ask for the Server URL, Worker capacity, whether to register, and whether to enable and start the service. For automation, pass the same choices as options. Supply the one-time bootstrap token through a root-readable protected file or `CODEX_WORKER_BOOTSTRAP_TOKEN`; it is never accepted as a command-line argument. For example, prepare a mode-0600 token file using your secret-management process, then run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-worker.sh | sudo bash -s -- \
+  --server https://server.example --capacity 2 --register --start --token-file /run/secrets/worker-bootstrap-token
+```
+
+The installer pipes the token to the registration command over standard input. It does not print the token. `--server` and `--capacity` update only those fields in the Worker YAML; on upgrade, existing YAML and environment settings are preserved unless those options are supplied. Registration requires a Server URL and token source. `--start` enables and starts the systemd service after installation and any requested registration. The final output states which actions completed.
+
 This installs only the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are discovered and can be handled through Server provisioning policy; they are not installer prerequisites.
 
 The installer is repeatable and preserves existing configuration and environment files. It creates the `codex-worker` system account and uses these locations:

@@ -11,7 +11,7 @@ public static class Program
         if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
         if (args.Length != 1 || args[0] is "--help" or "-h")
         {
-            Console.WriteLine("Usage: codex-worker <worker.yml> | register --server <url> --token <registration-token> [--identity-file <path>]");
+            Console.WriteLine("Usage: codex-worker <worker.yml> | register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
             return args.Length == 1 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
         }
 
@@ -53,24 +53,41 @@ public static class Program
         try
         {
             string? server = null, token = null, identityFile = null;
-            for (var index = 1; index < args.Length; index += 2)
+            var capacity = 1;
+            var readTokenFromStandardInput = false;
+            for (var index = 1; index < args.Length;)
             {
-                if (index + 1 >= args.Length) throw new ArgumentException("Register requires a value for every option.");
                 switch (args[index])
                 {
-                    case "--server": server = args[index + 1]; break;
-                    case "--token": token = args[index + 1]; break;
-                    case "--identity-file": identityFile = args[index + 1]; break;
+                    case "--token-stdin":
+                        if (readTokenFromStandardInput) throw new ArgumentException("Specify only one bootstrap token source.");
+                        readTokenFromStandardInput = true;
+                        index++;
+                        continue;
+                    case "--server":
+                    case "--token":
+                    case "--identity-file":
+                    case "--capacity":
+                        if (index + 1 >= args.Length) throw new ArgumentException("Register requires a value for every option.");
+                        if (args[index] == "--server") server = args[index + 1];
+                        else if (args[index] == "--token") token = args[index + 1];
+                        else if (args[index] == "--identity-file") identityFile = args[index + 1];
+                        else if (!int.TryParse(args[index + 1], out capacity) || capacity is < 1 or > 8)
+                            throw new ArgumentException("Register capacity must be an integer from 1 to 8.");
+                        index += 2;
+                        continue;
                     default: throw new ArgumentException($"Unknown register option '{args[index]}'.");
                 }
             }
+            if (readTokenFromStandardInput && token is not null) throw new ArgumentException("Specify only one bootstrap token source.");
+            if (readTokenFromStandardInput) token = await Console.In.ReadLineAsync();
             if (string.IsNullOrWhiteSpace(token) || !Uri.TryCreate(server, UriKind.Absolute, out var uri) ||
                 uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-                throw new ArgumentException("Usage: codex-worker register --server <url> --token <registration-token> [--identity-file <path>]");
+                throw new ArgumentException("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
             var settings = new WorkerServerSettings { Enabled = true, Url = uri.ToString().TrimEnd('/'), IdentityFile = identityFile };
             settings.Validate();
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await new WorkerRegistrationClient().BootstrapAsync(settings, 1, token, shutdown.Token);
+            await new WorkerRegistrationClient().BootstrapAsync(settings, capacity, token, shutdown.Token);
             Console.WriteLine("Worker registered. Start or restart the Codex Worker service to begin managed operation.");
             return ProcessExitCodes.Success;
         }

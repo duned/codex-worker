@@ -17,8 +17,23 @@ grep -q 'latest by default' "$temp_dir/help.txt"
 # startup must work even though Bash has no BASH_SOURCE entry for stdin scripts.
 bash -s -- --help < "$worker_installer" > "$temp_dir/worker-pipe-help.txt"
 grep -q -- '--version VERSION' "$temp_dir/worker-pipe-help.txt"
+grep -q -- '--server URL' "$temp_dir/worker-pipe-help.txt"
+grep -q -- '--capacity 1..8' "$temp_dir/worker-pipe-help.txt"
+grep -q -- '--token-file PATH' "$temp_dir/worker-pipe-help.txt"
 bash "$worker_installer" --help > "$temp_dir/worker-direct-help.txt"
 grep -q -- '--version VERSION' "$temp_dir/worker-direct-help.txt"
+
+if bash "$worker_installer" --capacity 9 >"$temp_dir/invalid-capacity.txt" 2>&1; then
+  echo 'Worker installer accepted an out-of-range capacity.' >&2
+  exit 1
+fi
+grep -q 'capacity must be an integer from 1 to 8' "$temp_dir/invalid-capacity.txt"
+
+if bash "$worker_installer" --token secret >"$temp_dir/unsafe-token-option.txt" 2>&1; then
+  echo 'Worker installer accepted a bootstrap token command-line option.' >&2
+  exit 1
+fi
+grep -q 'Unknown argument: --token' "$temp_dir/unsafe-token-option.txt"
 
 if bash "$installer" --version invalid >"$temp_dir/invalid.txt" 2>&1; then
   echo 'Installer accepted an invalid version.' >&2

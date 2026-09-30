@@ -19,11 +19,19 @@ if [[ -n $installer_source ]]; then
 fi
 
 usage() {
-  echo "Usage: $0 [--version VERSION]"
-  echo "Install the self-contained Codex Worker release for Ubuntu 24.04 x86_64."
+  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--start] [--token-file PATH]"
+  echo "Install and optionally configure/register/start the Codex Worker on Ubuntu 24.04 x86_64."
+  echo "For unattended registration, set CODEX_WORKER_BOOTSTRAP_TOKEN or use --token-file; tokens are never accepted as command-line values."
 }
 
 requested_version=latest
+requested_server=""
+requested_capacity=""
+register_requested=false
+start_requested=false
+token_file=""
+server_was_set=false
+capacity_was_set=false
 while (($#)); do
   case "$1" in
     --version)
@@ -33,6 +41,20 @@ while (($#)); do
       fi
       requested_version=$2
       shift 2
+      ;;
+    --server)
+      (($# >= 2)) && [[ -n $2 ]] || { echo "--server requires an absolute HTTP or HTTPS URL" >&2; exit 2; }
+      requested_server=$2; server_was_set=true; shift 2
+      ;;
+    --capacity)
+      (($# >= 2)) && [[ $2 =~ ^[1-8]$ ]] || { echo "--capacity must be an integer from 1 to 8" >&2; exit 2; }
+      requested_capacity=$2; capacity_was_set=true; shift 2
+      ;;
+    --register) register_requested=true; shift ;;
+    --start) start_requested=true; shift ;;
+    --token-file)
+      (($# >= 2)) && [[ -n $2 ]] || { echo "--token-file requires a path" >&2; exit 2; }
+      token_file=$2; shift 2
       ;;
     -h|--help)
       usage
@@ -55,6 +77,30 @@ if [[ ${EUID} -ne 0 ]]; then
   fail "run as root, for example: curl -fsSL https://raw.githubusercontent.com/$repository/main/packaging/linux/install-worker.sh | sudo bash"
 fi
 
+validate_server_url() {
+  [[ $1 =~ ^https?://[^[:space:]]+$ && $1 != *'"'* && $1 != *$'\\'* && $1 != *'#'* && $1 != *'?'* && $1 != *'@'* ]] || return 1
+}
+if [[ $server_was_set == true ]] && ! validate_server_url "$requested_server"; then
+  fail "--server must be an absolute HTTP or HTTPS URL without whitespace or YAML-special characters"
+fi
+if [[ -n $token_file && ! -r $token_file ]]; then
+  fail "bootstrap token file is not readable"
+fi
+if [[ -n $token_file ]]; then
+  token_file_mode=$(stat -c '%a' -- "$token_file") || fail "could not inspect bootstrap token file permissions"
+  if (( (8#$token_file_mode & 077) != 0 )); then
+    fail "bootstrap token file must not be accessible to group or other users (use mode 0600)"
+  fi
+fi
+if [[ $register_requested == true && -z $token_file && -z ${CODEX_WORKER_BOOTSTRAP_TOKEN:-} && ( ! -r /dev/tty || ! -w /dev/tty ) ]]; then
+  fail "--register requires CODEX_WORKER_BOOTSTRAP_TOKEN, --token-file, or an interactive terminal"
+fi
+if [[ -n $token_file && -n ${CODEX_WORKER_BOOTSTRAP_TOKEN:-} ]]; then
+  fail "use only one bootstrap token source: --token-file or CODEX_WORKER_BOOTSTRAP_TOKEN"
+fi
+bootstrap_token=${CODEX_WORKER_BOOTSTRAP_TOKEN:-}
+unset CODEX_WORKER_BOOTSTRAP_TOKEN
+
 if [[ ! -r /etc/os-release ]]; then
   fail "cannot identify the operating system (missing /etc/os-release)"
 fi
@@ -68,7 +114,7 @@ if [[ $machine != x86_64 ]]; then
   fail "supported architecture is x86_64; found $machine"
 fi
 
-for command_name in curl tar sha256sum install getent groupadd useradd id systemctl; do
+for command_name in curl tar sha256sum install getent groupadd useradd id systemctl runuser awk stat; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required system command is missing: $command_name"
 done
 
@@ -152,9 +198,72 @@ install -d -o codex-worker -g codex-worker -m 0700 "$data_root" "$data_root/.cod
 install -d -o codex-worker -g codex-worker -m 0750 "$data_root/projects" "$data_root/.codex-worker/worktrees" || fail "could not prepare Worker project directories"
 install -d -o codex-worker -g codex-worker -m 0750 /var/log/codex-worker || fail "could not prepare Worker log directory"
 
-if [[ ! -e $config_root/worker.yml ]]; then
+config_was_present=false
+if [[ -e $config_root/worker.yml ]]; then config_was_present=true; fi
+if [[ $config_was_present == false ]]; then
   curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/worker.managed.example.yml" --output "$temporary_dir/worker.yml" || fail "could not download the starter Worker configuration"
   install -o root -g codex-worker -m 0640 "$temporary_dir/worker.yml" "$config_root/worker.yml" || fail "could not install starter Worker configuration"
+fi
+
+# Guide only a clean first install. Existing operator YAML remains untouched unless
+# an option explicitly supplies a value.
+interactive=false
+if [[ -r /dev/tty && -w /dev/tty && $config_was_present == false ]]; then interactive=true; fi
+if [[ $interactive == true ]]; then
+  if [[ $server_was_set == false ]]; then
+    read -r -p "Codex Server URL: " requested_server </dev/tty
+    if [[ -n $requested_server ]]; then
+      validate_server_url "$requested_server" || fail "Server URL must be an absolute HTTP or HTTPS URL"
+      server_was_set=true
+    fi
+  fi
+  if [[ $capacity_was_set == false ]]; then
+    read -r -p "Worker capacity [1]: " requested_capacity </dev/tty
+    requested_capacity=${requested_capacity:-1}
+    [[ $requested_capacity =~ ^[1-8]$ ]] || fail "Worker capacity must be an integer from 1 to 8"
+    capacity_was_set=true
+  fi
+  if [[ $register_requested == false ]]; then
+    read -r -p "Register Worker now? [Y/n]: " answer </dev/tty
+    [[ ${answer,,} != n && ${answer,,} != no ]] && register_requested=true
+  fi
+  if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
+    read -r -s -p "Bootstrap token: " bootstrap_token </dev/tty
+    printf '\n' >/dev/tty
+    [[ -n $bootstrap_token ]] || fail "bootstrap token cannot be empty"
+  fi
+  if [[ $start_requested == false ]]; then
+    read -r -p "Start Worker after installation? [Y/n]: " answer </dev/tty
+    [[ ${answer,,} != n && ${answer,,} != no ]] && start_requested=true
+  fi
+fi
+
+if [[ $server_was_set == true || $capacity_was_set == true ]]; then
+  config_update="$temporary_dir/worker.yml"
+  WORKER_SERVER_URL="$requested_server" WORKER_CAPACITY="$requested_capacity" \
+    WORKER_SET_SERVER="$server_was_set" WORKER_SET_CAPACITY="$capacity_was_set" \
+    awk '
+      /^worker:$/ { section = "worker"; print; next }
+      /^server:$/ { section = "server"; print; next }
+      /^[^[:space:]]/ { section = "" }
+      section == "worker" && WORKER_SET_CAPACITY == "true" && /^  maxParallelTasks:/ {
+        print "  maxParallelTasks: " WORKER_CAPACITY; next
+      }
+      section == "server" && WORKER_SET_SERVER == "true" && /^  url:/ {
+        print "  url: \"" WORKER_SERVER_URL "\""; next
+      }
+      { print }
+    ' "$config_root/worker.yml" > "$config_update" || fail "could not update Worker configuration"
+  if [[ $capacity_was_set == true ]] && ! grep -q '^  maxParallelTasks:' "$config_update"; then
+    fail "Worker configuration has no worker.maxParallelTasks setting"
+  fi
+  if [[ $server_was_set == true ]] && ! grep -q '^  url:' "$config_update"; then
+    fail "Worker configuration has no server.url setting"
+  fi
+  install -o root -g codex-worker -m 0640 "$config_update" "$config_root/worker.yml" || fail "could not save Worker configuration"
+fi
+if [[ $server_was_set == false ]]; then
+  requested_server=$(awk '/^server:$/ { in_server = 1; next } /^[^[:space:]]/ { in_server = 0 } in_server && /^  url:/ { sub(/^  url:[[:space:]]*/, ""); if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2); print; exit }' "$config_root/worker.yml")
 fi
 if [[ ! -e $config_root/worker.env ]]; then
   install -o root -g codex-worker -m 0640 /dev/null "$config_root/worker.env" || fail "could not create Worker environment file"
@@ -191,5 +300,32 @@ if [[ $service_was_active == true ]]; then
   systemctl start codex-worker || fail "Worker $version was installed but the service could not be restarted"
 fi
 
+if [[ $register_requested == true ]]; then
+  [[ -n $requested_server ]] && validate_server_url "$requested_server" || fail "registration requires a valid server.url in Worker configuration or --server URL"
+  [[ $requested_server != *codex-server.example* ]] || fail "replace the starter server.url or pass --server URL before registering"
+  identity_file="$data_root/.codex-worker/worker-id"
+  capacity_for_registration=${requested_capacity:-$(awk '/^  maxParallelTasks:/ { print $2; exit }' "$config_root/worker.yml")}
+  capacity_for_registration=${capacity_for_registration:-1}
+  token_value=$bootstrap_token
+  if [[ -n $token_file ]]; then
+    IFS= read -r token_value < "$token_file" || [[ -n $token_value ]] || fail "bootstrap token file is empty"
+  elif [[ -z $bootstrap_token ]]; then
+    fail "registration requires a bootstrap token"
+  fi
+  [[ -n $token_value ]] || fail "bootstrap token cannot be empty"
+  if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$install_root/CodexWorker" register \
+      --server "$requested_server" --token-stdin --capacity "$capacity_for_registration" --identity-file "$identity_file"; then
+    fail "Worker registration failed; the bootstrap token was not written to installer output"
+  fi
+  unset token_value bootstrap_token
+fi
+if [[ $start_requested == true ]]; then
+  systemctl enable --now codex-worker || fail "Worker was installed but could not be enabled and started"
+fi
+
 echo "Codex Worker $version installed in $install_root. Existing binaries are preserved at $backup_dir when present."
-echo "Configure $config_root/worker.yml and $config_root/worker.env, then register with Codex Server and run: systemctl enable --now codex-worker"
+if [[ $server_was_set == true ]]; then echo "Configured Codex Server URL in $config_root/worker.yml."; fi
+if [[ $capacity_was_set == true ]]; then echo "Configured Worker capacity to $requested_capacity."; fi
+if [[ $register_requested == true ]]; then echo "Worker registration completed."; else echo "Worker registration was not requested."; fi
+if [[ $start_requested == true ]]; then echo "Worker service is enabled and started."; elif [[ $service_was_active == true ]]; then echo "Worker service was active before installation and has been restarted."; else echo "Worker service was not started by this installation."; fi
+echo "Add project configuration and required environment values to $config_root/worker.yml and $config_root/worker.env."
