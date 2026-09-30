@@ -304,6 +304,15 @@ public sealed class WorkerServerSettings
     public int HeartbeatIntervalSeconds { get; set; } = 20;
     /// <summary>Optional override for the durable identity file (defaults under the user's home directory).</summary>
     public string? IdentityFile { get; set; }
+    public string EffectiveUrl
+    {
+        get
+        {
+            var identityPath = IdentityFile ?? WorkerIdentity.DefaultPath;
+            var path = Path.GetFullPath(identityPath) + ".server";
+            return File.Exists(path) ? File.ReadAllText(path).Trim() : Url;
+        }
+    }
 
     internal void Validate()
     {

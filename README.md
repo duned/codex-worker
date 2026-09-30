@@ -150,6 +150,24 @@ The installer resolves the latest GitHub Release by default, downloads the match
 
 Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-server/current` selects the active release. Configuration and secrets are in `/etc/codex-server/server.env`; SQLite state is in `/var/lib/codex-server`; the service log directory is `/var/log/codex-server` and service output is available in the systemd journal. The environment file is root-owned and readable by the Server account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. Temporary files use `/run/codex-server` and are not durable state.
 
+Create a single-use Worker registration token as the Server account; it expires after 15 minutes and can be revoked before use. Pass the database path when the Server uses a non-default data directory:
+
+```sh
+sudo -u codex-server /opt/codex-server/current/CodexServer worker-token create /var/lib/codex-server/codex-server.db
+```
+
+On the Worker, use the URL and identity path from its managed configuration. The registration command verifies the Server response and stores the durable Worker credential with owner-only permissions beside the identity file. It stores the Server URL there too, so the managed YAML URL can remain at its installer placeholder. Run the command as the `codex-worker` service account so it can write its identity state:
+
+```sh
+sudo -u codex-worker /opt/codex-worker/current/CodexWorker register \
+  --server https://server.example \
+  --token '<one-time-registration-token>' \
+  --identity-file /var/lib/codex-worker/.codex-worker/worker-id
+sudo systemctl enable --now codex-worker
+```
+
+The one-time token is accepted only for registration. Subsequent Worker requests use its durable per-Worker credential; the Server stores only hashes. Revoke an unused bootstrap token with `worker-token revoke <token> [database-path]`, or revoke a Worker credential with `worker-token revoke-worker <worker-id> [database-path]`. A new bootstrap registration for that same identity rotates its credential. Do not put either credential in service configuration or logs.
+
 Start and inspect the service with:
 
 ```sh

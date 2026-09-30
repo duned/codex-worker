@@ -75,6 +75,17 @@ public static class ServerApplication
         });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
+        app.MapPost("/api/v1/workers/register", async (WorkerRegistrationRequest request, HttpContext context, IRegistryStore store) =>
+        {
+            if (request is null || !Valid(request)) return Results.BadRequest(new { error = "Invalid worker registration contract." });
+            var authorization = context.Request.Headers.Authorization.ToString();
+            if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return Results.Unauthorized();
+            var workerToken = context.Request.Headers["X-Codex-Worker-Token"].ToString();
+            var accepted = await store.RedeemWorkerBootstrapTokenAsync(authorization[7..], request.WorkerId, workerToken, context.RequestAborted);
+            if (!accepted) return Results.Unauthorized();
+            await store.RegisterWorkerAsync(request, context.RequestAborted);
+            return Results.Ok(new { workerId = request.WorkerId });
+        });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
@@ -160,7 +171,7 @@ public static class ServerApplication
         app.MapPut("/api/v1/workers/{workerId}", async (string workerId, WorkerRegistrationRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
                 return Results.BadRequest(new { error = "Invalid worker registration contract." });
             await store.RegisterWorkerAsync(request, context.RequestAborted);
@@ -169,7 +180,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/heartbeat", async (string workerId, WorkerHeartbeatRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
                 return Results.BadRequest(new { error = "Invalid worker heartbeat contract." });
             try { await store.HeartbeatWorkerAsync(request, context.RequestAborted); }
@@ -179,7 +190,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/assignments/request", async (string workerId, WorkerAssignmentRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (request is null || !string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) ||
                 request.AvailableCapacity is < 0 or > 8 || request.ProjectCapacities is null ||
                 request.ProjectCapacities.Count > 128 || request.ProjectCapacities.Any(p => string.IsNullOrWhiteSpace(p.Key) || p.Key.Length > 80 || p.Value is < 0 or > 8))
@@ -189,7 +200,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/workers/{workerId}/provisioning/request", async (string workerId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (!Guid.TryParseExact(workerId, "N", out _)) return Results.BadRequest(new { error = "Worker identity is invalid." });
             var plan = await store.AcceptProvisioningPlanAsync(workerId, context.RequestAborted);
             return plan is null ? Results.NoContent() : Results.Ok(plan);
@@ -197,7 +208,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/provisioning/{planId}/report", async (string workerId, string planId, ProvisioningWorkerReport report,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "Worker provisioning report identity is invalid." });
             try
@@ -246,7 +257,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionRequestId}/report", async (string workerId, string executionRequestId,
             WorkerExecutionReport report, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "Worker execution report identity is invalid." });
             try
@@ -260,7 +271,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionId}/lease/renew", async (string workerId, string executionId,
             ExecutionLeaseRenewal renewal, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (renewal is null || !string.Equals(workerId, renewal.WorkerId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "Execution lease renewal identity is invalid." });
             try
@@ -294,7 +305,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (await store.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var version = ManagedConfigurationVersion(projects);
@@ -403,6 +414,15 @@ public static class ServerApplication
             } while (await timer.WaitForNextTickAsync(context.RequestAborted));
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+    }
+
+    private static async Task<bool> AuthorizedWorkerAsync(HttpContext context, ServerConfiguration configuration, IRegistryStore store, string workerId)
+    {
+        if (Authorized(context, configuration)) return true;
+        var supplied = context.Request.Headers.Authorization.ToString();
+        const string prefix = "Bearer ";
+        return supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+            await store.IsWorkerTokenValidAsync(workerId, supplied[prefix.Length..], context.RequestAborted);
     }
 
     private static bool Authorized(HttpContext context, ServerConfiguration configuration, bool management = false)

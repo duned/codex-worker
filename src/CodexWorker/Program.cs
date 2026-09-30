@@ -7,9 +7,10 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var output = new WorkerConsole();
+        if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
         if (args.Length != 1 || args[0] is "--help" or "-h")
         {
-            Console.WriteLine("Usage: CodexWorker <worker.yml>");
+            Console.WriteLine("Usage: codex-worker <worker.yml> | register --server <url> --token <registration-token> [--identity-file <path>]");
             return args.Length == 1 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
         }
 
@@ -44,6 +45,39 @@ public static class Program
         });
         try { await new WorkerHost(global, projects, output).RunAsync(shutdown.Token); return ProcessExitCodes.Success; }
         catch (Exception ex) { return ExitCodeFor(ex); }
+    }
+
+    private static async Task<int> RegisterAsync(string[] args, WorkerConsole output)
+    {
+        try
+        {
+            string? server = null, token = null, identityFile = null;
+            for (var index = 1; index < args.Length; index += 2)
+            {
+                if (index + 1 >= args.Length) throw new ArgumentException("Register requires a value for every option.");
+                switch (args[index])
+                {
+                    case "--server": server = args[index + 1]; break;
+                    case "--token": token = args[index + 1]; break;
+                    case "--identity-file": identityFile = args[index + 1]; break;
+                    default: throw new ArgumentException($"Unknown register option '{args[index]}'.");
+                }
+            }
+            if (string.IsNullOrWhiteSpace(token) || !Uri.TryCreate(server, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+                throw new ArgumentException("Usage: codex-worker register --server <url> --token <registration-token> [--identity-file <path>]");
+            var settings = new WorkerServerSettings { Enabled = true, Url = uri.ToString().TrimEnd('/'), IdentityFile = identityFile };
+            settings.Validate();
+            using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await new WorkerRegistrationClient().BootstrapAsync(settings, 1, token, shutdown.Token);
+            Console.WriteLine("Worker registered. Start or restart the Codex Worker service to begin managed operation.");
+            return ProcessExitCodes.Success;
+        }
+        catch (Exception ex)
+        {
+            output.InfrastructureFailure($"Worker registration failed: {ex.Message}");
+            return ProcessExitCodes.StartupFailure;
+        }
     }
 
     internal static int ExitCodeFor(Exception? failure) => failure switch

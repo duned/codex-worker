@@ -114,6 +114,42 @@ public static class WorkerIdentity
     }
 }
 
+public static class WorkerAuthentication
+{
+    public static string TokenPath(string identityPath) => Path.GetFullPath(identityPath) + ".token";
+    public static async Task<string> LoadOrCreateTokenAsync(string identityPath, CancellationToken cancellationToken = default)
+    {
+        var path = TokenPath(identityPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (File.Exists(path))
+        {
+            var existing = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
+            if (existing.Length < 32) throw new InvalidDataException("Persisted Worker authentication material is invalid.");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            return existing;
+        }
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temp, token, cancellationToken);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            try { File.Move(temp, path, overwrite: false); }
+            catch (IOException) when (File.Exists(path)) { return (await File.ReadAllTextAsync(path, cancellationToken)).Trim(); }
+            return token;
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    public static string GetToken(WorkerServerSettings settings)
+    {
+        var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
+        var path = TokenPath(identityPath);
+        if (File.Exists(path)) return File.ReadAllText(path).Trim();
+        return Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN") ?? "";
+    }
+}
+
 public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 {
     private static readonly WorkerCapabilityDiscovery CapabilityDiscovery = WorkerCapabilityDiscovery.Shared;
@@ -121,14 +157,14 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return;
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token))
             throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
-        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
+            using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
             request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
@@ -148,19 +184,55 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         finally { if (httpClient is null) client.Dispose(); }
     }
 
+    public async Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, CancellationToken cancellationToken)
+    {
+        var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
+        var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath, cancellationToken);
+        var workerToken = await WorkerAuthentication.LoadOrCreateTokenAsync(identityPath, cancellationToken);
+        var urlPath = Path.GetFullPath(identityPath) + ".server";
+        await File.WriteAllTextAsync(urlPath, settings.Url.TrimEnd('/') + Environment.NewLine, cancellationToken);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(urlPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        try
+        {
+            var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
+            var registration = new WorkerRegistrationContract(2, identity,
+                Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
+                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities);
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), "api/v1/workers/register"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
+            request.Headers.Add("X-Codex-Worker-Token", workerToken);
+            request.Content = JsonContent.Create(registration);
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                // A prior request may have redeemed the one-time token before its response was lost.
+                await RegisterAsync(settings, capacity, cancellationToken);
+                return;
+            }
+        }
+        catch (WorkerStartupException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            throw new WorkerStartupException($"Codex Server bootstrap failed: {ex.Message}", ex);
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
     public async Task HeartbeatAsync(WorkerServerSettings settings, int capacity, int activeExecutions,
         IReadOnlyList<string> activeProjects, string lifecycleState, CancellationToken cancellationToken,
         IReadOnlyList<WorkerCapabilityContract>? capabilities = null,
         WorkerConfigurationSyncStatus? configurationSync = null)
     {
         if (!settings.Enabled) return;
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
         var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
                 lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
@@ -180,14 +252,14 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             throw new ArgumentOutOfRangeException(nameof(availableCapacity), "Assignment capacity must be between zero and eight.");
         if (!workerEnabled || availableCapacity == 0 || projectCapacities.Count == 0 || projectCapacities.All(p => p.Value == 0))
             return new(false, null);
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
         var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post,
-                new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
+                new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities));
             using var response = await client.SendAsync(request, cancellationToken);
@@ -262,7 +334,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get,
-                new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
+                new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
             request.Headers.Add("X-Worker-Credential-Token", token);
             using var response = await client.SendAsync(request, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
@@ -280,9 +352,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 
     private static HttpRequestMessage CreateAuthorizedRequest(HttpMethod method, WorkerServerSettings settings, string path)
     {
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
-        var request = new HttpRequestMessage(method, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"), path));
+        var request = new HttpRequestMessage(method, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
     }
@@ -291,7 +363,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         string? stage, long generation, CancellationToken cancellationToken)
     {
         if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to report execution state.");
         var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -304,7 +376,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 state == "Completed" ? "passed" : null,
                 state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState == "recoverable",
                 Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation);
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"),
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
                 $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(report);
@@ -319,12 +391,12 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return null;
-        var token = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to renew an execution lease.");
         var client = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.Url.TrimEnd('/') + "/"),
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
                 $"api/v1/workers/{lease.WorkerId}/executions/{lease.ExecutionId}/lease/renew"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new ExecutionLeaseRenewalContract(lease.WorkerId, lease.Generation));

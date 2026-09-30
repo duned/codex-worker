@@ -115,6 +115,48 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public async Task BootstrapPersistsDurableCredentialAndServerUrlWithoutReturningEitherInPayload()
+    {
+        using var temporary = new TemporaryDirectory();
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{\"workerId\":\"worker\"}");
+        using var client = new HttpClient(handler);
+        var identityPath = Path.Combine(temporary.Path, "worker-id");
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
+        await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "one-time-bootstrap-secret", CancellationToken.None);
+
+        var durableToken = WorkerAuthentication.GetToken(settings);
+        Assert.NotEqual("one-time-bootstrap-secret", durableToken);
+        Assert.Equal("https://server.example", settings.EffectiveUrl);
+        Assert.Equal("Bearer one-time-bootstrap-secret", handler.Authorization);
+        Assert.NotNull(handler.WorkerAuthorization);
+        Assert.DoesNotContain(durableToken, handler.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain("one-time-bootstrap-secret", handler.Body, StringComparison.Ordinal);
+        Assert.Equal($"https://server.example/api/v1/workers/register", handler.Uri);
+        Assert.Equal(durableToken, WorkerAuthentication.GetToken(settings));
+    }
+
+    [Fact]
+    public async Task BootstrapCanRetryAfterTheOneTimeTokenWasAlreadyConsumed()
+    {
+        using var temporary = new TemporaryDirectory();
+        var handler = new RetryHandler();
+        using var client = new HttpClient(handler);
+        var settings = new WorkerServerSettings
+        {
+            Enabled = true,
+            Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "worker-id")
+        };
+
+        await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "already-used-bootstrap-token", CancellationToken.None);
+
+        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal("PUT", handler.LastMethod);
+        Assert.Equal("Bearer " + WorkerAuthentication.GetToken(settings), handler.LastAuthorization);
+        Assert.Equal("https://server.example", settings.EffectiveUrl);
+    }
+
+    [Fact]
     public async Task AssignmentRequestUsesRegisteredIdentityAndDoesNotCallServerWithoutCapacity()
     {
         using var temporary = new TemporaryDirectory();
@@ -223,6 +265,7 @@ public sealed class WorkerRegistrationTests
             _responseBody = responseBody;
         }
         public string? Authorization { get; private set; }
+        public string? WorkerAuthorization { get; private set; }
         public string? Body { get; private set; }
         public string? Method { get; private set; }
         public string? Uri { get; private set; }
@@ -231,8 +274,23 @@ public sealed class WorkerRegistrationTests
             Method = request.Method.Method;
             Uri = request.RequestUri?.ToString();
             Authorization = request.Headers.Authorization?.ToString();
+            WorkerAuthorization = request.Headers.TryGetValues("X-Codex-Worker-Token", out var values) ? values.Single() : null;
             Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(_statusCode) { Content = new StringContent(_responseBody ?? "") };
+        }
+    }
+
+    private sealed class RetryHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public string? LastMethod { get; private set; }
+        public string? LastAuthorization { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            LastMethod = request.Method.Method;
+            LastAuthorization = request.Headers.Authorization?.ToString();
+            return Task.FromResult(new HttpResponseMessage(RequestCount == 1 ? HttpStatusCode.Unauthorized : HttpStatusCode.OK));
         }
     }
 

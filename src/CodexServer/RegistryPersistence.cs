@@ -13,6 +13,11 @@ public interface IRegistryStore
 {
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
+    Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default);
+    Task<bool> RevokeWorkerBootstrapTokenAsync(string token, CancellationToken cancellationToken = default);
+    Task<bool> RedeemWorkerBootstrapTokenAsync(string token, string workerId, string workerToken, CancellationToken cancellationToken = default);
+    Task<bool> IsWorkerTokenValidAsync(string workerId, string token, CancellationToken cancellationToken = default);
+    Task<bool> RevokeWorkerTokenAsync(string workerId, CancellationToken cancellationToken = default);
     Task RegisterWorkerAsync(WorkerRegistrationRequest worker, CancellationToken cancellationToken = default);
     Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkersAsync(CancellationToken cancellationToken = default);
@@ -428,6 +433,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     last_seen_at_utc TEXT NULL,
                     heartbeat_json TEXT NULL
                 );
+                CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token_hash TEXT NOT NULL PRIMARY KEY, expires_at_utc TEXT NOT NULL, consumed_at_utc TEXT NULL);
+                CREATE TABLE IF NOT EXISTS worker_auth_tokens (worker_id TEXT NOT NULL PRIMARY KEY, token_hash TEXT NOT NULL, created_at_utc TEXT NOT NULL, revoked_at_utc TEXT NULL);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT NOT NULL PRIMARY KEY,
                     display_name TEXT NOT NULL,
@@ -1273,6 +1280,77 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == CurrentSchemaVersion;
     }
+
+    public async Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default)
+    {
+        if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromHours(24)) throw new ArgumentOutOfRangeException(nameof(lifetime));
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO worker_bootstrap_tokens (token_hash, expires_at_utc) VALUES ($hash, $expires);";
+        command.Parameters.AddWithValue("$hash", HashToken(token));
+        command.Parameters.AddWithValue("$expires", _timeProvider.GetUtcNow().Add(lifetime).ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return token;
+    }
+
+    public async Task<bool> RevokeWorkerBootstrapTokenAsync(string token, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM worker_bootstrap_tokens WHERE token_hash=$hash AND consumed_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$hash", HashToken(token));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> RedeemWorkerBootstrapTokenAsync(string token, string workerId, string workerToken, CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(workerId, "N", out _) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(workerToken)) return false;
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "DELETE FROM worker_bootstrap_tokens WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$hash", HashToken(token));
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return false;
+        command.CommandText = "INSERT INTO worker_auth_tokens (worker_id, token_hash, created_at_utc, revoked_at_utc) VALUES ($worker,$token,$now,NULL) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash, created_at_utc=excluded.created_at_utc, revoked_at_utc=NULL;";
+        command.Parameters.Clear();
+        command.Parameters.AddWithValue("$worker", workerId);
+        command.Parameters.AddWithValue("$token", HashToken(workerToken));
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> IsWorkerTokenValidAsync(string workerId, string token, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT token_hash FROM worker_auth_tokens WHERE worker_id=$worker AND revoked_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$worker", workerId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is string expected && CryptographicOperations.FixedTimeEquals(Convert.FromHexString(expected), Convert.FromHexString(HashToken(token)));
+    }
+
+    public async Task<bool> RevokeWorkerTokenAsync(string workerId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE worker_auth_tokens SET revoked_at_utc=$now WHERE worker_id=$worker AND revoked_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$worker", workerId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    private static string HashToken(string token) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
 }
 
 /// <summary>Expires elapsed leases and conservatively reconciles abandoned Server-managed attempts.</summary>

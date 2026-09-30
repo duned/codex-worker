@@ -44,6 +44,28 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task BootstrapTokensAreShortLivedOneTimeAndCreatePerWorkerCredentials()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
+        var workerId = Guid.NewGuid().ToString("N");
+        Assert.False(await store.RedeemWorkerBootstrapTokenAsync("invalid", workerId, "worker-secret"));
+        clock.Advance(TimeSpan.FromMinutes(16));
+        Assert.False(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, "worker-secret"));
+
+        var validBootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
+        Assert.True(await store.RedeemWorkerBootstrapTokenAsync(validBootstrap, workerId, "worker-secret"));
+        Assert.False(await store.RedeemWorkerBootstrapTokenAsync(validBootstrap, workerId, "other-secret"));
+        Assert.True(await store.IsWorkerTokenValidAsync(workerId, "worker-secret"));
+        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "other-secret"));
+        Assert.True(await store.RevokeWorkerTokenAsync(workerId));
+        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "worker-secret"));
+    }
+
+    [Fact]
     public void DataDirectoryAndRelativeDatabasePathResolveOutsideTheWorkingDirectory()
     {
         using var temporary = new TemporaryDirectory();
