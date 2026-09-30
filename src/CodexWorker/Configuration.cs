@@ -159,14 +159,17 @@ public sealed class ProjectsSettings
 
 public static class ProjectConfigurationDiscovery
 {
-    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory)
+    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadForWorker(GlobalWorkerConfiguration global) =>
+        Load(global.Projects.Directory, allowEmpty: global.Server.Enabled && global.Projects.Ownership == "managed");
+
+    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory, bool allowEmpty = false)
     {
         if (!Directory.Exists(directory)) throw new InvalidDataException($"Projects directory does not exist: {directory}");
         var files = Directory.EnumerateFiles(directory).Where(x =>
             Path.GetExtension(x).Equals(".yml", StringComparison.OrdinalIgnoreCase) ||
             Path.GetExtension(x).Equals(".yaml", StringComparison.OrdinalIgnoreCase))
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase).ThenBy(x => x, StringComparer.Ordinal).ToArray();
-        if (files.Length == 0) throw new InvalidDataException($"No project YAML files found in {directory}.");
+        if (files.Length == 0 && !allowEmpty) throw new InvalidDataException($"No project YAML files found in {directory}.");
         var projects = new List<(string, WorkerConfiguration)>();
         foreach (var file in files)
         {
@@ -212,7 +215,7 @@ public static class ProjectConfigurationDiscovery
 public sealed class ProjectScheduler(int projectCount)
 {
     private int _next;
-    public int ProjectCount { get; private set; } = projectCount > 0 ? projectCount : throw new ArgumentOutOfRangeException(nameof(projectCount));
+    public int ProjectCount { get; private set; } = projectCount >= 0 ? projectCount : throw new ArgumentOutOfRangeException(nameof(projectCount));
     public int NextIndex => _next;
     public IEnumerable<int> ScanOrder()
     {
@@ -225,9 +228,9 @@ public sealed class ProjectScheduler(int projectCount)
     }
     public void Reconfigure(int projectCount)
     {
-        if (projectCount <= 0) throw new ArgumentOutOfRangeException(nameof(projectCount));
+        if (projectCount < 0) throw new ArgumentOutOfRangeException(nameof(projectCount));
         ProjectCount = projectCount;
-        _next %= projectCount;
+        _next = projectCount == 0 ? 0 : _next % projectCount;
     }
     public async Task<int?> ScanAsync(Func<int, Task<bool>> processOne)
     {

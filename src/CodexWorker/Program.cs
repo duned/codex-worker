@@ -22,7 +22,7 @@ public static class Program
             global = GlobalWorkerConfiguration.Load(args[0]);
             TelegramNotifier.ValidateConfiguration(global.Telegram.Enabled,
                 Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"), Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID"));
-            projects = ProjectConfigurationDiscovery.Load(global.Projects.Directory);
+            projects = ProjectConfigurationDiscovery.LoadForWorker(global);
         }
         catch (Exception ex)
         {

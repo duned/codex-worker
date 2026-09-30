@@ -82,6 +82,29 @@ public sealed class MultiProjectConfigurationTests
     }
 
     [Fact]
+    public void ManagedWorkerCanDiscoverAnEmptyProjectsDirectory()
+    {
+        using var fixture = new Fixture();
+        var global = new GlobalWorkerConfiguration
+        {
+            Projects = new ProjectsSettings { Directory = fixture.Projects, Ownership = "managed" },
+            Server = new WorkerServerSettings { Enabled = true, Url = "https://server.example" }
+        };
+
+        var projects = ProjectConfigurationDiscovery.LoadForWorker(global);
+        var scheduler = new ProjectScheduler(projects.Count);
+
+        Assert.Empty(projects);
+        Assert.Empty(scheduler.ScanOrder());
+        scheduler.Reconfigure(0);
+        Assert.Equal(0, scheduler.ProjectCount);
+
+        fixture.AddProject("later.yml", "Later", "owner/later", "later");
+
+        Assert.Equal("Later", Assert.Single(ProjectConfigurationDiscovery.LoadForWorker(global)).Configuration.Project.Name);
+    }
+
+    [Fact]
     public void MalformedProjectNamesSourceFile()
     {
         using var fixture = new Fixture();

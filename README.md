@@ -68,7 +68,7 @@ Copy [`config/worker.example.yml`](config/worker.example.yml) to `~/.codex-worke
 CodexWorker ~/.codex-worker/worker.yml
 ```
 
-Relative `projects.directory` paths resolve from the global config file. Project `directory` paths resolve from their project YAML file; relative `codex.instructionsFile` paths resolve from the checkout. Only `.yml` and `.yaml` files are discovered, sorted by filename; unrelated files are ignored. Any malformed project file fails startup. At least one project is required. Duplicate project names, GitHub repositories, or checkout paths are rejected. `worker.preflightTimeoutSeconds` applies to the one global preflight and is bounded to 1–300 seconds.
+Relative `projects.directory` paths resolve from the global config file. Project `directory` paths resolve from their project YAML file; relative `codex.instructionsFile` paths resolve from the checkout. Only `.yml` and `.yaml` files are discovered, sorted by filename; unrelated files are ignored. Any malformed project file fails startup. Standalone mode requires at least one project. Managed mode may start with an empty project directory: it registers, reports zero active projects, and remains healthy and idle while it synchronizes Server configuration. When Server projects are added later, add their matching machine-local project YAML to the configured directory so the Worker has checkout and execution settings; the running Worker discovers it during its next managed configuration sync. Duplicate project names, GitHub repositories, or checkout paths are rejected. `worker.preflightTimeoutSeconds` applies to the one global preflight and is bounded to 1–300 seconds.
 
 An optional project environment section accepts only a file path:
 

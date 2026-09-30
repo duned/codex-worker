@@ -106,7 +106,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
     private static void ValidateSnapshot(ServerManagedConfigurationContract snapshot)
     {
         if (snapshot.ContractVersion != 1 || string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
-            snapshot.Projects is null || snapshot.Projects.Count is 0 or > 1000)
+            snapshot.Projects is null || snapshot.Projects.Count > 1000)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");
         if (snapshot.Projects.Any(project => project is null || project.Revision < 1 || !ValidProject(project)))
             throw new InvalidDataException("Server returned an invalid managed project configuration.");

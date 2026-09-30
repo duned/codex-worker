@@ -64,7 +64,8 @@ public sealed class WorkerHost
         }
         try
         {
-            if (configuredProjects.Count == 0) throw new InvalidDataException("At least one project must be configured.");
+            if (configuredProjects.Count == 0 && _global.Projects.Ownership != "managed")
+                throw new InvalidDataException("At least one project must be configured in standalone mode.");
             discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.GetCachedAsync(ct);
             heartbeatCapabilities = discoveredCapabilities;
             if (managedConfiguration?.HasCachedSnapshot == true)
@@ -210,6 +211,7 @@ public sealed class WorkerHost
                     synchronization?.Error ?? "Server-managed configuration is incompatible."))
                 throw new WorkerInfrastructureException($"Worker readiness failed: {lifecycle.Snapshot.ReconnectReadinessResult}");
             await telegram.StartedAsync(runtimes.Count, ct);
+            if (runtimes.Count == 0) _output.NoProjectsConfigured();
             _output.Started();
             runtimeReadModel.State = "running";
             Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "running" });
@@ -264,7 +266,8 @@ public sealed class WorkerHost
                         var registration = new WorkerRegistrationClient();
                         var desired = await registration.GetManagedConfigurationAsync(_global.Server, executionToken);
                         var previousVersion = managedConfiguration!.Status.AppliedVersion;
-                        var replacement = managedConfiguration.Apply(desired, _projects);
+                        var localProjects = ProjectConfigurationDiscovery.Load(_global.Projects.Directory, allowEmpty: true);
+                        var replacement = managedConfiguration.Apply(desired, localProjects);
                         if (!string.Equals(previousVersion, desired.Version, StringComparison.Ordinal))
                         {
                             runtimeReadModel.Registry.ReplaceConfiguration(replacement);

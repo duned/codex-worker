@@ -5,6 +5,19 @@ namespace CodexWorker.Tests;
 public sealed class ManagedConfigurationTests
 {
     [Fact]
+    public void AppliesAnEmptyServerSnapshotForAColdStartWorker()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(Path.GetDirectoryName(fixture.CachePath)!, "empty-configuration.json"));
+        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
+
+        var configured = synchronizer.Apply(snapshot, []);
+
+        Assert.Empty(configured);
+        Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
+    }
+
+    [Fact]
     public void InitialSnapshotIsValidatedAppliedAndReported()
     {
         using var fixture = new Fixture();
