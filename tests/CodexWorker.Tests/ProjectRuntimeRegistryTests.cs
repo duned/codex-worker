@@ -27,6 +27,24 @@ public sealed class ProjectRuntimeRegistryTests
     }
 
     [Fact]
+    public void UnavailableProjectCannotBeReservedWhileIndependentProjectRemainsSchedulable()
+    {
+        var alpha = Config("alpha");
+        var beta = Config("beta");
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", alpha), ("beta.yml", beta)]);
+
+        Assert.True(registry.TryReserve("alpha"));
+        var status = registry.MarkUnavailable("alpha", "checkout is dirty");
+        registry.Release("alpha");
+
+        Assert.Equal(ProjectLifecycleState.Unavailable, status!.State);
+        Assert.Equal("checkout is dirty", status.UnavailableReason);
+        Assert.False(registry.TryReserve("alpha"));
+        Assert.True(registry.TryReserve("beta"));
+        registry.Release("beta");
+    }
+
+    [Fact]
     public void WorkerDrainBlocksAllProjectsAndCompletesAfterReservationsRelease()
     {
         var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha")), ("beta.yml", Config("beta"))]);

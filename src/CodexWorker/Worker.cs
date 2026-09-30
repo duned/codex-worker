@@ -160,6 +160,21 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, "Cancellation interrupted execution.");
             throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
         }
+        catch (PreExecutionInfrastructureException)
+        {
+            try
+            {
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.ReadyLabel, CancellationToken.None);
+            }
+            catch (Exception releaseError)
+            {
+                throw new WorkerInfrastructureException($"Project '{config.Project.Name}' failed preparing Issue #{issue.Number} before workspace creation, and the claimed Issue could not be safely released: {releaseError.Message}", releaseError);
+            }
+            var message = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] released to '{config.GitHub.ReadyLabel}' after pre-execution infrastructure failure.";
+            _operationalLog(message);
+            _output.Warning(message);
+            throw;
+        }
         catch (Exception ex)
         {
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);

@@ -1,5 +1,16 @@
 namespace CodexWorker;
 
+/// <summary>A project execution failed before an execution workspace existed and was safely released.</summary>
+public sealed class PreExecutionInfrastructureException(string project, int issueNumber, Guid executionId, string reason, Exception? inner = null)
+    : WorkerInfrastructureException(reason, inner)
+{
+    public string Project { get; } = project;
+    public int IssueNumber { get; } = issueNumber;
+    public Guid ExecutionId { get; } = executionId;
+}
+
+public sealed class ProjectCheckoutDirtyException(string message) : WorkerInfrastructureException(message);
+
 public interface IGitHubClient
 {
     Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken);

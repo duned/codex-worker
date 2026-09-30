@@ -175,21 +175,41 @@ public sealed class WorkerHost
                 },
                 async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
             )).ToArray();
-            var createdLabels = await StartupCoordinator.RunAsync(startupPlans, ct);
-            validatedConfigurations.UnionWith(runtimes.Select(project => project.Configuration));
-            Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(runtimes.SelectMany(project =>
+            var startupResult = await StartupCoordinator.RunIsolatedAsync(startupPlans, ct);
+            var createdLabels = startupResult.CreatedLabels;
+            foreach (var failure in startupResult.UnavailableProjects)
+            {
+                activeProject = failure.Name;
+                runtimeReadModel.Registry.MarkUnavailable(failure.Name, failure.Reason);
+                var message = $"Project '{failure.Name}' is unavailable after startup validation: {failure.Reason}";
+                _output.Warning(message);
+                _operationalLog($"Scheduler · {failure.Name} · unavailable · {failure.Reason}");
+            }
+            var unavailableNames = startupResult.UnavailableProjects.Select(failure => failure.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var healthyRuntimes = runtimes.Where(project => !unavailableNames.Contains(project.Configuration.Project.Name)).ToList();
+            if (configuredProjects.Count > 0 && healthyRuntimes.Count == 0)
+            {
+                var failure = startupResult.UnavailableProjects[0];
+                var message = failure.Reason.StartsWith("read-only startup validation failed:", StringComparison.Ordinal)
+                    ? $"Project configuration '{failure.Path}' failed read-only startup validation: {failure.Reason["read-only startup validation failed:".Length..].Trim()}"
+                    : $"All configured projects are unavailable; '{failure.Name}' could not start: {failure.Reason}";
+                throw new WorkerInfrastructureException(message);
+            }
+            validatedConfigurations.UnionWith(healthyRuntimes
+                .Select(project => project.Configuration));
+            Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(healthyRuntimes.SelectMany(project =>
                 WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
                 .Distinct().ToArray());
             if (_global.Server.Enabled)
                 await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
                     Array.Empty<string>(), "starting", ct, heartbeatCapabilities, managedConfiguration?.Status);
-            await ReconcileRecoveryAsync(runtimes, history, runtimeReadModel, ct);
+            await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, ct);
             if (configurationService is not null)
                 configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
             _output.GitHubCliReady();
             _output.GitHubAuthenticationReady();
-            _output.GitRepositoryAuthenticationReady(runtimes.Count);
-            _output.GitHubLabelsReady(runtimes.Count, createdLabels);
+            _output.GitRepositoryAuthenticationReady(healthyRuntimes.Count);
+            _output.GitHubLabelsReady(healthyRuntimes.Count, createdLabels);
             _output.GitHubDependenciesReady();
 
             _output.GlobalPreflight();
@@ -249,7 +269,15 @@ public sealed class WorkerHost
                         try { await renewal.Run; } catch (OperationCanceledException) { }
                         renewal.Stop.Dispose();
                     }
-                    await completed;
+                    try { await completed; }
+                    catch (PreExecutionInfrastructureException ex)
+                    {
+                        var message = $"Project '{ex.Project}' is unavailable after a pre-execution infrastructure failure for Issue #{ex.IssueNumber} [{ExecutionFormatting.ShortId(ex.ExecutionId)}]: {ex.Message}";
+                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, ex.Message);
+                        runtimeReadModel.Events.Publish("project.unavailable", message, ex.Project);
+                        _output.Warning(message);
+                        _operationalLog($"Scheduler · {message}");
+                    }
                     active.Remove(completed);
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
                     ReportCapacity();
@@ -420,6 +448,16 @@ public sealed class WorkerHost
                         safeToStop = true; // no Issue has been claimed while queue lookup is in progress
                         Task<IssueProcessingResult?>? execution;
                         try { execution = await project.Worker.ClaimNextAsync(executionToken); }
+                        catch (PreExecutionInfrastructureException ex)
+                        {
+                            runtimeReadModel.Registry.MarkUnavailable(project.Configuration.Project.Name, ex.Message);
+                            runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
+                            var message = $"Project '{ex.Project}' is unavailable after a pre-execution infrastructure failure for Issue #{ex.IssueNumber} [{ExecutionFormatting.ShortId(ex.ExecutionId)}]: {ex.Message}";
+                            runtimeReadModel.Events.Publish("project.unavailable", message, ex.Project);
+                            _output.Warning(message);
+                            _operationalLog($"Scheduler · {message}");
+                            continue;
+                        }
                         catch { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); throw; }
                         safeToStop = true;
                         if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }

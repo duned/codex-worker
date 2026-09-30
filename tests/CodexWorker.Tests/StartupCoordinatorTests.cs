@@ -53,6 +53,22 @@ public sealed class StartupCoordinatorTests
     }
 
     [Fact]
+    public async Task StartupValidationDegradesOnlyTheProjectWithAnInvalidCheckout()
+    {
+        var events = new List<string>();
+        var result = await StartupCoordinator.RunIsolatedAsync([
+            Plan("A", events, validateError: new InvalidDataException("dirty checkout")),
+            Plan("B", events, missing: [new RequiredGitHubLabel("b-ready", "123456", "ready")])
+        ], CancellationToken.None);
+
+        Assert.Single(result.UnavailableProjects);
+        Assert.Equal("A", result.UnavailableProjects[0].Name);
+        Assert.Contains("dirty checkout", result.UnavailableProjects[0].Reason);
+        Assert.Equal(1, result.CreatedLabels);
+        Assert.Equal(new[] { "validate:A", "validate:B", "capabilities:B", "query:B", "create:B:b-ready", "initialize:B" }, events);
+    }
+
+    [Fact]
     public async Task AllReadOnlyValidationFinishesBeforeLabelQueriesAndCreation()
     {
         var events = new List<string>();

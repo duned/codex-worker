@@ -538,7 +538,7 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         var status = await GitAsync(["status", "--porcelain=v1", "--untracked-files=all"], ct);
         if (!string.IsNullOrWhiteSpace(status.StandardOutput))
-            throw new WorkerInfrastructureException($"Project checkout is dirty {phase}; refusing to proceed.");
+            throw new ProjectCheckoutDirtyException($"Project checkout is dirty {phase}; refusing to proceed.");
     }
 
     private async Task ValidateBranchRefAsync(string branch, CancellationToken ct)

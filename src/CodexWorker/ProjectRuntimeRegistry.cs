@@ -1,7 +1,7 @@
 namespace CodexWorker;
 
-public enum ProjectLifecycleState { Enabled, Disabled, Draining }
-public sealed record ProjectLifecycleInfo(string Name, ProjectLifecycleState State, int ActiveExecutionCount, bool DrainComplete);
+public enum ProjectLifecycleState { Enabled, Disabled, Draining, Unavailable }
+public sealed record ProjectLifecycleInfo(string Name, ProjectLifecycleState State, int ActiveExecutionCount, bool DrainComplete, string? UnavailableReason = null);
 
 /// <summary>Atomic process-local lifecycle and configuration snapshots used by scheduling and control APIs.</summary>
 public sealed class ProjectRuntimeRegistry
@@ -90,6 +90,19 @@ public sealed class ProjectRuntimeRegistry
     public ProjectLifecycleInfo? Enable(string name) => Transition(name, ProjectLifecycleState.Enabled, "project.enabled", "Project enabled.");
     public ProjectLifecycleInfo? Disable(string name) => Transition(name, ProjectLifecycleState.Disabled, "project.disabled", "Project disabled.");
 
+    public ProjectLifecycleInfo? MarkUnavailable(string name, string reason)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry)) return null;
+            entry.UnavailableReason = reason;
+            entry.State = ProjectLifecycleState.Unavailable;
+            _events?.Publish("project.unavailable", reason, name);
+            SignalChanged();
+            return Info(name, entry);
+        }
+    }
+
     public ProjectLifecycleInfo? Drain(string name)
     {
         lock (_gate)
@@ -172,7 +185,8 @@ public sealed class ProjectRuntimeRegistry
                 {
                     if (previous.Active > 0 && !SameExecutionIdentity(previous.Configuration, configuration))
                         throw new ProjectConfigurationConflictException($"Project '{configuration.Project.Name}' has active executions and cannot change repository or checkout.");
-                    next.Add(configuration.Project.Name, new Entry(path, configuration, previous.State, previous.Active));
+                    var state = previous.State == ProjectLifecycleState.Unavailable ? ProjectLifecycleState.Enabled : previous.State;
+                    next.Add(configuration.Project.Name, new Entry(path, configuration, state, previous.Active));
                 }
                 else next.Add(configuration.Project.Name, new Entry(path, configuration));
             }
@@ -193,6 +207,7 @@ public sealed class ProjectRuntimeRegistry
             if (entry.State != target)
             {
                 entry.State = target;
+                if (target != ProjectLifecycleState.Unavailable) entry.UnavailableReason = null;
                 _events?.Publish(eventType, message, name);
                 if (target == ProjectLifecycleState.Enabled) SignalChanged();
             }
@@ -201,7 +216,7 @@ public sealed class ProjectRuntimeRegistry
     }
 
     private static ProjectLifecycleInfo Info(string name, Entry entry) => new(name, entry.State, entry.Active,
-        entry.State == ProjectLifecycleState.Draining && entry.Active == 0);
+        entry.State == ProjectLifecycleState.Draining && entry.Active == 0, entry.UnavailableReason);
 
     private static bool SameExecutionIdentity(WorkerConfiguration a, WorkerConfiguration b) =>
         string.Equals(a.Project.Repository, b.Project.Repository, StringComparison.OrdinalIgnoreCase) &&
@@ -224,6 +239,7 @@ public sealed class ProjectRuntimeRegistry
         public ProjectLifecycleState State = state;
         public int Active = active;
         public bool Removing;
+        public string? UnavailableReason;
         public ProjectLifecycleState StateBeforeRemoval = state;
     }
 }

@@ -26,7 +26,12 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             await _repositoryGate.WaitAsync(ct);
             try
             {
-                await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct);
+                try { await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct); }
+                catch (ProjectCheckoutDirtyException ex) when (!WorkspaceExists())
+                {
+                    throw new PreExecutionInfrastructureException(execution.Project, issue.Number, execution.ExecutionId,
+                        $"Project '{execution.Project}' failed preparing Issue #{issue.Number} before an execution workspace was created: {ex.Message}", ex);
+                }
                 if (context.RetryOf is { RecoveryState: "recoverable" or "cleanup-pending" or "missing" } previous)
                 {
                     if (history is not null) await history.UpdateRecoveryAsync(previous.ExecutionId, "cleanup-pending", ct);
@@ -158,7 +163,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     "Codex execution did not complete; see execution history for details.");
             else if (ex is OperationCanceledException && ct.IsCancellationRequested)
                 output.FailureReason(execution.ExecutionId, "Cancellation/interruption", "Execution was cancelled or interrupted.");
-            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
+            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message,
+                ex is PreExecutionInfrastructureException ? null : "uncertain");
             throw;
         }
     }
@@ -208,7 +214,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (reportServer is not null) await reportServer(entry, state, ct);
     }
 
-    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
+    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain")
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
         var workspace = git.ExecutionDirectory;
@@ -216,12 +222,20 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
             !PathEquals(workspace, checkout) && Directory.Exists(workspace))
             reason += $" Preserved execution workspace: {Path.GetFullPath(workspace)}";
-        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = "uncertain" }, CancellationToken.None); }
+        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState }, CancellationToken.None); }
         catch (WorkerInfrastructureException) { /* Preserve the original failure; the existing row remains incomplete. */ }
     }
 
     private static bool PathEquals(string left, string right) =>
         Path.GetFullPath(left).Equals(Path.GetFullPath(right), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private bool WorkspaceExists()
+    {
+        var workspace = git.ExecutionDirectory;
+        var checkout = config.Project.Directory;
+        return !string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
+            !PathEquals(workspace, checkout) && Directory.Exists(workspace);
+    }
 
     private Task SaveHistoryAsync(ExecutionHistoryEntry entry, CancellationToken ct) =>
         history is null ? Task.CompletedTask : history.UpdateAsync(entry, ct);

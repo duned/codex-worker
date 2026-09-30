@@ -93,6 +93,49 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task DirtyCheckoutPreparationReleasesClaimWithoutResumeMetadata()
+    {
+        using var historyDatabase = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(historyDatabase.Path);
+        using var h = new Harness(history: history);
+        h.Git.StartFailure = new ProjectCheckoutDirtyException("Project checkout is dirty before Issue #17; refusing to proceed.");
+
+        var failure = await Assert.ThrowsAsync<PreExecutionInfrastructureException>(() => h.ProcessOneAsync());
+
+        Assert.Equal("Test Project", failure.Project);
+        Assert.Equal(new[] { "ready->working", "working->ready" }, h.GitHub.Labels);
+        Assert.Null(h.Codex.InitialDirectory);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.Null(entry.RecoveryState);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("released to 'ready'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DirtyCheckoutFailureDoesNotCancelAnIndependentRunningExecution()
+    {
+        using var h = new Harness();
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.ReturnDistinctIssues = true;
+        h.Git.FailIssueNumber = 18;
+        h.Git.StartFailure = new ProjectCheckoutDirtyException("Project checkout is dirty before Issue #18; refusing to proceed.");
+        h.Codex.BlockRuns = true;
+
+        var independent = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        await h.Codex.BlockedRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var dirty = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+
+        Assert.NotNull(dirty);
+        await Assert.ThrowsAsync<PreExecutionInfrastructureException>(() => dirty!);
+        Assert.False(h.Cancellation.IsCancellationRequested);
+        Assert.True(independent is { IsCompleted: false });
+        Assert.Equal("working->ready", h.GitHub.Labels[^1]);
+
+        h.Codex.ReleaseRuns.TrySetResult();
+        Assert.NotNull(await independent!);
+    }
+
+    [Fact]
     public async Task CompletedIssueIsMarkedSupersededBeforeIntegration()
     {
         using var historyDatabase = new TempHistoryDatabase();
@@ -774,10 +817,14 @@ public sealed class WorkerV011Tests
         public bool LastResume { get; private set; }
         public int LastAttemptNumber { get; private set; }
         public GitIntegrationConflictException? IntegrationFailure { get; set; }
+        public ProjectCheckoutDirtyException? StartFailure { get; set; }
+        public int? FailIssueNumber { get; set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
-        { Started++; LastExecutionId = executionId; LastResume = resume; LastAttemptNumber = attemptNumber; return Task.CompletedTask; }
+        { Started++; LastExecutionId = executionId; LastResume = resume; LastAttemptNumber = attemptNumber;
+            var failure = FailIssueNumber is null || issue.Number == FailIssueNumber ? StartFailure : null;
+            return failure is null ? Task.CompletedTask : Task.FromException(failure); }
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)
