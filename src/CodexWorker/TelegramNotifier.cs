@@ -53,7 +53,7 @@ public sealed class TelegramNotifier : IDisposable
         SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO\n{project}"), ct);
 
     public Task StartingAsync(string project, string repository, GitHubIssue issue, CancellationToken ct) =>
-        SendTaskAsync(project, repository, issue, $"▶ CW {ApplicationVersion.Display} · {Project(project)} · TAREA INICIADA", null, ct);
+        SendTaskAsync(project, repository, issue, "▶", "TAREA INICIADA", null, ct);
 
     public Task StartingAsync(string project, string repository, GitHubIssue issue, WorkerExecution execution,
         CancellationToken ct)
@@ -62,8 +62,8 @@ public sealed class TelegramNotifier : IDisposable
         var mode = execution.Resumed ? "resume" : "restart";
         var retry = execution.AttemptNumber <= 1 ? "" : $"\nIntento {execution.AttemptNumber} · {mode} · ejecución actual {ExecutionFormatting.Display(execution.ExecutionId)}" +
             (execution.RetryOfExecutionId is { } id ? $"\nejecución anterior {ExecutionFormatting.Display(id)}" : "");
-        return SendTaskAsync(project, repository, issue,
-            $"▶ CW {ApplicationVersion.Display} · {Project(project)} · {(execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action)}",
+        return SendTaskAsync(project, repository, issue, "▶",
+            execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action,
             $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}", ct);
     }
 
@@ -75,9 +75,9 @@ public sealed class TelegramNotifier : IDisposable
 
     private Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid? executionId, string summary, CancellationToken ct)
     {
-        var identity = executionId is null ? "" : $" · {ExecutionFormatting.Display(executionId.Value)}";
-        var lines = new List<string> { $"✅ CW {ApplicationVersion.Display} · {Project(project)} · TAREA COMPLETADA{identity}", IssueLink(repository, issue), "",
-            $"Duración: {WorkerConsole.FormatDuration(duration)}" };
+        var lines = TaskHeader(project, repository, issue, "✅", "TAREA COMPLETADA");
+        if (executionId is not null) lines.Add($"Ejecución {ExecutionFormatting.Display(executionId.Value)}");
+        lines.AddRange(["", $"Duración: {WorkerConsole.FormatDuration(duration)}"]);
         AddMatch(lines, summary, @"Committed as `([^`]+)`", "Commit");
         AddMatch(lines, summary, @"Merged into `([^`]+)`", "Integrada en");
         AddMatch(lines, summary, @"Preserved on origin as `([^`]+)`", "Rama completada preservada");
@@ -93,14 +93,14 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     public Task BlockedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendTaskAsync(project, repository, issue, $"🟡 CW {ApplicationVersion.Display} · {Project(project)} · TAREA BLOQUEADA",
+        SendTaskAsync(project, repository, issue, "🟡", "TAREA BLOQUEADA",
             $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
 
     public Task BlockedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string details, CancellationToken ct) =>
         BlockedAsync(project, repository, issue, duration, $"Ejecución {ExecutionFormatting.Display(executionId)}\n{details}", ct);
 
     public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, string details, CancellationToken ct) =>
-        SendTaskAsync(project, repository, issue, $"❌ CW {ApplicationVersion.Display} · {Project(project)} · TAREA FALLIDA",
+        SendTaskAsync(project, repository, issue, "❌", "TAREA FALLIDA",
             $"{details}\nDuración: {WorkerConsole.FormatDuration(duration)}", ct);
 
     public Task FailedAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string details, CancellationToken ct) =>
@@ -114,12 +114,15 @@ public sealed class TelegramNotifier : IDisposable
 
     public static string Format(string message) => string.Join("\n", message.Split('\n').Select(Clean));
 
-    private Task SendTaskAsync(string project, string repository, GitHubIssue issue, string header, string? details, CancellationToken ct)
+    private Task SendTaskAsync(string project, string repository, GitHubIssue issue, string icon, string status, string? details, CancellationToken ct)
     {
-        var lines = new List<string> { header, IssueLink(repository, issue) };
+        var lines = TaskHeader(project, repository, issue, icon, status);
         if (!string.IsNullOrWhiteSpace(details)) { lines.Add(""); lines.Add(details); }
         return SendAsync(HtmlMessage(lines), ct, html: true);
     }
+
+    private static List<string> TaskHeader(string project, string repository, GitHubIssue issue, string icon, string status) =>
+        [$"{icon} {IssueLink(repository, issue)}", $"{Project(project)} · {status} · CW {ApplicationVersion.Display}"];
 
     private static string IssueLink(string repository, GitHubIssue issue)
     {
@@ -128,9 +131,16 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     private static string HtmlMessage(IEnumerable<string> lines) => string.Join("\n", lines.Select(line =>
-        string.IsNullOrEmpty(line) || line.StartsWith("<a href=\"https://github.com/", StringComparison.Ordinal)
+        string.IsNullOrEmpty(line) || IsIssueLinkLine(line)
             ? line
             : string.Join("\n", line.Split('\n').Select(EscapeHtml))));
+
+    private static bool IsIssueLinkLine(string line) =>
+        (line.StartsWith("▶ <a href=\"https://github.com/", StringComparison.Ordinal) ||
+         line.StartsWith("✅ <a href=\"https://github.com/", StringComparison.Ordinal) ||
+         line.StartsWith("🟡 <a href=\"https://github.com/", StringComparison.Ordinal) ||
+         line.StartsWith("❌ <a href=\"https://github.com/", StringComparison.Ordinal)) &&
+        line.EndsWith("</a>", StringComparison.Ordinal);
 
     private static string Project(string project) => EscapeHtml(project.ToUpperInvariant());
     private static string EscapeHtml(string value) => value.Replace("&", "&amp;", StringComparison.Ordinal)

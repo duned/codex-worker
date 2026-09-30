@@ -235,13 +235,13 @@ public sealed class OperabilityTests
         await telegram.StartingAsync("Codex Worker Test", "duned/codex-worker", issue, retry, CancellationToken.None);
 
         Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
-        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA INICIADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(1));
-        Assert.StartsWith($"🟡 CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA BLOQUEADA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(2));
+        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA INICIADA · CW {ApplicationVersion.Display}", MessageAt(1));
+        Assert.StartsWith($"🟡 <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA BLOQUEADA · CW {ApplicationVersion.Display}", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
-        Assert.StartsWith($"❌ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA FALLIDA\n<a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>", MessageAt(3));
+        Assert.StartsWith($"❌ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA FALLIDA · CW {ApplicationVersion.Display}", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
         Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
-        Assert.StartsWith($"▶ CW {ApplicationVersion.Display} · CODEX WORKER TEST · TAREA REANUDADA\n", MessageAt(5));
+        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA REANUDADA · CW {ApplicationVersion.Display}", MessageAt(5));
         Assert.Contains("Intento 2 · resume · ejecución", MessageAt(5));
         Assert.Contains("ejecución anterior [0b3fdff5]", MessageAt(5));
         Assert.DoesNotContain(retry.ExecutionId.ToString(), MessageAt(5));
@@ -269,7 +269,7 @@ public sealed class OperabilityTests
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
         Assert.Contains("Rama completada preservada: completed/3", message);
-        Assert.StartsWith($"✅ CW {ApplicationVersion.Display} · EXAMPLE · TAREA COMPLETADA\n<a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>", message);
+        Assert.StartsWith($"✅ <a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>\nEXAMPLE · TAREA COMPLETADA · CW {ApplicationVersion.Display}", message);
         Assert.DoesNotContain("════════════", message);
     }
 
@@ -286,8 +286,8 @@ public sealed class OperabilityTests
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
-        Assert.Contains("https://github.com/owner/repo/issues/8", message);
-        Assert.Contains("Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title #8", message);
+        Assert.StartsWith("▶ <a href=\"https://github.com/owner/repo/issues/8\">Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title #8</a>\nEXAMPLE · TAREA INICIADA · CW ", message);
+        Assert.DoesNotContain("https://github.com/owner/repo/issues/8\n", message);
         Assert.DoesNotContain("#8 · Add <uptime>", message);
     }
 
