@@ -242,11 +242,10 @@ public sealed class WorkerHost
             var executionToken = executionCancellation.Token;
             var scheduler = new ProjectScheduler(runtimes.Count);
             var capacityLog = new SchedulerCapacityLog(_global.Worker.MaxParallelTasks, _operationalLog);
-            void ReportCapacity() => capacityLog.Report(active.Count, runtimes.Select(project =>
-                (project.Configuration.Project.Name,
-                    active.Values.Count(value => string.Equals(value.Configuration.Project.Name,
-                        project.Configuration.Project.Name, StringComparison.OrdinalIgnoreCase)),
-                    project.Configuration.Worker.MaxParallelTasks)));
+            void ReportCapacity() => capacityLog.Report(active.Count, active.Values
+                .GroupBy(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => (group.First().Configuration.Project.Name, group.Count(),
+                    group.First().Configuration.Worker.MaxParallelTasks)));
             ReportCapacity();
             var idleHeartbeat = new IdleWorkerHeartbeat(_timeProvider.GetUtcNow());
             while (!ct.IsCancellationRequested)
@@ -481,7 +480,9 @@ public sealed class WorkerHost
                     using var changeWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var activeFinished = Task.WhenAny(active.Keys);
                     var runtimeChanged = runtimeReadModel.Registry.WaitForChangeAsync(runtimeVersion, changeWait.Token);
-                    await Task.WhenAny(activeFinished, runtimeChanged);
+                    await SchedulerPollWait.WaitForNextEventAsync(activeFinished, runtimeChanged,
+                        TimeSpan.FromSeconds(_global.Worker.PollingSeconds),
+                        active.Count < _global.Worker.MaxParallelTasks, ct);
                     changeWait.Cancel();
                     // Observe on the next pass so all task exceptions follow the common infrastructure path.
                     continue;

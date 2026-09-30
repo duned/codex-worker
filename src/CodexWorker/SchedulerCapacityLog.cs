@@ -1,43 +1,36 @@
 namespace CodexWorker;
 
+internal static class SchedulerPollWait
+{
+    public static Task<Task> WaitForNextEventAsync(Task activeFinished, Task runtimeChanged,
+        TimeSpan pollingInterval, bool hasAvailableCapacity, CancellationToken cancellationToken)
+    {
+        if (!hasAvailableCapacity) return Task.WhenAny(activeFinished, runtimeChanged);
+        var pollInterval = Task.Delay(pollingInterval, cancellationToken);
+        return Task.WhenAny(activeFinished, runtimeChanged, pollInterval);
+    }
+}
+
 /// <summary>Emits scheduler capacity snapshots only when their authoritative state changes.</summary>
 internal sealed class SchedulerCapacityLog(int globalLimit, Action<string> write)
 {
     private int _globalLimit = globalLimit;
-    private (int Active, int Limit)? _reportedGlobalState;
-    private readonly Dictionary<string, (int GlobalActive, int ProjectActive, int ProjectLimit)> _reportedProjects =
-        new(StringComparer.OrdinalIgnoreCase);
+    private string? _reportedSnapshot;
 
     public void Reconfigure(int newGlobalLimit)
     {
         _globalLimit = newGlobalLimit;
-        _reportedProjects.Clear();
     }
 
     public void Report(int globalActive, IEnumerable<(string Name, int Active, int Limit)> projects)
     {
-        var globalState = (globalActive, _globalLimit);
-        var globalChanged = _reportedGlobalState != globalState;
-        if (globalChanged)
-        {
-            write($"Scheduler · global {globalActive}/{_globalLimit}");
-            _reportedGlobalState = globalState;
-        }
+        var activeProjects = projects.Where(project => project.Active > 0).ToArray();
+        var snapshot = $"global {globalActive}/{_globalLimit}" + string.Concat(activeProjects.Select(project =>
+            $" · {project.Name} {project.Active}/{project.Limit}"));
+        if (string.Equals(_reportedSnapshot, snapshot, StringComparison.Ordinal)) return;
 
-        var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, projectActive, projectLimit) in projects)
-        {
-            present.Add(name);
-            var state = (globalActive, projectActive, projectLimit);
-            if (globalChanged || !_reportedProjects.TryGetValue(name, out var previous) || previous != state)
-            {
-                write($"Scheduler · global {globalActive}/{_globalLimit} · {name} {projectActive}/{projectLimit}");
-                _reportedProjects[name] = state;
-            }
-        }
-
-        foreach (var removed in _reportedProjects.Keys.Where(name => !present.Contains(name)).ToArray())
-            _reportedProjects.Remove(removed);
+        write($"Scheduler · {snapshot}");
+        _reportedSnapshot = snapshot;
     }
 }
 

@@ -5,50 +5,67 @@ namespace CodexWorker.Tests;
 public sealed class SchedulerCapacityLogTests
 {
     [Fact]
-    public void CloselySpacedClaimsAndCompletionsReportEveryCapacityTransition()
+    public void CapacityTransitionsAreReportedAsOneSnapshotWithOnlyActiveProjects()
     {
         var messages = new List<string>();
         var log = new SchedulerCapacityLog(2, messages.Add);
-        static (string Name, int Active, int Limit)[] State(int active) => [("Example", active, 2)];
-
-        log.Report(0, State(0));
-        log.Report(0, State(0));
-        log.Report(1, State(1));
-        log.Report(2, State(2));
-        log.Report(1, State(1));
-        log.Report(0, State(0));
+        log.Report(0, [("Example", 0, 2)]);
+        log.Report(0, [("Example", 0, 2)]);
+        log.Report(1, [("Example", 1, 2)]);
+        log.Report(2, [("Example", 2, 2)]);
+        log.Report(1, [("Example", 1, 2)]);
+        log.Report(0, [("Example", 0, 2)]);
 
         Assert.Equal(new[]
         {
             "Scheduler · global 0/2",
-            "Scheduler · global 0/2 · Example 0/2",
-            "Scheduler · global 1/2",
             "Scheduler · global 1/2 · Example 1/2",
-            "Scheduler · global 2/2",
             "Scheduler · global 2/2 · Example 2/2",
-            "Scheduler · global 1/2",
             "Scheduler · global 1/2 · Example 1/2",
-            "Scheduler · global 0/2",
-            "Scheduler · global 0/2 · Example 0/2"
+            "Scheduler · global 0/2"
         }, messages);
     }
 
     [Fact]
-    public void ProjectCapacityChangeIsReportedAndReconfigurationDropsRemovedProjectState()
+    public void MultipleActiveProjectsShareOneCapacityLineAndInactiveProjectsAreOmitted()
     {
         var messages = new List<string>();
         var log = new SchedulerCapacityLog(2, messages.Add);
-        log.Report(0, [("Removed", 0, 1)]);
-        log.Reconfigure(2);
-        log.Report(0, [("Current", 0, 2)]);
-        log.Report(1, [("Current", 1, 2)]);
+        log.Report(2, [("Finance", 1, 1), ("Codex Worker", 1, 2), ("Inactive", 0, 1)]);
+        log.Report(2, [("Finance", 1, 1), ("Codex Worker", 1, 2), ("Inactive", 0, 1)]);
+        log.Report(1, [("Finance", 0, 1), ("Codex Worker", 1, 2), ("Inactive", 0, 1)]);
 
-        Assert.Contains("Scheduler · global 0/2 · Removed 0/1", messages);
-        Assert.Contains("Scheduler · global 0/2 · Current 0/2", messages);
-        Assert.Contains("Scheduler · global 1/2 · Current 1/2", messages);
-        var currentProjectReported = messages.IndexOf("Scheduler · global 0/2 · Current 0/2");
-        Assert.DoesNotContain(messages.Skip(currentProjectReported + 1),
-            message => message.Contains("Removed", StringComparison.Ordinal));
+        Assert.Equal(new[]
+        {
+            "Scheduler · global 2/2 · Finance 1/1 · Codex Worker 1/2",
+            "Scheduler · global 1/2 · Codex Worker 1/2"
+        }, messages);
+    }
+
+    [Fact]
+    public async Task PartialCapacityWakesForTheNormalPollWhileExecutionIsStillRunning()
+    {
+        var execution = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var configurationChange = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await SchedulerPollWait.WaitForNextEventAsync(execution.Task, configurationChange.Task,
+            TimeSpan.FromMilliseconds(20), hasAvailableCapacity: true, CancellationToken.None);
+
+        Assert.False(execution.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task FullCapacityWaitsForExecutionOrConfigurationChange()
+    {
+        var execution = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var configurationChange = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wait = SchedulerPollWait.WaitForNextEventAsync(execution.Task, configurationChange.Task,
+            TimeSpan.FromMilliseconds(1), hasAvailableCapacity: false, CancellationToken.None);
+
+        await Task.Delay(20);
+        Assert.False(wait.IsCompleted);
+        execution.SetResult();
+        await wait;
     }
 
     [Fact]
