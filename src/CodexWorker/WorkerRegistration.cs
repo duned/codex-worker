@@ -189,6 +189,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
 
     public async Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, CancellationToken cancellationToken)
     {
+        // Copy/paste and CRLF secret files can include surrounding whitespace.
+        // Keep internal characters intact: they must still fail authentication.
+        bootstrapToken = bootstrapToken.Trim();
+        if (bootstrapToken.Length == 0 || bootstrapToken.Any(char.IsWhiteSpace))
+            throw new WorkerStartupException("Bootstrap token must be a single nonempty value. Copy only the token, without its description.");
         var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
         var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath, cancellationToken);
         var workerToken = await WorkerAuthentication.LoadOrCreateTokenAsync(identityPath, cancellationToken);

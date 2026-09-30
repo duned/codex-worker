@@ -7,6 +7,24 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerRegistrationTests
 {
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("token description")]
+    [InlineData("token\tvalue")]
+    [InlineData("token\nvalue")]
+    public async Task MalformedBootstrapInputFailsBeforeCreatingLocalCredentials(string token)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient().BootstrapAsync(
+            new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = path },
+            1, token, CancellationToken.None));
+        Assert.Contains("single nonempty value", failure.Message);
+        Assert.False(File.Exists(path));
+        Assert.False(File.Exists(path + ".token"));
+        Assert.False(File.Exists(path + ".server"));
+    }
+
     [Fact]
     public async Task IdentityPersistsAndSeparateFilesProduceDistinctIdentities()
     {

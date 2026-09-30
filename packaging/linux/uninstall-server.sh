@@ -50,6 +50,7 @@ uninstall_server() {
   remove_path "$unit_file" 'systemd unit'
   systemctl daemon-reload || fail 'systemd could not reload unit files'
   remove_path "$install_root" 'installed Server releases'
+  remove_path "${test_root}/usr/local/bin/codex-server" 'Server operator helper'
   remove_path "$log_root" 'Server logs'
   remove_path "$runtime_root" 'Server runtime files'
 

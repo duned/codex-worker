@@ -47,6 +47,39 @@ ensure_management_token() {
   unset management_token
 }
 
+write_operator_helper() {
+  cat <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $EUID -ne 0 ]]; then
+  echo 'Run with sudo: sudo codex-server worker-token create' >&2
+  exit 1
+fi
+if [[ ${1:-} != worker-token ]]; then
+  echo 'Usage: sudo codex-server worker-token <create|revoke|revoke-worker> [arguments]' >&2
+  exit 2
+fi
+# Let systemd parse its EnvironmentFile syntax; never source secrets as shell code.
+exec systemd-run --quiet --wait --pipe --collect \
+  --property=User=codex-server --property=Group=codex-server \
+  --property=EnvironmentFile=/etc/codex-server/server.env \
+  --property=WorkingDirectory=/opt/codex-server/current \
+  --property=UMask=0077 \
+  /opt/codex-server/current/CodexServer "$@"
+EOF
+}
+
+ensure_server_environment() (
+  umask 0077
+  local environment_file=$1
+  if [[ ! -e $environment_file ]]; then
+    # Retained installs keep their original database selection, including the
+    # legacy home default. Only a fresh install gets the documented directory.
+    printf 'Server__DataDirectory=/var/lib/codex-server\n' > "$environment_file"
+  fi
+  ensure_management_token "$environment_file"
+)
+
 # Keep the credential logic available to the local installer test without running installation.
 # As in install-worker.sh, BASH_SOURCE may be empty when executing from stdin.
 if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
@@ -148,12 +181,13 @@ else
   new_target="releases/$release_id"
 fi
 
-if [[ ! -e /etc/codex-server/server.env ]]; then
-  install -o root -g codex-server -m 0640 /dev/null /etc/codex-server/server.env
-fi
+ensure_server_environment /etc/codex-server/server.env
 chown root:codex-server /etc/codex-server/server.env
 chmod 0640 /etc/codex-server/server.env
-ensure_management_token /etc/codex-server/server.env
+install -d -o root -g root -m 0755 /usr/local/bin
+write_operator_helper > /usr/local/bin/codex-server
+chown root:root /usr/local/bin/codex-server
+chmod 0755 /usr/local/bin/codex-server
 cat > /etc/systemd/system/codex-server.service <<'EOF'
 [Unit]
 Description=Codex Server
@@ -209,4 +243,5 @@ The management token is stored in /etc/codex-server/server.env. Retrieve it when
 sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env
 The default endpoint is http://127.0.0.1:5090. Check status: systemctl status codex-server
 Logs: journalctl -u codex-server
+Create a short-lived, one-use Worker bootstrap token: sudo codex-server worker-token create
 EOF

@@ -1,5 +1,7 @@
 namespace CodexServer;
 
+using Microsoft.Extensions.Configuration;
+
 public static class Program
 {
     public static async Task Main(string[] args)
@@ -28,6 +30,8 @@ internal static class WorkerTokenCommand
             (args[1] is "revoke" or "revoke-worker") && args.Length is not (3 or 4))
             throw new ArgumentException("Usage: codex-server worker-token create [database-path] | revoke <registration-token> [database-path] | revoke-worker <worker-id> [database-path]");
         var configuration = new ServerConfiguration();
+        ServerApplication.CreateBuilder([]).Configuration.GetSection("Server").Bind(configuration);
+        configuration.Validate();
         var database = args[1] == "create"
             ? args.Length == 3 ? Path.GetFullPath(args[2]) : configuration.ResolveDatabasePath()
             : args.Length == 4 ? Path.GetFullPath(args[3]) : configuration.ResolveDatabasePath();
@@ -36,7 +40,7 @@ internal static class WorkerTokenCommand
         if (args[1] == "create")
         {
             var token = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
-            Console.WriteLine("Worker registration token (valid for 15 minutes; use once):");
+            Console.Error.WriteLine($"Worker registration token (valid for 15 minutes; use once). Database: {database}");
             Console.WriteLine(token);
         }
         else if (args[1] == "revoke" && await store.RevokeWorkerBootstrapTokenAsync(args[2])) Console.WriteLine("Worker registration token revoked.");

@@ -24,7 +24,7 @@ The installer verifies the archive checksum, enables and starts the service, and
 On the Server, create a single-use token (valid for 15 minutes):
 
 ```sh
-sudo -u codex-server /opt/codex-server/current/CodexServer worker-token create /var/lib/codex-server/codex-server.db
+sudo codex-server worker-token create
 ```
 
 Keep the token private for the prompt in C. To open the Server dashboard, retrieve its management token with `sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env` and enter it in the dashboard token prompt.

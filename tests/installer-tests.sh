@@ -78,9 +78,10 @@ for invocation in file stdin; do
     export CODEX_UNINSTALL_TEST_ROOT="$test_root"
     mkdir -p "$test_root/opt/codex-$component" "$test_root/etc/codex-$component" \
       "$test_root/var/lib/codex-$component" "$test_root/var/log/codex-$component" \
-      "$test_root/run/codex-$component" "$test_root/etc/systemd/system"
+      "$test_root/run/codex-$component" "$test_root/etc/systemd/system" "$test_root/usr/local/bin"
     touch "$test_root/etc/codex-$component/secret.env" "$test_root/var/lib/codex-$component/state.db" \
       "$test_root/opt/codex-$component/binary" "$test_root/etc/systemd/system/codex-$component.service"
+    if [[ $component == server ]]; then touch "$test_root/usr/local/bin/codex-server"; fi
     if [[ $component == worker ]]; then
       mkdir -p "$test_root/opt/codex-worker.previous.test" "$test_root/opt/codex-worker.failed.test"
     fi
@@ -89,6 +90,7 @@ for invocation in file stdin; do
     [[ -e $test_root/etc/codex-$component/secret.env && -e $test_root/var/lib/codex-$component/state.db ]] || {
       echo "$component default uninstall removed retained state." >&2; exit 1;
     }
+    if [[ $component == server ]]; then [[ ! -e $test_root/usr/local/bin/codex-server ]] || exit 1; fi
     grep -q 'Retained .*configuration and credentials' "$component_root/default.out"
     # Purge a complete installation, including binaries and an active unit.
     mkdir -p "$test_root/opt/codex-$component" "$test_root/var/log/codex-$component" "$test_root/run/codex-$component"
@@ -151,6 +153,63 @@ fi
 grep -q 'Unknown option' "$temp_dir/unknown.txt"
 
 source "$installer"
+# Exercise the exact helper emitted by the installer, with systemd isolated.
+write_operator_helper > "$temp_dir/codex-server"
+bash -n "$temp_dir/codex-server"
+cat > "$temp_dir/stubs/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CODEX_HELPER_ARGUMENTS"
+EOF
+chmod +x "$temp_dir/stubs/systemd-run"
+export CODEX_HELPER_ARGUMENTS="$temp_dir/helper-arguments"
+# Installer/helper require root; the isolated invocation performs no host writes.
+if [[ $EUID == 0 ]]; then
+  bash "$temp_dir/codex-server" worker-token create
+else
+  if bash "$temp_dir/codex-server" worker-token create > "$temp_dir/helper-nonroot.out" 2>&1; then
+    echo 'Operator helper accepted execution without root.' >&2; exit 1
+  fi
+  grep -q 'sudo codex-server worker-token create' "$temp_dir/helper-nonroot.out"
+  # Exercise the emitted exec command independently of its root-only guard.
+  sed -n '/^exec systemd-run/,$p' "$temp_dir/codex-server" > "$temp_dir/helper-command.sh"
+  bash "$temp_dir/helper-command.sh" worker-token create
+fi
+cat > "$temp_dir/expected-helper-arguments" <<'EOF'
+--quiet
+--wait
+--pipe
+--collect
+--property=User=codex-server
+--property=Group=codex-server
+--property=EnvironmentFile=/etc/codex-server/server.env
+--property=WorkingDirectory=/opt/codex-server/current
+--property=UMask=0077
+/opt/codex-server/current/CodexServer
+worker-token
+create
+EOF
+diff -u "$temp_dir/expected-helper-arguments" "$CODEX_HELPER_ARGUMENTS"
+# The helper never sources the secret-bearing systemd environment as shell code.
+! grep -Eq '(^|[[:space:]])(source|\.) /etc/codex-server/server.env' "$temp_dir/codex-server"
+grep -Fq 'Server__DataDirectory=/var/lib/codex-server' "$installer"
+
+fresh_environment="$temp_dir/fresh-server.env"
+ensure_server_environment "$fresh_environment"
+grep -Fxq 'Server__DataDirectory=/var/lib/codex-server' "$fresh_environment"
+[[ $(stat -c '%a' "$fresh_environment") == 600 ]] || exit 1
+cp "$fresh_environment" "$temp_dir/fresh-original.env"
+ensure_server_environment "$fresh_environment"
+cmp "$fresh_environment" "$temp_dir/fresh-original.env"
+legacy_environment="$temp_dir/legacy-server.env"
+printf 'CODEX_SERVER_MANAGEMENT_TOKEN=existing\n' > "$legacy_environment"
+ensure_server_environment "$legacy_environment"
+! grep -q 'Server__DataDirectory' "$legacy_environment"
+custom_environment="$temp_dir/custom-server.env"
+printf 'Server__DataDirectory=/srv/custom\nServer__DatabasePath=custom.db\nCODEX_SERVER_MANAGEMENT_TOKEN=existing\n' > "$custom_environment"
+cp "$custom_environment" "$temp_dir/custom-original.env"
+ensure_server_environment "$custom_environment"
+cmp "$custom_environment" "$temp_dir/custom-original.env"
+
 environment_file="$temp_dir/server.env"
 touch "$environment_file"
 credential_setup_output="$(ensure_management_token "$environment_file")"

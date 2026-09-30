@@ -30,15 +30,17 @@ public sealed class ServerHealthService(IRegistryStore registryStore) : IServerH
 
 public static class ServerApplication
 {
-    public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default)
-    {
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+    internal static WebApplicationBuilder CreateBuilder(string[] args) =>
+        WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args,
-            // Resolve default appsettings and content files beside the published application,
-            // never from whichever directory a service manager happened to select.
+            // Match configuration for both the service and operator commands.
             ContentRootPath = AppContext.BaseDirectory
         });
+
+    public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default)
+    {
+        var builder = CreateBuilder(args);
         var configuration = new ServerConfiguration();
         builder.Configuration.GetSection("Server").Bind(configuration);
         configuration.Validate();

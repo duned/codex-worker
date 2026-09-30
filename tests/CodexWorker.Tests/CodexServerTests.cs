@@ -195,6 +195,95 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("custom/registry.db")]
+    public async Task OperatorCommandUsesServiceDatabaseAndFreshWorkerCliCanRetry(string? databaseOverride)
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorDirectory = Environment.GetEnvironmentVariable("Server__DataDirectory");
+        var priorDatabase = Environment.GetEnvironmentVariable("Server__DatabasePath");
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        var originalInput = Console.In;
+        using var tokenOutput = new StringWriter();
+        using var diagnostics = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("Server__DataDirectory", temporary.Path);
+            Environment.SetEnvironmentVariable("Server__DatabasePath", databaseOverride);
+            // The installed helper supplies the same environment to this entry point
+            // as systemd supplies to the service. No database argument is needed.
+            Console.SetOut(tokenOutput);
+            Console.SetError(diagnostics);
+            await CodexServer.Program.Main(["worker-token", "create"]);
+            var token = tokenOutput.ToString().Trim();
+            Assert.Matches("^[A-Za-z0-9_-]{43}$", token);
+            Assert.DoesNotContain(token, diagnostics.ToString(), StringComparison.Ordinal);
+            var database = new ServerConfiguration { DataDirectory = temporary.Path, DatabasePath = databaseOverride }.ResolveDatabasePath();
+            Assert.True(File.Exists(database));
+            Assert.Contains(database, diagnostics.ToString());
+
+            Console.SetOut(originalOutput);
+            await using var app = await ServerApplication.BuildAsync(
+                [$"--Server:ListenUrl={url}", "--Logging:LogLevel:Default=Warning"]);
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var identityPath = Path.Combine(temporary.Path, "worker-id");
+            async Task<int> Register(string value, string path)
+            {
+                using var input = new StringReader(value + "\r\n");
+                Console.SetIn(input);
+                return await CodexWorker.Program.Main(["register", "--server", url, "--token-stdin",
+                    "--capacity", "2", "--identity-file", path]);
+            }
+
+            // Reproduce the old documented command's separate database: its fresh
+            // token is rejected, but staging does not prevent a valid clean retry.
+            tokenOutput.GetStringBuilder().Clear();
+            Console.SetOut(tokenOutput);
+            await CodexServer.Program.Main(["worker-token", "create", Path.Combine(temporary.Path, "wrong.db")]);
+            var wrongDatabaseToken = tokenOutput.ToString().Trim();
+            Console.SetOut(originalOutput);
+            Assert.Equal(ProcessExitCodes.StartupFailure, await Register(wrongDatabaseToken, identityPath));
+            Assert.Empty(await store.GetWorkersAsync());
+            Assert.Equal(ProcessExitCodes.Success, await Register("  " + token + "  ", identityPath));
+            Assert.Single(await store.GetWorkersAsync());
+            Assert.Equal(ProcessExitCodes.Success, await Register(token, identityPath)); // lost-response recovery
+            Assert.Equal(ProcessExitCodes.StartupFailure, await Register(token, Path.Combine(temporary.Path, "reuse-id")));
+            Assert.Equal(ProcessExitCodes.StartupFailure, await Register("invalid", Path.Combine(temporary.Path, "invalid-id")));
+
+            tokenOutput.GetStringBuilder().Clear();
+            Console.SetOut(tokenOutput);
+            await CodexServer.Program.Main(["worker-token", "create"]);
+            var expired = tokenOutput.ToString().Trim();
+            Console.SetOut(originalOutput);
+            // Advance persisted expiry without waiting 15 minutes. Generation and
+            // HTTP validation still use the production paths and actual SQLite DB.
+            await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE worker_bootstrap_tokens SET expires_at_utc='2000-01-01T00:00:00.0000000+00:00';";
+                await command.ExecuteNonQueryAsync();
+            }
+            Assert.Equal(ProcessExitCodes.StartupFailure, await Register(expired, Path.Combine(temporary.Path, "expired-id")));
+            Assert.Single(await store.GetWorkersAsync());
+            Assert.DoesNotContain(token, diagnostics.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain(expired, diagnostics.ToString(), StringComparison.Ordinal);
+            await app.StopAsync();
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+            Console.SetIn(originalInput);
+            Environment.SetEnvironmentVariable("Server__DataDirectory", priorDirectory);
+            Environment.SetEnvironmentVariable("Server__DatabasePath", priorDatabase);
+        }
+    }
+
     [Fact]
     public async Task RegistrationValidationReturnsSafeActionableContractAndCorrelation()
     {
