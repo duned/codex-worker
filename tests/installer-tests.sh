@@ -3,13 +3,22 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="$repo_root/packaging/linux/install-server.sh"
+worker_installer="$repo_root/packaging/linux/install-worker.sh"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
 
 bash -n "$installer"
+bash -n "$worker_installer"
 bash "$installer" --help >"$temp_dir/help.txt"
 grep -q -- '--version VERSION' "$temp_dir/help.txt"
 grep -q 'latest by default' "$temp_dir/help.txt"
+
+# Match curl | sudo bash argument handling. Resolving the installer location at
+# startup must work even though Bash has no BASH_SOURCE entry for stdin scripts.
+bash -s -- --help < "$worker_installer" > "$temp_dir/worker-pipe-help.txt"
+grep -q -- '--version VERSION' "$temp_dir/worker-pipe-help.txt"
+bash "$worker_installer" --help > "$temp_dir/worker-direct-help.txt"
+grep -q -- '--version VERSION' "$temp_dir/worker-direct-help.txt"
 
 if bash "$installer" --version invalid >"$temp_dir/invalid.txt" 2>&1; then
   echo 'Installer accepted an invalid version.' >&2

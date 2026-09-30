@@ -198,6 +198,8 @@ curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/l
 curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-worker.sh | sudo bash -s -- --version 0.13.0
 ```
 
+Both commands run the installer from standard input; it also supports downloading the script and running it directly with `sudo bash install-worker.sh`. The installer reports success only after the verified binaries, configuration permissions, systemd unit, and required service operations have completed.
+
 This installs only the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are discovered and can be handled through Server provisioning policy; they are not installer prerequisites.
 
 The installer is repeatable and preserves existing configuration and environment files. It creates the `codex-worker` system account and uses these locations:

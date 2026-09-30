@@ -37,6 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/l
 curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-worker.sh | sudo bash -s -- --version 0.13.0
 ```
 
+These pipe commands are supported on a clean host. The installer also works when downloaded and invoked directly with `sudo bash install-worker.sh`; in either mode it exits unsuccessfully with an actionable diagnostic if a required installation step fails.
+
 With no option the installer resolves the latest GitHub Release. `--version VERSION` pins an installation; an optional leading `v` is accepted. It preserves `/etc/codex-worker/worker.yml`, `/etc/codex-worker/worker.env`, and `/var/lib/codex-worker` across reruns. It installs binaries under `/opt/codex-worker`, configuration under `/etc/codex-worker`, persistent data and projects under `/var/lib/codex-worker`, and the systemd unit at `/etc/systemd/system/codex-worker.service`. Binaries and the unit are root-owned. The service runs as the unprivileged `codex-worker` account, configuration is root-owned and group-readable, and persistent state is private to the service account. Logs are available through journald; `/run/codex-worker` is created by systemd for runtime files.
 
 After installation, set `server.url`, add project configuration as appropriate, and put registration or provider secrets in `worker.env` with mode `0640`. Registration with Codex Server is a separate bootstrap step. Start the service when that configuration is ready:

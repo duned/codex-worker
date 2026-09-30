@@ -7,6 +7,17 @@ readonly config_root=/etc/codex-worker
 readonly data_root=/var/lib/codex-worker
 readonly archive_name_prefix=codex-worker
 
+# When Bash reads this installer from stdin (for example through curl | sudo bash),
+# BASH_SOURCE has no entry. In that case the systemd unit is fetched from GitHub.
+script_dir=""
+installer_source=${BASH_SOURCE[0]:-}
+if [[ -n $installer_source ]]; then
+  script_dir=$(cd -- "$(dirname -- "$installer_source")" && pwd) || {
+    echo "Codex Worker installation failed: could not resolve the installer directory" >&2
+    exit 1
+  }
+fi
+
 usage() {
   echo "Usage: $0 [--version VERSION]"
   echo "Install the self-contained Codex Worker release for Ubuntu 24.04 x86_64."
@@ -78,7 +89,7 @@ fi
 
 archive="$archive_name_prefix-$version-linux-x64.tar.gz"
 release_base="https://github.com/$repository/releases/download/$tag"
-temporary_dir=$(mktemp -d)
+temporary_dir=$(mktemp -d) || fail "could not create a temporary directory"
 stage_dir="$install_root.next.$$"
 backup_dir="$install_root.previous.$(date -u +%Y%m%dT%H%M%S.%N)"
 service_was_active=false
@@ -115,7 +126,7 @@ if [[ ${actual_hash,,} != ${expected_hash,,} ]]; then
   fail "checksum verification failed for $archive"
 fi
 
-mkdir "$temporary_dir/extracted"
+mkdir "$temporary_dir/extracted" || fail "could not prepare the extraction directory"
 tar -tzf "$temporary_dir/$archive" | while IFS= read -r entry; do
   case "$entry" in
     /*|../*|*/../*|*/..)
@@ -135,11 +146,11 @@ fi
 
 getent group codex-worker >/dev/null || groupadd --system codex-worker || fail "could not create codex-worker group"
 id codex-worker >/dev/null 2>&1 || useradd --system --gid codex-worker --home-dir "$data_root" --create-home --shell /usr/sbin/nologin codex-worker || fail "could not create codex-worker account"
-install -d -o root -g root -m 0755 "$install_root"
-install -d -o root -g codex-worker -m 0750 "$config_root"
-install -d -o codex-worker -g codex-worker -m 0700 "$data_root" "$data_root/.codex-worker"
-install -d -o codex-worker -g codex-worker -m 0750 "$data_root/projects" "$data_root/.codex-worker/worktrees"
-install -d -o codex-worker -g codex-worker -m 0750 /var/log/codex-worker
+install -d -o root -g root -m 0755 "$install_root" || fail "could not prepare $install_root"
+install -d -o root -g codex-worker -m 0750 "$config_root" || fail "could not prepare $config_root"
+install -d -o codex-worker -g codex-worker -m 0700 "$data_root" "$data_root/.codex-worker" || fail "could not prepare Worker state directories"
+install -d -o codex-worker -g codex-worker -m 0750 "$data_root/projects" "$data_root/.codex-worker/worktrees" || fail "could not prepare Worker project directories"
+install -d -o codex-worker -g codex-worker -m 0750 /var/log/codex-worker || fail "could not prepare Worker log directory"
 
 if [[ ! -e $config_root/worker.yml ]]; then
   curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/worker.managed.example.yml" --output "$temporary_dir/worker.yml" || fail "could not download the starter Worker configuration"
@@ -148,18 +159,18 @@ fi
 if [[ ! -e $config_root/worker.env ]]; then
   install -o root -g codex-worker -m 0640 /dev/null "$config_root/worker.env" || fail "could not create Worker environment file"
 fi
-chown root:codex-worker "$config_root/worker.yml" "$config_root/worker.env"
-chmod 0640 "$config_root/worker.yml" "$config_root/worker.env"
+chown root:codex-worker "$config_root/worker.yml" "$config_root/worker.env" || fail "could not set Worker configuration ownership"
+chmod 0640 "$config_root/worker.yml" "$config_root/worker.env" || fail "could not set Worker configuration permissions"
 
 if systemctl is-active --quiet codex-worker; then
   service_was_active=true
   systemctl stop codex-worker || fail "could not stop the running Worker before installation"
 fi
-rm -rf -- "$stage_dir"
-install -d -o root -g root -m 0755 "$stage_dir"
-cp -a "$temporary_dir/extracted"/. "$stage_dir"/
-chown -R root:root "$stage_dir"
-chmod 0755 "$stage_dir/CodexWorker"
+rm -rf -- "$stage_dir" || fail "could not clear the temporary staging directory"
+install -d -o root -g root -m 0755 "$stage_dir" || fail "could not create the temporary staging directory"
+cp -a "$temporary_dir/extracted"/. "$stage_dir"/ || fail "could not stage the verified Worker release"
+chown -R root:root "$stage_dir" || fail "could not set Worker binary ownership"
+chmod 0755 "$stage_dir/CodexWorker" || fail "could not set Worker executable permissions"
 if [[ -d $install_root ]]; then
   mv -- "$install_root" "$backup_dir" || fail "could not preserve the existing Worker installation"
   swap_started=true
@@ -168,13 +179,12 @@ if ! mv -- "$stage_dir" "$install_root"; then
   fail "could not activate Worker $version"
 fi
 
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [[ -f $script_dir/codex-worker.service ]]; then
-  install -o root -g root -m 0644 "$script_dir/codex-worker.service" /etc/systemd/system/codex-worker.service
+  install -o root -g root -m 0644 "$script_dir/codex-worker.service" /etc/systemd/system/codex-worker.service || fail "could not install the systemd unit"
 else
   # The remote installer is piped to bash, so its sibling unit is fetched from the same source branch.
   curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/codex-worker.service" --output "$temporary_dir/codex-worker.service" || fail "could not download the systemd unit"
-  install -o root -g root -m 0644 "$temporary_dir/codex-worker.service" /etc/systemd/system/codex-worker.service
+  install -o root -g root -m 0644 "$temporary_dir/codex-worker.service" /etc/systemd/system/codex-worker.service || fail "could not install the systemd unit"
 fi
 systemctl daemon-reload || fail "systemd could not reload unit files"
 if [[ $service_was_active == true ]]; then
