@@ -110,6 +110,74 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task ExplicitReadyLabelStartsFreshExecutionDespitePriorIntegrationConflict()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var config = h.Worker.Configuration.GitHub;
+        config.ReadyLabel = "team-ready";
+        config.IntegrationRecoveryLabel = "team-recover";
+        config.IntegrationConflictLabel = "team-conflict";
+        h.GitHub.ReadyLabel = config.ReadyLabel;
+        h.GitHub.RecoveryLabel = config.IntegrationRecoveryLabel;
+        h.GitHub.IssueLabels = [config.ReadyLabel, config.IntegrationRecoveryLabel, config.IntegrationConflictLabel];
+        h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+
+        var oldId = Guid.NewGuid();
+        var oldEntry = new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
+            "IntegrationConflict", 1000, "Prior implementation", "passed", 0, [], "old-commit", "main",
+            "completed/17", null, "integration-conflict", "base-commit", "preserved");
+        await history.CreateAsync(oldEntry);
+
+        var claim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(claim);
+        var result = await claim!;
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, result!.Kind);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal(2, entries.Count);
+        var preserved = entries.Single(entry => entry.ExecutionId == oldId);
+        Assert.Equal("IntegrationConflict", preserved.State);
+        Assert.Equal("old-commit", preserved.CommitSha);
+        Assert.Equal("base-commit", preserved.RecoveryBaseCommit);
+        var fresh = entries.Single(entry => entry.ExecutionId != oldId);
+        Assert.NotEqual(oldId, fresh.ExecutionId);
+        Assert.Null(fresh.RetryOfExecutionId);
+        Assert.False(fresh.Resumed);
+        Assert.Equal(2, fresh.AttemptNumber);
+        Assert.Equal(1, h.Git.Started);
+        Assert.Contains("team-recover", h.GitHub.RemovedLabels);
+        Assert.Contains("team-conflict", h.GitHub.RemovedLabels);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("explicit ready label takes precedence", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExplicitRecoveryLabelStillUsesIntegrationRecoveryPath()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+        h.GitHub.IssueLabels = ["codex-integration-recovery", "codex-integration-conflict"];
+        var sourceId = Guid.NewGuid();
+        await history.CreateAsync(new ExecutionHistoryEntry(sourceId, "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
+            "IntegrationConflict", 1000, "Prior implementation", "passed", 0, [], "old-commit", "main",
+            "completed/17", null, "integration-conflict", "base-commit", "preserved"));
+
+        var claim = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(claim);
+        await claim!;
+
+        Assert.Equal(1, h.Git.RecoveryStarted);
+        Assert.Equal(0, h.Git.Started);
+        var recovery = (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != sourceId);
+        Assert.Equal(sourceId, recovery.RetryOfExecutionId);
+    }
+
+    [Fact]
     public async Task DirtyCheckoutPreparationReleasesClaimWithoutResumeMetadata()
     {
         using var historyDatabase = new TempHistoryDatabase();
@@ -774,6 +842,10 @@ public sealed class WorkerV011Tests
         public bool CancelDuringClaim { get; set; }
         public bool ReturnDistinctIssues { get; set; }
         public bool ReturnRecoveryIssueOnFirstQuery { get; set; }
+        public string ReadyLabel { get; set; } = "ready";
+        public string RecoveryLabel { get; set; } = "codex-integration-recovery";
+        public IReadOnlyList<string> IssueLabels { get; set; } = [];
+        public List<string> RemovedLabels { get; } = [];
         public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
@@ -787,12 +859,12 @@ public sealed class WorkerV011Tests
         {
             FindCalls++;
             events.Add("find");
-            if (label == "codex-integration-recovery" && ReturnRecoveryIssueOnFirstQuery)
+            if (label == RecoveryLabel && ReturnRecoveryIssueOnFirstQuery)
             {
                 ReturnRecoveryIssueOnFirstQuery = false;
-                return Task.FromResult<GitHubIssue?>(Issue);
+                return Task.FromResult<GitHubIssue?>(Issue with { Labels = IssueLabels });
             }
-            if (label != "ready") return Task.FromResult<GitHubIssue?>(null);
+            if (label != ReadyLabel) return Task.FromResult<GitHubIssue?>(null);
             if (CancelDuringQuery)
             {
                 cancellation.Cancel();
@@ -805,7 +877,7 @@ public sealed class WorkerV011Tests
                     var number = Issue.Number + (ReturnDistinctIssues ? _returned : 0);
                     _returned++;
                     if (!excludedIssueNumbers.Contains(number))
-                        return Task.FromResult<GitHubIssue?>(Issue with { Number = number });
+                        return Task.FromResult<GitHubIssue?>(Issue with { Number = number, Labels = IssueLabels });
                 }
             }
             // End the polling loop without waiting; no real GitHub service is involved.
@@ -826,6 +898,8 @@ public sealed class WorkerV011Tests
             }
             return Task.CompletedTask;
         }
+        public Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct)
+        { RemovedLabels.Add(label); return Task.CompletedTask; }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
         { Comments.Add(comment); return Task.CompletedTask; }
         public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
@@ -837,6 +911,7 @@ public sealed class WorkerV011Tests
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
         public int Integrations { get; private set; }
+        public int RecoveryStarted { get; private set; }
         public GitRecoveryInfo? Recovery { get; set; }
         public Guid? LastExecutionId { get; private set; }
         public bool LastResume { get; private set; }
@@ -850,6 +925,10 @@ public sealed class WorkerV011Tests
         { Started++; LastExecutionId = executionId; LastResume = resume; LastAttemptNumber = attemptNumber;
             var failure = FailIssueNumber is null || issue.Number == FailIssueNumber ? StartFailure : null;
             return failure is null ? Task.CompletedTask : Task.FromException(failure); }
+        public Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+        { RecoveryStarted++; return Task.CompletedTask; }
+        public Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+            Task.FromResult<string?>(null);
         public Task VerifyCodexStateAsync(CancellationToken ct) => Task.CompletedTask;
         public Task DiscardUncommittedIssueChangesAsync(CancellationToken ct) { Cleanups++; return Task.CompletedTask; }
         public Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)

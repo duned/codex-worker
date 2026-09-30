@@ -2,7 +2,8 @@ using System.Text.Json;
 
 namespace CodexWorker;
 
-public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt);
+public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt,
+    IReadOnlyList<string>? Labels = null);
 public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
 public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
@@ -28,7 +29,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         CancellationToken cancellationToken)
     {
         var result = await RunGhAsync(["issue", "list", "--repo", repository, "--state", "open", "--label", label,
-            "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt"], cancellationToken,
+            "--search", "sort:created-asc", "--limit", "1000", "--json", "number,title,body,createdAt,labels"], cancellationToken,
             allowGracefulCancellation: true);
         try
         {
@@ -36,7 +37,10 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
             var candidates = document.RootElement.EnumerateArray()
                 .Select(e => new GitHubIssue(e.GetProperty("number").GetInt32(), e.GetProperty("title").GetString() ?? "",
                     e.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "",
-                    e.GetProperty("createdAt").GetDateTimeOffset()))
+                    e.GetProperty("createdAt").GetDateTimeOffset(),
+                    e.TryGetProperty("labels", out var labels) && labels.ValueKind == JsonValueKind.Array
+                        ? labels.EnumerateArray().Select(item => item.GetProperty("name").GetString() ?? "").ToArray()
+                        : []))
                 .OrderBy(candidate => candidate.CreatedAt);
 
             foreach (var candidate in candidates)
@@ -223,6 +227,9 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct) =>
         RunGhAsync(["issue", "edit", issueNumber.ToString(), "--repo", repository, "--remove-label", remove, "--add-label", add], ct);
+
+    public Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) =>
+        RunGhAsync(["issue", "edit", issueNumber.ToString(), "--repo", repository, "--remove-label", label], ct);
 
     public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) =>
         RunGhAsync(["issue", "comment", issueNumber.ToString(), "--repo", repository, "--body", comment], ct);

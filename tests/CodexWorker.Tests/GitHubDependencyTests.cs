@@ -13,7 +13,7 @@ public sealed class GitHubDependencyTests
         var issue = await fixture.Client.FindOldestReadyAsync("codex-ready", CancellationToken.None);
 
         Assert.Equal(1, issue?.Number);
-        Assert.Contains(fixture.Commands[0], arg => arg == "number,title,body,createdAt");
+        Assert.Contains(fixture.Commands[0], arg => arg == "number,title,body,createdAt,labels");
         Assert.DoesNotContain(fixture.Commands.SelectMany(args => args), arg => arg.Contains("blockedBy", StringComparison.Ordinal));
         Assert.Contains(fixture.Commands, args => args.SequenceEqual([
             "api", "--paginate", "repos/owner/repo/issues/1/dependencies/blocked_by"]));
@@ -26,6 +26,16 @@ public sealed class GitHubDependencyTests
     {
         var fixture = new Fixture([Issue(1, "2025-01-01T00:00:00Z")]);
         Assert.Equal(1, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
+    }
+
+    [Fact]
+    public async Task ReadyIssueLookupPreservesLabelsForSchedulingIntent()
+    {
+        var fixture = new Fixture([IssueWithLabels(1, "2025-01-01T00:00:00Z", "team-ready", "team-recover")]);
+
+        var issue = await fixture.Client.FindOldestReadyAsync("team-recover", CancellationToken.None);
+
+        Assert.Equal(new[] { "team-ready", "team-recover" }, issue?.Labels);
     }
 
     [Fact]
@@ -202,7 +212,14 @@ public sealed class GitHubDependencyTests
 
     private static Dictionary<string, JsonElement> Issue(int number, string createdAt, params string[] states)
     {
-        var json = JsonSerializer.Serialize(new { number, title = $"Issue {number}", body = "", createdAt, states });
+        var json = JsonSerializer.Serialize(new { number, title = $"Issue {number}", body = "", createdAt, states, labels = Array.Empty<string>() });
+        return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json)!;
+    }
+
+    private static Dictionary<string, JsonElement> IssueWithLabels(int number, string createdAt, params string[] labels)
+    {
+        var json = JsonSerializer.Serialize(new { number, title = $"Issue {number}", body = "", createdAt,
+            states = Array.Empty<string>(), labels });
         return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json)!;
     }
 
@@ -219,7 +236,8 @@ public sealed class GitHubDependencyTests
                 number = issue["number"].GetInt32(),
                 title = issue["title"].GetString(),
                 body = issue["body"].GetString(),
-                createdAt = issue["createdAt"].GetDateTimeOffset()
+                createdAt = issue["createdAt"].GetDateTimeOffset(),
+                labels = issue["labels"].EnumerateArray().Select(label => new { name = label.GetString() })
             }));
             var issuesByNumber = issueList.ToDictionary(issue => issue["number"].GetInt32());
             Client = new GitHubClient("owner/repo", (args, _) =>

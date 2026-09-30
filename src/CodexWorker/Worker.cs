@@ -44,6 +44,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             try { recoveryIssue = await github.FindOldestReadyAsync(config.GitHub.IntegrationRecoveryLabel, recoveryExcluded, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
             if (recoveryIssue is null || !recoveryExcluded.Add(recoveryIssue.Number)) break;
+            if (recoveryIssue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true)
+            {
+                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{recoveryIssue.Number} · explicit ready label takes precedence over integration recovery.";
+                _operationalLog(diagnostic);
+                continue;
+            }
             var recovery = await ClaimIntegrationRecoveryAsync(recoveryIssue, ct);
             if (recovery is not null) return recovery;
         }
@@ -174,6 +180,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+            foreach (var staleLabel in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel }
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+                if (issue.Labels?.Contains(staleLabel, StringComparer.OrdinalIgnoreCase) == true)
+                    await github.RemoveLabelAsync(issue.Number, staleLabel, ct);
             _operationalLog($"Scheduler · #{issue.Number} claimed · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}]");
             _output.IssueStarted(config.Project.Name, issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);

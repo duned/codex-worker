@@ -20,6 +20,7 @@ public interface IGitHubClient
         throw new WorkerInfrastructureException("This GitHub client cannot load a specifically assigned Issue.");
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
     Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct);
+    Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;
     Task CommentAsync(int issueNumber, string comment, CancellationToken ct);
     Task CloseAsync(int issueNumber, CancellationToken ct);
 }
