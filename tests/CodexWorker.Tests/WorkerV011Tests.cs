@@ -524,6 +524,10 @@ public sealed class WorkerV011Tests
         var execution = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("Failed", execution.State);
         Assert.Contains("Implementation could not be completed", execution.FailureReason);
+        var executionId = execution.ExecutionId;
+        Assert.Contains($"Reason · execution [{ExecutionFormatting.ShortId(executionId)}] · Codex reported incomplete task · Implementation could not be completed", h.ErrorOutput.ToString());
+        Assert.Contains($"Execution `[{ExecutionFormatting.ShortId(executionId)}]` (`{executionId}`)", Assert.Single(h.GitHub.Comments));
+        Assert.Contains("## Implementation attempt\n\nImplementation could not be completed\n\n## Failure\n\n**Reason:** Codex reported incomplete task.", Assert.Single(h.GitHub.Comments));
         File.Delete(database);
     }
 
@@ -541,6 +545,8 @@ public sealed class WorkerV011Tests
 
             Assert.Equal(0, h.Git.Cleanups);
             Assert.Equal(0, h.Git.Integrations);
+            Assert.Contains("## Recovery\n\n- **Execution:**", Assert.Single(h.GitHub.Comments));
+            Assert.Contains("- **Workspace:** Preserved\n- **Retry/resume:** Available", Assert.Single(h.GitHub.Comments));
         }
 
         using var reopened = new ExecutionHistoryStore(database);

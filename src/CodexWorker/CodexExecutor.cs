@@ -57,14 +57,14 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
 
     public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
     {
-        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
         return await RunStructuredAsync(projectDirectory, BuildPrompt(instructions, instructionsFile, issue), ct);
     }
 
     public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct)
     {
-        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
         var prompt = BuildPrompt(instructions, instructionsFile, issue);
         if (retryOf is not null)
             prompt += $"""
@@ -83,7 +83,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct)
     {
-        var instructions = await ReadInstructionsAsync(instructionsFile, ct);
+        var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
         var prompt = BuildRepairPrompt(instructions, instructionsFile, issue, failure, attempt, maximumAttempts);
         return await RunStructuredAsync(projectDirectory, prompt, ct);
     }
@@ -142,14 +142,21 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                     TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { throw new WorkerInfrastructureException($"Codex execution could not complete reliably: {ex.Message}", ex); }
+            catch (Exception ex)
+            {
+                throw new CodexExecutionInfrastructureException(ExecutionFailureCategory(ex),
+                    $"Codex execution could not complete reliably: {ex.Message}", ex);
+            }
             finally { environment.Dispose(); }
             if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"Codex execution exited with code {result.ExitCode}; service/authentication/CLI failure is possible.{Diagnostics(result.StandardOutput, result.StandardError)}");
-            if (!File.Exists(outputPath)) throw new WorkerInfrastructureException("Codex execution produced no structured final response.");
+                throw new CodexExecutionInfrastructureException("Codex process failure",
+                    $"Codex execution exited with code {result.ExitCode}; service/authentication/CLI failure is possible.{Diagnostics(result.StandardOutput, result.StandardError)}");
+            if (!File.Exists(outputPath)) throw new CodexExecutionInfrastructureException("Unknown Codex failure",
+                "Codex execution produced no structured final response.");
             try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
             catch (Exception ex) when (ex is not OperationCanceledException)
-            { throw new WorkerInfrastructureException($"Codex execution did not return a valid structured task result: {ex.Message}", ex); }
+            { throw new CodexExecutionInfrastructureException("Unknown Codex failure",
+                $"Codex execution did not return a valid structured task result: {ex.Message}", ex); }
         }
         finally
         {
@@ -174,6 +181,21 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         AddModelAndReasoning(args, settings);
         args.Add("Reply only with OK. Do not inspect or modify project files.");
         return args;
+    }
+
+    internal static string ExecutionFailureCategory(Exception exception) => exception is TimeoutException
+        ? "Codex timeout"
+        : "Codex service/authentication/infrastructure failure";
+
+    private static async Task<string> ReadExecutionInstructionsAsync(string instructionsFile, CancellationToken ct)
+    {
+        try { return await ReadInstructionsAsync(instructionsFile, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            throw new CodexExecutionInfrastructureException("Unknown Codex failure",
+                $"Codex execution could not read its configured instructions: {ex.Message}", ex);
+        }
     }
 
     private static void AddModelAndReasoning(List<string> args, CodexSettings settings)

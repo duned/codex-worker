@@ -7,6 +7,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
 {
     private readonly TextWriter _writer = writer ?? Console.Out;
     private readonly TextWriter _errorWriter = errorWriter ?? Console.Error;
+    private readonly bool _hasExplicitErrorWriter = errorWriter is not null;
     private readonly bool _interactive = interactive ?? !Console.IsOutputRedirected;
     private bool _waiting;
     private Stopwatch? _idleTimer;
@@ -144,6 +145,12 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · failed · {FormatDuration(elapsed)}" +
             (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {details}"),
             ConsoleColor.Red, "✗", _errorWriter);
+    public void FailureReason(Guid executionId, string category, string reason, IReadOnlyList<string>? secretValues = null)
+    {
+        var safeReason = FailureDiagnosticRedactor.Redact(reason, secretValues);
+        WriteLine($"Reason · execution {ExecutionFormatting.Display(executionId)} · {category} · {Compact(safeReason, 180)}",
+            ConsoleColor.DarkGray, writer: _hasExplicitErrorWriter ? _errorWriter : _writer);
+    }
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, string details) =>
         IssueFailedCore(issue, elapsed, details);
 
@@ -258,10 +265,11 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         ConsoleColor.Cyan => "\u001b[36m", _ => "\u001b[90m"
     };
 
-    private static string Compact(string value)
+    private static string Compact(string value, int maximumLength = 500)
     {
         var oneLine = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return oneLine.Length <= 500 ? oneLine : oneLine[..480] + " … [truncated]";
+        const string suffix = " [truncated]";
+        return oneLine.Length <= maximumLength ? oneLine : oneLine[..(maximumLength - suffix.Length)] + suffix;
     }
 
     private static string FormatElapsedClock(TimeSpan elapsed) => elapsed.TotalHours >= 1

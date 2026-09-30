@@ -96,10 +96,10 @@ public sealed class ExecutionReportTests
         Assert.Contains("Final validation command: `dotnet test` (exit 1).", markdown);
         Assert.Contains("Failed Example.Tests.ParserTests.ReadsHeader", markdown);
         Assert.Contains("## Recovery", markdown);
-        Assert.Contains($"Execution: `{id}`", markdown);
-        Assert.Contains("Branch: `feature/example-59`", markdown);
-        Assert.Contains("Workspace: preserved", markdown);
-        Assert.Contains("Retry/resume: available", markdown);
+        Assert.Contains($"- **Execution:** `[{ExecutionFormatting.ShortId(id)}]` (`{id}`)", markdown);
+        Assert.Contains("- **Branch:** `feature/example-59`", markdown);
+        Assert.Contains("- **Workspace:** Preserved", markdown);
+        Assert.Contains("- **Retry/resume:** Available", markdown);
         Assert.DoesNotContain("/home/", markdown);
 
         var secretReport = report with { ValidationRepairs = [new("dotnet test", 1, 1, "Output private-value", false)] };
@@ -141,5 +141,41 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("## Recovery", failedMarkdown);
         Assert.DoesNotContain("## Recovery", succeededMarkdown);
         Assert.Contains("## Validation\n\nValidation passed successfully.", succeededMarkdown);
+    }
+
+    [Fact]
+    public void IncompleteCodexReportHasSeparatedMarkdownSectionsCorrelationAndRecoveryWithoutDuplicateText()
+    {
+        var id = Guid.Parse("8d80eeb9-c246-4348-b5cb-dc3710faf11b");
+        const string summary = "Codex did not complete the requested implementation because the existing implementation still uses a shared long-lived token.";
+        var report = new IssueExecutionReport(summary, [], Failure: summary,
+            ExecutionId: id, RecoveryBranch: "feature/example-74", WorkspacePreserved: true,
+            RetryAvailable: true, FailureCategory: "Codex reported incomplete task");
+
+        var markdown = report.ToMarkdown(IssueOutcomeKind.Failed);
+
+        Assert.Contains("## Execution\n\nExecution `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`).", markdown);
+        Assert.Contains("## Implementation attempt\n\n" + summary, markdown);
+        Assert.Contains("## Failure\n\n**Reason:** Codex reported incomplete task.", markdown);
+        Assert.DoesNotContain("**Reason:** Codex reported incomplete task.\n\n" + summary, markdown);
+        Assert.Contains("## Recovery\n\n- **Execution:** `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`)\n- **Branch:** `feature/example-74`\n- **Workspace:** Preserved\n- **Retry/resume:** Available", markdown);
+        Assert.DoesNotContain("## ExecutionExecution", markdown);
+        Assert.DoesNotContain("## Failure**Reason", markdown);
+    }
+
+    [Fact]
+    public void FailureMarkdownIdentifiesValidationAndProcessFailureCategoriesAndRedactsSecrets()
+    {
+        var validation = new IssueExecutionReport("Implementation summary", [], FinalValidationFailure: "dotnet test",
+            Failure: "Validation failed after 0 repair attempts.", ExecutionId: Guid.NewGuid());
+        var process = new IssueExecutionReport("Implementation summary", [],
+            Failure: "Codex process exited with code 7.", ExecutionId: Guid.NewGuid(),
+            FailureCategory: "Codex process failure");
+        var sensitive = process with { Failure = "Request failed token=secret-value", SecretValues = ["secret-value"] };
+
+        Assert.Contains("**Reason:** Authoritative validation failed.", validation.ToMarkdown(IssueOutcomeKind.Failed));
+        Assert.Contains("**Reason:** Codex process failure.", process.ToMarkdown(IssueOutcomeKind.Failed));
+        Assert.DoesNotContain("secret-value", sensitive.ToMarkdown(IssueOutcomeKind.Failed));
+        Assert.Contains("[redacted]", sensitive.ToMarkdown(IssueOutcomeKind.Failed));
     }
 }

@@ -95,6 +95,23 @@ public sealed class OperabilityTests
     }
 
     [Fact]
+    public void FailureReasonIsCorrelatedBoundedAndRedacted()
+    {
+        var writer = new StringWriter();
+        var executionId = Guid.Parse("8d80eeb9-c246-4348-b5cb-dc3710faf11b");
+
+        new WorkerConsole(writer, interactive: false).FailureReason(executionId, "Codex reported incomplete task",
+            "Could not complete token=secret-value " + new string('x', 300), ["secret-value"]);
+
+        var line = Assert.Single(writer.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains("Reason · execution [8d80eeb9] · Codex reported incomplete task", line);
+        Assert.Contains("[redacted]", line);
+        Assert.Contains("[truncated]", line);
+        Assert.DoesNotContain("secret-value", line);
+        Assert.True(line.Length < 300);
+    }
+
+    [Fact]
     public void RepeatedIdleStateIsPrintedOnlyOnceUntilIssueStarts()
     {
         var writer = new StringWriter();

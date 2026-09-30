@@ -20,13 +20,17 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? RecoveryBranch = null,
     bool WorkspacePreserved = false,
     bool RetryAvailable = false,
-    IReadOnlyList<string>? SecretValues = null)
+    IReadOnlyList<string>? SecretValues = null,
+    string? FailureCategory = null)
 {
     public string ToMarkdown(IssueOutcomeKind kind)
     {
         var sections = new List<string>();
         if (ExecutionId is { } executionId)
-            sections.Add($"## Execution\n\nExecution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
+        {
+            sections.Add("## Execution");
+            sections.Add($"Execution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
+        }
         if (AttemptNumber > 1)
             sections.Add($"## Attempt history\n\nCurrent execution " +
                 (ExecutionId is { } currentId ? $"`{ExecutionFormatting.Display(currentId)}` (`{currentId}`)" : "identity unavailable") +
@@ -90,20 +94,29 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
         }
         else
         {
-            sections.Add($"## Failure\n\n{Failure ?? "The task could not be completed."}");
-            if (WorkspacePreserved)
+            var failureText = Failure ?? "The task could not be completed.";
+            var category = FailureCategory ?? (FinalValidationFailure is not null ? "Authoritative validation failed" : "Execution failed");
+            var normalizedSummary = Normalize(ImplementationSummary ?? "");
+            var normalizedFailure = Normalize(failureText);
+            var duplicate = normalizedSummary.Length > 0 && (normalizedSummary == normalizedFailure ||
+                normalizedFailure.Length >= 40 && normalizedSummary.Contains(normalizedFailure, StringComparison.OrdinalIgnoreCase) ||
+                normalizedSummary.Length >= 40 && normalizedFailure.Contains(normalizedSummary, StringComparison.OrdinalIgnoreCase));
+            sections.Add($"## Failure\n\n**Reason:** {category}.{(duplicate ? "" : $"\n\n{failureText}")}");
+            if (WorkspacePreserved || RetryAvailable || !string.IsNullOrWhiteSpace(RecoveryBranch))
             {
                 var recovery = new List<string> { "## Recovery" };
-                if (ExecutionId is not null) recovery.Add($"Execution: `{ExecutionId}`");
-                if (!string.IsNullOrWhiteSpace(RecoveryBranch)) recovery.Add($"Branch: `{RecoveryBranch}`");
-                recovery.Add($"Workspace: {(WorkspacePreserved ? "preserved" : "not preserved")}");
-                recovery.Add($"Retry/resume: {(RetryAvailable ? "available" : "unavailable")}");
-                sections.Add(string.Join("\n", recovery));
+                if (ExecutionId is not null) recovery.Add($"- **Execution:** `{ExecutionFormatting.Display(ExecutionId.Value)}` (`{ExecutionId}`)");
+                if (!string.IsNullOrWhiteSpace(RecoveryBranch)) recovery.Add($"- **Branch:** `{RecoveryBranch}`");
+                recovery.Add($"- **Workspace:** {(WorkspacePreserved ? "Preserved" : "Not preserved")}");
+                recovery.Add($"- **Retry/resume:** {(RetryAvailable ? "Available" : "Unavailable")}");
+                sections.Add(recovery[0] + "\n\n" + string.Join("\n", recovery.Skip(1)));
             }
         }
         var markdown = string.Join("\n\n", sections);
         return kind == IssueOutcomeKind.Failed ? FailureDiagnosticRedactor.Redact(markdown, SecretValues) : markdown;
     }
+
+    private static string Normalize(string value) => string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 }
 
 internal static class FailureDiagnosticRedactor
@@ -117,6 +130,6 @@ internal static class FailureDiagnosticRedactor
         if (secretValues is not null)
             foreach (var secret in secretValues.Where(item => item.Length >= 4).Distinct(StringComparer.Ordinal))
                 safe = safe.Replace(secret, "[redacted]", StringComparison.Ordinal);
-        return new string(safe.Where(character => !char.IsControl(character) || character == '\t').ToArray());
+        return new string(safe.Where(character => !char.IsControl(character) || character is '\t' or '\n').ToArray());
     }
 }

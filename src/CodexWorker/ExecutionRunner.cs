@@ -50,6 +50,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     execution.Resumed, execution.AttemptNumber, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
+            if (outcome.Status == "failed")
+                output.FailureReason(execution.ExecutionId, "Codex reported incomplete task", outcome.Summary,
+                    config.Environment.Variables.Values.ToArray());
             await git.VerifyCodexStateAsync(ct);
             var implementationSummary = outcome.Summary;
             var repairs = new List<ValidationRepairRecord>();
@@ -57,7 +60,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (outcome.Status == "blocked") return await CleanupOutcomeAsync(context, IssueOutcomeKind.Blocked,
                 new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
             if (outcome.Status == "failed") return await CleanupOutcomeAsync(context, IssueOutcomeKind.Failed,
-                new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary), ct);
+                new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary,
+                    FailureCategory: "Codex reported incomplete task"), ct);
 
             var repairAttempts = 0;
             while (true)
@@ -90,13 +94,17 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 await git.VerifyCodexStateAsync(ct);
                 if (outcome.Status is "blocked" or "failed")
                 {
+                    if (outcome.Status == "failed")
+                        output.FailureReason(execution.ExecutionId, "Codex repair reported incomplete task", outcome.Summary,
+                            config.Environment.Variables.Values.ToArray());
                     repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
                         outcome.Summary, false, failureSummary));
                     return await CleanupOutcomeAsync(context,
                         outcome.Status == "blocked" ? IssueOutcomeKind.Blocked : IssueOutcomeKind.Failed,
                         new IssueExecutionReport(implementationSummary, repairs,
                             HumanInput: outcome.Status == "blocked" ? outcome.Question : null,
-                            Failure: outcome.Status == "failed" ? outcome.Summary : null), ct);
+                            Failure: outcome.Status == "failed" ? outcome.Summary : null,
+                            FailureCategory: outcome.Status == "failed" ? "Codex repair reported incomplete task" : null), ct);
                 }
                 repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
                     outcome.Summary, false, failureSummary));
@@ -145,6 +153,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         }
         catch (Exception ex)
         {
+            if (ex is CodexExecutionInfrastructureException codexFailure)
+                output.FailureReason(execution.ExecutionId, codexFailure.Category,
+                    "Codex execution did not complete; see execution history for details.");
+            else if (ex is OperationCanceledException && ct.IsCancellationRequested)
+                output.FailureReason(execution.ExecutionId, "Cancellation/interruption", "Execution was cancelled or interrupted.");
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
             throw;
         }

@@ -20,6 +20,7 @@ This repository contains the generic .NET 10 Codex worker. Keep it project-agnos
 - Pass process arguments as argument lists rather than building shell command strings, except for validation commands that are explicitly configured shell commands.
 - Keep external-service access out of automated tests. Test parsing and deterministic decision logic locally.
 - Preserve bounded process output and useful failure context.
+- Keep failure diagnostics concise, redacted, and correlated with the execution ID. GitHub failure comments must use separated Markdown headings, paragraphs, and recovery lists; do not repeat the same explanation or include raw Codex output.
 - Keep the Codex child environment stripped of GitHub authentication and normal Git credential-helper configuration. Treat the remaining ability to use local Git as a trusted V0.1 boundary and retain Git state verification.
 - Never force-push or automatically resolve merge conflicts.
 - YAML configuration uses YamlDotNet; reject duplicate and unknown keys and keep example configuration checked in.

@@ -48,4 +48,12 @@ public sealed class CodexExecutorArgumentsTests
         Assert.Contains("chosen-model", args);
         Assert.Contains("Reply only with OK. Do not inspect or modify project files.", args);
     }
+
+    [Fact]
+    public void CodexInfrastructureFailureCategoriesDistinguishTimeoutFromServiceFailure()
+    {
+        Assert.Equal("Codex timeout", CodexExecutor.ExecutionFailureCategory(new TimeoutException("timed out")));
+        Assert.Equal("Codex service/authentication/infrastructure failure",
+            CodexExecutor.ExecutionFailureCategory(new InvalidOperationException("startup failed")));
+    }
 }
