@@ -32,6 +32,26 @@ EOF
 
 fail() { printf 'Codex Server installer: %s\n' "$*" >&2; exit 1; }
 
+ensure_management_token() {
+  local environment_file="$1"
+
+  if grep -Eq '^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=' "$environment_file"; then
+    return 0
+  fi
+
+  command -v openssl >/dev/null 2>&1 || fail 'OpenSSL is required to generate the initial management token.'
+  local management_token
+  management_token="$(openssl rand -hex 32)" || fail 'Could not generate the initial management token.'
+  [[ "$management_token" =~ ^[[:xdigit:]]{64}$ ]] || fail 'OpenSSL returned an invalid management token.'
+  printf '\nCODEX_SERVER_MANAGEMENT_TOKEN=%s\n' "$management_token" >> "$environment_file" || fail 'Could not save the initial management token.'
+  unset management_token
+}
+
+# Keep the credential logic available to the local installer test without running installation.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 while (($#)); do
   case "$1" in
     --version)
@@ -132,6 +152,7 @@ if [[ ! -e /etc/codex-server/server.env ]]; then
 fi
 chown root:codex-server /etc/codex-server/server.env
 chmod 0640 /etc/codex-server/server.env
+ensure_management_token /etc/codex-server/server.env
 cat > /etc/systemd/system/codex-server.service <<'EOF'
 [Unit]
 Description=Codex Server
@@ -183,6 +204,8 @@ printf 'Codex Server %s installed. Service: ' "${version:-local build}"
 systemctl is-active codex-server || true
 cat <<'EOF'
 Configure /etc/codex-server/server.env, then restart with: systemctl restart codex-server
+The management token is stored in /etc/codex-server/server.env. Retrieve it when needed with:
+sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env
 The default endpoint is http://127.0.0.1:5090. Check status: systemctl status codex-server
 Logs: journalctl -u codex-server
 EOF

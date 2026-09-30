@@ -24,6 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/l
 
 Pass `--version VERSION` after `bash -s --` to install a specific release. The installer resolves the latest release when no version is specified, downloads the matching `codex-server-VERSION-linux-x64.tar.gz` and `checksums.txt`, and verifies the archive before extracting it. Keep `checksums.txt` alongside both archives on every release. The installer is served from the repository's `main` branch; releases themselves are selected from the versioned GitHub Release assets.
 
+On first install, the installer generates a 256-bit management token in `/etc/codex-server/server.env` if that setting is not already present. The file is owned by `root:codex-server` with mode `0640`, and installer reruns preserve the configured token. Retrieve it explicitly when needed with `sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env`; the installer does not print the credential. The service starts with this token available, so no manual token configuration or restart is needed on a fresh install.
+
 To publish a release, run the script from a clean checkout for the release tag, review the generated archives and `checksums.txt`, and attach all three files as assets to the matching GitHub Release. The checksum file contains SHA-256 hashes of both archives and can be checked with `sha256sum --check checksums.txt` after downloading the assets.
 
 ## Installing a Worker

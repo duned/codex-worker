@@ -23,4 +23,34 @@ if bash "$installer" --unknown >"$temp_dir/unknown.txt" 2>&1; then
 fi
 grep -q 'Unknown option' "$temp_dir/unknown.txt"
 
+source "$installer"
+environment_file="$temp_dir/server.env"
+touch "$environment_file"
+credential_setup_output="$(ensure_management_token "$environment_file")"
+[[ -z "$credential_setup_output" ]] || {
+  echo 'Installer printed output while generating the management token.' >&2
+  exit 1
+}
+generated_token="$(sed -n 's/^CODEX_SERVER_MANAGEMENT_TOKEN=//p' "$environment_file")"
+[[ "$generated_token" =~ ^[[:xdigit:]]{64}$ ]] || {
+  echo 'Installer did not generate a 256-bit management token.' >&2
+  exit 1
+}
+ensure_management_token "$environment_file"
+[[ "$(sed -n 's/^CODEX_SERVER_MANAGEMENT_TOKEN=//p' "$environment_file")" == "$generated_token" ]] || {
+  echo 'Installer changed the management token on rerun.' >&2
+  exit 1
+}
+
+operator_environment_file="$temp_dir/operator-server.env"
+printf 'SERVER__ListenUrl=http://127.0.0.1:5090\nCODEX_SERVER_MANAGEMENT_TOKEN=operator-token\n' > "$operator_environment_file"
+ensure_management_token "$operator_environment_file"
+[[ "$(sed -n 's/^CODEX_SERVER_MANAGEMENT_TOKEN=//p' "$operator_environment_file")" == 'operator-token' ]] || {
+  echo 'Installer changed an operator-configured management token.' >&2
+  exit 1
+}
+
+grep -Fq 'chmod 0640 /etc/codex-server/server.env' "$installer"
+grep -Fq "sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN" "$installer"
+
 echo 'Installer argument and syntax checks passed.'
