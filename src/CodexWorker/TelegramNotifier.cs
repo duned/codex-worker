@@ -52,6 +52,9 @@ public sealed class TelegramNotifier : IDisposable
     public Task StoppedAsync(string project, CancellationToken ct) =>
         SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO\n{project}"), ct);
 
+    public Task NoWorkAsync(CancellationToken ct) =>
+        SendAsync(Format($"🟡 CW {ApplicationVersion.Display} · SIN TRABAJO"), ct);
+
     public Task StartingAsync(string project, string repository, GitHubIssue issue, CancellationToken ct) =>
         SendTaskAsync(project, repository, issue, "▶", "TAREA INICIADA", null, ct);
 

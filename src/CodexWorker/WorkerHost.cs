@@ -242,6 +242,7 @@ public sealed class WorkerHost
             var executionToken = executionCancellation.Token;
             var scheduler = new ProjectScheduler(runtimes.Count);
             var capacityLog = new SchedulerCapacityLog(_global.Worker.MaxParallelTasks, _operationalLog);
+            var idleNoWorkNotification = new IdleNoWorkNotificationState();
             void ReportCapacity() => capacityLog.Report(active.Count, active.Values
                 .GroupBy(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(group => (group.First().Configuration.Project.Name, group.Count(),
@@ -474,6 +475,8 @@ public sealed class WorkerHost
                 }
 
                 if (ct.IsCancellationRequested) break;
+                if (idleNoWorkNotification.Observe(active.Count, foundWork))
+                    await telegram.NoWorkAsync(ct);
                 if (active.Count > 0)
                 {
                     safeToStop = false;

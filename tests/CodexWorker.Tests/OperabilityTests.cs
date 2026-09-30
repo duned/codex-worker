@@ -430,6 +430,19 @@ public sealed class OperabilityTests
         Assert.Equal($"⚫ CW {ApplicationVersion.Display} · DETENIDO", stop.RootElement.GetProperty("text").GetString());
     }
 
+    [Fact]
+    public async Task NoWorkLifecycleNotificationUsesYellowWorkerStatus()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
+
+        await telegram.NoWorkAsync(CancellationToken.None);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.Equal($"🟡 CW {ApplicationVersion.Display} · SIN TRABAJO", body.RootElement.GetProperty("text").GetString());
+    }
+
     private sealed class RecordingHandler(HttpStatusCode status) : HttpMessageHandler
     {
         public int Calls { get; private set; }

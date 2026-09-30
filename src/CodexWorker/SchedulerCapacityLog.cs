@@ -45,3 +45,22 @@ internal sealed class IdleWorkerHeartbeat(DateTimeOffset startedAtUtc)
         _next = now.AddMinutes(15);
     }
 }
+
+/// <summary>Tracks transitions between scheduled work and a fully idle scheduler.</summary>
+internal sealed class IdleNoWorkNotificationState
+{
+    private bool _isIdle;
+
+    public bool Observe(int activeExecutions, bool foundWork)
+    {
+        if (activeExecutions > 0 || foundWork)
+        {
+            _isIdle = false;
+            return false;
+        }
+
+        if (_isIdle) return false;
+        _isIdle = true;
+        return true;
+    }
+}

@@ -5,6 +5,39 @@ namespace CodexWorker.Tests;
 public sealed class SchedulerCapacityLogTests
 {
     [Fact]
+    public void StartupWithNoWorkEntersIdleOnceAcrossRepeatedPolls()
+    {
+        var state = new IdleNoWorkNotificationState();
+
+        Assert.True(state.Observe(activeExecutions: 0, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
+    }
+
+    [Fact]
+    public void LastExecutionCompletionEntersIdleOnlyAfterActiveCountReachesZero()
+    {
+        var state = new IdleNoWorkNotificationState();
+
+        Assert.False(state.Observe(activeExecutions: 1, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 1, foundWork: false));
+        Assert.True(state.Observe(activeExecutions: 0, foundWork: false));
+    }
+
+    [Fact]
+    public void WorkIdleWorkIdleProducesOneNotificationForEachIdleTransition()
+    {
+        var state = new IdleNoWorkNotificationState();
+
+        Assert.True(state.Observe(activeExecutions: 0, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 1, foundWork: true));
+        Assert.False(state.Observe(activeExecutions: 1, foundWork: false));
+        Assert.True(state.Observe(activeExecutions: 0, foundWork: false));
+        Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
+    }
+
+    [Fact]
     public void CapacityTransitionsAreReportedAsOneSnapshotWithOnlyActiveProjects()
     {
         var messages = new List<string>();
