@@ -211,9 +211,18 @@ The installer is repeatable and preserves existing configuration and environment
 | Project configuration and configured checkouts | `/var/lib/codex-worker/projects` or operator-selected paths | codex-worker |
 | Execution worktrees | `/var/lib/codex-worker/.codex-worker/worktrees` | codex-worker |
 
-Edit `/etc/codex-worker/worker.yml`: set `server.url`, retain the persistent `server.identityFile`, and add local project YAML files under `projects.directory`. Each project configuration must identify its checkout and credentials through the supported local authentication setup. Managed enrollment requires `projects.ownership: managed` and `server.enabled: true`; the installed starter configuration selects those values. Put `CODEX_SERVER_REGISTRATION_TOKEN` in `/etc/codex-worker/worker.env` as a systemd environment assignment, for example `CODEX_SERVER_REGISTRATION_TOKEN=<secret>`, and keep the file root-owned with mode `0640`. Do not put credentials in YAML or command-line arguments.
+Edit `/etc/codex-worker/worker.yml`: set `server.url`, retain the persistent `server.identityFile`, and add local project YAML files under `projects.directory`. Each project configuration must identify its checkout and credentials through the supported local authentication setup. Managed enrollment requires `projects.ownership: managed` and `server.enabled: true`; the installed starter configuration selects those values. Keep `/etc/codex-worker/worker.env` root-owned with mode `0640` and put any required service environment values there. Do not put credentials in YAML or persistent service configuration.
 
-Start and enable the service after configuration:
+Create a one-time registration token on the Server, then bootstrap the Worker before starting its service. The bootstrap command takes the token as a process argument; use a protected operator terminal, avoid shell history and tracing, and do not capture process arguments or terminal output containing the token. It stores a separate durable Worker credential beside the identity file with owner-only permissions. After successful bootstrap, the Worker uses that credential, so `CODEX_SERVER_REGISTRATION_TOKEN` does not need to be set in `worker.env`.
+
+```sh
+sudo -u codex-worker /opt/codex-worker/CodexWorker register \
+  --server https://server.example \
+  --token '<one-time-registration-token>' \
+  --identity-file /var/lib/codex-worker/.codex-worker/worker-id
+```
+
+Start and enable the service after bootstrap and project configuration:
 
 ```sh
 sudo systemctl enable --now codex-worker
