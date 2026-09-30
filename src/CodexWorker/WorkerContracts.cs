@@ -50,9 +50,14 @@ public interface IGitRepository : IDisposable
         await DiscardUncommittedIssueChangesAsync(ct);
         return null;
     }
+    Task<GitRecoveryInfo?> PreserveIntegrationConflictAsync(CancellationToken ct) => Task.FromResult<GitRecoveryInfo?>(null);
     Task CleanupRecoveryWorkspaceAsync(ExecutionHistoryEntry recovery, CancellationToken ct) => Task.CompletedTask;
     Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct);
+    Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
+        Func<string, CancellationToken, Task<bool>> resolveConflict, CancellationToken ct) =>
+        CommitAndIntegrateAsync(issue, validateAfterRebase, ct);
 }
 
 public interface ICodexExecutor
@@ -62,6 +67,9 @@ public interface ICodexExecutor
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunAsync(projectDirectory, instructionsFile, issue, ct);
     Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct);
+    Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
+        GitHubIssue issue, string conflictDetails, CancellationToken ct) =>
+        Task.FromResult(new CodexOutcome("failed", "Integration conflict resolution is unavailable.", [], false, null));
 }
 
 public interface IValidationRunner

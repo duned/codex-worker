@@ -13,10 +13,11 @@ public sealed class WorkerExecution
             [ExecutionState.Validating] = [ExecutionState.Repairing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Repairing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
             [ExecutionState.Integrating] = [ExecutionState.Reporting, ExecutionState.InfrastructureFailure],
-            [ExecutionState.Reporting] = [ExecutionState.Completed, ExecutionState.Blocked, ExecutionState.Failed, ExecutionState.Superseded, ExecutionState.InfrastructureFailure],
+            [ExecutionState.Reporting] = [ExecutionState.Completed, ExecutionState.Blocked, ExecutionState.Failed, ExecutionState.IntegrationConflict, ExecutionState.Superseded, ExecutionState.InfrastructureFailure],
             [ExecutionState.Completed] = [],
             [ExecutionState.Blocked] = [],
             [ExecutionState.Failed] = [],
+            [ExecutionState.IntegrationConflict] = [],
             [ExecutionState.InfrastructureFailure] = [],
             [ExecutionState.Cancelled] = [],
             [ExecutionState.Superseded] = []
@@ -90,6 +91,7 @@ public enum ExecutionState
     Completed,
     Blocked,
     Failed,
+    IntegrationConflict,
     InfrastructureFailure,
     Cancelled,
     Superseded

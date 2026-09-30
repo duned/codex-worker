@@ -90,7 +90,7 @@ public sealed class ExecutionHistoryStore : IDisposable
                 resumed=MAX($resumed,resumed), server_execution_id=COALESCE($serverExecutionId,server_execution_id),
                 assignment_id=COALESCE($assignmentId,assignment_id), ownership_generation=COALESCE($ownershipGeneration,ownership_generation)
                 WHERE execution_id=$id AND completed_at_utc IS NULL
-                    AND state NOT IN ('Completed','Blocked','Failed','InfrastructureFailure','Cancelled')
+                    AND state NOT IN ('Completed','Blocked','Failed','IntegrationConflict','InfrastructureFailure','Cancelled')
             """;
         Bind(command, entry);
         try

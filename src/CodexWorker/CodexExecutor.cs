@@ -88,6 +88,30 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         return await RunStructuredAsync(projectDirectory, prompt, ct);
     }
 
+    public async Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
+        GitHubIssue issue, string conflictDetails, CancellationToken ct)
+    {
+        var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
+        var prompt = $"""
+            {instructions}
+
+            # Integration conflict recovery
+            The implementation for Issue #{issue.Number} is complete and passed the project's configured validation before integration.
+            Git is currently rebasing that completed implementation onto the latest configured base branch and has stopped on conflicts.
+            Resolve only the current rebase conflicts in this checkout. Preserve the intended Issue changes and compatible changes from the base branch.
+            Do not redesign or reimplement the Issue. Do not run Git commands that continue, abort, reset, commit, or otherwise change the rebase lifecycle; the Worker owns those operations.
+            Inspect and edit the conflicted files, then return success only when the conflict markers are removed and the intended combined code is ready.
+
+            Issue title: {issue.Title}
+            Issue body:
+            {issue.Body}
+
+            Git conflict diagnostics:
+            {conflictDetails}
+            """;
+        return await RunStructuredAsync(projectDirectory, prompt, ct);
+    }
+
     public Task PreflightAsync(CancellationToken ct) => PreflightAsync(ct, 60);
 
     public async Task PreflightAsync(CancellationToken ct, int timeoutSeconds)

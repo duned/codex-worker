@@ -101,7 +101,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             var duplicate = normalizedSummary.Length > 0 && (normalizedSummary == normalizedFailure ||
                 normalizedFailure.Length >= 40 && normalizedSummary.Contains(normalizedFailure, StringComparison.OrdinalIgnoreCase) ||
                 normalizedSummary.Length >= 40 && normalizedFailure.Contains(normalizedSummary, StringComparison.OrdinalIgnoreCase));
-            sections.Add($"## Failure\n\n**Reason:** {category}.{(duplicate ? "" : $"\n\n{failureText}")}");
+            sections.Add($"## {(kind == IssueOutcomeKind.IntegrationConflict ? "Integration conflict recovery" : "Failure")}\n\n**Reason:** {category}.{(duplicate ? "" : $"\n\n{failureText}")}");
             if (WorkspacePreserved || RetryAvailable || !string.IsNullOrWhiteSpace(RecoveryBranch))
             {
                 var recovery = new List<string> { "## Recovery" };
@@ -113,7 +113,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             }
         }
         var markdown = string.Join("\n\n", sections);
-        return kind == IssueOutcomeKind.Failed ? FailureDiagnosticRedactor.Redact(markdown, SecretValues) : markdown;
+        return kind is IssueOutcomeKind.Failed or IssueOutcomeKind.IntegrationConflict
+            ? FailureDiagnosticRedactor.Redact(markdown, SecretValues) : markdown;
     }
 
     private static string Normalize(string value) => string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));

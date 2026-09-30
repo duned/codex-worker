@@ -650,7 +650,7 @@ public sealed class WorkerHost
             var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
             foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                          item.Repository == project.Configuration.Project.Repository &&
-                         (item.RecoveryState is "recoverable" or "cleanup-pending" or "missing")))
+                         (item.RecoveryState is "recoverable" or "integration-conflict" or "cleanup-pending" or "missing")))
             {
                 var expired = RecoveryRetentionPolicy.IsExpired(entry, retention, DateTimeOffset.UtcNow);
                 var cleanupPending = entry.RecoveryState == "cleanup-pending";

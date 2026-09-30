@@ -21,6 +21,7 @@ github:
   workingLabel: codex-working
   blockedLabel: codex-blocked
   failedLabel: codex-failed
+  integrationConflictLabel: codex-integration-conflict
   doneLabel: codex-done
 
 # Maximum Issues this project may execute at once. Defaults to 1; the global

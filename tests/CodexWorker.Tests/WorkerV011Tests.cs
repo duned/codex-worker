@@ -72,7 +72,7 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
-    public async Task RecoverableIntegrationConflictFailsOnlyItsExecutionAndSchedulerCanContinue()
+    public async Task IntegrationConflictHasDedicatedStateAndSchedulerCanContinue()
     {
         using var historyDatabase = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(historyDatabase.Path);
@@ -80,10 +80,10 @@ public sealed class WorkerV011Tests
         h.GitHub.ReadyIssueCount = 2;
         h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted");
 
-        var failed = await h.ProcessOneAsync();
-        Assert.Equal(IssueOutcomeKind.Failed, failed!.Kind);
+        var conflicted = await h.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
         Assert.Equal(1, h.Git.Integrations);
-        Assert.Equal("Failed", Assert.Single(await history.ReadAllAsync()).State);
+        Assert.Equal("IntegrationConflict", Assert.Single(await history.ReadAllAsync()).State);
 
         h.Git.IntegrationFailure = null;
         var succeeded = await h.ProcessOneAsync();

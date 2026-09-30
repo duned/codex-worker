@@ -142,13 +142,35 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
                         token => output.RunProgressAsync(TaskLabel(issue, "Validation after rebase", execution),
                             () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, token),
-                            x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token), ct),
+                            x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: token),
+                        async (details, token) =>
+                        {
+                            var resolution = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
+                                () => codex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile,
+                                    issue, details, token), x => x.Status, x => x.Status == "success", ct: token);
+                            return resolution.Status == "success";
+                        }, ct),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
                 catch (GitIntegrationConflictException ex)
                 {
-                    return new IssueProcessingResult(IssueOutcomeKind.Failed,
-                        new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message));
+                    var recovery = await git.PreserveIntegrationConflictAsync(ct);
+                    var report = new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message,
+                        FailureCategory: "Integration conflict", RecoveryBranch: recovery?.Branch,
+                        WorkspacePreserved: recovery is not null, RetryAvailable: false,
+                        SecretValues: config.Environment.Variables.Values.ToArray());
+                    await SaveHistoryAsync(CreateEntry(execution, report, null, ex.Message) with
+                    {
+                        ValidationOutcome = "passed",
+                        CommitSha = recovery?.BaseCommit,
+                        IntegrationBranch = execution.BaseBranch,
+                        RecoveryState = recovery is null ? "integration-conflict-unavailable" : "integration-conflict",
+                        RecoveryBaseCommit = recovery?.BaseCommit,
+                        RecoveryStatus = recovery?.StatusSummary,
+                        RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)
+                    }, ct);
+                    return new IssueProcessingResult(IssueOutcomeKind.IntegrationConflict,
+                        report);
                 }
             }
             finally { _repositoryGate.Release(); }
@@ -246,7 +268,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             execution.IsTerminal ? DateTimeOffset.UtcNow : null, execution.State.ToString(),
             execution.IsTerminal ? (long)(duration ?? (DateTimeOffset.UtcNow - execution.StartedAtUtc)).TotalMilliseconds : null,
             report?.ImplementationSummary,
-            report?.Integration is not null ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
+            report?.Integration is not null || report?.FailureCategory == "Integration conflict" ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
                 report is { ValidationRepairs.Count: > 0 } ? "failed or interrupted" : null,
             report?.ValidationRepairs.Count ?? 0, report?.ValidationRepairs ?? [],
             report?.Integration?.CommitSha ?? Extract(report?.Integration?.Summary, "Committed as `([^`]+)`"),

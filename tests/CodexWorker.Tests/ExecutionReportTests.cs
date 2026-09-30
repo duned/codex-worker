@@ -107,6 +107,24 @@ public sealed class ExecutionReportTests
     }
 
     [Fact]
+    public void IntegrationConflictReportSeparatesCompletedImplementationFromPreservedRecoveryState()
+    {
+        var id = Guid.NewGuid();
+        var report = new IssueExecutionReport("Implementation and validation completed.", [],
+            Failure: "Rebase conflict could not be resolved automatically.", FailureCategory: "Integration conflict",
+            ExecutionId: id, RecoveryBranch: "feature/example-59", WorkspacePreserved: true,
+            RetryAvailable: false, SecretValues: []);
+
+        var markdown = report.ToMarkdown(IssueOutcomeKind.IntegrationConflict);
+
+        Assert.Contains("## Implementation attempt", markdown);
+        Assert.Contains("## Integration conflict recovery", markdown);
+        Assert.Contains($"`{id}`", markdown);
+        Assert.Contains("- **Workspace:** Preserved", markdown);
+        Assert.Contains("- **Retry/resume:** Unavailable", markdown);
+    }
+
+    [Fact]
     public void ValidationDiagnosticSummarySelectsActionableLinesRedactsSecretsAndBoundsOutput()
     {
         var failure = new ValidationFailure(2, "dotnet test", 1,

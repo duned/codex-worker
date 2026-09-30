@@ -3,7 +3,7 @@ using System.Diagnostics;
 
 namespace CodexWorker;
 
-public enum IssueOutcomeKind { Succeeded, Blocked, Failed, Superseded }
+public enum IssueOutcomeKind { Succeeded, Blocked, Failed, IntegrationConflict, Superseded }
 public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecutionReport Report)
 {
     public string Summary => Report.ToMarkdown(Kind);
@@ -146,6 +146,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
                 IssueOutcomeKind.Blocked => ExecutionState.Blocked,
                 IssueOutcomeKind.Failed => ExecutionState.Failed,
+                IssueOutcomeKind.IntegrationConflict => ExecutionState.IntegrationConflict,
                 IssueOutcomeKind.Superseded => ExecutionState.Superseded,
                 _ => throw new ArgumentOutOfRangeException()
             }, CancellationToken.None);
@@ -330,7 +331,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             execution.IsTerminal ? DateTimeOffset.UtcNow : null, execution.State.ToString(),
             execution.IsTerminal ? (long)(duration ?? (DateTimeOffset.UtcNow - execution.StartedAtUtc)).TotalMilliseconds : null,
             report?.ImplementationSummary,
-            report?.Integration is not null ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
+            report?.Integration is not null || report?.FailureCategory == "Integration conflict" ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
                 report is { ValidationRepairs.Count: > 0 } ? "failed or interrupted" : null,
             report?.ValidationRepairs.Count ?? 0, report?.ValidationRepairs ?? [],
             report?.Integration?.CommitSha ?? Extract(report?.Integration?.Summary, "Committed as `([^`]+)`"),
@@ -379,6 +380,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                     (result.Report.RecoveryBranch is null ? " · workspace not preserved · retry/resume unavailable" :
                         $" · workspace preserved on {result.Report.RecoveryBranch} · retry/resume {(result.Report.RetryAvailable ? "available" : "unavailable")}");
                 _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, recoveryDetails);
+                break;
+            case IssueOutcomeKind.IntegrationConflict:
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.IntegrationConflictLabel, ct);
+                await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
+                await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
+                    result.Report.ExecutionId!.Value, "Implementation is complete; integration conflict recovery is required.", ct);
+                var conflictDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
+                    (result.Report.WorkspacePreserved ? $" · implementation workspace preserved on {result.Report.RecoveryBranch} · integration recovery available" :
+                        " · implementation workspace preservation could not be verified");
+                _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, conflictDetails);
                 break;
             case IssueOutcomeKind.Superseded:
                 break;

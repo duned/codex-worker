@@ -274,6 +274,38 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task CodexResolvedRebaseConflictContinuesAndValidatesBeforeIntegration()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var executionDirectory = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(executionDirectory, "base.txt"), "feature and base changes combined");
+        await fixture.AdvanceBaseAsync("base.txt", "base branch change");
+        var resolverCalled = false;
+        var validationCalled = false;
+
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue, _ =>
+        {
+            validationCalled = true;
+            return Task.FromResult(ValidationResult.Success);
+        }, async (details, _) =>
+        {
+            resolverCalled = true;
+            Assert.NotEmpty(details);
+            Assert.Contains("<<<<<<<", await File.ReadAllTextAsync(Path.Combine(executionDirectory, "base.txt")));
+            await File.WriteAllTextAsync(Path.Combine(executionDirectory, "base.txt"), "feature and base changes combined");
+            return true;
+        }, CancellationToken.None);
+
+        Assert.True(resolverCalled);
+        Assert.True(validationCalled);
+        Assert.Equal("feature and base changes combined", await fixture.Git("show", "main:base.txt"));
+        Assert.True(result.HasChanges);
+    }
+
+    [Fact]
     public async Task FailedValidationAfterRebaseStopsBeforeIntegration()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
