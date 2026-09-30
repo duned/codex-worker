@@ -142,10 +142,7 @@ public sealed class TelegramNotifier : IDisposable
             : string.Join("\n", line.Split('\n').Select(EscapeHtml))));
 
     private static bool IsIssueLinkLine(string line) =>
-        (line.StartsWith("▶ <a href=\"https://github.com/", StringComparison.Ordinal) ||
-         line.StartsWith("✅ <a href=\"https://github.com/", StringComparison.Ordinal) ||
-         line.StartsWith("🟡 <a href=\"https://github.com/", StringComparison.Ordinal) ||
-         line.StartsWith("❌ <a href=\"https://github.com/", StringComparison.Ordinal)) &&
+        line.IndexOf("<a href=\"https://github.com/", StringComparison.Ordinal) > 0 &&
         line.EndsWith("</a>", StringComparison.Ordinal);
 
     private static string Project(string project) => EscapeHtml(project.ToUpperInvariant());

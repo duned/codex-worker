@@ -292,6 +292,25 @@ public sealed class OperabilityTests
     }
 
     [Fact]
+    public async Task IntegrationRecoveryIssueLinkRemainsTelegramHtmlWithWarningActionIcon()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
+        const string title = "Fix <link> & escaping";
+
+        await telegram.IntegrationRecoveryRejectedAsync("Example", "owner/repo",
+            new GitHubIssue(12, title, "", DateTimeOffset.UtcNow), "Recovery was rejected", CancellationToken.None);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        var message = body.RootElement.GetProperty("text").GetString()!;
+        Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
+        Assert.StartsWith("⚠️ <a href=\"https://github.com/owner/repo/issues/12\">Fix &lt;link&gt; &amp; escaping #12</a>\nEXAMPLE · RECUPERACIÓN DE INTEGRACIÓN RECHAZADA · CW ", message);
+        Assert.DoesNotContain("&lt;a href=", message);
+        Assert.Contains("Recovery was rejected", message);
+    }
+
+    [Fact]
     public async Task ConsoleTaskLifecycleLinesUseIssueIdentityAndKeepMarkdownOutOfOperationalOutput()
     {
         var writer = new StringWriter();
