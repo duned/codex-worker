@@ -38,7 +38,7 @@ Record hostnames, OS/image version, architecture, Worker and Server versions, de
 ## Prerequisites
 
 - Approval to create test Issues, branches, labels, and commits in the designated test repository. Confirm it can be safely modified and reset by the campaign operator.
-- A persistent Ubuntu 24.04 x86_64 Server VM and a clean Ubuntu 24.04 x86_64 Worker VM. Snapshot or rebuild the Worker before bootstrap; do not reuse the development Worker VM for the clean-install scenario.
+- Ubuntu 24.04 x86_64 Server and Worker VMs. Before each clean-install campaign, use the documented `uninstall-server.sh --purge` and `uninstall-worker.sh --purge` commands to remove installer-owned state on the respective hosts; snapshot or rebuild only if the VM itself is no longer usable.
 - On both service VMs: systemd and the installer utilities `curl`, `tar`, and `sha256sum`; the installer must run as root. Network access to GitHub releases and raw GitHub content is required. The release installers install self-contained binaries; **do not install .NET SDK or runtime** on either host. Explicitly record that `dotnet --info` is unavailable on the clean Worker before and after Worker installation.
 - Keep project/runtime dependencies absent at the start of the Worker campaign wherever possible. In particular, do not preinstall Git, `gh`, Codex CLI, or project-specific runtimes before baseline capability discovery. The V0.12 Worker provisioning implementation supports a limited set of fixed package mappings; it does not provision .NET, `gh`, or Codex CLI. Install unsupported execution prerequisites later using the approved host setup process and record them as manually provisioned, not as Worker provisioning coverage.
 - A GitHub repository checkout on the Worker dedicated to this Worker, clean and on the configured default branch. Create/configure it after baseline capability discovery and before execution. Keep `gh` authentication and Codex authentication available to the `codex-worker` system account.
@@ -119,6 +119,12 @@ Operator:
 **Collect:** `systemctl status`, bounded `journalctl -u codex-server` excerpt, endpoint responses, dashboard evidence, persistent directory/database metadata.
 
 **Status:** NOT TESTED
+
+### Repeating a clean-install campaign on the same VMs
+
+After collecting the campaign evidence and completing any required Server-side cleanup, run the matching `uninstall-server.sh --purge` and `uninstall-worker.sh --purge` commands as root. Each command removes the installer-owned unit, binaries/releases, configuration and secrets, persistent state, logs/runtime files, and standard service account/group where safe. Purge is destructive and erases the Worker identity and project checkouts as well as the Server database.
+
+Verify each host is clear before reinstalling: `systemctl show codex-server.service` / `systemctl show codex-worker.service` should report `LoadState=not-found`; the corresponding `/opt`, `/etc`, `/var/lib`, `/var/log`, and `/run` Codex directories should be absent; and the `codex-server` / `codex-worker` accounts and groups should be absent when created by the installer. External tools and packages remain installed and are outside the cleanup guarantee. Reinstall and run the campaign from its first install step.
 
 ### 2. Install and bootstrap a clean Worker
 

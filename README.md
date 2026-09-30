@@ -176,7 +176,19 @@ sudo systemctl status codex-server
 sudo journalctl -u codex-server
 ```
 
-To uninstall, stop and disable the service, then remove `/etc/systemd/system/codex-server.service`, reload systemd, and remove `/opt/codex-server` and `/var/log/codex-server`. Remove `/etc/codex-server` only after securely preserving or intentionally deleting its secrets. Remove `/var/lib/codex-server` only when you intend to permanently delete the Server database and all durable state. The installer does not remove prior version directories during upgrades so they remain available for operator recovery.
+Use the supported uninstaller to remove the service and installed releases while keeping configuration, credentials, and the database for a reinstall:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/uninstall-server.sh | sudo bash
+```
+
+To deliberately remove all Server resources owned by the installer, including its environment-file secrets and database, use `--purge`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/uninstall-server.sh | sudo bash -s -- --purge
+```
+
+Purge removes `/opt/codex-server`, `/etc/codex-server`, `/var/lib/codex-server`, `/var/log/codex-server`, the service unit, and the dedicated service account/group when they match the installer's standard identity. Verify cleanup with `systemctl show codex-server.service` (it should report `LoadState=not-found`) and confirm those paths are absent. It does not remove external dependencies or operator-managed backups.
 
 If installation fails, check that the host reports Ubuntu 24.04 and `x86_64`, that GitHub Releases are reachable, and that the selected version has both the Server archive and `checksums.txt`. Check `systemctl status codex-server` and `journalctl -u codex-server` for startup errors. The default listener is loopback only; configure a TLS terminating proxy and firewall before remote access.
 
@@ -252,7 +264,19 @@ dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self
 sudo packaging/linux/update-worker.sh publish
 ```
 
-To uninstall, stop and disable the service, then remove `/etc/systemd/system/codex-worker.service` and run `systemctl daemon-reload`. Remove `/opt/codex-worker` and `/etc/codex-worker` only when the binaries and configuration are no longer needed. `/var/lib/codex-worker` contains the persistent Worker identity, execution history, project checkouts, and recovery state; back it up or remove it explicitly according to your retention needs. The installer does not delete backups or state.
+Use the supported uninstaller to remove the service and installed release directories while retaining the configuration, credentials, Worker identity, execution history, and worktrees for a future reinstall:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/uninstall-worker.sh | sudo bash
+```
+
+For an E2E clean-install cycle, explicitly purge those resources:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/uninstall-worker.sh | sudo bash -s -- --purge
+```
+
+Purge removes the installer's `/opt/codex-worker` releases and upgrade backups, `/etc/codex-worker`, `/var/lib/codex-worker` (including identity, credentials, project checkouts, and worktrees), `/var/log/codex-worker`, the service unit, and the dedicated service account/group when they match the installer's standard identity. Verify cleanup with `systemctl show codex-worker.service` (it should report `LoadState=not-found`) and confirm those paths and `/opt/codex-worker.previous.*` directories are absent. It does not remove external tools such as Git, `gh`, Codex CLI, or other operator-installed dependencies.
 
 For troubleshooting, inspect `systemctl status codex-worker` and `journalctl -u codex-worker`. Installer failures identify the unsupported OS/architecture, missing utility, download, checksum, or extraction step. A failed update preserves the previous binaries and attempts to restore the prior service. Check release availability and outbound HTTPS access if downloads fail.
 
