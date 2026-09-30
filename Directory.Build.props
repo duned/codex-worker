@@ -2,5 +2,6 @@
   <PropertyGroup>
     <!-- Treat compiler and analyzer diagnostics as errors without promoting NuGet restore warnings. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>0.13.0</Version>
   </PropertyGroup>
 </Project>

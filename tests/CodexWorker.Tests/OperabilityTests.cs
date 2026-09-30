@@ -7,6 +7,12 @@ namespace CodexWorker.Tests;
 public sealed class OperabilityTests
 {
     [Fact]
+    public void ServerAndWorkerExposeTheSameReleaseVersion()
+    {
+        Assert.Equal(ApplicationVersion.Display, CodexServer.ServerApplication.DisplayVersion);
+    }
+
+    [Fact]
     public void ProcessExitCodesDistinguishGracefulStartupAndRuntimeOutcomes()
     {
         Assert.Equal(ProcessExitCodes.Success, Program.ExitCodeFor(null));

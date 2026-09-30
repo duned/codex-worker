@@ -1,6 +1,8 @@
 # codex-worker
 
-`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.13.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, configured in the project file. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+`codex-worker` is a .NET 10 polling daemon for multiple independently configured GitHub repositories. This release is V0.13.0. The startup header and Telegram lifecycle messages read the version from the application assembly version, set once in the shared MSBuild properties. It executes Issues concurrently within explicit global and per-project limits, asks Codex to implement each Issue in its own Git worktree, runs that project's authoritative validation there, and owns the Git and GitHub lifecycle.
+
+Linux x64 self-contained Server and Worker release archives can be built with [`packaging/release-linux-x64.sh`](packaging/release-linux-x64.sh). See [Linux release packaging](docs/release-packaging.md) for artifact contents and GitHub Release publishing steps.
 
 ## V0.7 local control plane
 
