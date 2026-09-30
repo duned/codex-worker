@@ -26,7 +26,7 @@ Options:
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash
-  curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash -s -- --version 1.2.3
+  curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/v1.2.3/packaging/linux/install-server.sh | sudo bash -s -- --version 1.2.3
 EOF
 }
 
