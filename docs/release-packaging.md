@@ -16,6 +16,14 @@ checksums.txt
 
 Use `packaging/release-linux-x64.sh --version` to print the effective release version without publishing. The archives contain the apphost, .NET runtime, native dependencies, application dependencies, and embedded dashboard resources required by each application. They do not contain operator configuration or credentials. On Ubuntu 24.04, extract the desired archive and run `./CodexServer` or `./CodexWorker`; configure each application through its normal environment and configuration mechanisms.
 
+The Server can be installed directly on Ubuntu 24.04 x64 from GitHub Release assets, without a checkout or .NET installation:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash
+```
+
+Pass `--version VERSION` after `bash -s --` to install a specific release. The installer resolves the latest release when no version is specified, downloads the matching `codex-server-VERSION-linux-x64.tar.gz` and `checksums.txt`, and verifies the archive before extracting it. Keep `checksums.txt` alongside both archives on every release. The installer is served from the repository's `main` branch; releases themselves are selected from the versioned GitHub Release assets.
+
 To publish a release, run the script from a clean checkout for the release tag, review the generated archives and `checksums.txt`, and attach all three files as assets to the matching GitHub Release. The checksum file contains SHA-256 hashes of both archives and can be checked with `sha256sum --check checksums.txt` after downloading the assets.
 
 ## Installing a Worker

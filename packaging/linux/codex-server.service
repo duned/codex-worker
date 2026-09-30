@@ -6,13 +6,15 @@ After=network.target
 Type=exec
 User=codex-server
 Group=codex-server
-WorkingDirectory=/opt/codex-server
+WorkingDirectory=/opt/codex-server/current
 EnvironmentFile=/etc/codex-server/server.env
-ExecStart=/opt/codex-server/CodexServer
+ExecStart=/opt/codex-server/current/CodexServer
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=codex-server
 RuntimeDirectoryMode=0750
+LogsDirectory=codex-server
+LogsDirectoryMode=0750
 Environment=TMPDIR=/run/codex-server
 TimeoutStopSec=30
 UMask=0077

@@ -134,14 +134,21 @@ The equivalent environment variables are `Server__ListenUrl` and `Server__DataDi
 
 #### Linux service installation
 
-The Linux package in `packaging/linux` creates a dedicated unprivileged service account, installs the published apphost and systemd unit, and preserves the existing environment file on repeat installs. Publish for the target host and install as root:
+On Ubuntu 24.04 x64, install the self-contained release without cloning the repository or installing .NET:
 
 ```sh
-dotnet publish src/CodexServer/CodexServer.csproj -c Release -r linux-x64 --self-contained false -o server-publish
-sudo packaging/linux/install-server.sh server-publish
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash
 ```
 
-The installer keeps binaries in `/opt/codex-server`, service configuration and secrets in `/etc/codex-server/server.env`, and SQLite state in `/var/lib/codex-server`. The environment file is root-owned and readable by the Server service account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. The Server logs to the systemd journal; temporary files use `/run/codex-server` and are not durable state.
+Choose a release explicitly with `--version VERSION`, for example:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash -s -- --version 0.13.0
+```
+
+The installer resolves the latest GitHub Release by default, downloads the matching Linux x64 Server archive and `checksums.txt`, verifies SHA-256 before extraction, and installs the self-contained files. It creates the `codex-server` system account, enables and starts the systemd service, and preserves `/etc/codex-server/server.env` on repeat installs. An already installed version remains selected if download or checksum verification fails. For a local build, the existing `packaging/linux/install-server.sh PUBLISHED_DIRECTORY` form remains available.
+
+Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-server/current` selects the active release. Configuration and secrets are in `/etc/codex-server/server.env`; SQLite state is in `/var/lib/codex-server`; the service log directory is `/var/log/codex-server` and service output is available in the systemd journal. The environment file is root-owned and readable by the Server account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. Temporary files use `/run/codex-server` and are not durable state.
 
 Start and inspect the service with:
 
@@ -150,6 +157,10 @@ sudo systemctl enable --now codex-server
 sudo systemctl status codex-server
 sudo journalctl -u codex-server
 ```
+
+To uninstall, stop and disable the service, then remove `/etc/systemd/system/codex-server.service`, reload systemd, and remove `/opt/codex-server` and `/var/log/codex-server`. Remove `/etc/codex-server` only after securely preserving or intentionally deleting its secrets. Remove `/var/lib/codex-server` only when you intend to permanently delete the Server database and all durable state. The installer does not remove prior version directories during upgrades so they remain available for operator recovery.
+
+If installation fails, check that the host reports Ubuntu 24.04 and `x86_64`, that GitHub Releases are reachable, and that the selected version has both the Server archive and `checksums.txt`. Check `systemctl status codex-server` and `journalctl -u codex-server` for startup errors. The default listener is loopback only; configure a TLS terminating proxy and firewall before remote access.
 
 Startup journal output includes version, runtime mode, endpoint, and state directory, but no credentials. The unit is in [`packaging/linux/codex-server.service`](packaging/linux/codex-server.service). When exposing the service remotely, configure a TLS-terminating proxy and firewall rules at the network boundary.
 

@@ -1,39 +1,188 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly repository="duned/codex-worker"
+readonly release_root="https://github.com/${repository}/releases"
+version=""
+publish_dir=""
+staging_dir=""
+
+cleanup() {
+  [[ -z "$staging_dir" ]] || rm -rf -- "$staging_dir"
+  [[ -z "${work_dir:-}" ]] || rm -rf -- "$work_dir"
+}
+trap cleanup EXIT
+
+usage() {
+  cat <<'EOF'
+Usage: install-server.sh [--version VERSION] [PUBLISHED_DIRECTORY]
+
+Install Codex Server from the official GitHub release (latest by default), or
+from a local self-contained publish directory when PUBLISHED_DIRECTORY is set.
+
+Options:
+  --version VERSION  Install a specific release (optional leading v is allowed)
+  -h, --help         Show this help
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/main/packaging/linux/install-server.sh | sudo bash -s -- --version 1.2.3
+EOF
+}
+
+fail() { printf 'Codex Server installer: %s\n' "$*" >&2; exit 1; }
+
+while (($#)); do
+  case "$1" in
+    --version)
+      (($# >= 2)) || { usage >&2; exit 2; }
+      [[ -z "$version" ]] || fail '--version may only be specified once.'
+      version="${2#v}"
+      version="${version#V}"
+      [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || fail 'Version must be a release version such as 1.2.3.'
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    --*) fail "Unknown option: $1" ;;
+    *)
+      [[ -z "$publish_dir" ]] || { usage >&2; exit 2; }
+      publish_dir="$1"
+      shift
+      ;;
+  esac
+done
+
 if [[ ${EUID} -ne 0 ]]; then
-  echo "Run this installer as root (for example, sudo ./install-server.sh /path/to/publish)." >&2
-  exit 1
+  fail 'Run as root (for example, curl -fsSL <installer-url> | sudo bash).'
 fi
 
-if [[ $# -ne 1 || ! -d $1 ]]; then
-  echo "Usage: $0 <published-server-directory>" >&2
-  exit 2
-fi
+if [[ -n "$publish_dir" ]]; then
+  [[ -d "$publish_dir" ]] || fail "Published directory does not exist: $publish_dir"
+  publish_dir="$(cd -- "$publish_dir" && pwd)"
+  [[ -x "$publish_dir/CodexServer" ]] || fail 'The publish directory must contain an executable CodexServer apphost.'
+else
+  [[ -r /etc/os-release ]] || fail 'Cannot identify the operating system; Ubuntu 24.04 is required.'
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 24.04 ]] || fail "Unsupported operating system: ${PRETTY_NAME:-unknown}. Ubuntu 24.04 is required."
+  [[ "$(uname -m)" == x86_64 ]] || fail "Unsupported architecture: $(uname -m). Linux x64 is required."
+  for command_name in curl tar sha256sum; do
+    command -v "$command_name" >/dev/null 2>&1 || fail "Required command not found: $command_name"
+  done
 
-publish_dir=$(cd -- "$1" && pwd)
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-if [[ ! -x $publish_dir/CodexServer ]]; then
-  echo "The publish directory must contain an executable CodexServer apphost." >&2
-  exit 2
+  if [[ -z "$version" ]]; then
+    latest_url="$(curl --fail --silent --show-error --location --output /dev/null --write-out '%{url_effective}' "${release_root}/latest")" || fail 'Could not resolve the latest release from GitHub.'
+    version="${latest_url##*/}"
+    version="${version#v}"
+    version="${version#V}"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || fail "Could not read a release version from GitHub URL: $latest_url"
+  fi
+
+  work_dir="$(mktemp -d)" || fail 'Could not create a temporary download directory.'
+  artifact="codex-server-${version}-linux-x64.tar.gz"
+  curl --fail --silent --show-error --location "${release_root}/download/v${version}/${artifact}" --output "$work_dir/$artifact" || fail "Could not download release artifact $artifact."
+  curl --fail --silent --show-error --location "${release_root}/download/v${version}/checksums.txt" --output "$work_dir/checksums.txt" || fail "Could not download checksums for release $version."
+  (cd "$work_dir" && awk -v artifact="$artifact" '$2 == artifact && length($1) == 64 { print; found++ } END { if (found != 1) exit 1 }' checksums.txt | sha256sum --check --status) || fail "Checksum verification failed for $artifact. No files were installed."
+  mkdir "$work_dir/publish"
+  tar --extract --gzip --file "$work_dir/$artifact" --directory "$work_dir/publish" || fail "Could not extract $artifact."
+  publish_dir="$work_dir/publish"
+  [[ -x "$publish_dir/CodexServer" ]] || fail 'The verified archive does not contain an executable CodexServer apphost.'
 fi
 
 getent group codex-server >/dev/null || groupadd --system codex-server
 id codex-server >/dev/null 2>&1 || useradd --system --gid codex-server --home-dir /var/lib/codex-server --create-home --shell /usr/sbin/nologin codex-server
 
-install -d -o root -g root -m 0755 /opt/codex-server
+install -d -o root -g root -m 0755 /opt/codex-server/releases
 install -d -o root -g codex-server -m 0750 /etc/codex-server
 install -d -o codex-server -g codex-server -m 0700 /var/lib/codex-server
-cp -a "$publish_dir"/. /opt/codex-server/
-chown -R root:root /opt/codex-server
-chmod 0755 /opt/codex-server/CodexServer
+install -d -o codex-server -g codex-server -m 0750 /var/log/codex-server
+previous_target=""
+if [[ -L /opt/codex-server/current ]]; then
+  previous_target="$(readlink /opt/codex-server/current)"
+fi
+
+if [[ -n "$version" ]]; then
+  release_dir="/opt/codex-server/releases/$version"
+  if [[ ! -e "$release_dir/CodexServer" ]]; then
+    [[ ! -e "$release_dir" ]] || fail "Existing release directory is incomplete: $release_dir"
+    staging_dir="/opt/codex-server/releases/.${version}.installing.$$"
+    install -d -o root -g root -m 0755 "$staging_dir"
+    cp -a "$publish_dir"/. "$staging_dir"/
+    chown -R root:root "$staging_dir"
+    chmod 0755 "$staging_dir/CodexServer"
+    mv -- "$staging_dir" "$release_dir"
+    staging_dir=""
+  fi
+  new_target="releases/$version"
+else
+  release_id="local-$(date -u +%Y%m%d%H%M%S)-$$"
+  release_dir="/opt/codex-server/releases/$release_id"
+  staging_dir="/opt/codex-server/releases/.${release_id}.installing"
+  install -d -o root -g root -m 0755 "$staging_dir"
+  cp -a "$publish_dir"/. "$staging_dir"/
+  chown -R root:root "$staging_dir"
+  chmod 0755 "$staging_dir/CodexServer"
+  mv -- "$staging_dir" "$release_dir"
+  staging_dir=""
+  new_target="releases/$release_id"
+fi
 
 if [[ ! -e /etc/codex-server/server.env ]]; then
   install -o root -g codex-server -m 0640 /dev/null /etc/codex-server/server.env
 fi
 chown root:codex-server /etc/codex-server/server.env
 chmod 0640 /etc/codex-server/server.env
-install -o root -g root -m 0644 "$script_dir/codex-server.service" /etc/systemd/system/codex-server.service
+cat > /etc/systemd/system/codex-server.service <<'EOF'
+[Unit]
+Description=Codex Server
+After=network.target
 
+[Service]
+Type=exec
+User=codex-server
+Group=codex-server
+WorkingDirectory=/opt/codex-server/current
+EnvironmentFile=/etc/codex-server/server.env
+ExecStart=/opt/codex-server/current/CodexServer
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=codex-server
+RuntimeDirectoryMode=0750
+LogsDirectory=codex-server
+LogsDirectoryMode=0750
+Environment=TMPDIR=/run/codex-server
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 /etc/systemd/system/codex-server.service
+
+ln -sfn "$new_target" /opt/codex-server/current.new
+mv -Tf /opt/codex-server/current.new /opt/codex-server/current
 systemctl daemon-reload
-echo "Codex Server installed. Configure /etc/codex-server/server.env, then run: systemctl enable --now codex-server"
+systemctl enable codex-server
+if systemctl is-active --quiet codex-server; then
+  start_command=restart
+else
+  start_command=start
+fi
+if ! systemctl "$start_command" codex-server; then
+  if [[ -n "$previous_target" ]]; then
+    ln -sfn "$previous_target" /opt/codex-server/current.new
+    mv -Tf /opt/codex-server/current.new /opt/codex-server/current
+    systemctl daemon-reload
+    systemctl restart codex-server || true
+  else
+    rm -f /opt/codex-server/current
+  fi
+  fail "Could not start Codex Server after installing ${version:-the local build}; the previous release selection was restored when available. Check journalctl -u codex-server."
+fi
+printf 'Codex Server %s installed. Service: ' "${version:-local build}"
+systemctl is-active codex-server || true
+cat <<'EOF'
+Configure /etc/codex-server/server.env, then restart with: systemctl restart codex-server
+The default endpoint is http://127.0.0.1:5090. Check status: systemctl status codex-server
+Logs: journalctl -u codex-server
+EOF
