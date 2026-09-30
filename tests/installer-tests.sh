@@ -181,3 +181,5 @@ grep -Fq 'chmod 0640 /etc/codex-server/server.env' "$installer"
 grep -Fq "sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN" "$installer"
 
 echo 'Installer and uninstaller argument, preservation, purge, idempotency, and failure checks passed.'
+
+bash "$repo_root/tests/worker-installer-lifecycle-tests.sh"

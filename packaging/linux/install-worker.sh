@@ -140,23 +140,83 @@ stage_dir="$install_root.next.$$"
 backup_dir="$install_root.previous.$(date -u +%Y%m%dT%H%M%S.%N)"
 service_was_active=false
 swap_started=false
+service_stopped=false
+service_was_enabled=false
+if systemctl is-enabled --quiet codex-worker; then service_was_enabled=true; fi
+unit_changed=false
+runtime_was_present=false
+[[ ! -x $install_root/CodexWorker ]] || runtime_was_present=true
+unit_path=/etc/systemd/system/codex-worker.service
+unit_was_present=false
+if [[ -f $unit_path ]]; then
+  cp -a -- "$unit_path" "$temporary_dir/previous.service"
+  unit_was_present=true
+fi
+service_was_present=false
+if [[ $unit_was_present == true ]] || systemctl cat codex-worker >/dev/null 2>&1; then
+  service_was_present=true
+fi
+config_changed=false
+if [[ -f $config_root/worker.yml ]]; then
+  cp -a -- "$config_root/worker.yml" "$temporary_dir/previous.yml"
+fi
 
 cleanup() {
   local status=$?
-  rm -rf -- "$temporary_dir" "$stage_dir"
-  if ((status != 0)) && [[ $swap_started == true ]] && [[ -d $backup_dir ]]; then
-    if [[ -e $install_root ]]; then
-      local failed_dir="$install_root.failed.$(date -u +%Y%m%dT%H%M%S.%N)"
-      mv -- "$install_root" "$failed_dir" || echo "Could not preserve failed Worker binaries at $failed_dir" >&2
+  if ((status != 0)) && [[ $service_stopped == true ]]; then
+    # Stop any partially started service before changing its executable or unit.
+    if [[ $service_was_present == false && $unit_changed == false ]] || systemctl stop codex-worker; then
+      if [[ ( $runtime_was_present == false || $service_was_enabled == false ) &&
+            ( $service_was_present == true || $unit_changed == true ) ]]; then
+        systemctl disable codex-worker || echo "Could not disable the Worker service" >&2
+      fi
+      if [[ $swap_started == true ]]; then
+        rm -rf -- "$install_root"
+        if [[ -d $backup_dir ]]; then
+          mv -- "$backup_dir" "$install_root" || echo "Could not restore previous Worker binaries from $backup_dir" >&2
+        fi
+      fi
+      if [[ $unit_changed == true ]]; then
+        if [[ $unit_was_present == true && $runtime_was_present == true ]]; then
+          cp -a -- "$temporary_dir/previous.service" "$unit_path"
+        else
+          rm -f -- "$unit_path"
+        fi
+      fi
+      if [[ $runtime_was_present == true ]]; then
+        if [[ $config_changed == true && -f $temporary_dir/previous.yml ]]; then
+          cp -a -- "$temporary_dir/previous.yml" "$config_root/worker.yml"
+        fi
+        if systemctl daemon-reload; then
+          if [[ $service_was_active == true && -x $install_root/CodexWorker ]]; then
+            if ! systemctl start codex-worker; then
+              systemctl stop codex-worker || echo "Could not stop the previous Worker after restart failure" >&2
+              echo "Previous Worker could not restart; inspect it before starting manually." >&2
+            fi
+          fi
+        else
+          echo "Could not reload the restored Worker unit; service left stopped." >&2
+        fi
+        echo "Previous Worker runtime retained/restored at $install_root." >&2
+      else
+        rm -rf -- "$install_root"
+        rm -f -- "$unit_path"
+        systemctl daemon-reload || echo "Could not reload systemd after cleanup" >&2
+        systemctl reset-failed codex-worker >/dev/null 2>&1 || true
+        echo "Worker service stopped and removed; no Worker runtime was installed." >&2
+      fi
+    else
+      echo "Could not stop Worker during rollback; files retained. Run: sudo systemctl stop codex-worker before retrying." >&2
     fi
-    mv -- "$backup_dir" "$install_root" || echo "Could not restore previous Worker binaries from $backup_dir" >&2
-    systemctl start codex-worker >/dev/null 2>&1 || true
-  elif ((status != 0)) && [[ $service_was_active == true ]] && [[ -d $install_root ]]; then
-    systemctl start codex-worker >/dev/null 2>&1 || true
+    echo "The codex-worker account and data/log directories remain. Configuration remains in $config_root; identity and recovery credentials remain in $data_root/.codex-worker." >&2
+    echo "Retry: rerun install-worker.sh --version $version --register --start with the same Server URL and --token-file PATH (a protected valid bootstrap token). Keep the existing identity and credentials." >&2
   fi
+  rm -rf -- "$temporary_dir" "$stage_dir"
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 curl --fail --silent --show-error --location "$release_base/$archive" --output "$temporary_dir/$archive" || fail "could not download Worker $version release artifact"
 curl --fail --silent --show-error --location "$release_base/checksums.txt" --output "$temporary_dir/checksums.txt" || fail "could not download release checksums"
@@ -192,11 +252,18 @@ fi
 
 getent group codex-worker >/dev/null || groupadd --system codex-worker || fail "could not create codex-worker group"
 id codex-worker >/dev/null 2>&1 || useradd --system --gid codex-worker --home-dir "$data_root" --create-home --shell /usr/sbin/nologin codex-worker || fail "could not create codex-worker account"
-install -d -o root -g root -m 0755 "$install_root" || fail "could not prepare $install_root"
 install -d -o root -g codex-worker -m 0750 "$config_root" || fail "could not prepare $config_root"
 install -d -o codex-worker -g codex-worker -m 0700 "$data_root" "$data_root/.codex-worker" || fail "could not prepare Worker state directories"
 install -d -o codex-worker -g codex-worker -m 0750 "$data_root/projects" "$data_root/.codex-worker/worktrees" || fail "could not prepare Worker project directories"
 install -d -o codex-worker -g codex-worker -m 0750 /var/log/codex-worker || fail "could not prepare Worker log directory"
+
+# Even an inactive unit can have a pending auto-restart. Stop it before mutation.
+if systemctl is-active --quiet codex-worker; then service_was_active=true; fi
+if [[ $service_was_present == true || $service_was_active == true ]]; then
+  systemctl stop codex-worker || fail "could not stop the Worker before installation"
+fi
+service_stopped=true
+config_changed=true
 
 config_was_present=false
 if [[ -e $config_root/worker.yml ]]; then config_was_present=true; fi
@@ -271,34 +338,18 @@ fi
 chown root:codex-worker "$config_root/worker.yml" "$config_root/worker.env" || fail "could not set Worker configuration ownership"
 chmod 0640 "$config_root/worker.yml" "$config_root/worker.env" || fail "could not set Worker configuration permissions"
 
-if systemctl is-active --quiet codex-worker; then
-  service_was_active=true
-  systemctl stop codex-worker || fail "could not stop the running Worker before installation"
-fi
 rm -rf -- "$stage_dir" || fail "could not clear the temporary staging directory"
 install -d -o root -g root -m 0755 "$stage_dir" || fail "could not create the temporary staging directory"
 cp -a "$temporary_dir/extracted"/. "$stage_dir"/ || fail "could not stage the verified Worker release"
 chown -R root:root "$stage_dir" || fail "could not set Worker binary ownership"
 chmod 0755 "$stage_dir/CodexWorker" || fail "could not set Worker executable permissions"
-if [[ -d $install_root ]]; then
-  mv -- "$install_root" "$backup_dir" || fail "could not preserve the existing Worker installation"
-  swap_started=true
-fi
-if ! mv -- "$stage_dir" "$install_root"; then
-  fail "could not activate Worker $version"
-fi
-
+runuser -u codex-worker -- "$stage_dir/CodexWorker" --help >/dev/null || fail "staged Worker executable cannot run as the service account"
 if [[ -f $script_dir/codex-worker.service ]]; then
-  install -o root -g root -m 0644 "$script_dir/codex-worker.service" /etc/systemd/system/codex-worker.service || fail "could not install the systemd unit"
+  cp -- "$script_dir/codex-worker.service" "$temporary_dir/codex-worker.service"
 else
-  # The remote installer is piped to bash, so its sibling unit is fetched from the same source branch.
   curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/codex-worker.service" --output "$temporary_dir/codex-worker.service" || fail "could not download the systemd unit"
-  install -o root -g root -m 0644 "$temporary_dir/codex-worker.service" /etc/systemd/system/codex-worker.service || fail "could not install the systemd unit"
 fi
-systemctl daemon-reload || fail "systemd could not reload unit files"
-if [[ $service_was_active == true ]]; then
-  systemctl start codex-worker || fail "Worker $version was installed but the service could not be restarted"
-fi
+grep -Fxq "ExecStart=$install_root/CodexWorker $config_root/worker.yml" "$temporary_dir/codex-worker.service" || fail "systemd ExecStart does not match the packaged Worker executable and configuration"
 
 if [[ $register_requested == true ]]; then
   [[ -n $requested_server ]] && validate_server_url "$requested_server" || fail "registration requires a valid server.url in Worker configuration or --server URL"
@@ -313,11 +364,25 @@ if [[ $register_requested == true ]]; then
     fail "registration requires a bootstrap token"
   fi
   [[ -n $token_value ]] || fail "bootstrap token cannot be empty"
-  if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$install_root/CodexWorker" register \
+  if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$stage_dir/CodexWorker" register \
       --server "$requested_server" --token-stdin --capacity "$capacity_for_registration" --identity-file "$identity_file"; then
     fail "Worker registration failed; the bootstrap token was not written to installer output"
   fi
   unset token_value bootstrap_token
+fi
+if [[ -d $install_root ]]; then
+  mv -- "$install_root" "$backup_dir" || fail "could not preserve the existing Worker installation"
+fi
+swap_started=true
+if ! mv -- "$stage_dir" "$install_root"; then
+  fail "could not activate Worker $version"
+fi
+
+unit_changed=true
+install -o root -g root -m 0644 "$temporary_dir/codex-worker.service" "$unit_path" || fail "could not install the systemd unit"
+systemctl daemon-reload || fail "systemd could not reload unit files"
+if [[ $service_was_active == true && $start_requested == false ]]; then
+  systemctl start codex-worker || fail "Worker $version was installed but the service could not be restarted"
 fi
 if [[ $start_requested == true ]]; then
   systemctl enable --now codex-worker || fail "Worker was installed but could not be enabled and started"

@@ -110,6 +110,16 @@ package_app() {
     --self-contained true \
     "-p:Version=$version" \
     --output "$package_dir"
+  local apphost
+  case "$name" in
+    codex-worker) apphost=CodexWorker ;;
+    codex-server) apphost=CodexServer ;;
+    *) echo "Unknown packaged application: $name" >&2; return 1 ;;
+  esac
+  if [[ ! -f $package_dir/$apphost || ! -x $package_dir/$apphost ]]; then
+    echo "Published $name is missing the executable $apphost apphost at the archive root." >&2
+    return 1
+  fi
   printf '%s\n' "$version" > "$package_dir/VERSION"
   tar -czf "$archive" -C "$package_dir" .
 }

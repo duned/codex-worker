@@ -18,6 +18,7 @@ if [[ "$1" == msbuild ]]; then echo 9.8.7; exit 0; fi
 [[ ${RELEASE_CASE:-} != build-failure ]] || exit 1
 version=""
 output=""
+project="$2"
 while (($#)); do
   case "$1" in
     -p:Version=*) version="${1#-p:Version=}" ;;
@@ -28,6 +29,12 @@ done
 [[ -n "$version" && -n "$output" ]]
 mkdir -p "$output"
 printf '%s\n' "$version" > "$output/assembly-version"
+if [[ ${RELEASE_CASE:-} != missing-apphost ]]; then
+  apphost="${project##*/}"
+  apphost="${apphost%.csproj}"
+  printf '#!/bin/sh\nexit 0\n' > "$output/$apphost"
+  chmod +x "$output/$apphost"
+fi
 STUB
 chmod +x "$fake_bin/dotnet"
 
@@ -47,6 +54,14 @@ for component in server worker; do
   [[ "$(tar -xOf "$explicit_output/codex-$component-1.2.3-linux-x64.tar.gz" ./assembly-version)" == 1.2.3 ]]
 done
 (cd "$explicit_output" && sha256sum --check checksums.txt)
+mkdir "$temp_dir/worker-layout"
+tar -xzf "$explicit_output/codex-worker-1.2.3-linux-x64.tar.gz" -C "$temp_dir/worker-layout"
+[[ -x $temp_dir/worker-layout/CodexWorker ]]
+grep -Fxq 'ExecStart=/opt/codex-worker/CodexWorker /etc/codex-worker/worker.yml' "$repo_root/packaging/linux/codex-worker.service"
+if PATH="$fake_bin:$PATH" TMPDIR="$temp_dir" RELEASE_CASE=missing-apphost \
+  "$repo_root/packaging/release-linux-x64.sh" >"$temp_dir/layout.out" 2>&1; then exit 1; fi
+grep -q 'missing the executable' "$temp_dir/layout.out"
+
 if PATH="$fake_bin:$PATH" TMPDIR="$temp_dir" RELEASE_CASE=build-failure \
   "$repo_root/packaging/release-linux-x64.sh" >"$temp_dir/build.out" 2>&1; then exit 1; fi
 [[ -z "$(find "$temp_dir" -maxdepth 1 -name 'codex-worker-artifacts.*' -print)" ]]
