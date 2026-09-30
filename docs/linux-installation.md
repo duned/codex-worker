@@ -20,6 +20,8 @@ The installer resolves the latest GitHub Release by default, downloads the match
 
 Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-server/current` selects the active release. Configuration and secrets are in `/etc/codex-server/server.env`; SQLite state is in `/var/lib/codex-server`; the service log directory is `/var/log/codex-server` and service output is available in the systemd journal. The environment file is root-owned and readable by the Server account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. Temporary files use `/run/codex-server` and are not durable state.
 
+Run `codex-server --help` (or `/opt/codex-server/current/CodexServer --help`) for CLI usage, and `codex-server --version` for the version. Both exit without starting a web host, reading service secrets, or creating persistent state, and work without sudo while the service is running. Invalid commands fail without starting a second Server.
+
 Create a single-use Worker registration token using the installed operator helper; it expires after 15 minutes and can be revoked before use:
 
 ```sh
@@ -27,6 +29,8 @@ sudo codex-server worker-token create
 ```
 
 The installed `codex-server` helper runs token commands as the Server service account using the same `/etc/codex-server/server.env` and published application configuration as the service. It requires systemd and root (`sudo`); no binary or database path is needed. Token creation writes only the token to stdout; lifetime and the selected database path go to stderr. Copy only the token value. Surrounding spaces and CRLF line endings are accepted by Worker registration; embedded whitespace is rejected before staging credentials.
+
+Token commands can run while the service is running. Direct binary invocations require a configured `Server__DataDirectory` / `Server__DatabasePath` or an explicit database path; they fail rather than silently selecting the caller's home directory. The helper explicitly permits the service-account default for retained installations without overriding data paths in the service environment file or published application configuration.
 
 On the Worker, use the URL and identity path from its managed configuration. The registration command verifies the Server response and stores the durable Worker credential with owner-only permissions beside the identity file. It stores the Server URL there too, so the managed YAML URL can remain at its installer placeholder. Run the command as the `codex-worker` service account so it can write its identity state, supplying the token through standard input from a protected secret source:
 

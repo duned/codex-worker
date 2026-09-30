@@ -17,6 +17,83 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task DirectTokenCommandRejectsImplicitHomeState()
+    {
+        var priorDirectory = Environment.GetEnvironmentVariable("Server__DataDirectory");
+        var priorDatabase = Environment.GetEnvironmentVariable("Server__DatabasePath");
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("Server__DataDirectory", null);
+            Environment.SetEnvironmentVariable("Server__DatabasePath", null);
+            Console.SetOut(output);
+            Console.SetError(error);
+            Assert.Equal(1, await CodexServer.Program.Main(["worker-token", "create"]));
+            Assert.Empty(output.ToString());
+            Assert.Contains("service state configuration", error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+            Environment.SetEnvironmentVariable("Server__DataDirectory", priorDirectory);
+            Environment.SetEnvironmentVariable("Server__DatabasePath", priorDatabase);
+        }
+    }
+
+    [Theory]
+    [InlineData("--help", 0)]
+    [InlineData("-h", 0)]
+    [InlineData("--version", 0)]
+    [InlineData("unknown-private-secret", 2)]
+    [InlineData("--unknown", 2)]
+    [InlineData("worker-token", 2)]
+    [InlineData("backup", 2)]
+    public async Task CliDispatchDoesNotStartHostOrCreateStateWhenDefaultPortIsOccupied(string argument, int expectedExit)
+    {
+        using var temporary = new TemporaryDirectory();
+        var state = Path.Combine(temporary.Path, "must-not-exist");
+        var priorDirectory = Environment.GetEnvironmentVariable("Server__DataDirectory");
+        var priorUrl = Environment.GetEnvironmentVariable("Server__ListenUrl");
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        using var listener = new TcpListener(IPAddress.Loopback, 5090);
+        // If a real Server already occupies the port, it supplies the same condition.
+        try { listener.Start(); }
+        catch (SocketException exception) when (exception.SocketErrorCode == SocketError.AddressAlreadyInUse) { }
+        try
+        {
+            Environment.SetEnvironmentVariable("Server__DataDirectory", state);
+            Environment.SetEnvironmentVariable("Server__ListenUrl", "http://127.0.0.1:5090");
+            Console.SetOut(output);
+            Console.SetError(error);
+            Assert.Equal(expectedExit, await CodexServer.Program.Main([argument]));
+            Assert.False(Directory.Exists(state));
+            if (argument is "--help" or "-h")
+            {
+                Assert.Contains("Usage:", output.ToString());
+                Assert.Contains("sudo codex-server worker-token create", output.ToString());
+            }
+            else if (argument == "--version") Assert.Equal($"Codex Server {ServerApplication.DisplayVersion}", output.ToString().Trim());
+            else Assert.Contains("--help", error.ToString());
+            Assert.DoesNotContain("unknown-private-secret", error.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("initialized", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+            Environment.SetEnvironmentVariable("Server__DataDirectory", priorDirectory);
+            Environment.SetEnvironmentVariable("Server__ListenUrl", priorUrl);
+        }
+    }
+
+    [Fact]
     public void CapabilityContractSupportsLegacyStringsAndUnknownFutureTypes()
     {
         Assert.Equal(new ServerWorkerCapability("tool", "git"), JsonSerializer.Deserialize<ServerWorkerCapability>("\"git\""));
@@ -213,11 +290,14 @@ public sealed class CodexServerTests
         {
             Environment.SetEnvironmentVariable("Server__DataDirectory", temporary.Path);
             Environment.SetEnvironmentVariable("Server__DatabasePath", databaseOverride);
+            await using var app = await ServerApplication.BuildAsync(
+                [$"--Server:ListenUrl={url}", "--Logging:LogLevel:Default=Warning"]);
+            await app.StartAsync();
             // The installed helper supplies the same environment to this entry point
             // as systemd supplies to the service. No database argument is needed.
             Console.SetOut(tokenOutput);
             Console.SetError(diagnostics);
-            await CodexServer.Program.Main(["worker-token", "create"]);
+            Assert.Equal(0, await CodexServer.Program.Main(["worker-token", "create"]));
             var token = tokenOutput.ToString().Trim();
             Assert.Matches("^[A-Za-z0-9_-]{43}$", token);
             Assert.DoesNotContain(token, diagnostics.ToString(), StringComparison.Ordinal);
@@ -226,9 +306,6 @@ public sealed class CodexServerTests
             Assert.Contains(database, diagnostics.ToString());
 
             Console.SetOut(originalOutput);
-            await using var app = await ServerApplication.BuildAsync(
-                [$"--Server:ListenUrl={url}", "--Logging:LogLevel:Default=Warning"]);
-            await app.StartAsync();
             var store = app.Services.GetRequiredService<IRegistryStore>();
             var identityPath = Path.Combine(temporary.Path, "worker-id");
             async Task<int> Register(string value, string path)

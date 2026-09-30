@@ -97,6 +97,7 @@ cat > "$temp_dir/expected-helper-arguments" <<'EOF'
 --collect
 --property=User=codex-server
 --property=Group=codex-server
+--property=Environment=CODEX_SERVER_OPERATOR_SERVICE_CONTEXT=1
 --property=EnvironmentFile=/etc/codex-server/server.env
 --property=WorkingDirectory=/opt/codex-server/current
 --property=UMask=0077
@@ -105,6 +106,18 @@ worker-token
 create
 EOF
 diff -u "$temp_dir/expected-helper-arguments" "$CODEX_HELPER_ARGUMENTS"
+# Help/version bypass sudo and systemd and dispatch directly to the executable.
+cat > "$temp_dir/server-cli" <<'EOF'
+#!/usr/bin/env bash
+printf 'CLI %s\n' "$@"
+EOF
+chmod +x "$temp_dir/server-cli"
+sed "s|/opt/codex-server/current/CodexServer|$temp_dir/server-cli|g" "$temp_dir/codex-server" > "$temp_dir/help-helper"
+rm "$CODEX_HELPER_ARGUMENTS"
+for cli_option in --help -h --version; do
+  [[ $(bash "$temp_dir/help-helper" "$cli_option") == "CLI $cli_option" ]]
+  [[ ! -e $CODEX_HELPER_ARGUMENTS ]]
+done
 # The helper never sources the secret-bearing systemd environment as shell code.
 ! grep -Eq '(^|[[:space:]])(source|\.) /etc/codex-server/server.env' "$temp_dir/codex-server"
 grep -Fq 'Server__DataDirectory=/var/lib/codex-server' "$installer"

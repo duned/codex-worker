@@ -51,6 +51,9 @@ write_operator_helper() {
   cat <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ $# == 1 && ( $1 == --help || $1 == -h || $1 == --version ) ]]; then
+  exec /opt/codex-server/current/CodexServer "$@"
+fi
 if [[ $EUID -ne 0 ]]; then
   echo 'Run with sudo: sudo codex-server worker-token create' >&2
   exit 1
@@ -62,6 +65,7 @@ fi
 # Let systemd parse its EnvironmentFile syntax; never source secrets as shell code.
 exec systemd-run --quiet --wait --pipe --collect \
   --property=User=codex-server --property=Group=codex-server \
+  --property=Environment=CODEX_SERVER_OPERATOR_SERVICE_CONTEXT=1 \
   --property=EnvironmentFile=/etc/codex-server/server.env \
   --property=WorkingDirectory=/opt/codex-server/current \
   --property=UMask=0077 \
