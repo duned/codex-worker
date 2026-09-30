@@ -83,6 +83,75 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public async Task RegistrationFailureIncludesSafeServerReasonAndRedactsBootstrapToken()
+    {
+        using var temporary = new TemporaryDirectory();
+        const string token = "registration-secret-value";
+        var handler = new CaptureHandler(HttpStatusCode.BadRequest,
+            "{\"error\":\"Invalid worker contract; bearer registration-secret-value\"}");
+        using var client = new HttpClient(handler);
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+            new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
+            1, token, CancellationToken.None));
+
+        Assert.Contains("HTTP 400", failure.Message);
+        Assert.Contains("Invalid worker contract", failure.Message);
+        Assert.Contains("[redacted]", failure.Message);
+        Assert.DoesNotContain(token, failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HeartbeatFailureUsesSharedSafeDiagnosticAndCorrelation()
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        var token = await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        var handler = new CaptureHandler(HttpStatusCode.BadRequest,
+            JsonSerializer.Serialize(new { error = $"Capacity must be 1..8; credential={token}; password=hidden; https://user:hidden@host" }));
+        using var client = new HttpClient(handler);
+
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => new WorkerRegistrationClient(client).HeartbeatAsync(
+            settings, 9, 0, [], "idle", CancellationToken.None, []));
+
+        Assert.Contains("HTTP 400", failure.Message);
+        Assert.Contains("Capacity must be 1..8", failure.Message);
+        Assert.Contains("Request ID: request-123", failure.Message);
+        Assert.DoesNotContain(token, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("hidden", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("<html>private server payload</html>")]
+    [InlineData("{\"error\":{\"secret\":\"private server payload\"}}")]
+    [InlineData("{invalid JSON: private server payload}")]
+    public async Task BootstrapOmitsUnstructuredBodiesButPreservesStatusAndCorrelation(string body)
+    {
+        using var temporary = new TemporaryDirectory();
+        using var client = new HttpClient(new CaptureHandler(HttpStatusCode.BadRequest, body));
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+            new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
+            1, "bootstrap-secret", CancellationToken.None));
+
+        Assert.Contains("HTTP 400", failure.Message);
+        Assert.Contains("Request ID: request-123", failure.Message);
+        Assert.DoesNotContain("private server payload", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BootstrapOmitsOversizedStructuredResponse()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var client = new HttpClient(new CaptureHandler(HttpStatusCode.BadRequest,
+            JsonSerializer.Serialize(new { error = "private server payload", padding = new string('x', 16 * 1024) })));
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+            new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
+            1, "bootstrap-secret", CancellationToken.None));
+
+        Assert.Contains("HTTP 400", failure.Message);
+        Assert.DoesNotContain("private server payload", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RepeatedBootstrapRegistersTheSamePersistentIdentity()
     {
         using var temporary = new TemporaryDirectory();
@@ -276,7 +345,9 @@ public sealed class WorkerRegistrationTests
             Authorization = request.Headers.Authorization?.ToString();
             WorkerAuthorization = request.Headers.TryGetValues("X-Codex-Worker-Token", out var values) ? values.Single() : null;
             Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(_statusCode) { Content = new StringContent(_responseBody ?? "") };
+            var response = new HttpResponseMessage(_statusCode) { Content = new StringContent(_responseBody ?? "") };
+            response.Headers.Add("X-Codex-Request-Id", "request-123");
+            return response;
         }
     }
 

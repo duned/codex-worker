@@ -53,6 +53,11 @@ public static class ServerApplication
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
 
         var app = builder.Build();
+        app.Use(async (context, next) =>
+        {
+            context.Response.Headers["X-Codex-Request-Id"] = context.TraceIdentifier;
+            await next(context);
+        });
         var persistence = app.Services.GetRequiredService<IRegistryStore>();
         await persistence.InitializeAsync(cancellationToken);
         await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
@@ -77,13 +82,22 @@ public static class ServerApplication
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
         app.MapPost("/api/v1/workers/register", async (WorkerRegistrationRequest request, HttpContext context, IRegistryStore store) =>
         {
-            if (request is null || !Valid(request)) return Results.BadRequest(new { error = "Invalid worker registration contract." });
+            if (request is null || !Valid(request))
+            {
+                return RegistrationError(app, context, StatusCodes.Status400BadRequest, "invalid_worker_registration",
+                    "Invalid worker registration contract. Check contractVersion (1 or 2), workerId (32-digit GUID), displayName (1..200), workerVersion (1..100), platform (1..300), capacity (1..8), and capabilities (up to 32 valid entries).");
+            }
             var authorization = context.Request.Headers.Authorization.ToString();
-            if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return Results.Unauthorized();
+            if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "missing_bootstrap_token",
+                    "A Bearer registration token is required. Create a fresh registration token and retry.");
             var workerToken = context.Request.Headers["X-Codex-Worker-Token"].ToString();
             var accepted = await store.BootstrapWorkerAsync(authorization[7..], request, workerToken, context.RequestAborted);
-            if (!accepted) return Results.Json(new { error = "Worker bootstrap token is invalid, expired, or has already been used. Create a fresh registration token and retry." },
-                statusCode: StatusCodes.Status401Unauthorized);
+            if (!accepted)
+            {
+                return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "invalid_bootstrap_token",
+                    "Worker bootstrap token is invalid, expired, or has already been used. Create a fresh registration token and retry.");
+            }
             return Results.Ok(new { workerId = request.WorkerId });
         });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
@@ -173,7 +187,8 @@ public static class ServerApplication
         {
             if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
-                return Results.BadRequest(new { error = "Invalid worker registration contract." });
+                return RegistrationError(app, context, StatusCodes.Status400BadRequest, "invalid_worker_registration",
+                    "Invalid worker registration contract. Check that workerId matches the URL, capacity is 1..8, contractVersion is 1 or 2, and metadata and capabilities satisfy the registration limits.");
             await store.RegisterWorkerAsync(request, context.RequestAborted);
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
@@ -434,6 +449,12 @@ public static class ServerApplication
         var actualBytes = Encoding.UTF8.GetBytes(supplied[prefix.Length..]);
         var expectedBytes = Encoding.UTF8.GetBytes(expected);
         return actualBytes.Length == expectedBytes.Length && CryptographicOperations.FixedTimeEquals(actualBytes, expectedBytes);
+    }
+
+    private static IResult RegistrationError(WebApplication app, HttpContext context, int statusCode, string code, string error)
+    {
+        app.Logger.LogWarning("Worker registration rejected with code {ErrorCode}; trace {TraceId}", code, context.TraceIdentifier);
+        return Results.Json(new { error, code, requestId = context.TraceIdentifier }, statusCode: statusCode);
     }
 
     private static bool Valid(WorkerRegistrationRequest request) => request.ContractVersion is 1 or 2 &&

@@ -196,6 +196,67 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task RegistrationValidationReturnsSafeActionableContractAndCorrelation()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "validation.db")));
+        await app.StartAsync();
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, url + "/api/v1/workers/register");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "private-bootstrap-token");
+        request.Headers.Add("X-Codex-Worker-Token", "private-worker-token");
+        request.Content = JsonContent.Create(new WorkerRegistrationRequest(2, Guid.NewGuid().ToString("N"),
+            "private-display-name", "1.0", "test", 9, []));
+        using var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_worker_registration", json.RootElement.GetProperty("code").GetString());
+        Assert.Contains("capacity (1..8)", json.RootElement.GetProperty("error").GetString());
+        Assert.Equal(response.Headers.GetValues("X-Codex-Request-Id").Single(), json.RootElement.GetProperty("requestId").GetString());
+        Assert.DoesNotContain("private-", body, StringComparison.Ordinal);
+        Assert.Empty(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
+
+        var settings = new CodexWorker.WorkerServerSettings
+        {
+            Enabled = true, Url = url, IdentityFile = Path.Combine(temporary.Path, "worker-id")
+        };
+        var failure = await Assert.ThrowsAsync<CodexWorker.WorkerStartupException>(() =>
+            new CodexWorker.WorkerRegistrationClient(client).BootstrapAsync(settings, 9, "private-bootstrap-token", CancellationToken.None));
+        Assert.Contains("HTTP 400", failure.Message);
+        Assert.Contains("capacity (1..8)", failure.Message);
+        Assert.Contains("Request ID:", failure.Message);
+        Assert.DoesNotContain("private-bootstrap-token", failure.Message, StringComparison.Ordinal);
+
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        var originalName = Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME");
+        using var capture = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME", new string('x', 201));
+            Console.SetOut(capture);
+            Console.SetError(capture);
+            var exitCode = await CodexWorker.Program.Main(["register", "--server", url, "--token", "private-bootstrap-token",
+                "--identity-file", Path.Combine(temporary.Path, "cli-worker-id")]);
+            Assert.Equal(CodexWorker.ProcessExitCodes.StartupFailure, exitCode);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME", originalName);
+        }
+        Assert.Contains("HTTP 400", capture.ToString());
+        Assert.Contains("displayName (1..200)", capture.ToString());
+        Assert.Contains("Request ID:", capture.ToString());
+        Assert.DoesNotContain("private-bootstrap-token", capture.ToString(), StringComparison.Ordinal);
+        await app.StopAsync();
+    }
+
+    [Fact]
     public async Task InvalidBootstrapCredentialIsActionableAndDoesNotCreateWorker()
     {
         using var temporary = new TemporaryDirectory();

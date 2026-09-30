@@ -170,6 +170,8 @@ sudo systemctl enable --now codex-worker
 
 The one-time token is accepted only for registration. Subsequent Worker requests use its durable per-Worker credential; the Server stores only hashes. Revoke an unused bootstrap token with `worker-token revoke <token> [database-path]`, or revoke a Worker credential with `worker-token revoke-worker <worker-id> [database-path]`. A new bootstrap registration for that same identity rotates its credential. Do not put either credential in service configuration or logs.
 
+Use `codex-worker --help` for top-level usage and `codex-worker register --help` for registration options. Help exits successfully without creating identity files or contacting the Server. Invalid registration arguments print the command usage and fail before network activity. Worker↔Server failures include the operation, HTTP status, a bounded structured `error` message when available, and the Server request ID. Unstructured or oversized response bodies are omitted; request credentials and recognizable credential patterns are redacted. Registration rejections return `{ error, code, requestId }`, with a safe reason and stable code such as `invalid_worker_registration` or `invalid_bootstrap_token`. Server responses also carry `X-Codex-Request-Id`. Routine rejection logs contain only that request ID and reason code, without tokens or request payloads. Match the request ID in Worker output to Server logs for deeper diagnosis. Use `--token-stdin` to keep the registration token out of process arguments; `--capacity` accepts 1 through 8 (default 1).
+
 Start and inspect the service with:
 
 ```sh

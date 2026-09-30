@@ -171,9 +171,12 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
                 capabilities));
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            {
+                var detail = await ReadSafeServerErrorAsync(response, cancellationToken, token);
+                throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}");
+            }
         }
         catch (WorkerStartupException) { throw; }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -203,7 +206,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
             request.Headers.Add("X-Codex-Worker-Token", workerToken);
             request.Content = JsonContent.Create(registration);
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
@@ -216,11 +219,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                     }
                     catch (WorkerStartupException)
                     {
-                        throw new WorkerStartupException("Codex Server rejected the bootstrap token as invalid, expired, or already used. Create a fresh registration token and retry. Local worker credentials were retained so a completed registration can be recovered safely.");
+                        throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP 401 (Unauthorized). The bootstrap token is invalid, expired, or already used. Create a fresh registration token and retry. Local worker credentials were retained so a completed registration can be recovered safely.{SafeRequestContext(response, [bootstrapToken, workerToken])}");
                     }
                 }
-                var detail = await ReadSafeServerErrorAsync(response, cancellationToken);
-                throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).{detail}");
+                var detail = await ReadSafeServerErrorAsync(response, cancellationToken, bootstrapToken, workerToken);
+                throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}");
             }
         }
         catch (WorkerStartupException) { throw; }
@@ -232,24 +235,66 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         finally { if (httpClient is null) client.Dispose(); }
     }
 
-    private static async Task<string> ReadSafeServerErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static string[] RequestSecrets(HttpRequestMessage request) =>
+        new[] { request.Headers.Authorization?.Parameter ?? string.Empty }
+            .Concat(request.Headers.Where(header => header.Key.Contains("Token", StringComparison.OrdinalIgnoreCase))
+                .SelectMany(header => header.Value)).ToArray();
+
+    private static string SafeRequestContext(HttpResponseMessage response, string[] secrets)
     {
+        var context = string.Empty;
+        if (response.Headers.TryGetValues("X-Codex-Request-Id", out var identifiers))
+        {
+            var requestId = identifiers.FirstOrDefault();
+            if (requestId is { Length: > 0 and <= 100 } && requestId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or ':' or '.'))
+                context = $" Request ID: {FailureDiagnosticRedactor.Redact(requestId, secrets)}.";
+        }
+        return context;
+    }
+
+    private static async Task<string> ReadSafeServerErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken,
+        params string[] secrets)
+    {
+        var context = SafeRequestContext(response, secrets);
         try
         {
+            const int maximumErrorBodyBytes = 16 * 1024;
+            if (response.Content.Headers.ContentLength is > maximumErrorBodyBytes) return context;
+            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var boundedBody = new MemoryStream();
+            var buffer = new byte[maximumErrorBodyBytes];
+            var total = 0;
+            while (total < buffer.Length)
+            {
+                var read = await responseStream.ReadAsync(buffer.AsMemory(total, buffer.Length - total), cancellationToken);
+                if (read == 0) break;
+                total += read;
+            }
+            if (total == buffer.Length) return context;
+            await boundedBody.WriteAsync(buffer.AsMemory(0, total), cancellationToken);
+            boundedBody.Position = 0;
             using var document = await System.Text.Json.JsonDocument.ParseAsync(
-                await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+                boundedBody, cancellationToken: cancellationToken);
             if (document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
                 document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == System.Text.Json.JsonValueKind.String)
             {
                 var message = error.GetString();
-                if (!string.IsNullOrWhiteSpace(message) && message.Length <= 300) return " " + message;
+                if (!string.IsNullOrWhiteSpace(message) && message.Length <= 300)
+                {
+                    var safeMessage = message;
+                    foreach (var secret in secrets.Where(value => !string.IsNullOrEmpty(value)))
+                        safeMessage = safeMessage.Replace(secret, "[redacted]", StringComparison.Ordinal);
+                    safeMessage = FailureDiagnosticRedactor.Redact(safeMessage);
+                    safeMessage = string.Concat(safeMessage.Where(character => !char.IsControl(character)));
+                    if (safeMessage.Length <= 300) return " " + safeMessage + context;
+                }
             }
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException)
         {
             // Do not surface unstructured server response bodies in worker diagnostics.
         }
-        return string.Empty;
+        return context;
     }
 
     public async Task HeartbeatAsync(WorkerServerSettings settings, int capacity, int activeExecutions,
@@ -269,9 +314,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
                 lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
                 configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion));
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+                throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
@@ -294,9 +339,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities));
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server assignment request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+                throw new HttpRequestException($"Codex Server assignment request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
             return await response.Content.ReadFromJsonAsync<WorkerAssignmentResponseContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty assignment response.");
         }
@@ -312,9 +357,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         try
         {
             using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{identity}/configuration");
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server configuration request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+                throw new HttpRequestException($"Codex Server configuration request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
             return await response.Content.ReadFromJsonAsync<ServerManagedConfigurationContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty managed configuration.");
         }
@@ -329,9 +374,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         try
         {
             using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/request");
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
-            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning request failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
             var plan = await response.Content.ReadFromJsonAsync<ProvisioningPlanContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty provisioning plan.");
             if (plan.WorkerId != workerId || plan.State != "Accepted" || !Guid.TryParseExact(plan.Id, "N", out _))
@@ -349,8 +394,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
         {
             using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{report.WorkerId}/provisioning/{planId}/report");
             request.Content = JsonContent.Create(report);
-            using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server provisioning report failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
@@ -368,9 +413,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             using var request = new HttpRequestMessage(HttpMethod.Get,
                 new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
             request.Headers.Add("X-Worker-Credential-Token", token);
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
-            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server credential retrieval failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+            if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server credential retrieval failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
             var credential = await response.Content.ReadFromJsonAsync<WorkerCredentialContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty credential response.");
             if (credential.Id != credentialId || credential.Version < 1 || string.IsNullOrEmpty(credential.Secret))
@@ -412,9 +457,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(report);
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+                throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
@@ -432,10 +477,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
                 $"api/v1/workers/{lease.WorkerId}/executions/{lease.ExecutionId}/lease/renew"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new ExecutionLeaseRenewalContract(lease.WorkerId, lease.Generation));
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict) return null;
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server execution lease renewal failed with HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).");
+                throw new HttpRequestException($"Codex Server execution lease renewal failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
             var renewed = await response.Content.ReadFromJsonAsync<ServerExecutionLeaseContract>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty lease renewal response.");
             if (renewed.Generation != lease.Generation || renewed.WorkerId != lease.WorkerId || renewed.ExecutionId != lease.ExecutionId || renewed.State != "Active")

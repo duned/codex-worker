@@ -8,11 +8,17 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var output = new WorkerConsole();
-        if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
-        if (args.Length != 1 || args[0] is "--help" or "-h")
+        if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
         {
-            Console.WriteLine("Usage: codex-worker <worker.yml> | register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
-            return args.Length == 1 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
+            PrintHelp(args.Length > 0 && args[0] == "register");
+            return ProcessExitCodes.Success;
+        }
+        if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
+        if (args.Length != 1 || args[0].StartsWith("-", StringComparison.Ordinal))
+        {
+            output.InfrastructureFailure("Invalid command line arguments.");
+            PrintHelp(false);
+            return ProcessExitCodes.StartupFailure;
         }
 
         GlobalWorkerConfiguration? global = null;
@@ -50,13 +56,16 @@ public static class Program
 
     private static async Task<int> RegisterAsync(string[] args, WorkerConsole output)
     {
+        string? token = null;
         try
         {
-            string? server = null, token = null, identityFile = null;
+            string? server = null, identityFile = null;
             var capacity = 1;
             var readTokenFromStandardInput = false;
+            var options = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 1; index < args.Length;)
             {
+                if (!options.Add(args[index])) throw new ArgumentException("Register options must be specified only once.");
                 switch (args[index])
                 {
                     case "--token-stdin":
@@ -68,7 +77,9 @@ public static class Program
                     case "--token":
                     case "--identity-file":
                     case "--capacity":
-                        if (index + 1 >= args.Length) throw new ArgumentException("Register requires a value for every option.");
+                        if (index + 1 >= args.Length || args[index + 1].StartsWith("-", StringComparison.Ordinal) ||
+                            string.IsNullOrWhiteSpace(args[index + 1]))
+                            throw new ArgumentException($"Register option '{args[index]}' requires a value.");
                         if (args[index] == "--server") server = args[index + 1];
                         else if (args[index] == "--token") token = args[index + 1];
                         else if (args[index] == "--identity-file") identityFile = args[index + 1];
@@ -76,14 +87,15 @@ public static class Program
                             throw new ArgumentException("Register capacity must be an integer from 1 to 8.");
                         index += 2;
                         continue;
-                    default: throw new ArgumentException($"Unknown register option '{args[index]}'.");
+                    default: throw new ArgumentException("Unknown register option. Use the documented options below.");
                 }
             }
             if (readTokenFromStandardInput && token is not null) throw new ArgumentException("Specify only one bootstrap token source.");
-            if (readTokenFromStandardInput) token = await Console.In.ReadLineAsync();
-            if (string.IsNullOrWhiteSpace(token) || !Uri.TryCreate(server, UriKind.Absolute, out var uri) ||
+            if (!Uri.TryCreate(server, UriKind.Absolute, out var uri) ||
                 uri.Scheme is not ("http" or "https") || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-                throw new ArgumentException("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
+                throw new ArgumentException("Register requires a valid --server URL without credentials, query, or fragment.");
+            if (readTokenFromStandardInput) token = await Console.In.ReadLineAsync();
+            if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Register requires --token or a nonempty token from --token-stdin.");
             var settings = new WorkerServerSettings { Enabled = true, Url = uri.ToString().TrimEnd('/'), IdentityFile = identityFile };
             settings.Validate();
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -93,9 +105,34 @@ public static class Program
         }
         catch (Exception ex)
         {
-            output.InfrastructureFailure($"Worker registration failed: {ex.Message}");
+            output.InfrastructureFailure($"Worker registration failed: {FailureDiagnosticRedactor.Redact(ex.Message, [token ?? string.Empty])}");
+            if (ex is ArgumentException) PrintHelp(true);
             return ProcessExitCodes.StartupFailure;
         }
+    }
+
+    private static void PrintHelp(bool register)
+    {
+        if (!register)
+        {
+            Console.WriteLine("Usage: codex-worker <worker.yml> | codex-worker register [options]");
+            Console.WriteLine("Use 'codex-worker register --help' for registration options and examples.");
+            Console.WriteLine("  -h, --help                     Show help without running an operation.");
+            return;
+        }
+        Console.WriteLine("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --server <url>                 Required. Codex Server base URL (HTTP or HTTPS).");
+        Console.WriteLine("  --token <registration-token>   Required unless --token-stdin. One-time registration token.");
+        Console.WriteLine("  --token-stdin                  Read the token from stdin; mutually exclusive with --token.");
+        Console.WriteLine("  --capacity <1..8>              Optional. Execution capacity; defaults to 1.");
+        Console.WriteLine("  --identity-file <path>         Optional. Worker identity path; defaults to ~/.codex-worker/worker-id.");
+        Console.WriteLine("  -h, --help                     Show help without contacting the Server or writing identity files.");
+        Console.WriteLine();
+        Console.WriteLine("Example:");
+        Console.WriteLine("  codex-worker register --server https://server.example --token <registration-token>");
+        Console.WriteLine("  codex-worker register --server https://server.example --token-stdin --capacity 2");
     }
 
     internal static int ExitCodeFor(Exception? failure) => failure switch
