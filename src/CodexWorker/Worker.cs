@@ -166,7 +166,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // Ready is an explicit request for new implementation after an integration conflict,
         // including older rows that recorded the conflict as a failed task.
         var freshAfterConflict = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
-            latest is not null && (latest.State == "IntegrationConflict" || latest.RecoveryState == "integration-conflict");
+            latest is not null && IsTerminalIntegrationConflict(latest);
         var retryOf = !freshAfterConflict && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
@@ -221,6 +221,16 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             throw;
         }
     }
+
+    private static bool IsTerminalIntegrationConflict(ExecutionHistoryEntry entry) =>
+        entry.State == "IntegrationConflict" ||
+        entry.State is "Failed" or "Blocked" &&
+        (entry.RecoveryState == "integration-conflict" ||
+         // Legacy GitIntegrationConflictException outcomes were stored as Failed
+         // without validation or recovery metadata. Match the worker's diagnostic
+         // prefix and Issue identity, not arbitrary mentions in a Codex failure.
+         entry.State == "Failed" && entry.RecoveryState is null && entry.CompletedAtUtc is not null &&
+         entry.FailureReason?.StartsWith($"Integration conflict for Issue #{entry.IssueNumber};", StringComparison.Ordinal) == true);
 
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
         int issueKey, CancellationToken ct, bool integrationRecovery = false)
@@ -301,6 +311,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // Remove eligibility before reporting so this Issue cannot repeatedly consume capacity.
         // A failed GitHub update remains infrastructure failure: its remote state is uncertain.
         await github.ReplaceLabelAsync(issue.Number, claimedLabel, config.GitHub.BlockedLabel, ct);
+        await telegram.PreparationRejectedAsync(config.Project.Name, config.Project.Repository, issue,
+            execution.ExecutionId, safeReason, CancellationToken.None);
         await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
             $"### Preparation rejected\n\nExecution `{execution.ExecutionId}` could not start.\n\n{safeReason}\n\n### Recovery\n\n" +
             $"- Inspect the previous execution and preserved workspace.\n- Correct the preparation problem or select `worker.retryMode: restart`.\n- Apply `{config.GitHub.ReadyLabel}` for a new attempt, or `{config.GitHub.IntegrationRecoveryLabel}` to recover a preserved integration conflict.\n", ct);

@@ -274,6 +274,35 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task FreshAttemptAfterConflictUsesCurrentMainAndLeavesOldWorktreeUntouched()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var oldId = Guid.NewGuid();
+        await original.StartIssueAsync(oldId, fixture.Issue, CancellationToken.None);
+        var oldDirectory = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(oldDirectory, "base.txt"), "old implementation");
+        await fixture.AdvanceBaseAsync("base.txt", "current authoritative main");
+        await Assert.ThrowsAsync<GitIntegrationConflictException>(() => original.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        var oldHead = await fixture.GitAt(oldDirectory, "rev-parse", "HEAD");
+        var mainHead = await fixture.Git("rev-parse", "origin/main");
+
+        using var fresh = original.CreateExecutionRepository();
+        var newId = Guid.NewGuid();
+        await fresh.StartIssueAsync(newId, fixture.Issue, null, false, 2, CancellationToken.None);
+
+        Assert.NotEqual(oldDirectory, fresh.ExecutionDirectory);
+        Assert.Equal(mainHead, await fixture.GitAt(fresh.ExecutionDirectory, "rev-parse", "HEAD"));
+        Assert.Equal("current authoritative main", await File.ReadAllTextAsync(Path.Combine(fresh.ExecutionDirectory, "base.txt")));
+        Assert.Equal(oldHead, await fixture.GitAt(oldDirectory, "rev-parse", "HEAD"));
+        Assert.Equal("old implementation", await File.ReadAllTextAsync(Path.Combine(oldDirectory, "base.txt")));
+        Assert.Equal(string.Empty, await fixture.GitAt(oldDirectory, "status", "--short"));
+        Assert.Contains($"worktree {oldDirectory}", await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
+    [Fact]
     public async Task IntegrationRecoveryReusesPreservedImplementationAndValidatesBeforeCompleting()
     {
         using var fixture = await RepositoryFixture.CreateAsync();

@@ -130,6 +130,7 @@ public sealed class WorkerV011Tests
     [Theory]
     [InlineData("IntegrationConflict", null)]
     [InlineData("IntegrationConflict", "integration-conflict")]
+    [InlineData("IntegrationConflict", "integration-conflict-unavailable")]
     [InlineData("Failed", "integration-conflict")]
     public async Task ExplicitReadyLabelStartsFreshExecutionDespitePriorIntegrationConflict(string state, string? recoveryState)
     {
@@ -173,6 +174,10 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, fresh.AttemptNumber);
         Assert.Equal(1, h.Git.Started);
         Assert.False(h.Git.LastResume);
+        Assert.Null(h.Git.LastRetryOf);
+        Assert.NotNull(h.Codex.InitialDirectory);
+        Assert.Equal(1, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
         Assert.Equal(0, h.Git.RecoveryStarted);
         Assert.Contains("team-recover", h.GitHub.RemovedLabels);
         Assert.Contains("team-conflict", h.GitHub.RemovedLabels);
@@ -180,11 +185,50 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
-    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling()
+    public async Task LegacyConflictWithoutRecoveryOrValidationMetadataStartsFreshFromExplicitReady()
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.GitHub.IssueLabels = ["ready"];
+        // The #79 conflict was persisted as Failed, with no validation, commit, or
+        // recovery metadata. Only the structured Git conflict message survived.
+        var oldId = Guid.Parse("0cc4c541-a260-44bf-a4f0-9cd2f40dd35f");
+        var oldEntry = new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
+            "feature/17-example-task-retry-2", "main", DateTimeOffset.UtcNow.AddMinutes(-15), DateTimeOffset.UtcNow.AddMinutes(-1),
+            "Failed", 847848, "Completed implementation", null, 0, [], null, null, null,
+            "Integration conflict for Issue #17; the rebase was aborted and its worktree was preserved. Rebasing (1/1)\rerror: could not apply implementation commit",
+            AttemptNumber: 2);
+        await history.CreateAsync(oldEntry);
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, result!.Kind);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal(2, entries.Count);
+        var preserved = entries.Single(entry => entry.ExecutionId == oldId);
+        Assert.Equal(oldEntry with { Repairs = preserved.Repairs }, preserved);
+        var fresh = entries.Single(entry => entry.ExecutionId != oldId);
+        Assert.Equal("Completed", fresh.State);
+        Assert.Equal(3, fresh.AttemptNumber);
+        Assert.Null(fresh.RetryOfExecutionId);
+        Assert.False(fresh.Resumed);
+        Assert.Null(h.Git.LastRetryOf);
+        Assert.False(h.Git.LastResume);
+        Assert.NotNull(h.Codex.InitialDirectory);
+        Assert.Equal(1, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.DoesNotContain(h.GitHub.Comments, comment => comment.Contains("Preparation rejected", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(telegramEnabled: true, history: history);
         h.Worker.Configuration.Worker.RetryMode = "resume";
         h.GitHub.ReadyIssueCount = 2;
         h.GitHub.ReturnDistinctIssues = true;
@@ -207,6 +251,12 @@ public sealed class WorkerV011Tests
             message.Contains(oldId.ToString(), StringComparison.Ordinal));
         Assert.DoesNotContain("Infrastructure failure", h.ErrorOutput.ToString());
         Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        var notification = Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
+        Assert.Contains("TAREA BLOQUEADA", notification);
+        Assert.Contains(ExecutionFormatting.Display(rejected.ExecutionId), notification);
+        Assert.Contains("has no safe recoverable state", notification);
+        Assert.Contains("TEST PROJECT", notification);
+        Assert.Contains("https://github.com/owner/repo/issues/17", notification);
     }
 
     [Theory]
@@ -214,7 +264,7 @@ public sealed class WorkerV011Tests
     [InlineData(true)]
     public async Task SafePreparationRejectionAllowsNextReadyIssueToExecute(bool missingRecovery)
     {
-        using var h = new Harness();
+        using var h = new Harness(telegramEnabled: true);
         h.GitHub.ReadyIssueCount = 2;
         h.GitHub.ReturnDistinctIssues = true;
         h.Git.FailIssueNumber = 17;
@@ -231,7 +281,36 @@ public sealed class WorkerV011Tests
         Assert.Contains("working->blocked", h.GitHub.Labels);
         Assert.Contains("working->done", h.GitHub.Labels);
         Assert.Single(h.GitHub.Comments, comment => comment.Contains("### Preparation rejected", StringComparison.Ordinal));
+        Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
         Assert.DoesNotContain("Infrastructure failure", h.ErrorOutput.ToString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PreparationNotificationFailureRemainsIsolatedAndRedactsReason(bool throws)
+    {
+        using var h = new Harness(telegramEnabled: true);
+        h.TelegramFailure = throws;
+        h.Worker.Configuration.Environment.Variables = new Dictionary<string, string> { ["TEST_SECRET"] = "private-test-value" };
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.ReturnDistinctIssues = true;
+        h.Git.FailIssueNumber = 17;
+        h.Git.StartFailure = new ProjectCheckoutDirtyException("Checkout is dirty: private-test-value");
+
+        var rejected = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(rejected);
+        Assert.Null(await rejected!);
+        await h.RunAsync();
+
+        Assert.Contains("working->blocked", h.GitHub.Labels);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        var message = Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
+        Assert.DoesNotContain("private-test-value", message);
+        Assert.Contains("[redacted]", message);
+        Assert.Contains("Telegram notification failed", h.Output.ToString());
+        Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -928,20 +1007,23 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
-    [Fact]
-    public async Task ResumedRetryKeepsFailedAttemptAndRunsFreshValidationBeforeIntegration()
+    [Theory]
+    [InlineData("failed", "Failed")]
+    [InlineData("blocked", "Blocked")]
+    public async Task ResumedRetryKeepsFailedAttemptAndRunsFreshValidationBeforeIntegration(string outcome, string state)
     {
         var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
         using var history = new ExecutionHistoryStore(database);
         using var h = new Harness(history: history);
         h.Worker.Configuration.Worker.RetryMode = "resume";
         h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery.");
-        h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial implementation remains", [], false, null);
+        h.GitHub.IssueLabels = ["ready"];
+        h.Codex.InitialOutcome = new CodexOutcome(outcome, "Partial implementation remains; integration conflict needs investigation", [], false, null);
 
         var failed = await h.ProcessOneAsync();
-        Assert.Equal(IssueOutcomeKind.Failed, failed!.Kind);
+        Assert.Equal(state == "Failed" ? IssueOutcomeKind.Failed : IssueOutcomeKind.Blocked, failed!.Kind);
         var first = Assert.Single(await history.ReadAllAsync());
-        Assert.Equal("Failed", first.State);
+        Assert.Equal(state, first.State);
         h.GitHub.ReadyIssueCount = 2;
         h.Codex.InitialOutcome = Success("Completed the full task");
 
@@ -956,7 +1038,7 @@ public sealed class WorkerV011Tests
         Assert.NotEqual(first.ExecutionId, retry.ExecutionId);
         Assert.Equal(first.ExecutionId, retry.RetryOfExecutionId);
         Assert.True(retry.Resumed);
-        Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == first.ExecutionId).State);
+        Assert.Equal(state, entries.Single(entry => entry.ExecutionId == first.ExecutionId).State);
         Assert.Equal("Completed", retry.State);
         Assert.True(h.Git.LastResume);
         Assert.Contains($"↳ Attempt 2 · resume from [{first.ExecutionId.ToString("N")[..8]}]", h.Output.ToString());
@@ -1016,6 +1098,7 @@ public sealed class WorkerV011Tests
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
+        public bool? TelegramFailure { set => _telegramHandler!.Failure = value; }
 
         public async Task RunAsync() => await Worker.RunAsync(Cancellation.Token);
         public Task<IssueProcessingResult?> ProcessOneAsync() => Worker.ProcessOneAsync(Cancellation.Token);
@@ -1031,12 +1114,14 @@ public sealed class WorkerV011Tests
         private sealed class StubTelegramHandler : HttpMessageHandler
         {
             public List<string> Messages { get; } = [];
+            public bool? Failure { get; set; }
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 var body = await request.Content!.ReadAsStringAsync(cancellationToken);
                 using var document = System.Text.Json.JsonDocument.Parse(body);
                 Messages.Add(document.RootElement.GetProperty("text").GetString()!);
-                return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+                if (Failure == true) throw new HttpRequestException("Simulated Telegram delivery failure");
+                return new HttpResponseMessage(Failure == false ? System.Net.HttpStatusCode.BadGateway : System.Net.HttpStatusCode.OK);
             }
         }
     }
@@ -1133,6 +1218,7 @@ public sealed class WorkerV011Tests
         public GitRecoveryInfo? Recovery { get; set; }
         public Guid? LastExecutionId { get; private set; }
         public bool LastResume { get; private set; }
+        public ExecutionHistoryEntry? LastRetryOf { get; private set; }
         public int LastAttemptNumber { get; private set; }
         public GitIntegrationConflictException? IntegrationFailure { get; set; }
         public WorkerInfrastructureException? StartFailure { get; set; }
@@ -1140,7 +1226,7 @@ public sealed class WorkerV011Tests
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
-        { Started++; LastExecutionId = executionId; LastResume = resume; LastAttemptNumber = attemptNumber;
+        { Started++; LastExecutionId = executionId; LastResume = resume; LastRetryOf = retryOf; LastAttemptNumber = attemptNumber;
             var failure = FailIssueNumber is null || issue.Number == FailIssueNumber ? StartFailure : null;
             return failure is null ? Task.CompletedTask : Task.FromException(failure); }
         public Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
