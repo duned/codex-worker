@@ -48,7 +48,8 @@ ensure_management_token() {
 }
 
 # Keep the credential logic available to the local installer test without running installation.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+# As in install-worker.sh, BASH_SOURCE may be empty when executing from stdin.
+if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
   return 0
 fi
 

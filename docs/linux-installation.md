@@ -156,4 +156,6 @@ dotnet publish src/CodexWorker/CodexWorker.csproj -c Release -r linux-x64 --self
 sudo packaging/linux/install.sh publish
 ```
 
+The release installers (`install-server.sh` and `install-worker.sh`) and both uninstallers support the piped `bash` commands above as well as direct file execution, with Bash strict mode enabled. `install.sh` and `update-worker.sh` are local build tools: run them from files in the checkout; `install.sh` requires its sibling configuration and systemd unit.
+
 This path installs the binaries and starter configuration without enrolling or starting the Worker. Complete the manual enrollment and service steps above. For Server, use `sudo packaging/linux/install-server.sh PUBLISHED_DIRECTORY`; its local publish mode enables and starts the Server service. These are advanced build-based paths; use published releases for the normal clean-machine flow.

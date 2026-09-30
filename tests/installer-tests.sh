@@ -9,17 +9,21 @@ worker_uninstaller="$repo_root/packaging/linux/uninstall-worker.sh"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT
 
-bash -n "$installer"
-bash -n "$worker_installer"
-bash -n "$server_uninstaller"
-bash -n "$worker_uninstaller"
+for script in "$installer" "$worker_installer" "$server_uninstaller" "$worker_uninstaller"; do
+  bash -n "$script"
+  # Do not hide stdin regressions by weakening the scripts' strict mode.
+  grep -Fxq 'set -euo pipefail' "$script"
+done
 bash "$installer" --help >"$temp_dir/help.txt"
 grep -q -- '--version VERSION' "$temp_dir/help.txt"
 grep -q 'latest by default' "$temp_dir/help.txt"
 
 # Match curl | sudo bash argument handling. Resolving the installer location at
 # startup must work even though Bash has no BASH_SOURCE entry for stdin scripts.
-bash -s -- --help < "$worker_installer" > "$temp_dir/worker-pipe-help.txt"
+cat "$installer" | bash -s -- --help > "$temp_dir/server-pipe-help.txt"
+grep -q -- '--version VERSION' "$temp_dir/server-pipe-help.txt"
+grep -q 'latest by default' "$temp_dir/server-pipe-help.txt"
+cat "$worker_installer" | bash -s -- --help > "$temp_dir/worker-pipe-help.txt"
 grep -q -- '--version VERSION' "$temp_dir/worker-pipe-help.txt"
 grep -q -- '--server URL' "$temp_dir/worker-pipe-help.txt"
 grep -q -- '--capacity 1..8' "$temp_dir/worker-pipe-help.txt"
@@ -56,39 +60,60 @@ EOF
 chmod +x "$temp_dir/stubs/systemctl" "$temp_dir/stubs/id" "$temp_dir/stubs/getent"
 export PATH="$temp_dir/stubs:$PATH"
 
-for component in server worker; do
-  component_root="$temp_dir/$component"
-  test_root="$component_root/root"
-  export CODEX_UNINSTALL_TEST_ROOT="$test_root"
-  mkdir -p "$test_root/opt/codex-$component" "$test_root/etc/codex-$component" \
-    "$test_root/var/lib/codex-$component" "$test_root/var/log/codex-$component" \
-    "$test_root/run/codex-$component" "$test_root/etc/systemd/system"
-  touch "$test_root/etc/codex-$component/secret.env" "$test_root/var/lib/codex-$component/state.db" \
-    "$test_root/opt/codex-$component/binary" "$test_root/etc/systemd/system/codex-$component.service"
-  if [[ $component == worker ]]; then
-    mkdir -p "$test_root/opt/codex-worker.previous.test" "$test_root/opt/codex-worker.failed.test"
+# Keep direct invocation coverage and repeat the same checks with a real pipe.
+run_uninstaller() {
+  local script=$1
+  shift
+  if [[ $invocation == stdin ]]; then
+    cat "$script" | bash -s -- "$@"
+  else
+    bash "$script" "$@"
   fi
-  bash "$repo_root/packaging/linux/uninstall-$component.sh" > "$component_root/default.out"
-  [[ ! -e $test_root/opt/codex-$component && ! -e $test_root/etc/systemd/system/codex-$component.service ]] || exit 1
-  [[ -e $test_root/etc/codex-$component/secret.env && -e $test_root/var/lib/codex-$component/state.db ]] || {
-    echo "$component default uninstall removed retained state." >&2; exit 1;
-  }
-  grep -q 'Retained .*configuration and credentials' "$component_root/default.out"
-  bash "$repo_root/packaging/linux/uninstall-$component.sh" --purge > "$component_root/purge.out"
-  [[ ! -e $test_root/etc/codex-$component && ! -e $test_root/var/lib/codex-$component ]] || {
-    echo "$component purge left configuration or persistent state." >&2; exit 1;
-  }
-  if [[ $component == worker ]]; then
-    [[ ! -e $test_root/opt/codex-worker.previous.test && ! -e $test_root/opt/codex-worker.failed.test ]] || {
-      echo 'Worker purge left an installer-created upgrade directory.' >&2; exit 1;
+}
+
+for invocation in file stdin; do
+  for component in server worker; do
+    component_root="$temp_dir/$invocation-$component"
+    test_root="$component_root/root"
+    export CODEX_UNINSTALL_TEST_ROOT="$test_root"
+    mkdir -p "$test_root/opt/codex-$component" "$test_root/etc/codex-$component" \
+      "$test_root/var/lib/codex-$component" "$test_root/var/log/codex-$component" \
+      "$test_root/run/codex-$component" "$test_root/etc/systemd/system"
+    touch "$test_root/etc/codex-$component/secret.env" "$test_root/var/lib/codex-$component/state.db" \
+      "$test_root/opt/codex-$component/binary" "$test_root/etc/systemd/system/codex-$component.service"
+    if [[ $component == worker ]]; then
+      mkdir -p "$test_root/opt/codex-worker.previous.test" "$test_root/opt/codex-worker.failed.test"
+    fi
+    run_uninstaller "$repo_root/packaging/linux/uninstall-$component.sh" > "$component_root/default.out"
+    [[ ! -e $test_root/opt/codex-$component && ! -e $test_root/etc/systemd/system/codex-$component.service ]] || exit 1
+    [[ -e $test_root/etc/codex-$component/secret.env && -e $test_root/var/lib/codex-$component/state.db ]] || {
+      echo "$component default uninstall removed retained state." >&2; exit 1;
     }
-  fi
-  grep -q '^stop codex-' "$test_root/systemctl.log"
-  grep -q '^disable codex-' "$test_root/systemctl.log"
-  grep -q '^daemon-reload$' "$test_root/systemctl.log"
-  grep -q 'PURGE: permanently deleting' "$component_root/purge.out"
-  bash "$repo_root/packaging/linux/uninstall-$component.sh" --purge > "$component_root/repeat.out"
-  grep -q 'Already absent' "$component_root/repeat.out"
+    grep -q 'Retained .*configuration and credentials' "$component_root/default.out"
+    # Purge a complete installation, including binaries and an active unit.
+    mkdir -p "$test_root/opt/codex-$component" "$test_root/var/log/codex-$component" "$test_root/run/codex-$component"
+    touch "$test_root/opt/codex-$component/binary" "$test_root/etc/systemd/system/codex-$component.service"
+    if [[ $component == worker ]]; then
+      mkdir -p "$test_root/opt/codex-worker.previous.test" "$test_root/opt/codex-worker.failed.test" "$test_root/opt/codex-worker.next.test"
+    fi
+    run_uninstaller "$repo_root/packaging/linux/uninstall-$component.sh" --purge > "$component_root/purge.out"
+    [[ ! -e $test_root/opt/codex-$component && ! -e $test_root/etc/systemd/system/codex-$component.service &&
+       ! -e $test_root/var/log/codex-$component && ! -e $test_root/run/codex-$component ]] || exit 1
+    [[ ! -e $test_root/etc/codex-$component && ! -e $test_root/var/lib/codex-$component ]] || {
+      echo "$component purge left configuration or persistent state." >&2; exit 1;
+    }
+    if [[ $component == worker ]]; then
+      [[ ! -e $test_root/opt/codex-worker.previous.test && ! -e $test_root/opt/codex-worker.failed.test && ! -e $test_root/opt/codex-worker.next.test ]] || {
+        echo 'Worker purge left an installer-created upgrade directory.' >&2; exit 1;
+      }
+    fi
+    grep -q '^stop codex-' "$test_root/systemctl.log"
+    grep -q '^disable codex-' "$test_root/systemctl.log"
+    grep -q '^daemon-reload$' "$test_root/systemctl.log"
+    grep -q 'PURGE: permanently deleting' "$component_root/purge.out"
+    run_uninstaller "$repo_root/packaging/linux/uninstall-$component.sh" --purge > "$component_root/repeat.out"
+    grep -q 'Already absent' "$component_root/repeat.out"
+  done
 done
 
 # A service operation failure is reported and leaves installer data untouched.

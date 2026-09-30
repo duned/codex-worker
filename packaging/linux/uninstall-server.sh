@@ -87,7 +87,8 @@ uninstall_server() {
   fi
 }
 
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
+# As in install-worker.sh, BASH_SOURCE may be empty when executing from stdin.
+if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then return 0; fi
 while (($#)); do
   case "$1" in
     --purge) [[ $purge == false ]] || fail '--purge may only be specified once.'; purge=true; shift ;;
