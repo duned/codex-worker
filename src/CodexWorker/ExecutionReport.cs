@@ -28,34 +28,34 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
         var sections = new List<string>();
         if (ExecutionId is { } executionId)
         {
-            sections.Add("## Execution");
+            sections.Add("### Execution");
             sections.Add($"Execution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
         }
         if (AttemptNumber > 1)
-            sections.Add($"## Attempt history\n\nCurrent execution " +
+            sections.Add($"### Attempt history\n\nCurrent execution " +
                 (ExecutionId is { } currentId ? $"`{ExecutionFormatting.Display(currentId)}` (`{currentId}`)" : "identity unavailable") +
                 $" (attempt {AttemptNumber}); " +
                 $"{(Resumed ? "resumed from" : "restarted after")} previous execution " +
                 (RetryOfExecutionId is { } previousId ? $"`{ExecutionFormatting.Display(previousId)}` (`{previousId}`)." : "identity unavailable."));
         if (kind == IssueOutcomeKind.Blocked)
         {
-            if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"## Work performed\n\n{ImplementationSummary}");
-            sections.Add($"## Human input required\n\n{HumanInput ?? Failure ?? "Human input is required to continue."}");
+            if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"### Work performed\n\n{ImplementationSummary}");
+            sections.Add($"### Human input required\n\n{HumanInput ?? Failure ?? "Human input is required to continue."}");
             return string.Join("\n\n", sections);
         }
 
         if (!string.IsNullOrWhiteSpace(ImplementationSummary))
-            sections.Add($"## {(kind == IssueOutcomeKind.Succeeded ? "Implementation" : "Implementation attempt")}\n\n{ImplementationSummary}");
+            sections.Add($"### {(kind == IssueOutcomeKind.Succeeded ? "Implementation" : "Implementation attempt")}\n\n{ImplementationSummary}");
         if (ValidationRepairs.Count > 0 || FinalValidationFailure is not null)
         {
-            var validation = new List<string> { "## Validation & repairs" };
+            var validation = new List<string> { "### Validation & repairs" };
             if (ValidationRepairs.Count > 0)
                 validation.Add($"Initial validation failed: `{ValidationRepairs[0].FailedCommand}`.");
             else if (FinalValidationFailure is not null)
                 validation.Add($"Initial validation failed: `{FinalValidationFailure}`.");
             foreach (var repair in ValidationRepairs)
             {
-                validation.Add($"### Repair {repair.Attempt}/{repair.MaximumAttempts}");
+                validation.Add($"#### Repair {repair.Attempt}/{repair.MaximumAttempts}");
                 if (kind == IssueOutcomeKind.Failed && !string.IsNullOrWhiteSpace(repair.ValidationBeforeRepair))
                     validation.Add("Failure before repair:\n" + string.Join("\n", repair.ValidationBeforeRepair.Split('\n').Select(line => $"- {line}")));
                 if (!string.IsNullOrWhiteSpace(repair.RepairSummary)) validation.Add(repair.RepairSummary);
@@ -74,11 +74,11 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             }
             sections.Add(string.Join("\n\n", validation));
         }
-        else if (kind == IssueOutcomeKind.Succeeded) sections.Add("## Validation\n\nValidation passed successfully.");
+        else if (kind == IssueOutcomeKind.Succeeded) sections.Add("### Validation\n\nValidation passed successfully.");
 
         if (kind == IssueOutcomeKind.Succeeded)
         {
-            var result = new List<string> { "## Result", $"- Duration: {WorkerConsole.FormatDuration(Duration)}" };
+            var result = new List<string> { "### Result", $"- Duration: {WorkerConsole.FormatDuration(Duration)}" };
             var integration = Integration;
             if (integration is { HasChanges: true })
             {
@@ -101,10 +101,10 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             var duplicate = normalizedSummary.Length > 0 && (normalizedSummary == normalizedFailure ||
                 normalizedFailure.Length >= 40 && normalizedSummary.Contains(normalizedFailure, StringComparison.OrdinalIgnoreCase) ||
                 normalizedSummary.Length >= 40 && normalizedFailure.Contains(normalizedSummary, StringComparison.OrdinalIgnoreCase));
-            sections.Add($"## {(kind == IssueOutcomeKind.IntegrationConflict ? "Integration conflict recovery" : "Failure")}\n\n**Reason:** {category}.{(duplicate ? "" : $"\n\n{failureText}")}");
+            sections.Add($"### {(kind == IssueOutcomeKind.IntegrationConflict ? "Integration conflict recovery" : "Failure")}\n\n**Reason:** {category}.{(duplicate ? "" : $"\n\n{failureText}")}");
             if (WorkspacePreserved || RetryAvailable || !string.IsNullOrWhiteSpace(RecoveryBranch))
             {
-                var recovery = new List<string> { "## Recovery" };
+                var recovery = new List<string> { "### Recovery" };
                 if (ExecutionId is not null) recovery.Add($"- **Execution:** `{ExecutionFormatting.Display(ExecutionId.Value)}` (`{ExecutionId}`)");
                 if (!string.IsNullOrWhiteSpace(RecoveryBranch)) recovery.Add($"- **Branch:** `{RecoveryBranch}`");
                 recovery.Add($"- **Workspace:** {(WorkspacePreserved ? "Preserved" : "Not preserved")}");

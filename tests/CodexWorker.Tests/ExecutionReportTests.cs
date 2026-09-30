@@ -3,6 +3,17 @@ namespace CodexWorker.Tests;
 public sealed class ExecutionReportTests
 {
     [Fact]
+    public void GithubCommentReportTitleUsesSecondLevelHeading()
+    {
+        var issue = new GitHubIssue(90, "Handle integration conflicts", "", DateTimeOffset.UnixEpoch);
+
+        var heading = IssueFormatting.ReportHeading(issue);
+
+        Assert.Equal("## Handle integration conflicts #90\n\n", heading);
+        Assert.False(heading.StartsWith("# ", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void FirstPassSuccessIncludesImplementationValidationDurationAndIntegration()
     {
         var report = new IssueExecutionReport("Added fiscal year closure behavior.", [],
@@ -11,8 +22,8 @@ public sealed class ExecutionReportTests
             Duration: TimeSpan.FromMinutes(8) + TimeSpan.FromSeconds(42));
 
         var markdown = report.ToMarkdown(IssueOutcomeKind.Succeeded);
-        Assert.Contains("## Implementation\n\nAdded fiscal year closure behavior.", markdown);
-        Assert.Contains("## Validation\n\nValidation passed successfully.", markdown);
+        Assert.Contains("### Implementation\n\nAdded fiscal year closure behavior.", markdown);
+        Assert.Contains("### Validation\n\nValidation passed successfully.", markdown);
         Assert.Contains("- Duration: 08:42", markdown);
         Assert.Contains("- Commit: `abc123`", markdown);
         Assert.Contains("- Merged into: `dev`", markdown);
@@ -20,7 +31,7 @@ public sealed class ExecutionReportTests
     }
 
     [Fact]
-    public void CompletionMarkdownRetainsCodexSummaryHeadingsForGitHubReporting()
+    public void CompletionMarkdownRetainsCodexSummaryAndUsesLowerHeadingLevelsForReportSections()
     {
         const string summary = "## Implementation\n\nImplemented X.\n\n## Validation\n\nTests passed.";
         var report = new IssueExecutionReport(summary, []);
@@ -28,8 +39,8 @@ public sealed class ExecutionReportTests
         var markdown = report.ToMarkdown(IssueOutcomeKind.Succeeded);
 
         Assert.Contains(summary, markdown);
-        Assert.Contains("## Implementation", markdown);
-        Assert.Contains("## Validation", markdown);
+        Assert.Contains("### Implementation", markdown);
+        Assert.Contains("### Validation", markdown);
     }
 
     [Fact]
@@ -41,7 +52,7 @@ public sealed class ExecutionReportTests
 
         var markdown = report.ToMarkdown(IssueOutcomeKind.Succeeded);
         Assert.Contains("Implemented fiscal year closure snapshots.", markdown);
-        Assert.Contains("### Repair 1/2", markdown);
+        Assert.Contains("#### Repair 1/2", markdown);
         Assert.Contains("Fixed the snapshot round-trip assertion.", markdown);
         Assert.Contains("Initial validation failed: `dotnet test`.", markdown);
         Assert.Contains("Validation passed after repair 1/2.", markdown);
@@ -61,7 +72,7 @@ public sealed class ExecutionReportTests
         Assert.True(markdown.IndexOf("Corrected the mapping.", StringComparison.Ordinal) <
                     markdown.IndexOf("Updated the schema test.", StringComparison.Ordinal));
         Assert.Contains("Validation failed after 2 repair attempt(s): `dotnet test`.", markdown);
-        Assert.Contains("## Implementation attempt", markdown);
+        Assert.Contains("### Implementation attempt", markdown);
         Assert.DoesNotContain("stdout", markdown);
     }
 
@@ -71,9 +82,9 @@ public sealed class ExecutionReportTests
         var report = new IssueExecutionReport("Added a migration draft.", [], HumanInput: "Which API should own this behavior?");
         var markdown = report.ToMarkdown(IssueOutcomeKind.Blocked);
 
-        Assert.Contains("## Work performed", markdown);
+        Assert.Contains("### Work performed", markdown);
         Assert.Contains("Added a migration draft.", markdown);
-        Assert.Contains("## Human input required", markdown);
+        Assert.Contains("### Human input required", markdown);
         Assert.Contains("Which API should own this behavior?", markdown);
         Assert.DoesNotContain("TELEGRAM_BOT_TOKEN", markdown);
         Assert.DoesNotContain("GITHUB_TOKEN", markdown);
@@ -95,7 +106,7 @@ public sealed class ExecutionReportTests
 
         Assert.Contains("Final validation command: `dotnet test` (exit 1).", markdown);
         Assert.Contains("Failed Example.Tests.ParserTests.ReadsHeader", markdown);
-        Assert.Contains("## Recovery", markdown);
+        Assert.Contains("### Recovery", markdown);
         Assert.Contains($"- **Execution:** `[{ExecutionFormatting.ShortId(id)}]` (`{id}`)", markdown);
         Assert.Contains("- **Branch:** `feature/example-59`", markdown);
         Assert.Contains("- **Workspace:** Preserved", markdown);
@@ -117,8 +128,8 @@ public sealed class ExecutionReportTests
 
         var markdown = report.ToMarkdown(IssueOutcomeKind.IntegrationConflict);
 
-        Assert.Contains("## Implementation attempt", markdown);
-        Assert.Contains("## Integration conflict recovery", markdown);
+        Assert.Contains("### Implementation attempt", markdown);
+        Assert.Contains("### Integration conflict recovery", markdown);
         Assert.Contains($"`{id}`", markdown);
         Assert.Contains("- **Workspace:** Preserved", markdown);
         Assert.Contains("- **Retry/resume:** Unavailable", markdown);
@@ -156,9 +167,9 @@ public sealed class ExecutionReportTests
 
         Assert.Contains("error CS1002: ; expected", failedMarkdown);
         Assert.Contains("exit 1", failedMarkdown);
-        Assert.DoesNotContain("## Recovery", failedMarkdown);
-        Assert.DoesNotContain("## Recovery", succeededMarkdown);
-        Assert.Contains("## Validation\n\nValidation passed successfully.", succeededMarkdown);
+        Assert.DoesNotContain("### Recovery", failedMarkdown);
+        Assert.DoesNotContain("### Recovery", succeededMarkdown);
+        Assert.Contains("### Validation\n\nValidation passed successfully.", succeededMarkdown);
     }
 
     [Fact]
@@ -172,13 +183,13 @@ public sealed class ExecutionReportTests
 
         var markdown = report.ToMarkdown(IssueOutcomeKind.Failed);
 
-        Assert.Contains("## Execution\n\nExecution `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`).", markdown);
-        Assert.Contains("## Implementation attempt\n\n" + summary, markdown);
-        Assert.Contains("## Failure\n\n**Reason:** Codex reported incomplete task.", markdown);
+        Assert.Contains("### Execution\n\nExecution `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`).", markdown);
+        Assert.Contains("### Implementation attempt\n\n" + summary, markdown);
+        Assert.Contains("### Failure\n\n**Reason:** Codex reported incomplete task.", markdown);
         Assert.DoesNotContain("**Reason:** Codex reported incomplete task.\n\n" + summary, markdown);
-        Assert.Contains("## Recovery\n\n- **Execution:** `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`)\n- **Branch:** `feature/example-74`\n- **Workspace:** Preserved\n- **Retry/resume:** Available", markdown);
-        Assert.DoesNotContain("## ExecutionExecution", markdown);
-        Assert.DoesNotContain("## Failure**Reason", markdown);
+        Assert.Contains("### Recovery\n\n- **Execution:** `[8d80eeb9]` (`8d80eeb9-c246-4348-b5cb-dc3710faf11b`)\n- **Branch:** `feature/example-74`\n- **Workspace:** Preserved\n- **Retry/resume:** Available", markdown);
+        Assert.DoesNotContain("### ExecutionExecution", markdown);
+        Assert.DoesNotContain("### Failure**Reason", markdown);
     }
 
     [Fact]

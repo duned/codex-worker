@@ -8,5 +8,5 @@ public static class IssueFormatting
     /// <summary>Compact identity used on every operational execution event.</summary>
     public static string OperationalIdentity(GitHubIssue issue) => $"Issue · {Display(issue)}";
 
-    public static string ReportHeading(GitHubIssue issue) => $"# {Display(issue)}\n\n";
+    public static string ReportHeading(GitHubIssue issue) => $"## {Display(issue)}\n\n";
 }

@@ -282,8 +282,9 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
         Assert.Equal("preflight", h.Events[0]);
         Assert.Equal("find", h.Events[1]);
-        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Implementation", StringComparison.Ordinal));
-        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Validation\n\nValidation passed successfully.", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## " + IssueFormatting.Display(h.GitHub.Issue), StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Implementation", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Validation\n\nValidation passed successfully.", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -341,7 +342,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Cleanups);
         Assert.Contains("working->done", h.GitHub.Labels);
         var comment = Assert.Single(h.GitHub.Comments);
-        Assert.StartsWith("# Example task #17\n\n", comment);
+        Assert.StartsWith("## Example task #17\n\n", comment);
         Assert.Contains("implemented", comment);
         Assert.Contains("fixed restore issue", comment);
         Assert.Contains("Initial validation failed: `dotnet test`.", comment);
@@ -388,7 +389,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->failed", h.GitHub.Labels);
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("authoritative check", StringComparison.Ordinal));
-        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Implementation attempt", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Implementation attempt", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -407,7 +408,7 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->blocked", h.GitHub.Labels);
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Which API?", StringComparison.Ordinal));
-        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("## Work performed", StringComparison.Ordinal));
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Work performed", StringComparison.Ordinal));
         var execution = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("Blocked", execution.State);
         Assert.Equal(1, execution.RepairCount);
@@ -570,7 +571,7 @@ public sealed class WorkerV011Tests
         var executionId = execution.ExecutionId;
         Assert.Contains($"Reason · execution [{ExecutionFormatting.ShortId(executionId)}] · Codex reported incomplete task · Implementation could not be completed", h.ErrorOutput.ToString());
         Assert.Contains($"Execution `[{ExecutionFormatting.ShortId(executionId)}]` (`{executionId}`)", Assert.Single(h.GitHub.Comments));
-        Assert.Contains("## Implementation attempt\n\nImplementation could not be completed\n\n## Failure\n\n**Reason:** Codex reported incomplete task.", Assert.Single(h.GitHub.Comments));
+        Assert.Contains("### Implementation attempt\n\nImplementation could not be completed\n\n### Failure\n\n**Reason:** Codex reported incomplete task.", Assert.Single(h.GitHub.Comments));
         File.Delete(database);
     }
 
@@ -588,7 +589,7 @@ public sealed class WorkerV011Tests
 
             Assert.Equal(0, h.Git.Cleanups);
             Assert.Equal(0, h.Git.Integrations);
-            Assert.Contains("## Recovery\n\n- **Execution:**", Assert.Single(h.GitHub.Comments));
+            Assert.Contains("### Recovery\n\n- **Execution:**", Assert.Single(h.GitHub.Comments));
             Assert.Contains("- **Workspace:** Preserved\n- **Retry/resume:** Available", Assert.Single(h.GitHub.Comments));
         }
 
