@@ -20,6 +20,13 @@ public sealed class OperabilityTests
     }
 
     [Fact]
+    public void ServerRuntimeVersionMatchesProductVersionMetadata()
+    {
+        var version = System.Diagnostics.FileVersionInfo.GetVersionInfo(typeof(CodexServer.ServerApplication).Assembly.Location).ProductVersion!;
+        Assert.Equal(version.Split('+')[0], CodexServer.ServerApplication.DisplayVersion);
+    }
+
+    [Fact]
     public void ProcessExitCodesDistinguishGracefulStartupAndRuntimeOutcomes()
     {
         Assert.Equal(ProcessExitCodes.Success, Program.ExitCodeFor(null));

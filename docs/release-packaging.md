@@ -42,4 +42,10 @@ See the [Linux installation reference](linux-installation.md) for generated mana
 
 Run `bash tests/release-tests.sh` to exercise packaging and release decisions with stubbed GitHub, Git, and .NET commands, without publishing a real release.
 
-The current source development line is `0.16.0` in `Directory.Build.props`. Worker and Server product metadata, banners and version endpoints derive from that shared MSBuild version. Release commands continue to override it with the explicitly selected stable version without editing the source property.
+## Product version policy
+
+The shared MSBuild `Version` property in `Directory.Build.props` is the authoritative current product version: `0.15.0`. Worker and Server product metadata, banners and version endpoints derive from that property through generated assembly metadata.
+
+The current product version changes only through the explicit release/version process. Starting the next numbered roadmap or GitHub Issue series does not bump it; neither Issue numbering nor branch names determine a product version. While 16.x work is in progress before the v0.16 release, the intended current version remains `0.15.0`. Do not independently bump versions as part of unrelated feature Issues.
+
+Explicitly prepare the next source version in `Directory.Build.props` as part of its release. `packaging/release.sh VERSION` and `packaging/release-linux-x64.sh --set-version VERSION` continue to override the shared MSBuild version for the requested build, including published assemblies, archive names and archive `VERSION` files, without editing the source property.
