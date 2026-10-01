@@ -32,6 +32,17 @@ public static class CodexResultParser
 public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     IReadOnlyDictionary<string, string>? projectEnvironment = null) : ICodexExecutor
 {
+    private static string Executable
+    {
+        get
+        {
+            var configured = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+            if (string.IsNullOrWhiteSpace(configured)) return "codex";
+            if (!Path.IsPathFullyQualified(configured))
+                throw new WorkerInfrastructureException("CODEX_WORKER_CODEX_EXECUTABLE must be an absolute path accessible to the service account.");
+            return configured;
+        }
+    }
     internal const string OutputSchema = """
         {
           "type": "object",
@@ -114,35 +125,52 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
 
     public Task PreflightAsync(CancellationToken ct) => PreflightAsync(ct, 60);
 
-    public async Task PreflightAsync(CancellationToken ct, int timeoutSeconds)
+    public Task PreflightAsync(CancellationToken ct, int timeoutSeconds) => PreflightAsync(ct, timeoutSeconds, Path.GetTempPath());
+
+    internal async Task PreflightAsync(CancellationToken ct, int timeoutSeconds, string temporaryRoot)
     {
-        var tempDirectory = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-{Guid.NewGuid():N}");
-        var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-preflight-output-{Guid.NewGuid():N}.txt");
-        Directory.CreateDirectory(tempDirectory);
+        var tempDirectory = Path.Combine(temporaryRoot, $"codex-worker-preflight-{Guid.NewGuid():N}");
+        var outputPath = Path.Combine(tempDirectory, "result.txt");
         try
         {
+            try
+            {
+                Directory.CreateDirectory(tempDirectory);
+                // Probe write access as the effective Worker account before launching the child.
+                await File.WriteAllTextAsync(Path.Combine(tempDirectory, ".access-probe"), "", ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new WorkerInfrastructureException($"Codex preflight temporary working directory could not be created/accessed: '{tempDirectory}'. Check the service account's TMPDIR and permissions.", ex);
+            }
             var args = BuildPreflightArguments(settings, outputPath);
             using var environment = CodexEnvironment.Create();
             ProcessResult result;
             try
             {
-                result = await runner.RunAsync("codex", args, tempDirectory,
+                result = await runner.RunAsync(Executable, args, tempDirectory,
                     TimeSpan.FromSeconds(timeoutSeconds), ct, environment.Variables);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
-                throw new WorkerInfrastructureException($"Codex startup preflight could not execute: {ex.Message}", ex);
+                var reason = ex is TimeoutException
+                    ? "Codex process started but preflight timed out. Check service-account authentication and network access."
+                    : $"Codex could not start in the effective Worker environment: {FailureDiagnosticRedactor.Redact(ex.Message)}";
+                throw new WorkerInfrastructureException(reason, ex);
             }
             if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"Codex startup preflight exited with code {result.ExitCode}.{Diagnostics(result.StandardOutput, result.StandardError)}");
+                throw new WorkerInfrastructureException($"Codex process started but preflight exited with code {result.ExitCode}. Check Codex authentication, its runtime, and network access as the Worker service account. Process output is omitted to protect authentication material.");
             var response = File.Exists(outputPath) ? (await File.ReadAllTextAsync(outputPath, ct)).Trim() : "";
             if (!response.Equals("OK", StringComparison.Ordinal))
-                throw new WorkerInfrastructureException($"Codex startup preflight returned an unexpected response; expected exactly 'OK'. Received: {Tail(response, 1000)}");
+                throw new WorkerInfrastructureException("Codex process started but preflight returned an unexpected response; expected exactly 'OK'. Response omitted to protect authentication material.");
         }
-        catch (WorkerInfrastructureException) { throw; }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) { throw new WorkerInfrastructureException($"Codex startup preflight failed: {ex.Message}", ex); }
+        catch (Exception ex)
+        {
+            throw new WorkerInfrastructureException($"Codex execution capability unavailable. {FailureDiagnosticRedactor.Redact(ex.Message)} Worker installation and any completed registration/identity remain valid. Correct the service capability/environment and restart the Worker. No installation or authentication is performed automatically.", ex);
+        }
         finally
         {
             TryDelete(outputPath);
@@ -162,7 +190,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             ProcessResult result;
             try
             {
-                result = await runner.RunAsync("codex", args, projectDirectory,
+                result = await runner.RunAsync(Executable, args, projectDirectory,
                     TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }

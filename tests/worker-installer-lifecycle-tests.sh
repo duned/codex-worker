@@ -132,6 +132,12 @@ run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
    $(grep -n '^enable --now' "$LIFECYCLE_ROOT/events" | cut -d: -f1) ]]
 grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
   "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
+# The fake Worker accepts only --help and register: any Codex preflight gate
+# would fail this clean installation instead of leaving registration coherent.
+grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
+grep -q 'do not imply execution readiness' "$LIFECYCLE_ROOT/output"
+grep -q 'not installed or configured automatically' "$LIFECYCLE_ROOT/output"
+[[ -f $LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id.credential ]]
 for initial_state in clean broken; do
   prepare_root "$initial_state"
   if [[ $initial_state == broken ]]; then

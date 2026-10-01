@@ -14,6 +14,19 @@ public static class Program
             return ProcessExitCodes.Success;
         }
         if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
+        if (args is ["--codex-preflight"])
+        {
+            try
+            {
+                await new CodexExecutor(new ProcessRunner(), new CodexSettings { Model = null }).PreflightAsync(CancellationToken.None);
+                return ProcessExitCodes.Success;
+            }
+            catch (Exception ex)
+            {
+                output.InfrastructureFailure(FailureDiagnosticRedactor.Redact(ex.Message));
+                return ProcessExitCodes.StartupFailure;
+            }
+        }
         if (args.Length != 1 || args[0].StartsWith("-", StringComparison.Ordinal))
         {
             output.InfrastructureFailure("Invalid command line arguments.");
@@ -100,7 +113,7 @@ public static class Program
             settings.Validate();
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await new WorkerRegistrationClient().BootstrapAsync(settings, capacity, token, shutdown.Token);
-            Console.WriteLine("Worker registered. Start or restart the Codex Worker service to begin managed operation.");
+            Console.WriteLine("Worker registered. Registration does not imply execution readiness. Start or restart the service to check external execution capabilities.");
             return ProcessExitCodes.Success;
         }
         catch (Exception ex)
@@ -118,6 +131,7 @@ public static class Program
             Console.WriteLine("Usage: codex-worker <worker.yml> | codex-worker register [options]");
             Console.WriteLine("Use 'codex-worker register --help' for registration options and examples.");
             Console.WriteLine("  -h, --help                     Show help without running an operation.");
+            Console.WriteLine("  --codex-preflight              Check Codex execution/authentication without projects or Server access.");
             return;
         }
         Console.WriteLine("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");

@@ -223,6 +223,37 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public async Task MissingCodexDoesNotInvalidateSuccessfulBootstrapOrPersistentIdentity()
+    {
+        using var temporary = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        try
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", Path.Combine(temporary.Path, "absent-codex"));
+            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            using var client = new HttpClient(handler);
+            var identityPath = Path.Combine(temporary.Path, "worker-id");
+            var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
+            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "bootstrap-test-token", CancellationToken.None);
+            var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath);
+            var token = await File.ReadAllTextAsync(identityPath + ".token");
+            var url = await File.ReadAllTextAsync(identityPath + ".server");
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
+                    new CodexExecutor(new ProcessRunner(), new CodexSettings()).PreflightAsync(CancellationToken.None));
+                Assert.Contains("registration/identity remain valid", failure.Message);
+                Assert.DoesNotContain("registration failed", failure.Message);
+                Assert.Equal(identity, await WorkerIdentity.LoadOrCreateAsync(identityPath));
+                Assert.Equal(token, await File.ReadAllTextAsync(identityPath + ".token"));
+                Assert.Equal(url, await File.ReadAllTextAsync(identityPath + ".server"));
+            }
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous); }
+    }
+
+    [Fact]
     public async Task BootstrapCanRetryAfterTheOneTimeTokenWasAlreadyConsumed()
     {
         using var temporary = new TemporaryDirectory();

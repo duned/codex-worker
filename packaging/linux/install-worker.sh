@@ -392,5 +392,8 @@ echo "Codex Worker $version installed in $install_root. Existing binaries are pr
 if [[ $server_was_set == true ]]; then echo "Configured Codex Server URL in $config_root/worker.yml."; fi
 if [[ $capacity_was_set == true ]]; then echo "Configured Worker capacity to $requested_capacity."; fi
 if [[ $register_requested == true ]]; then echo "Worker registration completed."; else echo "Worker registration was not requested."; fi
-if [[ $start_requested == true ]]; then echo "Worker service is enabled and started."; elif [[ $service_was_active == true ]]; then echo "Worker service was active before installation and has been restarted."; else echo "Worker service was not started by this installation."; fi
+if [[ $start_requested == true ]]; then echo "Worker service enable/start request completed."; elif [[ $service_was_active == true ]]; then echo "Worker service was active before installation; its restart request completed."; else echo "Worker service was not started by this installation."; fi
 echo "Add project configuration and required environment values to $config_root/worker.yml and $config_root/worker.env."
+
+echo "Installation/registration do not imply execution readiness. External Git, gh, Codex CLI and service-account authentication are not installed or configured automatically."
+echo "Service start and capability readiness are separate. Check runtime status and diagnostics: systemctl status codex-worker; journalctl -u codex-worker."

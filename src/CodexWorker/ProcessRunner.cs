@@ -27,12 +27,27 @@ public sealed class ProcessRunner
             foreach (var (key, value) in environment)
                 if (value is null) start.Environment.Remove(key); else start.Environment[key] = value;
 
+        if (!Directory.Exists(workingDirectory))
+            throw new InvalidOperationException($"Working directory is missing or inaccessible: '{workingDirectory}'. Check service-account permissions.");
+        if (!OperatingSystem.IsWindows())
+            start.FileName = ResolveExecutable(executable, workingDirectory, start.Environment.TryGetValue("PATH", out var childPath) ? childPath : null);
+
         using var process = new Process { StartInfo = start };
         try
         {
             if (!process.Start()) throw new InvalidOperationException($"Could not start {executable}.");
         }
-        catch (Exception ex) { throw new InvalidOperationException($"Could not start '{executable}': {ex.Message}", ex); }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            var reason = ex.NativeErrorCode switch
+            {
+                2 => "Executable resolved, but launch failed: check its symlink target, shebang interpreter or native loader, and working-directory lifetime",
+                13 => "Permission denied: check executable/interpreter permissions and working-directory traversal access",
+                _ => "Process launch failed"
+            };
+            throw new InvalidOperationException($"{reason}. Executable '{start.FileName}', working directory '{workingDirectory}': {ex.Message}", ex);
+        }
+        catch (Exception ex) { throw new InvalidOperationException($"Could not start '{start.FileName}' in '{workingDirectory}': {ex.Message}", ex); }
 
         var stdout = ReadLimitedAsync(process.StandardOutput, CaptureLimit);
         var stderr = ReadLimitedAsync(process.StandardError, CaptureLimit);
@@ -61,6 +76,45 @@ public sealed class ProcessRunner
             throw;
         }
         return new ProcessResult(process.ExitCode, await stdout, await stderr);
+    }
+
+    internal static string ResolveExecutable(string executable, string workingDirectory, string? path)
+    {
+        if (OperatingSystem.IsWindows()) return executable;
+        if (executable.Contains('/'))
+        {
+            var fullPath = Path.GetFullPath(executable, workingDirectory);
+            if (InspectExecutable(fullPath)) return fullPath;
+            throw new InvalidOperationException($"Executable is not installed at '{fullPath}'. Check the configured executable path.");
+        }
+        string? unusable = null;
+        foreach (var entry in (path ?? "").Split(Path.PathSeparator))
+        {
+            // Service resolution deliberately excludes current-directory and relative PATH entries.
+            if (!Path.IsPathFullyQualified(entry)) continue;
+            var candidate = Path.Combine(entry, executable);
+            if (!InspectExecutable(candidate)) continue;
+            if (!Directory.Exists(candidate) && (File.GetUnixFileMode(candidate) &
+                (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0) return candidate;
+            unusable ??= candidate;
+        }
+        if (unusable is not null)
+            throw new InvalidOperationException($"Executable is present but not executable: '{unusable}'. Check service-account permissions and file type.");
+        var guidance = executable == "codex"
+            ? "Set CODEX_WORKER_CODEX_EXECUTABLE to an absolute service-accessible path in worker.env if needed."
+            : "Configure an absolute service-accessible executable path if needed.";
+        throw new InvalidOperationException($"Executable '{executable}' is not installed/resolvable in the effective service PATH. {guidance} Interactive shell profiles are not consulted.");
+    }
+
+    private static bool InspectExecutable(string path)
+    {
+        try { _ = File.GetAttributes(path); return true; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            throw new InvalidOperationException($"Executable path is inaccessible: '{path}'. Check service-account directory traversal and file permissions.", ex);
+        }
     }
 
     private static async Task<string> ReadLimitedAsync(StreamReader reader, int limit)

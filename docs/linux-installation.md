@@ -99,6 +99,25 @@ Registration and an executable check run as the service account from a staged re
 
 This installs only the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are discovered and can be handled through Server provisioning policy; they are not installer prerequisites.
 
+Installation and registration can succeed on an **unprovisioned** node. They do not imply execution readiness, and missing Codex does not invalidate the persistent Worker identity or registration. The installer never installs Codex or copies authentication material. In the current runtime, global authenticated Codex preflight is still required even with zero projects: failure stops startup before queue access with exit code 2, and the packaged unit prevents an automatic restart loop. The registered Worker may therefore be offline until its external execution capabilities are available. Keeping an unprovisioned Worker online for Server-driven capability discovery, installation and authentication is the v0.16 Provisioning boundary; this change does not add those flows.
+
+The packaged unit uses `HOME=/var/lib/codex-worker`, `TMPDIR=/run/codex-worker` (created by systemd for the service lifetime), and `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`. The protected `/etc/codex-worker/worker.env` can override these values. Unix executable resolution uses only absolute entries in the effective child PATH, without consulting interactive shell profiles or searching private nvm/npm locations. Empty and relative PATH entries do not enable current-directory fallback. For an existing CLI outside that PATH, set `CODEX_WORKER_CODEX_EXECUTABLE=/absolute/path/to/codex` in `worker.env`. This selects the same executable for preflight and tasks on each cold start. Its interpreter/runtime must also be accessible to `codex-worker`. Existing service-account Codex authentication is retained through `CODEX_HOME`; credentials are never copied from an interactive user.
+
+After the external capability/environment has been corrected, restart with `sudo systemctl restart codex-worker`, then inspect `systemctl status codex-worker` and `journalctl -u codex-worker`. The installer uses `Type=exec`: a completed service-start request means the Worker binary launched, and readiness must be checked separately. Preflight diagnostics distinguish a missing executable, an unusable executable or interpreter/loader, directory/access failures, timeout, and a process that exits unsuccessfully. Preflight creates and probes its temporary directory before launch, retains it until the subprocess exits, and cleans it afterward. Failed-process output and unexpected responses are omitted to protect authentication material.
+
+To check Codex with the service account/environment independently of registration or projects:
+
+```sh
+sudo systemd-run --wait --collect --service-type=exec \
+  -p User=codex-worker -p Group=codex-worker \
+  -p WorkingDirectory=/var/lib/codex-worker \
+  -p 'Environment=HOME=/var/lib/codex-worker PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
+  -p EnvironmentFile=/etc/codex-worker/worker.env -p UMask=0077 \
+  -p RuntimeMaxSec=90 /opt/codex-worker/CodexWorker --codex-preflight
+```
+
+This standalone check uses the system temporary directory unless `worker.env` overrides it. If it sets `TMPDIR=/run/codex-worker`, the persistent service must be running so that directory exists. The check performs the existing authenticated Codex request; it does not install or log in to Codex, load projects, or contact the Server.
+
 The installer is repeatable and preserves existing configuration and environment files. It creates the `codex-worker` system account and uses these locations:
 
 | Purpose | Location | Owner |
