@@ -14,7 +14,7 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
-    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null)
+    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default)
 {
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
@@ -188,6 +188,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
                 new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
         }
+        catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
+        {
+            await RecordInfrastructureFailureAsync(execution, "Execution interrupted by Worker shutdown", "uncertain", shutdown: true);
+            throw new WorkerShutdownException(shutdownToken, shutdownError);
+        }
         catch (Exception ex)
         {
             if (ex is CodexExecutionInfrastructureException codexFailure)
@@ -321,18 +326,18 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (reportServer is not null) await reportServer(entry, state, ct);
     }
 
-    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain")
+    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain", bool shutdown = false)
     {
-        if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
+        if (!execution.IsTerminal) execution.TransitionTo(shutdown ? ExecutionState.Cancelled : ExecutionState.InfrastructureFailure);
         reason = FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray());
-        output.Warning($"Execution {execution.ExecutionId} · infrastructure failure · {reason}");
+        output.Warning($"Execution {execution.ExecutionId} · {(shutdown ? "Worker shutdown" : "infrastructure failure")} · {reason}");
         var workspace = git.ExecutionDirectory;
         var checkout = config.Project.Directory;
         if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
             !PathEquals(workspace, checkout) && Directory.Exists(workspace))
             reason += $" Preserved execution workspace: {Path.GetFullPath(workspace)}";
         try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState }, CancellationToken.None); }
-        catch (WorkerInfrastructureException) { /* Preserve the original failure; the existing row remains incomplete. */ }
+        catch (WorkerInfrastructureException) when (!shutdown) { /* Preserve the original failure; the existing row remains incomplete. */ }
     }
 
     private static bool PathEquals(string left, string right) =>

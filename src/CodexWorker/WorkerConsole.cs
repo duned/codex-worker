@@ -197,7 +197,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         {
             var elapsed = _timeProvider.GetElapsedTime(started);
             await StopSpinnerAsync();
-            FinishProgress(label, elapsed, false, false, failureDetail?.Invoke(ex) ?? "interrupted");
+            FinishProgress(label, elapsed, false, false, failureDetail?.Invoke(ex) ?? "interrupted",
+                cancelled: ct.IsCancellationRequested && WorkerShutdown.IsCancellation(ex));
             throw;
         }
 
@@ -231,15 +232,15 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         }
     }
 
-    private void FinishProgress(string label, TimeSpan elapsed, bool success, bool warning, string? detail)
+    private void FinishProgress(string label, TimeSpan elapsed, bool success, bool warning, string? detail, bool cancelled = false)
     {
-        var symbol = warning ? "⚠" : success ? "✓" : "✗";
-        var state = warning ? ConsoleColor.Yellow : success ? ConsoleColor.Green : ConsoleColor.Red;
+        var symbol = cancelled ? "↳" : warning ? "⚠" : success ? "✓" : "✗";
+        var state = cancelled ? ConsoleColor.DarkGray : warning ? ConsoleColor.Yellow : success ? ConsoleColor.Green : ConsoleColor.Red;
         if (_interactive)
         {
             lock (_writer) { _writer.Write("\r\u001b[2K"); _writer.Flush(); }
         }
-        var result = warning ? "blocked" : success ? "OK" : "failed";
+        var result = cancelled ? "cancelled" : warning ? "blocked" : success ? "OK" : "failed";
         WriteLine($"{label} {result} · {FormatDuration(elapsed)}{(string.IsNullOrWhiteSpace(detail) ? "" : " · " + Compact(detail))}", state, symbol);
     }
 

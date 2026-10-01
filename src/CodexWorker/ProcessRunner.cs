@@ -13,6 +13,7 @@ public sealed class ProcessRunner
         TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null,
         string? standardInput = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(executable)
         {
             WorkingDirectory = workingDirectory,
@@ -32,6 +33,14 @@ public sealed class ProcessRunner
         if (!OperatingSystem.IsWindows())
             start.FileName = ResolveExecutable(executable, workingDirectory, start.Environment.TryGetValue("PATH", out var childPath) ? childPath : null);
 
+        // A Linux session gives the entire child tree a stable termination target even if
+        // the parent exits before its descendants. setsid execs directly in this child.
+        var isolatedSession = OperatingSystem.IsLinux() && File.Exists("/usr/bin/setsid") && File.Exists("/bin/kill");
+        if (isolatedSession)
+        {
+            start.ArgumentList.Insert(0, start.FileName);
+            start.FileName = "/usr/bin/setsid";
+        }
         using var process = new Process { StartInfo = start };
         try
         {
@@ -64,10 +73,18 @@ public sealed class ProcessRunner
                 process.StandardInput.Close();
             }
             await process.WaitForExitAsync(linked.Token);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException)
         {
-            try { process.Kill(entireProcessTree: true); } catch { /* process may have exited */ }
+            if (cancellationToken.IsCancellationRequested && isolatedSession)
+            {
+                await SignalSessionAsync(process.Id, "-TERM");
+                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException) { /* Escalate after the bounded graceful interval. */ }
+            }
+            if (isolatedSession) await SignalSessionAsync(process.Id, "-KILL");
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { /* process may have exited */ }
             await process.WaitForExitAsync(CancellationToken.None);
             var output = await stdout;
             var error = await stderr;
@@ -75,7 +92,23 @@ public sealed class ProcessRunner
                 throw new ProcessTimeoutException(executable, timeout!.Value, output, error);
             throw;
         }
-        return new ProcessResult(process.ExitCode, await stdout, await stderr);
+        var standardOutput = await stdout;
+        var standardError = await stderr;
+        if (isolatedSession && process.ExitCode is 126 or 127 &&
+            standardError.StartsWith("setsid: failed to execute", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Executable resolved, but launch failed: check its symlink target, shebang interpreter or native loader, and working-directory lifetime. Permission denied may indicate executable/interpreter permissions. Executable '{executable}', working directory '{workingDirectory}'.");
+        return new ProcessResult(process.ExitCode, standardOutput, standardError);
+    }
+
+    private static async Task SignalSessionAsync(int processId, string signal)
+    {
+        var start = new ProcessStartInfo("/bin/kill") { UseShellExecute = false, RedirectStandardError = true };
+        start.ArgumentList.Add(signal);
+        start.ArgumentList.Add("--");
+        start.ArgumentList.Add($"-{processId}");
+        using var signalProcess = Process.Start(start) ?? throw new InvalidOperationException("Could not terminate child process session.");
+        // Exit 1 simply means the session already exited. Do not expose kill diagnostics.
+        await signalProcess.WaitForExitAsync(CancellationToken.None);
     }
 
     internal static string ResolveExecutable(string executable, string workingDirectory, string? path)
@@ -152,6 +185,21 @@ public sealed class CodexExecutionInfrastructureException(string category, strin
     : WorkerInfrastructureException(message, inner)
 {
     public string Category { get; } = category;
+}
+
+internal sealed class WorkerShutdownException(CancellationToken token, Exception inner)
+    : OperationCanceledException("Execution interrupted by Worker shutdown", inner, token);
+
+internal static class WorkerShutdown
+{
+    // Git/GitHub deliberately wrap cancellations to flag uncertain mutation state.
+    // Recognize only cancellation chains; an unrelated failure during shutdown still fails.
+    internal static bool IsCancellation(Exception error)
+    {
+        while (error is WorkerInfrastructureException && error.InnerException is not null)
+            error = error.InnerException;
+        return error is OperationCanceledException;
+    }
 }
 
 public sealed class WorkerStartupException(string message, Exception? inner = null) : WorkerInfrastructureException(message, inner);

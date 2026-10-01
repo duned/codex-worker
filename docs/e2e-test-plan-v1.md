@@ -437,3 +437,17 @@ Status:
 **Campaign dates:**  
 **Operators:**  
 **Overall notes for V0.14:**
+
+## Restart during active execution
+
+Run on an already-provisioned test Worker, using an Issue with enough implementation work to observe Codex running. Repeat with two active Issues, during validation, and during integration/rebase. Record execution IDs, feature branches, worktree paths and current commits before restarting.
+
+1. Wait for the execution history stage to show implementation (or the stage under test), then deliberately run `sudo systemctl restart codex-worker`.
+2. Inspect `journalctl -u codex-worker` and the service exit status. The old process should log `Worker shutdown requested`, followed by `Execution interrupted by Worker shutdown` for interrupted attempts, and exit successfully. There should be no generic infrastructure failure for this interruption. A genuine concurrent failure should still fail the Worker.
+3. Verify the old Codex process and its descendants have exited. The packaged unit sends SIGTERM to the Worker first (`KillMode=mixed`); the Worker gives each isolated Linux child session up to three seconds to stop before killing remaining descendants. systemd retains a final group kill if the service stop timeout expires.
+4. Verify useful files, commits and branches remain in each interrupted worktree. History records `Cancelled`, the shutdown reason and `uncertain` recovery state, retaining earlier validation/integration metadata. Do not delete the preserved workspace to make restart succeed.
+5. Verify the restarted Worker reaches readiness with fresh scheduler capacity and does not execute a duplicate owned Issue. In standalone mode, the working label is preserved: inspect and reconcile repository/GitHub state before explicitly applying the ready label for a fresh attempt. Shutdown workspaces are uncertain, so they are not automatically resumed or removed by retention cleanup.
+6. In managed mode, wait for the existing ownership lease to expire. Shutdown records must not be replayed as terminal failed Server reports on startup: the last confirmed Server stage determines existing lease-expiry reconciliation. Pre-integration expiry can create a fenced, linked fresh attempt; claiming, integration and reporting uncertainty remains for operator review. Confirm stale ownership cannot report or integrate, and the old workspace remains available for inspection.
+7. For an integration/rebase interruption, reconcile remote refs, local commits, rebase state and Issue reporting before retrying. Do not assume cancellation means that a push or GitHub mutation did not complete.
+
+Local deterministic regressions cover child graceful termination and forced escalation, one/two controlled execution interruptions, validation and wrapped integration/Issue-mutation cancellation, genuine concurrent failures, preserved real-worktree contents, and a fresh retry after restart. They use local processes and repositories, without systemd or external services; record the deployed systemd exercise separately.

@@ -43,7 +43,6 @@ public sealed class WorkerHost
         var discoveredCapabilities = (IReadOnlyList<WorkerCapabilityContract>)Array.Empty<WorkerCapabilityContract>();
         var validatedConfigurations = new HashSet<WorkerConfiguration>(ReferenceEqualityComparer.Instance);
         string? activeProject = null;
-        var safeToStop = true;
         var operational = false;
         var nextManagedConfigurationSync = DateTimeOffset.MinValue;
         var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
@@ -62,6 +61,13 @@ public sealed class WorkerHost
                     status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
             }
         }
+        using var shutdownRegistration = ct.Register(() =>
+        {
+            var status = Volatile.Read(ref heartbeatStatus);
+            Volatile.Write(ref heartbeatStatus, status with { State = "shutting-down" });
+            if (runtimeReadModel is not null) runtimeReadModel.State = "shutting-down";
+            _output.Warning("Worker shutdown requested");
+        });
         try
         {
             if (configuredProjects.Count == 0 && _global.Projects.Ownership != "managed")
@@ -120,6 +126,9 @@ public sealed class WorkerHost
                 {
                     if (entry.ServerExecutionId is null || entry.AssignmentId is null || entry.OwnershipGeneration is null ||
                         entry.State is not ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")) continue;
+                    // A shutdown interruption leaves the last Server stage/lease intact so
+                    // expiry reconciliation can fence retries and retain uncertain integration.
+                    if (IsShutdownInterruption(entry)) continue;
                     var serverState = entry.State == "Completed" ? "Completed" : "Failed";
                     try { await new WorkerRegistrationClient().ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -137,7 +146,7 @@ public sealed class WorkerHost
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
             foreach (var (path, config) in configuredProjects)
             {
-                var project = CreateRuntime(path, config, telegram, history, repositoryGates);
+                var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct);
                 runtimes.Add(project);
                 allRuntimes.Add(project);
             }
@@ -324,7 +333,7 @@ public sealed class WorkerHost
                             replacement.Add(existing);
                         else
                         {
-                            var project = CreateRuntime(path, configuration, telegram, history, repositoryGates);
+                            var project = CreateRuntime(path, configuration, telegram, history, repositoryGates, ct);
                             replacement.Add(project);
                             allRuntimes.Add(project);
                         }
@@ -343,7 +352,6 @@ public sealed class WorkerHost
                 var foundWork = false;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
                 {
-                    safeToStop = false;
                     var registration = new WorkerRegistrationClient();
                     var provisioningPlan = await registration.RequestProvisioningPlanAsync(_global.Server, executionToken);
                     if (provisioningPlan is not null)
@@ -354,10 +362,8 @@ public sealed class WorkerHost
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")
                             throw new WorkerInfrastructureException($"Provisioning plan {provisioningPlan.Id} failed at action '{provisioningResult.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
-                        safeToStop = true;
                         continue;
                     }
-                    safeToStop = true;
                 }
                 while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
@@ -380,11 +386,11 @@ public sealed class WorkerHost
                         activeProject = null;
                         // The Server may accept the assignment before a cancelled request returns.
                         // Treat interruption here as uncertain so shutdown preserves that state for inspection.
-                        safeToStop = false;
+
                         var assignmentResponse = await new WorkerRegistrationClient().RequestAssignmentAsync(_global.Server,
                             !runtimeReadModel.Registry.WorkerDraining, _global.Worker.MaxParallelTasks - active.Count,
                             projectCapacities, executionToken);
-                        if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { safeToStop = true; break; }
+                        if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { break; }
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
                             throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
                         var assignment = assignmentResponse.Assignment!;
@@ -433,7 +439,6 @@ public sealed class WorkerHost
                         Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
                         runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
                         foundWork = true;
-                        safeToStop = false;
                         continue;
                     }
                     var selected = false;
@@ -445,7 +450,6 @@ public sealed class WorkerHost
                         if (projectActive >= project.Configuration.Worker.MaxParallelTasks) continue;
                         if (!runtimeReadModel.Registry.TryReserve(project.Configuration.Project.Name, project.Configuration)) continue;
                         activeProject = project.Configuration.Project.Name;
-                        safeToStop = true; // no Issue has been claimed while queue lookup is in progress
                         Task<IssueProcessingResult?>? execution;
                         try { execution = await project.Worker.ClaimNextAsync(executionToken); }
                         catch (PreExecutionInfrastructureException ex)
@@ -459,7 +463,6 @@ public sealed class WorkerHost
                             continue;
                         }
                         catch { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); throw; }
-                        safeToStop = true;
                         if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }
                         active.Add(execution, project);
                         ReportCapacity();
@@ -468,7 +471,6 @@ public sealed class WorkerHost
                         scheduler.Selected(index);
                         selected = true;
                         foundWork = true;
-                        safeToStop = false;
                         break;
                     }
                     if (!selected) break;
@@ -479,7 +481,6 @@ public sealed class WorkerHost
                     await telegram.NoWorkAsync(ct);
                 if (active.Count > 0)
                 {
-                    safeToStop = false;
                     using var changeWait = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     var activeFinished = Task.WhenAny(active.Keys);
                     var runtimeChanged = runtimeReadModel.Registry.WaitForChangeAsync(runtimeVersion, changeWait.Token);
@@ -490,7 +491,7 @@ public sealed class WorkerHost
                     // Observe on the next pass so all task exceptions follow the common infrastructure path.
                     continue;
                 }
-                safeToStop = true;
+
                 _output.Waiting();
                 idleHeartbeat.EmitIfDue(_timeProvider.GetUtcNow(), _operationalLog);
                 if (!foundWork)
@@ -501,6 +502,7 @@ public sealed class WorkerHost
             }
             Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "draining" });
             // Cancellation has already reached active executions. Await them so no child process is orphaned.
+            if (ct.IsCancellationRequested) ct.ThrowIfCancellationRequested();
             if (active.Count > 0) await Task.WhenAll(active.Keys);
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown();
@@ -508,8 +510,18 @@ public sealed class WorkerHost
             runtimeReadModel.Events.Publish("worker.stopped", "Worker stopped.");
             await telegram.StoppedAsync(runtimes.Count, CancellationToken.None);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested && safeToStop && active.Count == 0)
+        catch (Exception shutdownError) when (ct.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
+            Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "shutting-down" });
+            if (runtimeReadModel is not null)
+            {
+                runtimeReadModel.State = "shutting-down";
+                runtimeReadModel.Events.Publish("worker.shutting-down", "Worker shutdown requested.");
+            }
+            executionCancellation?.Cancel();
+            // Await every execution, including those still validating or integrating. Only
+            // controlled cancellations are expected; concurrent genuine failures still fail the host.
+            await AwaitShutdownExecutionsAsync(active.Keys);
             await _output.StopWaitingAsync(finalizeLine: true);
             _output.Shutdown("Worker stopped.");
             if (runtimeReadModel is not null)
@@ -564,6 +576,25 @@ public sealed class WorkerHost
             foreach (var gate in repositoryGates.Values) gate.Dispose();
             history?.Dispose();
             executionCancellation?.Dispose();
+        }
+    }
+
+    internal static bool IsShutdownInterruption(ExecutionHistoryEntry entry) =>
+        entry.State == "Cancelled" && entry.FailureReason?.StartsWith("Execution interrupted by Worker shutdown", StringComparison.Ordinal) == true;
+
+    internal static async Task AwaitShutdownExecutionsAsync(IEnumerable<Task<IssueProcessingResult?>> executions)
+    {
+        var tasks = executions.Select(ObserveAsync).ToArray();
+        try { await Task.WhenAll(tasks); }
+        catch (Exception error)
+        {
+            throw new WorkerInfrastructureException("Execution failed while Worker shutdown was requested.", error);
+        }
+
+        static async Task ObserveAsync(Task<IssueProcessingResult?> task)
+        {
+            try { await task; }
+            catch (WorkerShutdownException) { /* Explicitly recorded controlled interruption. */ }
         }
     }
 
@@ -702,7 +733,7 @@ public sealed class WorkerHost
     }
 
     private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,
-        ExecutionHistoryStore history, IDictionary<string, SemaphoreSlim> repositoryGates)
+        ExecutionHistoryStore history, IDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken)
     {
         var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
         var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
@@ -711,7 +742,7 @@ public sealed class WorkerHost
         if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
             repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
-            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog), codex, github, repositoryGate);
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken), codex, github, repositoryGate);
     }
 
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,

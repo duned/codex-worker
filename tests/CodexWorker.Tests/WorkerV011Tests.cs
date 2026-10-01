@@ -1047,6 +1047,104 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task ShutdownInterruptsActiveExecutionsAndRestartCanClaimFreshAttempts(int count)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using (var h = new Harness(history: history, gracefulShutdown: true))
+        {
+            h.GitHub.ReadyIssueCount = count;
+            h.GitHub.ReturnDistinctIssues = true;
+            h.GitHub.CancelWhenEmpty = false;
+            h.Codex.BlockRuns = true;
+            var tasks = new List<Task<IssueProcessingResult?>>();
+            for (var index = 0; index < count; index++)
+                tasks.Add((await h.Worker.ClaimNextAsync(h.Cancellation.Token))!);
+            await h.Codex.BlockedRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            h.Cancellation.Cancel();
+            await WorkerHost.AwaitShutdownExecutionsAsync(tasks);
+            Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+            Assert.Equal(count, h.Git.Started);
+            Assert.Equal(0, h.Git.Cleanups);
+            Assert.DoesNotContain("infrastructure failure", h.Output.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Execution interrupted by Worker shutdown", h.Output.ToString());
+            Assert.All(await history.ReadAllAsync(), entry =>
+            {
+                Assert.Equal("Cancelled", entry.State);
+                Assert.Equal("uncertain", entry.RecoveryState);
+                Assert.Contains("Worker shutdown", entry.FailureReason);
+            });
+            Assert.Empty(h.GitHub.Comments);
+        }
+        // An operator reconciles the preserved state and explicitly applies ready. A new
+        // host has fresh capacity and starts another attempt without changing the old row.
+        using var restarted = new Harness(history: history, gracefulShutdown: true);
+        var result = await restarted.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Succeeded, result!.Kind);
+        Assert.Equal(2, result.Report.AttemptNumber);
+        Assert.Equal(count, (await history.ReadAllAsync()).Count(entry => entry.State == "Cancelled"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShutdownDuringValidationOrIntegrationPreservesPassedValidation(bool integration)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, gracefulShutdown: true);
+        if (integration)
+            h.Git.IntegrationException = new WorkerInfrastructureException("Git interrupted", new OperationCanceledException(h.Cancellation.Token));
+        h.Validation.CancelOnCall = 1;
+        h.Validation.OnRun = h.Cancellation.Cancel;
+        if (integration)
+        {
+            // Cancel at the integration operation itself, after the boundary checks.
+            h.Validation.OnRun = null;
+            h.Git.BeforeIntegration = h.Cancellation.Cancel;
+        }
+        var task = (await h.Worker.ClaimNextAsync(h.Cancellation.Token))!;
+        await WorkerHost.AwaitShutdownExecutionsAsync([task]);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Cancelled", entry.State);
+        Assert.Equal("passed", entry.ValidationOutcome);
+        Assert.Equal("uncertain", entry.RecoveryState);
+        Assert.Equal(0, h.Git.Cleanups);
+    }
+
+    [Fact]
+    public async Task ShutdownDuringIssueMutationKeepsUncertainOwnershipForInspection()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, gracefulShutdown: true);
+        h.GitHub.CancelDuringClaim = true;
+        await Assert.ThrowsAsync<WorkerShutdownException>(() => h.Worker.ClaimNextAsync(h.Cancellation.Token));
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.True(WorkerHost.IsShutdownInterruption(entry));
+        Assert.Equal("uncertain", entry.RecoveryState);
+        Assert.Empty(h.GitHub.Comments);
+        Assert.Equal(0, h.Git.Started);
+    }
+
+    [Fact]
+    public async Task UnexpectedCancellationIsNotAControlledShutdownInterruption()
+    {
+        var cancelled = Task.FromCanceled<IssueProcessingResult?>(new CancellationToken(true));
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => WorkerHost.AwaitShutdownExecutionsAsync([cancelled]));
+    }
+
+    [Fact]
+    public async Task GenuineFailureDuringShutdownStillFailsDrain()
+    {
+        var failure = Task.FromException<IssueProcessingResult?>(new WorkerInfrastructureException("repository failed"));
+        var cancelled = Task.FromCanceled<IssueProcessingResult?>(new CancellationToken(true));
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => WorkerHost.AwaitShutdownExecutionsAsync([cancelled, failure]));
+    }
+
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
@@ -1069,7 +1167,7 @@ public sealed class WorkerV011Tests
         private readonly HttpClient? _telegramClient;
         private readonly StubTelegramHandler? _telegramHandler;
 
-        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null)
+        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false)
         {
             Directory.CreateDirectory(_directory);
             var instructions = Path.Combine(_directory, "AGENTS.md");
@@ -1094,7 +1192,7 @@ public sealed class WorkerV011Tests
             }
             else _telegram = new TelegramNotifier(false, output);
             Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history,
-                operationalLog: OperationalMessages.Add);
+                operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default);
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
@@ -1221,6 +1319,8 @@ public sealed class WorkerV011Tests
         public ExecutionHistoryEntry? LastRetryOf { get; private set; }
         public int LastAttemptNumber { get; private set; }
         public GitIntegrationConflictException? IntegrationFailure { get; set; }
+        public Exception? IntegrationException { get; set; }
+        public Action? BeforeIntegration { get; set; }
         public WorkerInfrastructureException? StartFailure { get; set; }
         public int? FailIssueNumber { get; set; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
@@ -1247,6 +1347,8 @@ public sealed class WorkerV011Tests
             Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
         {
             Integrations++;
+            BeforeIntegration?.Invoke();
+            if (IntegrationException is not null) return Task.FromException<GitIntegrationResult>(IntegrationException);
             if (IntegrationFailure is not null) return Task.FromException<GitIntegrationResult>(IntegrationFailure);
             return Task.FromResult(new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
@@ -1272,17 +1374,17 @@ public sealed class WorkerV011Tests
             return PreflightException is null ? Task.CompletedTask : Task.FromException(PreflightException);
         }
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
-            RunCoreAsync(projectDirectory);
+            RunCoreAsync(projectDirectory, ct);
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
-            ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory);
-        private async Task<CodexOutcome> RunCoreAsync(string projectDirectory)
+            ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory, ct);
+        private async Task<CodexOutcome> RunCoreAsync(string projectDirectory, CancellationToken ct)
         {
             InitialDirectory = projectDirectory;
             RunStarted.TrySetResult();
             if (BlockRuns)
             {
                 BlockedRunStarted.TrySetResult();
-                await ReleaseRuns.Task;
+                await ReleaseRuns.Task.WaitAsync(ct);
             }
             if (InitialException is not null) throw InitialException;
             return InitialOutcome;

@@ -2,6 +2,7 @@
   <PropertyGroup>
     <!-- Treat compiler and analyzer diagnostics as errors without promoting NuGet restore warnings. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>0.14.0</Version>
+    <!-- Current development line; command-line Version overrides remain authoritative for releases. -->
+    <Version>0.16.0</Version>
   </PropertyGroup>
 </Project>

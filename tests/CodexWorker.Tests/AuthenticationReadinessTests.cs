@@ -5,6 +5,15 @@ namespace CodexWorker.Tests;
 public sealed class AuthenticationReadinessTests
 {
     [Fact]
+    public async Task GitReadinessPreservesWrappedApplicationCancellation()
+    {
+        var token = new CancellationToken(true);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => GitRemoteAuthenticationProbe.ValidateAsync(
+            (_, _) => Task.FromException(new WorkerInfrastructureException("Git interrupted", new OperationCanceledException(token))),
+            "owner/repo", "feature/", token));
+    }
+
+    [Fact]
     public async Task GitReadinessChecksRemoteReadAndDryRunWriteWithoutMutation()
     {
         var commands = new List<string[]>();

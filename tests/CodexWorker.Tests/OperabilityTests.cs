@@ -7,6 +7,13 @@ namespace CodexWorker.Tests;
 public sealed class OperabilityTests
 {
     [Fact]
+    public void RuntimeVersionMatchesProductVersionMetadata()
+    {
+        var version = System.Diagnostics.FileVersionInfo.GetVersionInfo(typeof(ApplicationVersion).Assembly.Location).ProductVersion!;
+        Assert.Equal(version.Split('+')[0], ApplicationVersion.Display);
+    }
+
+    [Fact]
     public void ServerAndWorkerExposeTheSameReleaseVersion()
     {
         Assert.Equal(ApplicationVersion.Display, CodexServer.ServerApplication.DisplayVersion);
@@ -136,7 +143,8 @@ public sealed class OperabilityTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
         Assert.Contains("\u001b[2K", writer.ToString());
-        Assert.Contains("Codex working failed", writer.ToString());
+        Assert.Contains("Codex working cancelled", writer.ToString());
+        Assert.DoesNotContain("Codex working failed", writer.ToString());
     }
 
     [Fact]

@@ -41,3 +41,5 @@ See the [Linux installation reference](linux-installation.md) for generated mana
 ## Local release tests
 
 Run `bash tests/release-tests.sh` to exercise packaging and release decisions with stubbed GitHub, Git, and .NET commands, without publishing a real release.
+
+The current source development line is `0.16.0` in `Directory.Build.props`. Worker and Server product metadata, banners and version endpoints derive from that shared MSBuild version. Release commands continue to override it with the explicitly selected stable version without editing the source property.

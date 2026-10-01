@@ -818,6 +818,80 @@ public sealed class GitWorktreeTests
         Assert.Equal(0, registry.Get("sample")!.ActiveExecutionCount);
     }
 
+    [Fact]
+    public async Task ShutdownDuringCodexPreservesRealWorkspaceAndRestartUsesFreshCapacity()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../shutdown-history.db"));
+        using var shutdown = new CancellationTokenSource();
+        using var writer = new StringWriter();
+        var console = new WorkerConsole(writer, false);
+        using var telegram = new TelegramNotifier(false, console);
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = new GitSettings { AutoMerge = true },
+            GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done" },
+            Codex = new CodexSettings { InstructionsFile = "unused" },
+            Validation = new ValidationSettings { Commands = ["local-check"] },
+            Worker = new WorkerSettings()
+        };
+        var codex = new ShutdownCodex();
+        ExecutionHistoryEntry interrupted;
+        using (var git = fixture.CreateRepository(config.Git))
+        {
+            await git.InitializeAsync(CancellationToken.None);
+            var worker = new Worker(config, new ConcurrentGitHub(fixture.Issue), git, codex,
+                new ImmediateValidation(), telegram, console, history, shutdownToken: shutdown.Token);
+            var task = (await worker.ClaimNextAsync(shutdown.Token))!;
+            var workspace = await codex.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!File.Exists(Path.Combine(workspace, "child-started"))) await Task.Delay(20, deadline.Token);
+            shutdown.Cancel();
+            await WorkerHost.AwaitShutdownExecutionsAsync([task]);
+            interrupted = Assert.Single(await history.ReadAllAsync());
+            Assert.True(WorkerHost.IsShutdownInterruption(interrupted));
+            Assert.Equal("uncertain", interrupted.RecoveryState);
+            Assert.Contains(workspace, interrupted.FailureReason);
+            Assert.Equal("useful partial implementation", await File.ReadAllTextAsync(Path.Combine(workspace, "partial.txt")));
+            Assert.DoesNotContain("infrastructure failure", writer.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        using var restartedGit = fixture.CreateRepository(config.Git);
+        await restartedGit.InitializeAsync(CancellationToken.None);
+        var restarted = new Worker(config, new ConcurrentGitHub(fixture.Issue), restartedGit,
+            new FileCodex(), new ImmediateValidation(), telegram, console, history);
+        // Ready here represents an explicit operator retry after inspecting uncertain state.
+        var retry = await restarted.ProcessOneAsync(CancellationToken.None);
+        Assert.Equal(IssueOutcomeKind.Succeeded, retry!.Kind);
+        Assert.Equal(2, retry.Report.AttemptNumber);
+        var preserved = Path.Combine(fixture.WorktreeRoot, interrupted.ExecutionId.ToString("N"));
+        Assert.True(Directory.Exists(preserved));
+        Assert.Equal("useful partial implementation", await File.ReadAllTextAsync(Path.Combine(preserved, "partial.txt")));
+        Assert.Equal(interrupted.FeatureBranch, await fixture.GitAt(preserved, "branch", "--show-current"));
+    }
+
+    private sealed class ImmediateValidation : IValidationRunner
+    {
+        public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct) =>
+            Task.FromResult(ValidationResult.Success);
+    }
+
+    private sealed class ShutdownCodex : ICodexExecutor
+    {
+        public TaskCompletionSource<string> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
+        {
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, "partial.txt"), "useful partial implementation", ct);
+            Started.SetResult(projectDirectory);
+            await new ProcessRunner().RunAsync("/bin/sh", ["-c", "touch child-started; sleep 60"], projectDirectory, cancellationToken: ct);
+            throw new InvalidOperationException("The controlled child should be interrupted.");
+        }
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) => throw new InvalidOperationException();
+    }
+
     private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
     {
         private int _number = 16;

@@ -797,6 +797,10 @@ internal static class GitRemoteAuthenticationProbe
             await run(["push", "--dry-run", "--porcelain", "origin", $"HEAD:refs/heads/{probeBranch}"], cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested && WorkerShutdown.IsCancellation(ex))
+        {
+            throw new OperationCanceledException("Git authentication check interrupted by cancellation.", ex, cancellationToken);
+        }
         catch (Exception ex) when (ex is WorkerInfrastructureException or ProcessTimeoutException or InvalidOperationException)
         {
             _ = ex;

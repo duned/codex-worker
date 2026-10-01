@@ -11,7 +11,7 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
-    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null)
+    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default)
 {
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
@@ -37,9 +37,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     /// <summary>Claims the next eligible Issue and returns its independent execution task, if one was claimed.</summary>
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
+        if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
         var recoveryExcluded = new HashSet<int>();
         while (true)
         {
+            if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
             GitHubIssue? recoveryIssue;
             try { recoveryIssue = await github.FindOldestReadyAsync(config.GitHub.IntegrationRecoveryLabel, recoveryExcluded, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
@@ -56,6 +58,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var excluded = new HashSet<int>();
         while (true)
         {
+            if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
             GitHubIssue? issue;
             try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, excluded, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
@@ -69,6 +72,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         var issueKey = issue.Number;
         if (!_activeIssues.TryAdd(issueKey, 0)) return null;
+        WorkerExecution? claimedExecution = null;
         try
         {
             IReadOnlyList<ExecutionHistoryEntry> allHistory = history is null ? [] : await history.ReadAllAsync(ct);
@@ -113,12 +117,19 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                     .Select(entry => entry.AttemptNumber).DefaultIfEmpty(0).Max() + 1,
                 featureBranchOverride: source.FeatureBranch);
             await CreateHistoryAsync(execution, ct);
+            claimedExecution = execution;
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
             _output.IssueStarted(config.Project.Name, issue, execution);
             return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true);
+        }
+        catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
+        {
+            _activeIssues.TryRemove(issueKey, out _);
+            if (claimedExecution is not null) await RecordShutdownAsync(claimedExecution);
+            throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch
         {
@@ -176,7 +187,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
-            await TransitionAsync(execution, ExecutionState.Cancelled, CancellationToken.None);
+            if (shutdownToken.IsCancellationRequested) await RecordShutdownAsync(execution);
+            else await TransitionAsync(execution, ExecutionState.Cancelled, CancellationToken.None);
             _activeIssues.TryRemove(issueKey, out _);
             return null;
         }
@@ -202,6 +214,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             _output.IssueStarted(config.Project.Name, issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, retryOf, issueKey, ct);
+        }
+        catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
+        {
+            await RecordShutdownAsync(execution);
+            throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -258,6 +275,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 ?? CreateEntry(execution, report, null, null);
             await ReportServerAsync(finalEntry, execution.State, CancellationToken.None);
             return result with { Report = report };
+        }
+        catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
+        {
+            await RecordShutdownAsync(execution);
+            throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
@@ -386,7 +408,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken);
         return runner.RunAsync(context, ct);
     }
 
@@ -440,6 +462,17 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         execution.TransitionTo(state);
         try { await SaveHistoryAsync(CreateEntry(execution, report, null, null), ct); }
         catch (WorkerInfrastructureException ex) { _output.Warning($"Execution completed, but its final history details could not be saved: {ex.Message}"); }
+    }
+
+    private async Task RecordShutdownAsync(WorkerExecution execution)
+    {
+        if (execution.IsTerminal) return; // ExecutionRunner already recorded the workspace interruption.
+        execution.TransitionTo(ExecutionState.Cancelled);
+        const string reason = "Execution interrupted by Worker shutdown";
+        _output.Warning($"Execution {execution.ExecutionId} · {reason}");
+        await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = "uncertain" }, CancellationToken.None);
+        // Keep remote ownership and labels unchanged. Restart/lease reconciliation must inspect
+        // uncertain Git/GitHub state before any new attempt; shutdown must not perform remote mutations.
     }
 
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
