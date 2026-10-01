@@ -83,10 +83,32 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
             while (await reader.ReadAsync(token))
             {
                 var item = JsonSerializer.Deserialize<ProvisioningCommand>(reader.GetString(0))!;
+                if (item.Status == ProvisioningCommandStatus.Running && item.DeadlineUtc <= UtcNow)
+                {
+                    // A node only asks for another command after its previous executor has
+                    // returned. The executor enforces this deadline and terminates its child
+                    // process tree before returning, so an expired command can be closed when
+                    // that node reconnects instead of permanently occupying the capability.
+                    var interrupted = item with
+                    {
+                        Status = ProvisioningCommandStatus.Failed,
+                        Diagnostic = ProvisioningDiagnostic.Interrupted,
+                        CompletedAtUtc = UtcNow
+                    };
+                    await reader.DisposeAsync();
+                    await SaveAsync(command, interrupted, token);
+                    break;
+                }
                 if (item.Status == ProvisioningCommandStatus.Pending) { pending = item; break; }
             }
         }
-        if (pending is null) return null;
+        if (pending is null)
+        {
+            // Expiring one operation above may have released the unique active slot. Leave
+            // pending work for the next poll, keeping each claim transaction bounded.
+            await transaction.CommitAsync(token);
+            return null;
+        }
         var now = UtcNow;
         var running = pending with { Status = ProvisioningCommandStatus.Running, Diagnostic = ProvisioningDiagnostic.Executing,
             StartedAtUtc = now, DeadlineUtc = now.AddSeconds(pending.Request.TimeoutSeconds) };
