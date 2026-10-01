@@ -33,6 +33,28 @@ public static class NodeProvisioning
             stale, capabilities, !connected ? "unknown" : worker.Availability == "draining" ? "degraded" : "healthy");
     }
 
+    public static ProvisionableNode WithCommands(ProvisionableNode node, IReadOnlyList<ProvisioningCommand> commands)
+    {
+        var capabilities = node.Capabilities.Select(capability =>
+        {
+            var latest = commands.LastOrDefault(command => command.Request.NodeId == node.Id &&
+                command.Request.CapabilityId == capability.Definition.Id);
+            if (latest is null) return capability;
+            var busy = !ProvisioningCommandProtocol.Terminal(latest.Status);
+            var failed = latest.Status is ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut;
+            if (!busy && !failed) return capability;
+            return capability with
+            {
+                State = capability.State with { Operation = new(busy ? CapabilityOperationState.Running : CapabilityOperationState.Failed,
+                    latest.Request.Action.ToString().ToLowerInvariant(), failed ? "operation-failed" : null) },
+                AvailableActions = busy ? [] : capability.AvailableActions
+            };
+        }).ToArray();
+        return node with { Capabilities = capabilities,
+            ProvisioningReadiness = capabilities.Any(item => item.State.Operation.State == CapabilityOperationState.Running)
+                ? "busy" : node.ProvisioningReadiness };
+    }
+
     private static bool Matches(ProvisioningAction action, string id) =>
         action.Type == "refresh-capabilities" || action.Type == "tool" && action.Name == id ||
         action.Type == "authentication" && (action.Name == id || id == "codex-cli" && action.Name == "codex");

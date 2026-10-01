@@ -376,6 +376,45 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         finally { if (httpClient is null) client.Dispose(); }
     }
 
+    public async Task<bool> ExecuteProvisioningCommandAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.Enabled) return false;
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var client = CreateClient();
+        try
+        {
+            using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/request");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return false;
+            response.EnsureSuccessStatusCode();
+            var command = await response.Content.ReadFromJsonAsync<ProvisioningCommand>(cancellationToken: cancellationToken)
+                ?? throw new InvalidDataException("Empty provisioning command.");
+            if (!ProvisioningCommandProtocol.Valid(command.Request) || command.Request.NodeId != workerId ||
+                !Guid.TryParseExact(command.Id, "N", out _) || command.Status != ProvisioningCommandStatus.Running ||
+                command.StartedAtUtc is null || command.DeadlineUtc is null ||
+                command.DeadlineUtc > command.StartedAtUtc.Value.AddSeconds(command.Request.TimeoutSeconds))
+                throw new InvalidDataException("Invalid provisioning command identity or deadline.");
+            var action = command.Request.Action;
+            var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration;
+            var type = action is ProvisioningCommandAction.Logout or ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
+            var key = $"{type}:{command.Request.CapabilityId}:{action}".ToLowerInvariant();
+            var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+            var permitted = !policy.DeniedActions.Contains(key, StringComparer.OrdinalIgnoreCase) &&
+                (readOnly || policy.Enabled && (type != "authentication" || policy.AllowCredentials) &&
+                    (privileged ? command.Request.AllowElevation && policy.AllowedPrivilegedActions.Contains(key, StringComparer.OrdinalIgnoreCase) : policy.AllowNonPrivileged));
+            var result = await new NodeProvisioningCommandExecutor(provisioningDiscovery ?? ProvisioningDiscovery)
+                .ExecuteAsync(command, permitted, cancellationToken);
+            // A terminal acknowledgement is safe to resend; execution itself is never retried.
+            using var reportRequest = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
+            reportRequest.Content = JsonContent.Create(result);
+            using var reportResponse = await client.SendAsync(reportRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            reportResponse.EnsureSuccessStatusCode();
+            return true;
+        }
+        finally { if (httpClient is null) client.Dispose(); }
+    }
+
     public async Task<ProvisioningPlanContract?> RequestProvisioningPlanAsync(WorkerServerSettings settings, CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return null;

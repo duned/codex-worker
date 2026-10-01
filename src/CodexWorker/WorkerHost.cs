@@ -353,6 +353,8 @@ public sealed class WorkerHost
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
                 {
                     var registration = new WorkerRegistrationClient();
+                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, executionToken))
+                        continue;
                     var provisioningPlan = await registration.RequestProvisioningPlanAsync(_global.Server, executionToken);
                     if (provisioningPlan is not null)
                     {

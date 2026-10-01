@@ -66,7 +66,7 @@ public static class CapabilityCatalog
             (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
             state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" &&
             state.Operation.DiagnosticCode is null or "operation-failed" &&
-            state.Operation.Action is null or "refresh" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision");
+            state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration");
     }
 }
 

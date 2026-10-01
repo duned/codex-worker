@@ -1,0 +1,171 @@
+namespace CodexProvisioning;
+
+using System.Diagnostics;
+using System.Text.Json.Serialization;
+
+[JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandAction>))]
+public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration }
+[JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandStatus>))]
+public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Cancelled, TimedOut }
+[JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
+public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
+
+// No free-form arguments, shell text, credentials, paths or package names cross this boundary.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ProvisioningCommandRequest(string NodeId, string CapabilityId, ProvisioningCommandAction Action,
+    int TimeoutSeconds = 120, bool AllowElevation = false);
+public sealed record ProvisioningCommand(string Id, ProvisioningCommandRequest Request, DateTimeOffset CreatedAtUtc,
+    ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, DateTimeOffset? StartedAtUtc = null,
+    DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic);
+
+public static class ProvisioningCommandProtocol
+{
+    public static bool Valid(ProvisioningCommandRequest? request) => request is not null &&
+        (request.NodeId == "server" || Guid.TryParseExact(request.NodeId, "N", out _)) &&
+        CapabilityCatalog.Definitions.Any(item => item.Id == request.CapabilityId) && Enum.IsDefined(request.Action) &&
+        request.TimeoutSeconds is >= 5 and <= 600;
+
+    public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
+    {
+        ProvisioningCommandAction.Detect => true,
+        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId == "git",
+        ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
+        ProvisioningCommandAction.CheckConfiguration => request.CapabilityId == "git",
+        _ => false
+    };
+
+    public static bool Terminal(ProvisioningCommandStatus status) => status is ProvisioningCommandStatus.Succeeded or
+        ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.Cancelled or ProvisioningCommandStatus.TimedOut;
+
+    public static bool ValidReport(ProvisioningCommandReport? report) => report is not null && (report.Status, report.Diagnostic) switch
+    {
+        (ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing) => true,
+        (ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed) => true,
+        (ProvisioningCommandStatus.Cancelled, ProvisioningDiagnostic.Cancelled) => true,
+        (ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut) => true,
+        (ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported or ProvisioningDiagnostic.Denied or
+            ProvisioningDiagnostic.ProcessFailed or ProvisioningDiagnostic.Interrupted) => true,
+        _ => false
+    };
+}
+
+/// <summary>Product-owned commands only. Output is drained and discarded, never returned or logged.</summary>
+public sealed class NodeProvisioningCommandExecutor
+{
+    private readonly NodeCapabilityDiscovery _discovery;
+    private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<int>> _run;
+    private readonly Func<bool> _supportsApt;
+    private readonly Func<bool> _isRoot;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
+
+    public NodeProvisioningCommandExecutor(NodeCapabilityDiscovery discovery,
+        Func<string, IReadOnlyList<string>, CancellationToken, Task<int>>? run = null,
+        Func<bool>? supportsApt = null, Func<bool>? isRoot = null)
+    {
+        _discovery = discovery;
+        _run = run ?? RunAsync;
+        _supportsApt = supportsApt ?? (() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version"));
+        _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
+    }
+
+    public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommand command, bool permitted,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ProvisioningCommandProtocol.Valid(command.Request) || !ProvisioningCommandProtocol.Supported(command.Request))
+            return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+        if (!permitted) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+        if (command.DeadlineUtc is null) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var remaining = command.DeadlineUtc.Value - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero) return new(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut);
+        timeout.CancelAfter(remaining);
+        var gate = _gates.GetOrAdd(command.Request.CapabilityId, _ => new SemaphoreSlim(1, 1));
+        var acquired = false;
+        try
+        {
+            await gate.WaitAsync(timeout.Token);
+            acquired = true;
+            var request = command.Request;
+            if (request.Action == ProvisioningCommandAction.Detect)
+            {
+                var states = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+                return states.Single(state => state.Id == request.CapabilityId).Health == CapabilityHealth.Error
+                    ? new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed)
+                    : new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
+            }
+            string executable;
+            IReadOnlyList<string> arguments;
+            if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall)
+            {
+                if (!_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+                if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+                executable = _isRoot() ? "/usr/bin/apt-get" : "sudo";
+                var operation = request.Action == ProvisioningCommandAction.Uninstall ? "remove" : "install";
+                arguments = [operation, "-y", "--no-install-recommends", .. request.Action == ProvisioningCommandAction.Update ? new[] { "--only-upgrade" } : Array.Empty<string>(), "git"];
+                if (executable == "sudo") arguments = ["-n", "/usr/bin/apt-get", .. arguments];
+            }
+            else
+            {
+                executable = CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
+                arguments = request.Action switch
+                {
+                    ProvisioningCommandAction.CheckConfiguration => ["config", "--get", "user.name"],
+                    ProvisioningCommandAction.CheckAuthentication when request.CapabilityId == "github-cli" => ["auth", "status"],
+                    ProvisioningCommandAction.CheckAuthentication => ["login", "status"],
+                    ProvisioningCommandAction.Logout when request.CapabilityId == "github-cli" => ["auth", "logout", "--hostname", "github.com"],
+                    _ => ["logout"]
+                };
+            }
+            var exitCode = await _run(executable, arguments, timeout.Token);
+            if (exitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration)
+                exitCode = await _run("git", ["config", "--get", "user.email"], timeout.Token);
+            var observed = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+            if (exitCode == 0 && command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall)
+            {
+                var expected = command.Request.Action == ProvisioningCommandAction.Uninstall ? InstallationState.Missing : InstallationState.Installed;
+                if (observed.Single(state => state.Id == command.Request.CapabilityId).Installation != expected) exitCode = 1;
+            }
+            return exitCode == 0 ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
+                : new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            return cancellationToken.IsCancellationRequested
+                ? new(ProvisioningCommandStatus.Cancelled, ProvisioningDiagnostic.Cancelled)
+                : new(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut);
+        }
+        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+        { return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed); }
+        finally { if (acquired) gate.Release(); }
+    }
+
+    private static async Task<int> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
+    {
+        using var process = new Process { StartInfo = new(executable) { UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
+        foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
+        process.StartInfo.Environment["DEBIAN_FRONTEND"] = "noninteractive";
+        process.Start();
+        process.StandardInput.Close();
+        using var drainCancellation = new CancellationTokenSource();
+        var output = DrainAsync(process.StandardOutput, drainCancellation.Token);
+        var error = DrainAsync(process.StandardError, drainCancellation.Token);
+        try { await process.WaitForExitAsync(token); return process.ExitCode; }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(CancellationToken.None);
+            drainCancellation.CancelAfter(TimeSpan.FromSeconds(3));
+            try { await Task.WhenAll(output, error); }
+            catch (OperationCanceledException) when (drainCancellation.IsCancellationRequested) { }
+        }
+    }
+
+    private static async Task DrainAsync(StreamReader reader, CancellationToken token)
+    {
+        var buffer = new char[1024];
+        while (await reader.ReadAsync(buffer.AsMemory(), token) != 0) { }
+    }
+}

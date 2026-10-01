@@ -17,6 +17,71 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task TypedProvisioningApiRejectsShellFieldsAndRunsKnownLocalAction()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "test-management-token");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "registry.db")),
+                capabilityDiscovery: TestCapabilityDiscovery.Create());
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            var request = new CodexProvisioning.ProvisioningCommandRequest("server", "git", CodexProvisioning.ProvisioningCommandAction.Detect);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/provisioning/commands", request)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
+            using var arbitrary = new StringContent("""
+                {"nodeId":"server","capabilityId":"git","action":"Detect","command":"echo secret"}
+                """, System.Text.Encoding.UTF8, "application/json");
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/v1/provisioning/commands", arbitrary)).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/provisioning/commands",
+                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.Install })).StatusCode);
+            var response = await client.PostAsJsonAsync("/api/v1/provisioning/commands", request);
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            var operation = await response.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
+            Assert.NotNull(operation);
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                operation = await client.GetFromJsonAsync<CodexProvisioning.ProvisioningCommand>($"/api/v1/provisioning/commands/{operation.Id}");
+                Assert.NotNull(operation);
+                if (CodexProvisioning.ProvisioningCommandProtocol.Terminal(operation.Status)) break;
+                await Task.Delay(30);
+            }
+            Assert.Equal(CodexProvisioning.ProvisioningCommandStatus.Succeeded, operation.Status);
+            Assert.NotNull(operation.StartedAtUtc);
+            Assert.NotNull(operation.CompletedAtUtc);
+            Assert.Equal(CodexProvisioning.ProvisioningDiagnostic.Completed, operation.Diagnostic);
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var workerId = Guid.NewGuid().ToString("N");
+            var workerToken = new string('t', 40);
+            await registry.RegisterWorkerAsync(new(2, workerId, "Worker", "1.0", "linux", 1, []));
+            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+            Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId })).StatusCode);
+            await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0", "running", 0, 1, [], []));
+            var workerResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId });
+            Assert.Equal(HttpStatusCode.Created, workerResponse.StatusCode);
+            using var workerClient = new HttpClient { BaseAddress = new Uri(url) };
+            workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", workerToken);
+            var dispatch = await workerClient.PostAsync($"/api/v1/workers/{workerId}/provisioning/commands/request", null);
+            Assert.Equal(HttpStatusCode.OK, dispatch.StatusCode);
+            var dispatched = await dispatch.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
+            Assert.NotNull(dispatched);
+            Assert.Equal(CodexProvisioning.ProvisioningCommandStatus.Running, dispatched.Status);
+            Assert.Equal(workerId, dispatched.Request.NodeId);
+            Assert.Equal(HttpStatusCode.NoContent, (await workerClient.PostAsync($"/api/v1/workers/{workerId}/provisioning/commands/request", null)).StatusCode);
+            var report = new CodexProvisioning.ProvisioningCommandReport(CodexProvisioning.ProvisioningCommandStatus.Succeeded, CodexProvisioning.ProvisioningDiagnostic.Completed);
+            Assert.Equal(HttpStatusCode.Conflict, (await workerClient.PostAsJsonAsync($"/api/v1/workers/{workerId}/provisioning/commands/{operation.Id}/report", report)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await workerClient.PostAsJsonAsync($"/api/v1/workers/server/provisioning/commands/{operation.Id}/report", report)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await workerClient.PostAsJsonAsync($"/api/v1/workers/{workerId}/provisioning/commands/{dispatched.Id}/report", report)).StatusCode);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
+    }
+
+    [Fact]
     public async Task NodeApiUsesCommonInventoryAndRequiresManagementAuthentication()
     {
         using var temporary = new TemporaryDirectory();

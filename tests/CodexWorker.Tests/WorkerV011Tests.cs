@@ -894,10 +894,14 @@ public sealed class WorkerV011Tests
     {
         for (var i = 0; i < 50; i++)
         {
-            if (output.ToString().Contains(value, StringComparison.Ordinal)) return;
+            // WorkerConsole locks this writer while updating the spinner. Snapshot
+            // under the same lock because StringWriter's StringBuilder is not thread-safe.
+            string snapshot;
+            lock (output) snapshot = output.ToString();
+            if (snapshot.Contains(value, StringComparison.Ordinal)) return;
             await Task.Delay(100);
         }
-        Assert.Contains(value, output.ToString());
+        lock (output) Assert.Contains(value, output.ToString());
     }
 
     [Fact]

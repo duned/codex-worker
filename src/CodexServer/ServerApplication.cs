@@ -54,6 +54,9 @@ public static class ServerApplication
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(configuration.ResolveDatabasePath()));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
+        builder.Services.AddSingleton(_ => new ProvisioningCommandStore(configuration.ResolveDatabasePath()));
+        builder.Services.AddSingleton<NodeProvisioningCommandExecutor>();
+        builder.Services.AddHostedService<LocalProvisioningCommandService>();
         builder.Services.AddHostedService<ExecutionLeaseExpirationService>();
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
 
@@ -65,6 +68,7 @@ public static class ServerApplication
         });
         var persistence = app.Services.GetRequiredService<IRegistryStore>();
         await persistence.InitializeAsync(cancellationToken);
+        await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
         await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
         app.Logger.LogInformation("Codex Server {Version} initialized in {RuntimeMode} mode; listening on {ListenUrl}; persistent data directory: {DataDirectory}",
             DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
@@ -84,7 +88,7 @@ public static class ServerApplication
             }
         });
         app.MapGet("/api/v1/nodes", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
-            NodeCapabilityDiscovery discovery, IServerHealthService health) =>
+            NodeCapabilityDiscovery discovery, IServerHealthService health, ProvisioningCommandStore commands) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var nodes = new List<ProvisionableNode>();
@@ -97,13 +101,85 @@ public static class ServerApplication
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
             foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
                 nodes.Add(NodeProvisioning.Describe(worker, plans));
-            return Results.Ok(nodes);
+            var operations = await commands.ListAsync(context.RequestAborted);
+            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, operations)));
         });
         app.MapPost("/api/v1/nodes/server/capabilities/refresh", async (HttpContext context, ServerConfiguration settings,
             NodeCapabilityDiscovery discovery) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             return Results.Ok(await discovery.GetAsync(refresh: true, cancellationToken: context.RequestAborted));
+        });
+        app.MapPost("/api/v1/provisioning/commands", async (ProvisioningCommandRequest request, HttpContext context,
+            ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!ProvisioningCommandProtocol.Valid(request) || !ProvisioningCommandProtocol.Supported(request))
+                return Results.BadRequest(new { error = "Unsupported or invalid provisioning action." });
+            if (request.NodeId != "server")
+            {
+                var worker = await registry.GetWorkerAsync(request.NodeId, context.RequestAborted);
+                if (worker is null) return Results.NotFound();
+                if (worker.Availability == "stale") return Results.Conflict(new { error = "Worker is offline." });
+            }
+            try
+            {
+                var operation = await commands.CreateAsync(request, context.RequestAborted);
+                return Results.Created($"/api/v1/provisioning/commands/{operation.Id}", operation);
+            }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapGet("/api/v1/provisioning/commands", async (HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
+            Authorized(context, settings, management: true) ? Results.Ok(await commands.ListAsync(context.RequestAborted)) : Results.Unauthorized());
+        app.MapGet("/api/v1/provisioning/commands/{id}", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var operation = (await commands.ListAsync(context.RequestAborted)).FirstOrDefault(item => item.Id == id);
+            return operation is null ? Results.NotFound() : Results.Ok(operation);
+        });
+        app.MapPost("/api/v1/provisioning/commands/{id}/cancel", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            try
+            {
+                var operation = await commands.CancelAsync(id, context.RequestAborted);
+                return operation is null ? Results.NotFound() : Results.Ok(operation);
+            }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/provisioning/commands/{id}/reconcile", async (string id, bool nodeQuiescent, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!nodeQuiescent) return Results.BadRequest(new { error = "Verify that the node operation has stopped before reconciliation." });
+            try
+            {
+                var operation = await commands.ReconcileAsync(id, context.RequestAborted);
+                return operation is null ? Results.NotFound() : Results.Ok(operation);
+            }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/workers/{workerId}/provisioning/commands/request", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
+        {
+            if (!await AuthorizedWorkerAsync(context, settings, registry, workerId)) return Results.Unauthorized();
+            var worker = await registry.GetWorkerAsync(workerId, context.RequestAborted);
+            if (worker is null || worker.Availability == "stale") return Results.NoContent();
+            var operation = await commands.ClaimAsync(workerId, context.RequestAborted);
+            return operation is null ? Results.NoContent() : Results.Ok(operation);
+        });
+        app.MapPost("/api/v1/workers/{workerId}/provisioning/commands/{id}/report", async (string workerId, string id,
+            ProvisioningCommandReport report, HttpContext context, ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
+        {
+            if (!await AuthorizedWorkerAsync(context, settings, registry, workerId)) return Results.Unauthorized();
+            if (!Guid.TryParseExact(workerId, "N", out _) || await registry.GetWorkerAsync(workerId, context.RequestAborted) is null)
+                return Results.NotFound();
+            try
+            {
+                var operation = await commands.ReportAsync(id, workerId, report, context.RequestAborted);
+                return operation is null ? Results.NotFound() : Results.Ok(operation);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));

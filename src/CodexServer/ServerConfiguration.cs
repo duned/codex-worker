@@ -8,6 +8,9 @@ public sealed class ServerConfiguration
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "codex-server");
     /// <summary>Optional legacy override for the SQLite file; relative values are resolved inside DataDirectory.</summary>
     public string? DatabasePath { get; set; }
+    // Mutating local provisioning and elevation each require operator opt-in.
+    public bool EnableLocalProvisioning { get; set; }
+    public bool AllowLocalProvisioningElevation { get; set; }
     public int WorkerStaleAfterSeconds { get; set; } = 90;
     public int ExecutionLeaseDurationSeconds { get; set; } = 900;
     public int ExecutionLeaseRenewalIntervalSeconds { get; set; } = 60;
