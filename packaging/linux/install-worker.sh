@@ -92,14 +92,16 @@ if [[ -n $token_file ]]; then
     fail "bootstrap token file must not be accessible to group or other users (use mode 0600)"
   fi
 fi
-if [[ $register_requested == true && -z $token_file && -z ${CODEX_WORKER_BOOTSTRAP_TOKEN:-} && ( ! -r /dev/tty || ! -w /dev/tty ) ]]; then
-  fail "--register requires CODEX_WORKER_BOOTSTRAP_TOKEN, --token-file, or an interactive terminal"
-fi
 if [[ -n $token_file && -n ${CODEX_WORKER_BOOTSTRAP_TOKEN:-} ]]; then
   fail "use only one bootstrap token source: --token-file or CODEX_WORKER_BOOTSTRAP_TOKEN"
 fi
 bootstrap_token=${CODEX_WORKER_BOOTSTRAP_TOKEN:-}
 unset CODEX_WORKER_BOOTSTRAP_TOKEN
+if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    fail "--register requires CODEX_WORKER_BOOTSTRAP_TOKEN or --token-file PATH when no interactive terminal is available"
+  fi
+fi
 
 if [[ ! -r /etc/os-release ]]; then
   fail "cannot identify the operating system (missing /etc/os-release)"
@@ -294,15 +296,20 @@ if [[ $interactive == true ]]; then
     read -r -p "Register Worker now? [Y/n]: " answer </dev/tty
     [[ ${answer,,} != n && ${answer,,} != no ]] && register_requested=true
   fi
-  if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
-    read -r -s -p "Bootstrap token: " bootstrap_token </dev/tty
-    printf '\n' >/dev/tty
-    [[ -n $bootstrap_token ]] || fail "bootstrap token cannot be empty"
-  fi
   if [[ $start_requested == false ]]; then
     read -r -p "Start Worker after installation? [Y/n]: " answer </dev/tty
     [[ ${answer,,} != n && ${answer,,} != no ]] && start_requested=true
   fi
+fi
+
+# A clean interactive install can ask whether to register, while an explicit
+# --register can be used with either a new or existing configuration. Resolve
+# the terminal source after that choice is known, always through the controlling
+# terminal so curl | sudo bash never consumes the script's piped stdin.
+if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
+  IFS= read -r -s -p "Bootstrap token: " bootstrap_token </dev/tty || fail "could not read the bootstrap token from the interactive terminal"
+  printf '\n' >/dev/tty
+  [[ -n $bootstrap_token ]] || fail "bootstrap token cannot be empty"
 fi
 
 if [[ $server_was_set == true || $capacity_was_set == true ]]; then
@@ -360,8 +367,6 @@ if [[ $register_requested == true ]]; then
   token_value=$bootstrap_token
   if [[ -n $token_file ]]; then
     IFS= read -r token_value < "$token_file" || [[ -n $token_value ]] || fail "bootstrap token file is empty"
-  elif [[ -z $bootstrap_token ]]; then
-    fail "registration requires a bootstrap token"
   fi
   [[ -n $token_value ]] || fail "bootstrap token cannot be empty"
   if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$stage_dir/CodexWorker" register \

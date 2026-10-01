@@ -9,6 +9,8 @@ export REAL_INSTALL="$real_install"
 # Run a relocated copy, never the root installer against the host. Production
 # has no test-root override. Only paths, OS/root checks and terminal prompts move.
 prepare_root() {
+  local tty_rewrite='s|/dev/tty|/nonexistent-test-terminal|g'
+  if [[ ${2:-} == tty ]]; then tty_rewrite=''; fi
   export LIFECYCLE_ROOT="$test_dir/$1"
   mkdir -p "$LIFECYCLE_ROOT/opt" "$LIFECYCLE_ROOT/etc/systemd/system" \
     "$LIFECYCLE_ROOT/var/log" "$LIFECYCLE_ROOT/scripts"
@@ -19,7 +21,7 @@ prepare_root() {
     -e "s|/var/log/codex-worker|$LIFECYCLE_ROOT/var/log/codex-worker|g" \
     -e "s|/etc/systemd/system|$LIFECYCLE_ROOT/etc/systemd/system|g" \
     -e "s|/etc/os-release|$LIFECYCLE_ROOT/etc/os-release|g" \
-    -e 's/${EUID} -ne 0/1 -ne 1/g' -e 's|/dev/tty|/nonexistent-test-terminal|g' \
+    -e 's/${EUID} -ne 0/1 -ne 1/g' -e "$tty_rewrite" \
     "$repo_root/packaging/linux/install-worker.sh" > "$LIFECYCLE_ROOT/scripts/install-worker.sh"
   sed -e "s|/opt/codex-worker|$LIFECYCLE_ROOT/opt/codex-worker|g" \
     -e "s|/etc/codex-worker|$LIFECYCLE_ROOT/etc/codex-worker|g" \
@@ -123,6 +125,49 @@ run_install() {
   CODEX_WORKER_BOOTSTRAP_TOKEN=test-token bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" \
     --version 1.2.3 --server https://server.example --register --start > "$LIFECYCLE_ROOT/output" 2>&1
 }
+run_interactive_install() {
+  python3 - "$LIFECYCLE_ROOT/scripts/install-worker.sh" > "$LIFECYCLE_ROOT/output" 2>&1 <<'PY'
+import os
+import pty
+import select
+import signal
+import sys
+import time
+
+pid, terminal = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", sys.argv[1], "--version", "1.2.3", "--server",
+                         "https://server.example", "--capacity", "1", "--register", "--start"], os.environ)
+
+output = bytearray()
+token_sent = False
+deadline = time.monotonic() + 30
+status = None
+while time.monotonic() < deadline:
+    ready, _, _ = select.select([terminal], [], [], 0.1)
+    if ready:
+        try:
+            chunk = os.read(terminal, 4096)
+        except OSError:
+            chunk = b""
+        if not chunk:
+            break
+        output.extend(chunk)
+        if not token_sent and b"Bootstrap token: " in output:
+            os.write(terminal, b"test-token\n")
+            token_sent = True
+    waited, child_status = os.waitpid(pid, os.WNOHANG)
+    if waited:
+        status = child_status
+        break
+if status is None:
+    os.kill(pid, signal.SIGKILL)
+    _, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(output)
+if not token_sent or not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+    raise SystemExit(1)
+PY
+}
 assert_clean_failure() {
   [[ ! -e $LIFECYCLE_ROOT/active && ! -e $LIFECYCLE_ROOT/restarting &&
      ! -e $LIFECYCLE_ROOT/broken && ! -e $LIFECYCLE_ROOT/enabled &&
@@ -161,6 +206,29 @@ for initial_state in clean broken; do
   [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
   [[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id") == "$identity" ]]
 done
+prepare_root noninteractive-token
+if bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 --server https://server.example \
+  --register --start > "$LIFECYCLE_ROOT/output" 2>&1; then
+  echo 'Non-interactive registration without a token source was accepted.' >&2; exit 1
+fi
+grep -q 'CODEX_WORKER_BOOTSTRAP_TOKEN or --token-file PATH' "$LIFECYCLE_ROOT/output"
+! grep -q test-token "$LIFECYCLE_ROOT/output"
+
+prepare_root token-file
+printf 'test-token\n' > "$LIFECYCLE_ROOT/bootstrap-token"
+chmod 0600 "$LIFECYCLE_ROOT/bootstrap-token"
+bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 --server https://server.example \
+  --capacity 1 --register --start --token-file "$LIFECYCLE_ROOT/bootstrap-token" \
+  > "$LIFECYCLE_ROOT/output" 2>&1 || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
+! grep -q test-token "$LIFECYCLE_ROOT/output"
+
+prepare_root interactive-token tty
+run_interactive_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+grep -q 'Bootstrap token:' "$LIFECYCLE_ROOT/output"
+grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
+! grep -q test-token "$LIFECYCLE_ROOT/output"
+
 prepare_root start-failure
 if START_FAIL=true run_install; then echo 'Start failure accepted'; exit 1; fi
 assert_clean_failure
