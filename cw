@@ -27,8 +27,9 @@ Environment overrides:
   CW_DEPLOY_DIR     Local deployment directory (default: ~/apps/codex-worker)
   CW_SERVICE_NAME   systemd service name (default: codex-worker)
 
-cw deploy is a local development deployment. It does not create a product
-release or change the repository product version.
+cw deploy manages a system-level Worker service and requires suitable sudo
+permission for non-interactive systemctl stop/start operations. It does not
+create a product release or change the repository product version.
 HELP
 }
 
@@ -37,6 +38,22 @@ help_hint() { error 'Run ./cw --help for usage.'; }
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || { error "required command is unavailable: $1"; return 1; }
+}
+
+service_mutation() {
+  local action=$1 output
+  if output=$(sudo -n systemctl "$action" "$service_name" 2>&1); then
+    return 0
+  else
+    local result=$?
+    if [[ $output == sudo:* || $output == *"a password is required"* || $output == *"a terminal is required"* || $output == *"not allowed to execute"* ]]; then
+      error "sudo authorization failed for systemctl $action $service_name; allow this non-interactive operation"
+    else
+      output=${output//$'\n'/ }
+      error "systemd $action failed for $service_name${output:+: $output}"
+    fi
+    return "$result"
+  fi
 }
 
 git_value() {
@@ -96,12 +113,14 @@ read_version() {
 deploy_command() {
   need_command dotnet || return 1
   need_command git || return 1
+  need_command sudo || return 1
   need_command systemctl || return 1
   local version commit parent
   stage=''
   backup=''
   failed=''
   was_active=false
+  stopped=false
   swapped=false
   version=$(read_version)
   [[ -n $version ]] || { error 'could not read product version from Directory.Build.props'; return 1; }
@@ -122,12 +141,12 @@ deploy_command() {
         mv -- "$backup" "$deploy_dir" || error "could not restore previous deployment from $backup"
       fi
       if [[ $was_active == true ]]; then
-        systemctl start "$service_name" || error "could not restart previous Worker service"
+        service_mutation start || error "could not restart previous Worker service"
       fi
       error "deployment failed; previous deployment restored when possible${failed:+; failed files preserved at $failed}"
     fi
-    if ((result != 0)) && [[ $swapped != true && $was_active == true ]]; then
-      systemctl start "$service_name" || error 'could not restart Worker after the failed replacement attempt'
+    if ((result != 0)) && [[ $swapped != true && $was_active == true && $stopped == true ]]; then
+      service_mutation start || error 'could not restart Worker after the failed replacement attempt'
     fi
     return "$result"
   }
@@ -142,21 +161,23 @@ deploy_command() {
   }
   printf '%s\n' "$version" > "$stage/publish/VERSION"
   systemctl is-active --quiet "$service_name" && was_active=true
-  if [[ $was_active == true ]]; then systemctl stop "$service_name" || { error 'could not stop active Worker service'; return 1; }; fi
+  if [[ $was_active == true ]]; then
+    service_mutation stop || return 1
+    stopped=true
+  fi
   if [[ -e $deploy_dir ]]; then mv -- "$deploy_dir" "$backup" || { error "could not preserve existing deployment at $deploy_dir"; return 1; }; fi
   if ! mv -- "$stage/publish" "$deploy_dir"; then
     [[ ! -d $backup ]] || mv -- "$backup" "$deploy_dir"
-    if [[ $was_active == true ]]; then systemctl start "$service_name" || true; fi
     error 'could not install staged publish'; return 1
   fi
   swapped=true
-  systemctl start "$service_name" || { error 'could not start Worker service'; return 1; }
+  service_mutation start || return 1
   local healthy=false
   for _ in {1..30}; do
     if systemctl is-active --quiet "$service_name"; then healthy=true; break; fi
     sleep 1
   done
-  [[ $healthy == true ]] || { error 'Worker service did not become active'; return 1; }
+  [[ $healthy == true ]] || { error 'Worker service started but failed active/running verification'; return 1; }
   swapped=false
   trap - EXIT
   rm -rf -- "$stage"

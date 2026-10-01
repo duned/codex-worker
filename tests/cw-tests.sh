@@ -31,16 +31,28 @@ printf '%s\n' "$*" > "$CW_TEST_ROOT/journal.args"
 MOCK
 cat > "$bin/systemctl" <<'MOCK'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CW_TEST_ROOT/systemctl.args"
 case "$1" in
   is-active)
     if [[ ${2:-} == --quiet ]]; then shift; fi
     [[ -f $CW_TEST_ROOT/active ]] && exit 0 || exit 3
     ;;
-  stop) rm -f "$CW_TEST_ROOT/active" ;;
-  start) [[ ! -f $CW_TEST_ROOT/fail-start ]] || exit 1; touch "$CW_TEST_ROOT/active" ;;
+  stop) [[ ! -f $CW_TEST_ROOT/fail-stop ]] || { echo 'Failed to stop service: Access denied' >&2; exit 1; }; rm -f "$CW_TEST_ROOT/active" ;;
+  start) [[ ! -f $CW_TEST_ROOT/fail-start ]] || { echo 'Failed to start service: Access denied' >&2; exit 1; }; touch "$CW_TEST_ROOT/active" ;;
   show) printf '1\n' ;;
   *) exit 0 ;;
 esac
+MOCK
+cat > "$bin/sudo" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CW_TEST_ROOT/sudo.args"
+[[ ${1:-} == -n ]] || { echo 'interactive sudo invocation' >&2; exit 90; }
+shift
+if [[ -f $CW_TEST_ROOT/fail-sudo-stop && ${1:-} == systemctl && ${2:-} == stop ]]; then
+  echo 'sudo: a password is required' >&2
+  exit 1
+fi
+exec "$@"
 MOCK
 cat > "$bin/dotnet" <<'MOCK'
 #!/usr/bin/env bash
@@ -125,9 +137,11 @@ export CW_DEPLOY_DIR="$test_root/apps/worker"
 "$repo_root/cw" --help | grep -Fq 'status, s'
 "$repo_root/cw" -h >/dev/null
 "$repo_root/cw" help >/dev/null
+: > "$test_root/sudo.args"
 "$repo_root/cw" s > "$test_root/status.out"
 grep -Fq 'Repository' "$test_root/status.out"
 grep -Fq 'Worker service (cw-test)' "$test_root/status.out"
+[[ ! -s $test_root/sudo.args ]]
 "$repo_root/cw" p > "$test_root/projects.out"
 grep -Fq 'Alpha' "$test_root/projects.out"
 grep -Fq "$test_root/projects/a.yml" "$test_root/projects.out"
@@ -149,17 +163,42 @@ if "$repo_root/cw" deploy >"$test_root/deploy-fail.out" 2>&1; then
 fi
 grep -Fxq 'old deployment' "$CW_DEPLOY_DIR/old-file"
 rm "$test_root/fail-publish"
+: > "$test_root/systemctl.args"
+: > "$test_root/sudo.args"
+touch "$test_root/active" "$test_root/fail-sudo-stop"
+if "$repo_root/cw" deploy >"$test_root/deploy-sudo-fail.out" 2>&1; then
+  echo 'sudo authorization failure unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'sudo authorization failed' "$test_root/deploy-sudo-fail.out"
+grep -Fxq 'old deployment' "$CW_DEPLOY_DIR/old-file"
+[[ -f $test_root/active ]]
+! grep -Fq 'start cw-test' "$test_root/systemctl.args"
+rm "$test_root/fail-sudo-stop"
+touch "$test_root/fail-stop"
+if "$repo_root/cw" deploy >"$test_root/deploy-stop-fail.out" 2>&1; then
+  echo 'failed service stop unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'systemd stop failed' "$test_root/deploy-stop-fail.out"
+grep -Fxq 'old deployment' "$CW_DEPLOY_DIR/old-file"
+[[ -f $test_root/active ]]
+! grep -Fq 'start cw-test' "$test_root/systemctl.args"
+rm "$test_root/fail-stop"
 "$repo_root/cw" d > "$test_root/deploy.out"
 [[ -x $CW_DEPLOY_DIR/CodexWorker ]]
 [[ -f $CW_DEPLOY_DIR/VERSION ]]
 [[ -f $test_root/active ]]
 grep -Fq 'service is active' "$test_root/deploy.out"
+grep -Fxq -- '-n systemctl stop cw-test' "$test_root/sudo.args"
+grep -Fxq -- '-n systemctl start cw-test' "$test_root/sudo.args"
+! grep -Fq 'interactive sudo invocation' "$test_root/deploy.out"
 printf 'rollback marker\n' > "$CW_DEPLOY_DIR/rollback-marker"
 touch "$test_root/fail-start"
 if "$repo_root/cw" deploy >"$test_root/deploy-start-fail.out" 2>&1; then
   echo 'failed service start unexpectedly succeeded' >&2; exit 1
 fi
 grep -Fxq 'rollback marker' "$CW_DEPLOY_DIR/rollback-marker"
+grep -Fq 'systemd start failed' "$test_root/deploy-start-fail.out"
+grep -Fq 'previous deployment restored' "$test_root/deploy-start-fail.out"
 rm "$test_root/fail-start"
 
 echo 'cw tests passed'
