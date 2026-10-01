@@ -7,14 +7,9 @@ trap 'rm -rf -- "$test_root"' EXIT
 bin="$test_root/bin"
 mkdir -p "$bin" "$test_root/projects" "$test_root/apps"
 export PATH="$bin:$PATH"
-export CW_WORKER_CONFIG="$test_root/worker.yml"
 export CW_DEPLOY_DIR="$test_root/apps/worker"
 export CW_SERVICE_NAME=cw-test
 export CW_TEST_ROOT="$test_root"
-cat > "$CW_WORKER_CONFIG" <<'YAML'
-projects:
-  directory: projects
-YAML
 cat > "$test_root/projects/a.yml" <<'YAML'
 project:
   name: Alpha
@@ -25,9 +20,14 @@ project:
   name: Beta
   repository: b/beta
 YAML
+printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 cat > "$bin/journalctl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CW_TEST_ROOT/journal.args"
+MOCK
+cat > "$bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+cat "$CW_TEST_ROOT/projects.json"
 MOCK
 cat > "$bin/systemctl" <<'MOCK'
 #!/usr/bin/env bash
@@ -92,24 +92,40 @@ git -C "$fixture_repo" config user.email cw-tests@example.invalid
 git -C "$fixture_repo" config user.name cw-tests
 git -C "$fixture_repo" add cw Directory.Build.props src projects
 git -C "$fixture_repo" commit -qm 'fixture repository'
+git -C "$fixture_repo" branch -M main
+feature_branch='feature/16-1-model-node-capabilities-and-provisioning-state-110'
+feature_worktree="$test_root/worktree with spaces"
+detached_worktree="$test_root/detached worktree"
+git -C "$fixture_repo" worktree add -q -b "$feature_branch" "$feature_worktree"
+git -C "$fixture_repo" worktree add -q --detach "$detached_worktree" HEAD
+printf '[{"name":"Fixture","configurationPath":"%s/projects/fixture.yml","projectDirectory":"%s/repo","repository":"owner/fixture","token":"secret-value"},{"name":"Finance","configurationPath":"/srv/worker projects/finance.yml","projectDirectory":"/srv/repos/finance","repository":"owner/finance"}]\n' "$fixture_repo" "$fixture_repo" > "$test_root/projects.json"
 ln -s "$fixture_repo/cw" "$fixture_bin/cw"
-export CW_WORKER_CONFIG="$fixture_repo/worker.yml"
-cat > "$CW_WORKER_CONFIG" <<'YAML'
-projects:
-  directory: projects
-YAML
+export CW_WORKER_CONFIG="$test_root/unreadable-or-missing-worker.yml"
+export CW_WORKER_API_URL=http://127.0.0.1:5080
 export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
 (
   cd "$caller_dir"
   "$fixture_bin/cw" --help | grep -Fq 'status, s'
   "$fixture_bin/cw" status > "$test_root/symlink-status.out"
   grep -Fq "  root     $fixture_repo" "$test_root/symlink-status.out"
+  grep -Fq "  - main" "$test_root/symlink-status.out"
+  grep -Fq "$feature_branch" "$test_root/symlink-status.out"
+  grep -Fq "$(git -C "$fixture_repo" rev-parse --short HEAD)  $fixture_repo" "$test_root/symlink-status.out"
+  grep -Fq "$(git -C "$feature_worktree" rev-parse --short HEAD)  $feature_worktree" "$test_root/symlink-status.out"
+  grep -Fq "(detached)" "$test_root/symlink-status.out"
+  grep -Fq "$(git -C "$detached_worktree" rev-parse --short HEAD)  $detached_worktree" "$test_root/symlink-status.out"
   "$fixture_bin/cw" s > "$test_root/symlink-short-status.out"
   grep -Fq "  root     $fixture_repo" "$test_root/symlink-short-status.out"
   "$fixture_repo/cw" status > "$test_root/direct-status.out"
   grep -Fq "  root     $fixture_repo" "$test_root/direct-status.out"
   "$fixture_bin/cw" projects > "$test_root/symlink-projects.out"
   grep -Fq 'Fixture' "$test_root/symlink-projects.out"
+  grep -Fq "$fixture_repo/projects/fixture.yml" "$test_root/symlink-projects.out"
+  grep -Fq "$fixture_repo/repo" "$test_root/symlink-projects.out"
+  grep -Fq 'Finance' "$test_root/symlink-projects.out"
+  grep -Fq '/srv/worker projects/finance.yml' "$test_root/symlink-projects.out"
+  ! grep -Fq 'unreadable-or-missing-worker.yml' "$test_root/symlink-projects.out"
+  ! grep -Fq 'secret-value' "$test_root/symlink-projects.out"
   "$fixture_bin/cw" p >/dev/null
   "$fixture_bin/cw" log -n 23
   grep -Fxq -- '-u cw-test -n 23 --no-pager' "$test_root/journal.args"
@@ -131,8 +147,8 @@ grep -Fq "not a Codex Worker repository: $test_root/invalid target" "$test_root/
 grep -Fq 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj' "$test_root/invalid.out"
 
 # Restore defaults for the original-checkout command coverage below.
-export CW_WORKER_CONFIG="$test_root/worker.yml"
 export CW_DEPLOY_DIR="$test_root/apps/worker"
+printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 
 "$repo_root/cw" --help | grep -Fq 'status, s'
 "$repo_root/cw" -h >/dev/null

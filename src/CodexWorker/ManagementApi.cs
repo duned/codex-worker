@@ -14,7 +14,7 @@ public sealed record WorkerCapability(string Name, string Kind, string? Version 
 public sealed record WorkerStatus(string Version, string State, long UptimeSeconds, int MaxParallelTasks,
     int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount,
     string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult);
-public sealed record ProjectRuntimeInfo(string Name, string Repository, bool Enabled, string State,
+public sealed record ProjectRuntimeInfo(string Name, string ConfigurationPath, string ProjectDirectory, string Repository, bool Enabled, string State,
     int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount);
 public sealed record ProjectLifecycleRequest(string Action);
 public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool PassedAfterRepair);
@@ -151,7 +151,7 @@ public sealed class WorkerRuntimeReadModel
                 var config = item.Configuration;
                 var state = lifecycle[config.Project.Name];
                 var active = entries.Count(e => string.Equals(e.Project, config.Project.Name, StringComparison.OrdinalIgnoreCase));
-                return new ProjectRuntimeInfo(config.Project.Name, config.Project.Repository, state.State == ProjectLifecycleState.Enabled,
+                return new ProjectRuntimeInfo(config.Project.Name, item.Path, config.Project.Directory, config.Project.Repository, state.State == ProjectLifecycleState.Enabled,
                     state.State.ToString(), config.Worker.MaxParallelTasks, active,
                     Math.Max(0, config.Worker.MaxParallelTasks - active), null);
             }).ToArray();

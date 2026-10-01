@@ -6,7 +6,7 @@ readonly SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
 readonly REPO_ROOT="$SCRIPT_DIR"
 readonly CALLER_DIR="$PWD"
 readonly service_name=${CW_SERVICE_NAME:-codex-worker}
-readonly worker_config=${CW_WORKER_CONFIG:-/etc/codex-worker/worker.yml}
+readonly worker_api_url=${CW_WORKER_API_URL:-http://127.0.0.1:5080}
 readonly deploy_dir=${CW_DEPLOY_DIR:-$HOME/apps/codex-worker}
 
 usage() {
@@ -23,7 +23,7 @@ Developer and local Worker operations:
   help, -h, --help
 
 Environment overrides:
-  CW_WORKER_CONFIG  Global Worker YAML (default: /etc/codex-worker/worker.yml)
+  CW_WORKER_API_URL Worker read API (default: http://127.0.0.1:5080)
   CW_DEPLOY_DIR     Local deployment directory (default: ~/apps/codex-worker)
   CW_SERVICE_NAME   systemd service name (default: codex-worker)
 
@@ -81,7 +81,27 @@ status_command() {
   if [[ -n $(git_value status --porcelain 2>/dev/null) ]]; then dirty=dirty; else dirty=clean; fi
   printf '  worktree %s\n' "$dirty"
   printf '  worktrees\n'
-  git_value worktree list --porcelain 2>/dev/null | awk '/^worktree / { sub(/^worktree /, "  - "); print }'
+  git_value worktree list --porcelain 2>/dev/null | awk '
+    function emit() {
+      if (path == "") return
+      label = branch != "" ? branch : detached ? "(detached)" : "(unknown)"
+      sha = substr(commit, 1, 7)
+      if (length(label) > width) width = length(label)
+      paths[++count] = path
+      labels[count] = label
+      commits[count] = sha
+    }
+    BEGIN { width = 0 }
+    /^worktree / { emit(); path = substr($0, 10); commit = ""; branch = ""; detached = 0; next }
+    /^HEAD / { commit = substr($0, 6); next }
+    /^branch / { branch = substr($0, 8); sub(/^refs\/heads\//, "", branch); next }
+    /^detached$/ { detached = 1; next }
+    /^$/ { emit(); path = ""; next }
+    END {
+      emit()
+      for (i = 1; i <= count; i++) printf "  - %-*s  %s  %s\n", width, labels[i], commits[i], paths[i]
+    }
+  '
 
   printf '\nWorker service (%s)\n' "$service_name"
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -203,52 +223,31 @@ log_command() {
   fi
 }
 
-yaml_scalar() {
-  local file=$1 key=$2
-  awk -v key="$key" '
-    /^[[:space:]]*#/ { next }
-    {
-      line=$0
-      if (match(line, "^[[:space:]]*" key "[[:space:]]*:")) {
-        sub("^[[:space:]]*" key "[[:space:]]*:[[:space:]]*", "", line)
-        sub(/[[:space:]]+#.*$/, "", line)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-        if (line ~ /^".*"$/ || line ~ /^\047.*\047$/) line=substr(line, 2, length(line)-2)
-        print line
-        exit
-      }
-    }
-  ' "$file"
-}
-
 projects_command() {
-  [[ -r $worker_config ]] || { error "Worker configuration is not readable: $worker_config"; return 1; }
-  local config_dir
-  config_dir=$(awk '
-    /^[[:space:]]*#/ { next }
-    /^[[:space:]]*projects:[[:space:]]*(#.*)?$/ { in_projects=1; next }
-    in_projects && /^[^[:space:]#]/ { in_projects=0 }
-    in_projects && /^[[:space:]]+directory[[:space:]]*:/ {
-      sub(/^[[:space:]]+directory[[:space:]]*:[[:space:]]*/, "")
-      sub(/[[:space:]]+#.*$/, "")
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-      if ($0 ~ /^".*"$/ || $0 ~ /^\047.*\047$/) $0=substr($0, 2, length($0)-2)
-      print; exit
-    }
-  ' "$worker_config")
-  [[ -n $config_dir ]] || config_dir=./projects
-  if [[ $config_dir != /* ]]; then config_dir="$(dirname -- "$(realpath -m -- "$worker_config")")/$config_dir"; fi
-  config_dir=$(realpath -m -- "$config_dir")
-  [[ -d $config_dir ]] || { error "project configuration directory does not exist: $config_dir"; return 1; }
+  need_command curl || return 1
+  need_command python3 || return 1
+  local response
+  response=$(curl --fail --silent --show-error "${worker_api_url%/}/api/projects") || {
+    error "cannot read the running Worker's project list from ${worker_api_url%/}/api/projects"
+    return 1
+  }
   printf 'Projects\n'
-  local found=false file name
-  while IFS= read -r -d '' file; do
-    found=true
-    name=$(yaml_scalar "$file" name)
-    [[ -n $name ]] || name=$(basename -- "$file")
-    printf '\n%s\n  config  %s\n' "$name" "$file"
-  done < <(find "$config_dir" -maxdepth 1 -type f \( -iname '*.yml' -o -iname '*.yaml' \) -print0 | sort -z -f)
-  [[ $found == true ]] || printf '\n(no project YAML files found)\n'
+  if ! python3 -c 'import json, sys
+try:
+    projects = json.load(sys.stdin)
+    if not isinstance(projects, list): raise ValueError()
+    for project in projects:
+        name, path = project["name"], project["configurationPath"]
+        directory, repository = project.get("projectDirectory", ""), project.get("repository", "")
+        if not isinstance(name, str) or not name or not isinstance(path, str) or not path: raise ValueError()
+        print(f"\n{name}\n  config  {path}")
+        if directory: print(f"  repo    {directory}")
+        if repository: print(f"  origin  {repository}")
+except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+    sys.exit(1)' <<<"$response"; then
+    error 'Worker project API returned invalid project metadata'
+    return 1
+  fi
 }
 
 main() {
