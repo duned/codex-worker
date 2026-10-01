@@ -1,16 +1,16 @@
-using System.Diagnostics;
-
 namespace CodexWorker;
 
 /// <summary>Small presentation boundary for worker status and bounded in-place progress.</summary>
-public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive = null, TextWriter? errorWriter = null)
+public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive = null, TextWriter? errorWriter = null,
+    TimeProvider? timeProvider = null)
 {
     private readonly TextWriter _writer = writer ?? Console.Out;
     private readonly TextWriter _errorWriter = errorWriter ?? Console.Error;
     private readonly bool _hasExplicitErrorWriter = errorWriter is not null;
     private readonly bool _interactive = interactive ?? !Console.IsOutputRedirected;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private bool _waiting;
-    private Stopwatch? _idleTimer;
+    private long? _idleStarted;
     private CancellationTokenSource? _idleCancellation;
     private Task? _idleSpinner;
     private bool _idleLineDrawn;
@@ -60,11 +60,11 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     {
         if (_waiting) return;
         _waiting = true;
-        _idleTimer = Stopwatch.StartNew();
+        _idleStarted = _timeProvider.GetTimestamp();
         if (_interactive)
         {
             _idleCancellation = new CancellationTokenSource();
-            _idleSpinner = SpinAsync("Waiting for work", _idleTimer, _idleCancellation.Token);
+            _idleSpinner = SpinAsync("Waiting for work", _idleStarted.Value, _idleCancellation.Token);
         }
         else WriteLine("Waiting for work...", null, "○");
     }
@@ -78,10 +78,9 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         {
             try { await _idleSpinner; } catch (OperationCanceledException) { }
         }
-        _idleTimer?.Stop();
-        if (_interactive && _idleTimer is not null)
+        if (_interactive && _idleStarted is not null)
         {
-            var elapsedText = $"⠋ Waiting for work... {FormatElapsedClock(_idleTimer.Elapsed)}";
+            var elapsedText = $"⠋ Waiting for work... {FormatElapsedClock(_timeProvider.GetElapsedTime(_idleStarted.Value))}";
             lock (_writer) { _writer.Write('\r'); _writer.Write(elapsedText); _writer.Flush(); _idleLineDrawn = true; }
         }
         if (_interactive && finalizeLine)
@@ -96,7 +95,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         _idleCancellation?.Dispose();
         _idleCancellation = null;
         _idleSpinner = null;
-        _idleTimer = null;
+        _idleStarted = null;
     }
 
     public void IssueStarted(GitHubIssue issue)
@@ -180,25 +179,25 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         Func<T, bool>? succeeded = null, Func<T, bool>? warning = null,
         Func<Exception, string>? failureDetail = null, CancellationToken ct = default)
     {
-        var timer = Stopwatch.StartNew();
+        var started = _timeProvider.GetTimestamp();
         using var spinnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task? spinner = null;
-        if (_interactive) spinner = SpinAsync(label, timer, spinnerCancellation.Token);
+        if (_interactive) spinner = SpinAsync(label, started, spinnerCancellation.Token);
         else WriteLine($"{label}...", ConsoleColor.Cyan, "▶");
         try
         {
             var result = await operation();
-            timer.Stop();
+            var elapsed = _timeProvider.GetElapsedTime(started);
             await StopSpinnerAsync();
             var ok = succeeded?.Invoke(result) ?? true;
-            FinishProgress(label, timer.Elapsed, ok, warning?.Invoke(result) ?? false, completion?.Invoke(result));
+            FinishProgress(label, elapsed, ok, warning?.Invoke(result) ?? false, completion?.Invoke(result));
             return result;
         }
         catch (Exception ex)
         {
-            timer.Stop();
+            var elapsed = _timeProvider.GetElapsedTime(started);
             await StopSpinnerAsync();
-            FinishProgress(label, timer.Elapsed, false, false, failureDetail?.Invoke(ex) ?? "interrupted");
+            FinishProgress(label, elapsed, false, false, failureDetail?.Invoke(ex) ?? "interrupted");
             throw;
         }
 
@@ -219,16 +218,16 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         return $"{duration.Seconds}s";
     }
 
-    private async Task SpinAsync(string label, Stopwatch timer, CancellationToken ct)
+    private async Task SpinAsync(string label, long started, CancellationToken ct)
     {
         const string frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
         var index = 0;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            var text = $"{frames[index++ % frames.Length]} {label}... {FormatElapsedClock(timer.Elapsed)}";
+            var text = $"{frames[index++ % frames.Length]} {label}... {FormatElapsedClock(_timeProvider.GetElapsedTime(started))}";
             lock (_writer) { _writer.Write('\r'); _writer.Write(text); _writer.Flush(); _idleLineDrawn = true; }
-            await Task.Delay(120, ct);
+            await Task.Delay(TimeSpan.FromMilliseconds(120), _timeProvider, ct);
         }
     }
 

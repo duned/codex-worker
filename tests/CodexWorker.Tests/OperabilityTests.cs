@@ -53,7 +53,6 @@ public sealed class OperabilityTests
         var writer = new StringWriter();
         var console = new WorkerConsole(writer, interactive: true);
         console.Waiting();
-        await Task.Delay(30);
         await console.StopWaitingAsync(finalizeLine: true);
         console.Shutdown();
 
@@ -134,7 +133,7 @@ public sealed class OperabilityTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellation.Token);
             return true;
         }, ct: cancellation.Token);
-        cancellation.CancelAfter(20);
+        cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
         Assert.Contains("\u001b[2K", writer.ToString());
         Assert.Contains("Codex working failed", writer.ToString());
@@ -144,34 +143,44 @@ public sealed class OperabilityTests
     public async Task InteractivePreflightProgressSpinsAndFinalizesWithElapsedTime()
     {
         var writer = new StringWriter();
-        var output = new WorkerConsole(writer, interactive: true);
-        await output.RunProgressAsync("Codex preflight", async () =>
-        {
-            await Task.Delay(240);
-            return true;
-        });
+        var time = new SpinnerTimeProvider();
+        var output = new WorkerConsole(writer, interactive: true, timeProvider: time);
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var progress = output.RunProgressAsync("Codex preflight", () => completion.Task);
+        Assert.Contains("⠋ Codex preflight... 00:00", writer.ToString());
+
+        await time.AdvanceToNextRenderAsync(TimeSpan.FromSeconds(1));
+        Assert.Contains("⠙ Codex preflight... 00:01", writer.ToString());
+        completion.SetResult(true);
+        await progress;
         var text = writer.ToString();
-        Assert.Contains("Codex preflight...", text);
         Assert.Contains("\u001b[2K", text);
-        Assert.Contains("✓ Codex preflight OK ·", text);
+        Assert.Contains("✓ Codex preflight OK · 1s", text);
     }
 
     [Fact]
     public async Task IdleSpinnerShowsElapsedTimeAndRestartsForANewIdlePeriod()
     {
         var writer = new StringWriter();
-        var output = new WorkerConsole(writer, interactive: true);
+        var time = new SpinnerTimeProvider();
+        var output = new WorkerConsole(writer, interactive: true, timeProvider: time);
         output.Waiting();
-        // Let the spinner cross the one-second display boundary without reading
-        // StringWriter concurrently with its background writer task.
-        await Task.Delay(1_300);
+        Assert.Contains("⠋ Waiting for work... 00:00", writer.ToString());
+        await time.AdvanceToNextRenderAsync(TimeSpan.FromSeconds(1));
+        // Check the live render before stopping, so finalization cannot mask a stalled spinner.
+        Assert.Contains("⠙ Waiting for work... 00:01", writer.ToString());
+        output.Waiting();
+        await time.AdvanceToNextRenderAsync(TimeSpan.FromSeconds(1));
+        Assert.Contains("⠹ Waiting for work... 00:02", writer.ToString());
         await output.StopWaitingAsync();
-        Assert.Contains("Waiting for work... 00:01", writer.ToString());
 
         writer.GetStringBuilder().Clear();
         output.Waiting();
+        Assert.Contains("⠋ Waiting for work... 00:00", writer.ToString());
+        Assert.DoesNotContain("00:02", writer.ToString());
+        await time.AdvanceToNextRenderAsync(TimeSpan.FromSeconds(1));
+        Assert.Contains("⠙ Waiting for work... 00:01", writer.ToString());
         await output.StopWaitingAsync();
-        Assert.Contains("Waiting for work... 00:00", writer.ToString());
         Assert.Contains("\u001b[2K", writer.ToString());
     }
 
@@ -315,7 +324,8 @@ public sealed class OperabilityTests
     {
         var writer = new StringWriter();
         var issue = new GitHubIssue(7, "V0.5 · P1 · Introduce execution identity and lifecycle state", "", DateTimeOffset.UtcNow);
-        var console = new WorkerConsole(writer, interactive: false, errorWriter: writer);
+        var console = new WorkerConsole(writer, interactive: false, errorWriter: writer,
+            timeProvider: new SpinnerTimeProvider());
         const string summary = "## Implementation\n\nImplemented X.\n\n## Validation\n\nTests passed.";
 
         console.IssueStarted("Finance", issue);
@@ -460,6 +470,54 @@ public sealed class OperabilityTests
 
         using var body = JsonDocument.Parse(handler.Body!);
         Assert.Equal($"🟡 CW {ApplicationVersion.Display} · SIN TRABAJO", body.RootElement.GetProperty("text").GetString());
+    }
+
+    // Only the spinner's one-shot delays are needed here. Each advance waits for
+    // the next delay registration, which acknowledges that the render has finished.
+    private sealed class SpinnerTimeProvider : TimeProvider
+    {
+        private long _timestamp;
+        private SpinnerTimer? _pending;
+        private TaskCompletionSource? _nextRegistration;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _timestamp;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Assert.Equal(TimeSpan.FromMilliseconds(120), dueTime);
+            Assert.Equal(Timeout.InfiniteTimeSpan, period);
+            var timer = new SpinnerTimer(callback, state);
+            _pending = timer;
+            var registration = _nextRegistration;
+            _nextRegistration = null;
+            registration?.SetResult();
+            return timer;
+        }
+
+        public async Task AdvanceToNextRenderAsync(TimeSpan elapsed)
+        {
+            var pending = _pending ?? throw new InvalidOperationException("No spinner delay is pending.");
+            _nextRegistration = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _timestamp += elapsed.Ticks;
+            var registered = _nextRegistration.Task;
+            pending.Fire();
+            await registered;
+        }
+
+        private sealed class SpinnerTimer(TimerCallback callback, object? state) : ITimer
+        {
+            private bool _disposed;
+            public void Fire()
+            {
+                Assert.False(_disposed);
+                callback(state);
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
+            public void Dispose() => _disposed = true;
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
     }
 
     private sealed class RecordingHandler(HttpStatusCode status) : HttpMessageHandler
