@@ -288,20 +288,30 @@ public static class Program
 
     private static async Task<int> ShowCapabilitiesAsync(WorkerCommandLine commandLine, WorkerConsole output)
     {
-        if (commandLine.Arguments.Count != 0)
+        var arguments = commandLine.Arguments;
+        var hasSubcommand = arguments.Count > 0 && (arguments[0] is "list" or "refresh");
+        var action = hasSubcommand ? arguments[0] : "list";
+        var optionStart = hasSubcommand ? 1 : 0;
+        var json = false;
+        for (var index = optionStart; index < arguments.Count; index++)
         {
-            output.InfrastructureFailure("Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
-            return ProcessExitCodes.StartupFailure;
+            if (arguments[index] == "--json" && !json) json = true;
+            else
+            {
+                output.InfrastructureFailure("Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
+                return ProcessExitCodes.StartupFailure;
+            }
         }
         try
         {
             if (commandLine.ConfigurationPath is not null)
                 _ = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath);
-            var capabilities = await new WorkerCapabilityDiscovery().DiscoverAsync();
-            foreach (var capability in capabilities)
-                Console.WriteLine($"{capability.Type}/{capability.Name}{(capability.Version is null ? "" : $" {capability.Version}")}");
+            var inventory = await CapabilityInventoryReporter.CreateAsync(new CodexProvisioning.NodeCapabilityDiscovery(),
+                refresh: action == "refresh");
+            CapabilityInventoryReporter.Write(inventory, json);
             return ProcessExitCodes.Success;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             output.InfrastructureFailure($"Capability discovery failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
@@ -355,9 +365,11 @@ public static class Program
                 Console.WriteLine("A service restart is required for the change to take effect.");
                 break;
             case "capabilities":
-                Console.WriteLine($"Usage: codex-worker capabilities {configOption}");
-                Console.WriteLine("Discover locally available execution tools and versions.");
-                Console.WriteLine("Example: codex-worker capabilities");
+                Console.WriteLine($"Usage: codex-worker capabilities <list|refresh> {configOption} [--json]");
+                Console.WriteLine("List local capability observations or force a fresh detection.");
+                Console.WriteLine("Missing capabilities are reported as inventory state.");
+                Console.WriteLine("Options: --json  Write the typed capability inventory contract as JSON.");
+                Console.WriteLine("Examples: codex-worker capabilities list; codex-worker capabilities refresh --json");
                 break;
             case "provision":
                 Console.WriteLine($"Usage: codex-worker provision {configOption} <capability-id> <action> [--allow-elevation]");
