@@ -19,6 +19,13 @@ codex-server worker drain <worker-id>
 codex-server worker disable <worker-id>
 codex-server worker revoke-token <worker-id>
 codex-server worker revoke-delivery-token <worker-id>
+codex-server projects list
+codex-server projects show <project-id> --json
+codex-server projects create <definition.json>
+codex-server projects update <project-id> <expected-revision> <definition.json>
+codex-server projects enable <project-id> <expected-revision>
+codex-server projects disable <project-id> <expected-revision>
+codex-server projects delete <project-id> <expected-revision>
 ```
 
 `status` checks the configured local database through the Server health service. It reports control-plane persistence readiness and explicitly reports process health as `not-observed`: a separate offline command cannot establish whether the web process is running. `diagnostics` summarizes registered Worker availability and lifecycle, reported capacity, and project count from the local registry. It does not probe node capabilities, and Worker availability does not establish project eligibility.
@@ -29,7 +36,9 @@ Worker commands use the configured Server database directly and do not contact t
 
 `worker revoke-token` revokes the generated per-Worker API token and records its revocation time. This blocks new calls authenticated by that token. It does not directly delete active assignment leases; without authorization, the Worker cannot renew or report them, so the existing lease expiry and recovery path applies. `worker revoke-delivery-token` revokes the independent Worker credential-delivery token. A Worker API-token revocation does not revoke delivery authorization, and delivery-token revocation blocks future retrieval without revoking the Worker API token or erasing secrets already delivered. The one-use bootstrap authorization is consumed at registration. The shared `CODEX_SERVER_REGISTRATION_TOKEN` remains a server-wide fallback for Worker API endpoints; a per-Worker token revocation does not revoke that fallback. Operators who need to remove all access through the fallback must rotate or remove the Server configuration value.
 
-All four operations inspect local configuration or state only. They do not call `/livez`, `/readyz`, `/health`, or any other loopback endpoint; status and diagnostics JSON include `loopbackContacted: false`. The read-only status and diagnostic queries can run while the Server is active. Restore remains an offline backup operation and requires the Server to be stopped.
+`projects` reads and changes central projects through the same registry contracts used by the management API. It opens only the configured local SQLite database and does not require the web Server to be running. Create/update read a JSON `CentralProjectDefinition` with `name`, `repository`, `defaultBranch`, `description`, and optional structured `requirements`. `list`, `show`, and mutations support `--json`. Every definition update, enable/disable transition, and delete requires the current revision; stale revisions return exit code `3` with the current revision. Disabled projects retain queued requests and active executions: the requests remain queued until re-enabled, and assigned/running executions keep their current lease and may finish. Deletion returns exit code `3` and state counts while queued, assigned, or running requests still refer to the project. Missing projects return exit code `4`.
+
+These operations inspect local configuration or state only. They do not call `/livez`, `/readyz`, `/health`, or any other loopback endpoint; status and diagnostics JSON include `loopbackContacted: false`. The read-only status and diagnostic queries can run while the Server is active. Restore remains an offline backup operation and requires the Server to be stopped.
 
 ## Configuration resolution
 

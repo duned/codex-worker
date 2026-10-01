@@ -29,6 +29,7 @@ public interface IRegistryStore
     Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);
     Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default);
     Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision, CancellationToken cancellationToken = default);
+    Task<CentralProject?> UpdateProjectLifecycleAsync(string projectId, bool enabled, long expectedRevision, CancellationToken cancellationToken = default);
     Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
     Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default);
@@ -133,7 +134,8 @@ public sealed record CentralProjectDefinition(string Name, string Repository, st
     string Description, IReadOnlyList<ProjectRequirement>? Requirements = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
-    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true);
+public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
 [JsonConverter(typeof(ProjectRequirementJsonConverter))]
@@ -263,6 +265,17 @@ public sealed class ProjectRevisionConflictException(long currentRevision)
 {
     public long CurrentRevision { get; } = currentRevision;
 }
+
+public sealed class ProjectInUseException(int queued, int assigned, int running)
+    : Exception($"Project cannot be deleted while it has active execution requests (Queued: {queued}, Assigned: {assigned}, Running: {running}).")
+{
+    public int Queued { get; } = queued;
+    public int Assigned { get; } = assigned;
+    public int Running { get; } = running;
+}
+
+public sealed class ProjectDisabledException(string message = "Project is disabled and cannot accept new execution requests.")
+    : Exception(message);
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
@@ -542,20 +555,29 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT 1 FROM projects WHERE project_id = $projectId;";
-        command.Parameters.AddWithValue("$projectId", request.ProjectId);
-        if (await command.ExecuteScalarAsync(cancellationToken) is null) throw new KeyNotFoundException($"Project '{request.ProjectId}' was not found.");
         var id = Guid.NewGuid().ToString("N");
         var now = _timeProvider.GetUtcNow();
-        command.Parameters.Clear();
-        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) VALUES ($id, $projectId, $workType, $workId, $workReference, $created, 'Queued');";
+        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) SELECT $id, $projectId, $workType, $workId, $workReference, $created, 'Queued' FROM projects WHERE project_id = $projectId AND COALESCE(json_extract(configuration_json, '$.enabled'), 1) = 1;";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$projectId", request.ProjectId);
         command.Parameters.AddWithValue("$workType", request.WorkReference.Type);
         command.Parameters.AddWithValue("$workId", request.WorkReference.Id);
         command.Parameters.AddWithValue("$workReference", JsonSerializer.Serialize(request.WorkReference, ProjectJson));
         command.Parameters.AddWithValue("$created", now.ToString("O"));
-        try { await command.ExecuteNonQueryAsync(cancellationToken); }
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+            {
+                command.Parameters.Clear();
+                command.CommandText = "SELECT configuration_json, created_at_utc FROM projects WHERE project_id = $projectId;";
+                command.Parameters.AddWithValue("$projectId", request.ProjectId);
+                await using var projectReader = await command.ExecuteReaderAsync(cancellationToken);
+                if (!await projectReader.ReadAsync(cancellationToken)) throw new KeyNotFoundException($"Project '{request.ProjectId}' was not found.");
+                var project = ToProject(request.ProjectId, projectReader.GetString(0), projectReader.GetString(1));
+                if (!project.Enabled) throw new ProjectDisabledException();
+                throw new InvalidOperationException("Execution request could not be queued because the project changed concurrently.");
+            }
+        }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new ExecutionRequestConflictException(); }
         return new(id, request.ProjectId, request.WorkReference, now, "Queued", null, null, null);
     }
@@ -636,6 +658,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         foreach (var queuedItem in queued)
         {
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
+                !candidateProject.Enabled ||
                 !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities).IsEligible) continue;
             command.Parameters.Clear();
             command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND assigned_worker_id = $worker AND state = 'Assigned';";
@@ -658,7 +681,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var expires = now.Add(_leaseDuration);
         var assignmentId = Guid.NewGuid().ToString("N");
         command.Parameters.Clear();
-        command.CommandText = "UPDATE execution_requests SET state = 'Assigned', assigned_worker_id = $worker, assigned_at_utc = $now, assignment_id = $assignment WHERE id = $id AND state = 'Queued' AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Enabled');";
+        command.CommandText = "UPDATE execution_requests SET state = 'Assigned', assigned_worker_id = $worker, assigned_at_utc = $now, assignment_id = $assignment WHERE id = $id AND state = 'Queued' AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Enabled') AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = execution_requests.project_id AND COALESCE(json_extract(p.configuration_json, '$.enabled'), 1) = 1);";
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         command.Parameters.AddWithValue("$assignment", assignmentId);
@@ -719,6 +742,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
+        if (!project.Enabled) return "project is disabled";
         var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
         var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
@@ -732,6 +756,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyDictionary<string, CentralProject> projects, IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return [];
+        if (!project.Enabled) return [];
         if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible)) return [];
         if (workers.Count == 0) return WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), []).MissingRequirements;
         return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).MissingRequirements)
@@ -1068,7 +1093,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "UPDATE execution_requests SET state = $next, assigned_worker_id = COALESCE($worker, assigned_worker_id), assigned_at_utc = CASE WHEN $next = 'Assigned' THEN $now ELSE assigned_at_utc END, assignment_id = CASE WHEN $next = 'Assigned' THEN $assignment ELSE assignment_id END, execution_id = COALESCE($executionId, execution_id) WHERE id = $id AND (state = CASE $next WHEN 'Assigned' THEN 'Queued' WHEN 'Running' THEN 'Assigned' WHEN 'Completed' THEN 'Running' WHEN 'Failed' THEN 'Running' ELSE '' END) AND ($next != 'Running' OR ($workerForRun IS NULL AND assigned_worker_id IS NOT NULL) OR assigned_worker_id = $workerForRun);";
+        command.CommandText = "UPDATE execution_requests SET state = $next, assigned_worker_id = COALESCE($worker, assigned_worker_id), assigned_at_utc = CASE WHEN $next = 'Assigned' THEN $now ELSE assigned_at_utc END, assignment_id = CASE WHEN $next = 'Assigned' THEN $assignment ELSE assignment_id END, execution_id = COALESCE($executionId, execution_id) WHERE id = $id AND (state = CASE $next WHEN 'Assigned' THEN 'Queued' WHEN 'Running' THEN 'Assigned' WHEN 'Completed' THEN 'Running' WHEN 'Failed' THEN 'Running' ELSE '' END) AND ($next != 'Running' OR ($workerForRun IS NULL AND assigned_worker_id IS NOT NULL) OR assigned_worker_id = $workerForRun) AND ($next != 'Assigned' OR EXISTS (SELECT 1 FROM projects p WHERE p.project_id = execution_requests.project_id AND COALESCE(json_extract(p.configuration_json, '$.enabled'), 1) = 1));";
         command.Parameters.AddWithValue("$next", transition.State);
         command.Parameters.AddWithValue("$worker", (object?)transition.AssignedWorkerId ?? DBNull.Value);
         command.Parameters.AddWithValue("$workerForRun", (object?)transition.AssignedWorkerId ?? DBNull.Value);
@@ -1080,9 +1105,13 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         {
             await using var exists = connection.CreateCommand();
             exists.Transaction = (SqliteTransaction)transaction;
-            exists.CommandText = "SELECT 1 FROM execution_requests WHERE id = $id;";
+            exists.CommandText = "SELECT r.state, p.project_id, COALESCE(json_extract(p.configuration_json, '$.enabled'), 1) FROM execution_requests r LEFT JOIN projects p ON p.project_id = r.project_id WHERE r.id = $id;";
             exists.Parameters.AddWithValue("$id", executionRequestId);
-            if (await exists.ExecuteScalarAsync(cancellationToken) is null) return null;
+            await using var existsReader = await exists.ExecuteReaderAsync(cancellationToken);
+            if (!await existsReader.ReadAsync(cancellationToken)) return null;
+            if (transition.State == "Assigned" && existsReader.GetString(0) == "Queued" &&
+                !existsReader.IsDBNull(1) && existsReader.GetInt32(2) == 0)
+                throw new ProjectDisabledException("Project is disabled and cannot receive new assignments.");
             throw new ExecutionRequestTransitionException();
         }
         if (transition.State == "Assigned")
@@ -1206,18 +1235,77 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return null;
     }
 
-    public async Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default)
+    public async Task<CentralProject?> UpdateProjectLifecycleAsync(string projectId, bool enabled, long expectedRevision,
+        CancellationToken cancellationToken = default)
     {
+        if (expectedRevision < 1) throw new InvalidDataException("expectedRevision must be positive.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        var now = _timeProvider.GetUtcNow();
         await using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM projects WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $revision;";
+        command.CommandText = "UPDATE projects SET configuration_json = json_set(configuration_json, '$.enabled', json(CASE WHEN $enabled THEN 'true' ELSE 'false' END), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        command.Parameters.AddWithValue("$enabled", enabled ? 1 : 0);
+        command.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
+        command.Parameters.AddWithValue("$updated", now.ToString("O"));
         command.Parameters.AddWithValue("$id", projectId);
-        command.Parameters.AddWithValue("$revision", expectedRevision);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) == 1) return true;
+        command.Parameters.AddWithValue("$expectedRevision", expectedRevision);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 1)
+            return await GetProjectAsync(projectId, cancellationToken);
         var current = await GetProjectAsync(projectId, cancellationToken);
         if (current is not null) throw new ProjectRevisionConflictException(current.Revision);
-        return false;
+        return null;
+    }
+
+    public async Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default)
+    {
+        if (expectedRevision < 1) throw new InvalidDataException("expectedRevision must be positive.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "DELETE FROM projects WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $revision AND NOT EXISTS (SELECT 1 FROM execution_requests r WHERE r.project_id = projects.project_id AND r.state IN ('Queued', 'Assigned', 'Running'));";
+        command.Parameters.AddWithValue("$id", projectId);
+        command.Parameters.AddWithValue("$revision", expectedRevision);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 1)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = "SELECT configuration_json, created_at_utc FROM projects WHERE project_id = $id;";
+        command.Parameters.AddWithValue("$id", projectId);
+        await using var projectReader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await projectReader.ReadAsync(cancellationToken))
+        {
+            await projectReader.DisposeAsync();
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+        var current = ToProject(projectId, projectReader.GetString(0), projectReader.GetString(1));
+        await projectReader.DisposeAsync();
+        if (current.Revision != expectedRevision)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            throw new ProjectRevisionConflictException(current.Revision);
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = "SELECT state, COUNT(*) FROM execution_requests WHERE project_id = $id AND state IN ('Queued', 'Assigned', 'Running') GROUP BY state;";
+        command.Parameters.AddWithValue("$id", projectId);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        await using (var executionsReader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await executionsReader.ReadAsync(cancellationToken))
+                counts.Add(executionsReader.GetString(0), executionsReader.GetInt32(1));
+        }
+        await transaction.CommitAsync(cancellationToken);
+        var queued = counts.GetValueOrDefault("Queued");
+        var assigned = counts.GetValueOrDefault("Assigned");
+        var running = counts.GetValueOrDefault("Running");
+        if (queued + assigned + running > 0) throw new ProjectInUseException(queued, assigned, running);
+        throw new InvalidOperationException("Project deletion could not be completed because its registry state changed concurrently.");
     }
 
     private static CentralProject ToProject(string id, string json, string created) =>

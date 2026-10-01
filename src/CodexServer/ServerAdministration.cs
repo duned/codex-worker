@@ -121,6 +121,18 @@ public interface IServerAdministrationServiceFactory
     IServerAdministrationService Create(ServerConfiguration configuration);
 }
 
+public interface IServerProjectAdministrationService
+{
+    Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
+    Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);
+    Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default);
+    Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision,
+        CancellationToken cancellationToken = default);
+    Task<CentralProject?> UpdateProjectLifecycleAsync(string projectId, bool enabled, long expectedRevision,
+        CancellationToken cancellationToken = default);
+    Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
+}
+
 public sealed class LocalServerAdministrationServiceFactory : IServerAdministrationServiceFactory
 {
     public IServerAdministrationService Create(ServerConfiguration configuration)
@@ -135,7 +147,7 @@ public sealed class LocalServerAdministrationServiceFactory : IServerAdministrat
 
 /// <summary>Reads local Server state through the existing registry and health service contracts.</summary>
 public sealed class LocalServerAdministrationService(ServerConfiguration configuration, IRegistryStore registry,
-    IServerHealthService healthService, TimeProvider? timeProvider = null) : IServerAdministrationService
+    IServerHealthService healthService, TimeProvider? timeProvider = null) : IServerAdministrationService, IServerProjectAdministrationService
 {
     private const string LocalStatusDiagnostic = "The configured Server database is unavailable or not initialized.";
 
@@ -176,6 +188,51 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
              "Worker availability does not establish node capability readiness or project eligibility."], null);
     }
 
+    public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.GetProjectsAsync(cancellationToken);
+    }
+
+    public async Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.GetProjectAsync(projectId, cancellationToken);
+    }
+
+    public async Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.CreateProjectAsync(definition, cancellationToken);
+    }
+
+    public async Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.UpdateProjectAsync(projectId, definition, expectedRevision, cancellationToken);
+    }
+
+    public async Task<CentralProject?> UpdateProjectLifecycleAsync(string projectId, bool enabled, long expectedRevision,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.UpdateProjectLifecycleAsync(projectId, enabled, expectedRevision, cancellationToken);
+    }
+
+    public async Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.RemoveProjectAsync(projectId, expectedRevision, cancellationToken);
+    }
+
+    private async Task EnsurePersistenceAvailableAsync(CancellationToken cancellationToken)
+    {
+        var status = await GetStatusAsync(cancellationToken);
+        if (!status.PersistenceAvailable)
+            throw new IOException(status.Diagnostic ?? LocalStatusDiagnostic);
+    }
+
     private ServerAdministrationStatusDocument CreateStatus(bool persistenceAvailable, string? diagnostic)
     {
         var readiness = persistenceAvailable ? "ready" : "not-ready";
@@ -189,6 +246,8 @@ public static class ServerAdministrationExitCodes
     public const int Success = 0;
     public const int OperationalFailure = 1;
     public const int InvalidArguments = 2;
+    public const int Conflict = 3;
+    public const int NotFound = 4;
     public const int Canceled = 130;
 }
 
@@ -207,6 +266,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             return InvalidArguments("Missing Server administration command. Run 'codex-server --help' for usage.");
 
         var command = arguments[0];
+        if (command == "projects") return await RunProjectsAsync(arguments, cancellationToken);
         var configurationCommand = command == "config";
         var operation = configurationCommand && arguments.Count > 1 ? arguments[1] : command;
         var optionStart = configurationCommand ? 2 : 1;
@@ -261,6 +321,228 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             _error.WriteLine("Local Server administration failed. Check the configured data directory, database, and file permissions.");
             return ServerAdministrationExitCodes.OperationalFailure;
         }
+    }
+
+    private async Task<int> RunProjectsAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        const string usage = "Usage: codex-server projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]";
+        if (arguments.Count == 2 && arguments[1] == "--help")
+        {
+            _output.WriteLine(usage);
+            _output.WriteLine("Create and update read a CentralProjectDefinition JSON file. Mutations require the current project revision.");
+            return ServerAdministrationExitCodes.Success;
+        }
+        if (arguments.Count < 2)
+            return InvalidArguments(usage);
+
+        var operation = arguments[1];
+        var expectedArguments = operation switch
+        {
+            "list" => 0,
+            "show" => 1,
+            "create" => 1,
+            "update" => 3,
+            "enable" or "disable" or "delete" => 2,
+            _ => -1
+        };
+        if (expectedArguments < 0 || !TryParseProjectOptions(arguments, 2, out var positionals, out var json, out var configurationArguments) ||
+            positionals.Count != expectedArguments)
+            return InvalidArguments(usage);
+        if (operation is "update" or "enable" or "disable" or "delete")
+        {
+            if (!long.TryParse(positionals[1], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var revision) || revision < 1)
+                return InvalidArguments("Project mutations require a positive expected revision.");
+        }
+
+        var inspected = configurationService.Inspect(configurationArguments);
+        if (!inspected.Document.IsValid || inspected.Configuration is null)
+        {
+            WriteConfigurationFailure(inspected.Document, json);
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+
+        try
+        {
+            if (serviceFactory.Create(inspected.Configuration) is not IServerProjectAdministrationService projects)
+            {
+                _error.WriteLine("Local project administration is unavailable through the configured Server service.");
+                return ServerAdministrationExitCodes.OperationalFailure;
+            }
+
+            switch (operation)
+            {
+                case "list":
+                    var all = await projects.GetProjectsAsync(cancellationToken);
+                    WriteProjects(all, json);
+                    break;
+                case "show":
+                    var found = await projects.GetProjectAsync(positionals[0], cancellationToken);
+                    if (found is null) return ProjectNotFound(positionals[0]);
+                    WriteProject(found, json);
+                    break;
+                case "create":
+                    var created = await projects.CreateProjectAsync(await ReadProjectDefinitionAsync(positionals[0], cancellationToken), cancellationToken);
+                    WriteProject(created, json);
+                    break;
+                case "update":
+                    var updated = await projects.UpdateProjectAsync(positionals[0], await ReadProjectDefinitionAsync(positionals[2], cancellationToken),
+                        ParseRevision(positionals[1]), cancellationToken);
+                    if (updated is null) return ProjectNotFound(positionals[0]);
+                    WriteProject(updated, json);
+                    break;
+                case "enable":
+                case "disable":
+                    var lifecycle = await projects.UpdateProjectLifecycleAsync(positionals[0], operation == "enable",
+                        ParseRevision(positionals[1]), cancellationToken);
+                    if (lifecycle is null) return ProjectNotFound(positionals[0]);
+                    WriteProject(lifecycle, json);
+                    break;
+                case "delete":
+                    if (!await projects.RemoveProjectAsync(positionals[0], ParseRevision(positionals[1]), cancellationToken))
+                        return ProjectNotFound(positionals[0]);
+                    _output.WriteLine(json ? "{\"deleted\":true}" : "Project deleted.");
+                    break;
+                default:
+                    return InvalidArguments(usage);
+            }
+            return ServerAdministrationExitCodes.Success;
+        }
+        catch (OperationCanceledException) { return ServerAdministrationExitCodes.Canceled; }
+        catch (ProjectRevisionConflictException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (ProjectInUseException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (InvalidDataException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (JsonException)
+        {
+            _error.WriteLine("Project definition file is not valid CentralProjectDefinition JSON.");
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            _error.WriteLine("Project definition file could not be found.");
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (KeyNotFoundException)
+        {
+            _error.WriteLine("Project was not found.");
+            return ServerAdministrationExitCodes.NotFound;
+        }
+        catch (InvalidOperationException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            _error.WriteLine("Local project administration failed. Check the configured Server database, definition file, and file permissions.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+    }
+
+    private async Task<CentralProjectDefinition> ReadProjectDefinitionAsync(string path, CancellationToken cancellationToken)
+    {
+        var json = await File.ReadAllTextAsync(path, cancellationToken);
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
+        };
+        return JsonSerializer.Deserialize<CentralProjectDefinition>(json, options)
+            ?? throw new InvalidDataException("Project definition file must contain a JSON object.");
+    }
+
+    private void WriteProjects(IReadOnlyList<CentralProject> projects, bool json)
+    {
+        if (json)
+        {
+            _output.WriteLine(JsonSerializer.Serialize(projects, JsonOptions));
+            return;
+        }
+        if (projects.Count == 0)
+        {
+            _output.WriteLine("No central projects are registered.");
+            return;
+        }
+        foreach (var project in projects)
+            _output.WriteLine($"{project.Id}\t{(project.Enabled ? "enabled" : "disabled")}\trevision {project.Revision}\t{project.Name}\t{project.Repository}");
+    }
+
+    private void WriteProject(CentralProject project, bool json)
+    {
+        if (json)
+        {
+            _output.WriteLine(JsonSerializer.Serialize(project, JsonOptions));
+            return;
+        }
+        _output.WriteLine($"Project: {project.Name} ({project.Id})");
+        _output.WriteLine($"Lifecycle: {(project.Enabled ? "enabled" : "disabled")}");
+        _output.WriteLine($"Revision: {project.Revision}");
+        _output.WriteLine($"Repository: {project.Repository}");
+        _output.WriteLine($"Default branch: {project.DefaultBranch}");
+        _output.WriteLine($"Description: {project.Description}");
+        _output.WriteLine("Requirements: " + (project.Requirements.Count == 0
+            ? "none"
+            : string.Join(", ", project.Requirements.Select(requirement => $"{requirement.Type}:{requirement.Name}{(requirement.Version is null ? "" : " " + requirement.Version)}"))));
+    }
+
+    private int ProjectNotFound(string projectId)
+    {
+        _error.WriteLine($"Project '{ServerAdministrationRedaction.Redact(projectId)}' was not found.");
+        return ServerAdministrationExitCodes.NotFound;
+    }
+
+    private static long ParseRevision(string value) => long.Parse(value, System.Globalization.NumberStyles.None,
+        System.Globalization.CultureInfo.InvariantCulture);
+
+    private static bool TryParseProjectOptions(IReadOnlyList<string> arguments, int start,
+        out IReadOnlyList<string> positionals, out bool json, out IReadOnlyList<string> configurationArguments)
+    {
+        var values = new List<string>();
+        var configuration = new List<string>();
+        json = false;
+        for (var index = start; index < arguments.Count; index++)
+        {
+            var argument = arguments[index];
+            if (argument == "--json" && !json)
+            {
+                json = true;
+                continue;
+            }
+            if (IsConfigurationOption(argument))
+            {
+                configuration.Add(argument);
+                if (!argument.Contains('=') && index + 1 < arguments.Count &&
+                    !arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+                    configuration.Add(arguments[++index]);
+                else if (!argument.Contains('='))
+                    return Fail(out positionals, out configurationArguments);
+                continue;
+            }
+            if (argument.StartsWith("--", StringComparison.Ordinal))
+                return Fail(out positionals, out configurationArguments);
+            values.Add(argument);
+        }
+        positionals = values;
+        configurationArguments = configuration;
+        return true;
+    }
+
+    private static bool Fail(out IReadOnlyList<string> positionals, out IReadOnlyList<string> configurationArguments)
+    {
+        positionals = [];
+        configurationArguments = [];
+        return false;
     }
 
     private int RunConfiguration(string operation, IReadOnlyList<string> configurationArguments, bool json)

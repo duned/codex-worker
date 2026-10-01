@@ -139,6 +139,88 @@ public sealed class ServerAdministrationTests
             ["status", $"--Server:DataDirectory={temporary.Path}"], new CancellationToken(canceled: true)));
     }
 
+    [Fact]
+    public async Task ProjectsCliUsesCentralContractsForCrudLifecycleAndConflictDiagnostics()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "server.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var definitionPath = Path.Combine(temporary.Path, "project.json");
+        await File.WriteAllTextAsync(definitionPath, JsonSerializer.Serialize(new CentralProjectDefinition(
+            "Cli Project", "team/cli-project", "main", "Created locally", [new("runtime", "dotnet", ">=10.0")])));
+        var updatePath = Path.Combine(temporary.Path, "project-update.json");
+        await File.WriteAllTextAsync(updatePath, JsonSerializer.Serialize(new CentralProjectDefinition(
+            "Cli Project", "team/cli-project", "main", "Updated locally", [new("runtime", "dotnet", ">=10.0")])));
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(),
+            new LocalServerAdministrationServiceFactory(), output, error);
+        string[] options = [$"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}"];
+
+        var createCode = await cli.RunAsync(["projects", "create", definitionPath, "--json", .. options]);
+        using var createdJson = JsonDocument.Parse(output.ToString());
+        var createdId = createdJson.RootElement.GetProperty("id").GetString()!;
+        Assert.Equal(ServerAdministrationExitCodes.Success, createCode);
+        Assert.True(createdJson.RootElement.GetProperty("enabled").GetBoolean());
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "update", createdId, "1", updatePath, "--json", .. options]));
+        using var updatedJson = JsonDocument.Parse(output.ToString());
+        Assert.Equal(2, updatedJson.RootElement.GetProperty("revision").GetInt64());
+        output.GetStringBuilder().Clear();
+
+        await registry.EnqueueExecutionAsync(new EnqueueExecutionRequest(createdId, new WorkReference("issue", "55")));
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "disable", createdId, "2", "--json", .. options]));
+        using var disabledJson = JsonDocument.Parse(output.ToString());
+        Assert.False(disabledJson.RootElement.GetProperty("enabled").GetBoolean());
+        Assert.Equal(3, disabledJson.RootElement.GetProperty("revision").GetInt64());
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Conflict,
+            await cli.RunAsync(["projects", "delete", createdId, "3", .. options]));
+        Assert.Contains("Queued: 1", error.ToString(), StringComparison.Ordinal);
+        error.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Conflict,
+            await cli.RunAsync(["projects", "enable", createdId, "2", .. options]));
+        Assert.Contains("current revision is 3", error.ToString(), StringComparison.Ordinal);
+        error.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "enable", createdId, "3", "--json", .. options]));
+        using var enabledJson = JsonDocument.Parse(output.ToString());
+        Assert.True(enabledJson.RootElement.GetProperty("enabled").GetBoolean());
+        Assert.Equal(4, enabledJson.RootElement.GetProperty("revision").GetInt64());
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "disable", createdId, "4", "--json", .. options]));
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(["projects", "list", "--json", .. options]));
+        using var projectsJson = JsonDocument.Parse(output.ToString());
+        Assert.False(Assert.Single(projectsJson.RootElement.EnumerateArray()).GetProperty("enabled").GetBoolean());
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "show", createdId, "--json", .. options]));
+        using var showJson = JsonDocument.Parse(output.ToString());
+        Assert.Equal("Updated locally", showJson.RootElement.GetProperty("description").GetString());
+        output.GetStringBuilder().Clear();
+
+        var disposableDefinitionPath = Path.Combine(temporary.Path, "disposable-project.json");
+        await File.WriteAllTextAsync(disposableDefinitionPath, JsonSerializer.Serialize(new CentralProjectDefinition(
+            "Disposable", "team/disposable", "main", "", [])));
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "create", disposableDefinitionPath, "--json", .. options]));
+        using var disposableJson = JsonDocument.Parse(output.ToString());
+        var disposableId = disposableJson.RootElement.GetProperty("id").GetString()!;
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["projects", "delete", disposableId, "1", "--json", .. options]));
+        using var deletedJson = JsonDocument.Parse(output.ToString());
+        Assert.True(deletedJson.RootElement.GetProperty("deleted").GetBoolean());
+    }
+
     private sealed class StubAdministrationFactory : IServerAdministrationServiceFactory
     {
         public StubAdministrationService Service { get; } = new();

@@ -1,4 +1,5 @@
 using CodexWorker;
+using System.Text.Json;
 
 namespace CodexWorker.Tests;
 
@@ -119,6 +120,26 @@ public sealed class ManagedConfigurationTests
         Assert.NotEqual(fixture.Snapshot(1).Version, fixture.Snapshot(2).Version);
         var changedProject = fixture.Project(1) with { DefaultBranch = "trunk" };
         Assert.NotEqual(fixture.Snapshot(1).Version, ManagedConfigurationSynchronizer.CalculateVersion([changedProject]));
+    }
+
+    [Fact]
+    public void DisabledCentralLifecycleFieldSurvivesManagedSnapshotCachingAndRestart()
+    {
+        using var fixture = new Fixture();
+        var disabledProject = fixture.Project(2) with { Enabled = false };
+        var snapshot = new ServerManagedConfigurationContract(1,
+            ManagedConfigurationSynchronizer.CalculateVersion([disabledProject]), [disabledProject]);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        synchronizer.Apply(snapshot, fixture.LocalProjects);
+        var stored = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(fixture.CachePath), jsonOptions);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        restarted.LoadLastValid(fixture.LocalProjects);
+        var restored = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(fixture.CachePath), jsonOptions);
+
+        Assert.False(Assert.Single(stored!.Projects).Enabled);
+        Assert.False(Assert.Single(restored!.Projects).Enabled);
     }
 
     private sealed class Fixture : IDisposable

@@ -504,12 +504,25 @@ public static class ServerApplication
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        app.MapPut("/api/v1/projects/{projectId}/lifecycle", async (string projectId, ProjectLifecycleUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (request.ExpectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
+            try
+            {
+                var updated = await store.UpdateProjectLifecycleAsync(projectId, request.Enabled, request.ExpectedRevision, context.RequestAborted);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
         app.MapDelete("/api/v1/projects/{projectId}", async (string projectId, long expectedRevision, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             if (expectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
             try { return await store.RemoveProjectAsync(projectId, expectedRevision, context.RequestAborted) ? Results.NoContent() : Results.NotFound(); }
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
+            catch (ProjectInUseException ex) { return Results.Conflict(new { error = ex.Message, queued = ex.Queued, assigned = ex.Assigned, running = ex.Running }); }
         });
         app.MapGet("/api/v1/executions", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -527,6 +540,7 @@ public static class ServerApplication
                 return Results.Created($"/api/v1/executions/{created.Id}", created);
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (ExecutionRequestConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapPost("/api/v1/executions/{executionRequestId}/state", async (string executionRequestId, ExecutionStateTransition transition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
@@ -538,6 +552,7 @@ public static class ServerApplication
                 return updated is null ? Results.NotFound() : Results.Ok(updated);
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (ExecutionRequestTransitionException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         return app;
