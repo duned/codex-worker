@@ -21,7 +21,7 @@ public sealed class CodexServiceEnvironmentTests
                   if [ "$1" = --output-last-message ]; then shift; output=$1; fi
                   shift
                 done
-                printf '%s' '{"status":"success","summary":"Done","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null}' > "$output"
+                printf '%s' '{"status":"success","summary":"Done","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}' > "$output"
                 """);
             File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
@@ -281,7 +281,7 @@ public sealed class CodexServiceEnvironmentTests
                   shift
                 done
                 if [ "$structured" = true ]; then
-                  printf '%s' '{"status":"success","summary":"completed","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null}' > "$output"
+                  printf '%s' '{"status":"success","summary":"completed","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}' > "$output"
                 else
                   printf OK > "$output"
                 fi

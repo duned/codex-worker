@@ -138,9 +138,13 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed, string details) => IssueCompleted(issue, elapsed);
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed) =>
         IssueBlockedCore(issue, elapsed);
+    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, Guid executionId, string details) =>
+        WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · blocked · {FormatDuration(elapsed)}" +
+            (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {Compact(FailureDiagnosticRedactor.Redact(details))}"),
+            ConsoleColor.Yellow, "⚠");
     public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, Guid executionId) =>
         WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · blocked · {FormatDuration(elapsed)}", ConsoleColor.Yellow, "⚠");
-    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) => IssueBlocked(issue, elapsed);
+    public void IssueBlocked(GitHubIssue issue, TimeSpan elapsed, string details) => IssueBlockedCore(issue, elapsed, details);
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed) =>
         IssueFailedCore(issue, elapsed);
     public void IssueFailed(GitHubIssue issue, TimeSpan elapsed, Guid executionId, string details) =>
@@ -161,7 +165,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         IssueCompleted(issue, elapsed);
     public void IssueBlocked(string project, GitHubIssue issue, TimeSpan elapsed) => IssueBlocked(issue, elapsed);
     public void IssueBlocked(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
-        IssueBlocked(issue, elapsed);
+        IssueBlockedCore(issue, elapsed, details);
     public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed) => IssueFailed(issue, elapsed);
     public void IssueFailed(string project, GitHubIssue issue, TimeSpan elapsed, string details) =>
         IssueFailed(issue, elapsed, details);
@@ -170,6 +174,10 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · completed · {FormatDuration(elapsed)}", ConsoleColor.Green, "✓");
     private void IssueBlockedCore(GitHubIssue issue, TimeSpan elapsed) =>
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · blocked · {FormatDuration(elapsed)}", ConsoleColor.Yellow, "⚠");
+    private void IssueBlockedCore(GitHubIssue issue, TimeSpan elapsed, string details) =>
+        WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · blocked · {FormatDuration(elapsed)}" +
+            (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {Compact(FailureDiagnosticRedactor.Redact(details))}"),
+            ConsoleColor.Yellow, "⚠");
     private void IssueFailedCore(GitHubIssue issue, TimeSpan elapsed) =>
         WriteLine($"{IssueFormatting.OperationalIdentity(issue)} · failed · {FormatDuration(elapsed)}", ConsoleColor.Red, "✗", _errorWriter);
     private void IssueFailedCore(GitHubIssue issue, TimeSpan elapsed, string details) =>
