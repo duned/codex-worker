@@ -535,8 +535,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
-                    result.Report.ExecutionId!.Value, result.Report.HumanInput ?? "Human input is required.", ct);
-                _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value);
+                    result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact(
+                        result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues), ct);
+                _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
+                    FailureDiagnosticRedactor.Redact(result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues));
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;

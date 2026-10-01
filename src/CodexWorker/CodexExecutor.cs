@@ -2,7 +2,8 @@ using System.Text.Json;
 
 namespace CodexWorker;
 
-public sealed record CodexOutcome(string Status, string Summary, string[] TestsOrValidationPerformed, bool NeedsHumanInput, string? Question);
+public sealed record CodexOutcome(string Status, string Summary, string[] TestsOrValidationPerformed, bool NeedsHumanInput, string? Question,
+    string? BlockerType = null);
 
 public static class CodexResultParser
 {
@@ -19,13 +20,17 @@ public static class CodexResultParser
         var needsHumanInput = root.GetProperty("needsHumanInput").GetBoolean();
         var questionElement = root.GetProperty("question");
         var question = questionElement.ValueKind == JsonValueKind.Null ? null : questionElement.GetString();
+        var blockerTypeElement = root.GetProperty("blockerType");
+        var blockerType = blockerTypeElement.ValueKind == JsonValueKind.Null ? null : blockerTypeElement.GetString();
         if (status == "success" && (needsHumanInput || !string.IsNullOrWhiteSpace(question)))
             throw new InvalidDataException("A success Codex result cannot request unresolved human input.");
-        if (status == "blocked" && (!needsHumanInput || string.IsNullOrWhiteSpace(question)))
-            throw new InvalidDataException("A blocked Codex result must require human input and provide a non-empty question.");
-        if (status == "failed" && (needsHumanInput || !string.IsNullOrWhiteSpace(question)))
-            throw new InvalidDataException("A failed Codex result cannot request unresolved human input; use blocked for that outcome.");
-        return new CodexOutcome(status, summary, checks, needsHumanInput, question);
+        if (status == "blocked" && (blockerType is not ("human_input" or "external_prerequisite") || string.IsNullOrWhiteSpace(question)))
+            throw new InvalidDataException("A blocked Codex result must identify a human_input or external_prerequisite blocker and provide its reason.");
+        if (status == "blocked" && needsHumanInput != (blockerType == "human_input"))
+            throw new InvalidDataException("needsHumanInput must match the blocked result's blockerType.");
+        if (status != "blocked" && (blockerType is not null || needsHumanInput || !string.IsNullOrWhiteSpace(question)))
+            throw new InvalidDataException("Only a blocked Codex result can identify an unresolved blocker.");
+        return new CodexOutcome(status, summary, checks, needsHumanInput, question, blockerType);
     }
 }
 
@@ -43,12 +48,12 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "summary", "testsOrValidationPerformed", "needsHumanInput", "question"],
+          "required": ["status", "summary", "testsOrValidationPerformed", "needsHumanInput", "question", "blockerType"],
           "properties": {
             "status": {
               "type": "string",
               "enum": ["success", "blocked", "failed"],
-              "description": "Use success when implementation is complete, even if optional local checks could not run because of sandbox, network, or environment restrictions. Use failed only when the implementation itself cannot be completed. Use blocked only when human input or a decision is required."
+              "description": "Use success when implementation is complete, even if optional local checks could not run because of sandbox, network, or environment restrictions. Use failed when the implementation itself cannot be completed despite the required environment being available. Use blocked when a clearly identified external prerequisite or human input prevents completion."
             },
             "summary": { "type": "string", "minLength": 1 },
             "testsOrValidationPerformed": {
@@ -57,7 +62,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
               "description": "Report checks performed. If an optional check could not run, include the command/check and the reason. The worker's configured validation commands are authoritative and run separately after Codex."
             },
             "needsHumanInput": { "type": "boolean" },
-            "question": { "type": ["string", "null"] }
+            "question": { "type": ["string", "null"], "description": "For blocked results, the concise human-readable reason the prerequisite is needed." },
+            "blockerType": { "type": ["string", "null"], "enum": ["human_input", "external_prerequisite", null] }
           }
         }
         """;
@@ -267,7 +273,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
 
         In `summary`, provide a concise, self-contained explanation of what was implemented, the important behavior or design decisions, the main application layers affected, and important tests added or changed. Explain the task outcome rather than listing modified files.
 
-        Use `success` when the requested implementation is complete, even if an optional Codex-run check was unavailable. Use `failed` only when you could not complete the implementation for a technical reason. Use `blocked` only when a requirement is missing or a human decision/input is needed, and state it in `question`; environment restrictions on optional self-validation alone are not a reason to use `blocked`. Summarize implementation and checks attempted, completed, or unavailable (including reasons) in `testsOrValidationPerformed`.
+        Use `success` when the requested implementation is complete, even if an optional Codex-run check was unavailable. Use `failed` only when you could not complete the implementation because of an implementation or repository failure. Use `blocked` only when you establish that an external prerequisite (such as required service/feed access, credentials, or a machine/resource) or human input is required for progress and prevents completion. Do not treat optional self-validation restrictions, speculative dependencies, ambiguous errors, or implementation failures as blocked. For blocked results, set `blockerType` to `external_prerequisite` or `human_input`, set `needsHumanInput` to true only for `human_input`, and put the concise reason in `question`. For all other results, set `blockerType` and `question` to null and `needsHumanInput` to false. Summarize implementation and checks attempted, completed, or unavailable (including reasons) in `testsOrValidationPerformed`.
 
         The worker owns all Git and GitHub lifecycle. Do not create, switch, merge, commit, push, or delete Git branches; do not commit; do not run GitHub CLI commands; do not manipulate Issue labels, comments, or state. Focus only on implementing and locally validating the requested change. The worker will review, validate, commit, and integrate your changes.
 
@@ -284,7 +290,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     internal static string BuildRepairPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue,
         ValidationFailure failure, int attempt, int maximumAttempts) => $"""
         # Generic worker repair instructions
-        This is repair attempt {attempt} of {maximumAttempts}, not a new implementation task. Inspect the existing implementation and fix the cause of the authoritative validation failure below while preserving the functionality requested in the original Issue. Make focused changes in-place. You may perform useful local checks, but the worker's configured validation commands remain authoritative and will be run again after this repair. A `success` response means you completed the repair; it does not mean authoritative validation has passed. Return a final response matching the supplied JSON schema. Use `blocked` only when human input or a decision is required, `failed` when you cannot complete the repair for a technical reason, and `success` when the repair changes are ready for the worker validation retry.
+        This is repair attempt {attempt} of {maximumAttempts}, not a new implementation task. Inspect the existing implementation and fix the cause of the authoritative validation failure below while preserving the functionality requested in the original Issue. Make focused changes in-place. You may perform useful local checks, but the worker's configured validation commands remain authoritative and will be run again after this repair. A `success` response means you completed the repair; it does not mean authoritative validation has passed. Return a final response matching the supplied JSON schema. Use `blocked` only when an established external prerequisite or human input prevents repair progress, `failed` for implementation/repository failures, and `success` when the repair changes are ready for the worker validation retry. For blocked results, identify the blocker type and reason as specified by the response schema.
 
         In `summary`, describe only what this repair attempt corrected. Keep it concise and never restate or replace the original implementation summary.
 

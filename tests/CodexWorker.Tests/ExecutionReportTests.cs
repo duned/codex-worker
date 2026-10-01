@@ -84,10 +84,25 @@ public sealed class ExecutionReportTests
 
         Assert.Contains("### Work performed", markdown);
         Assert.Contains("Added a migration draft.", markdown);
-        Assert.Contains("### Human input required", markdown);
+        Assert.Contains("### Required prerequisite", markdown);
         Assert.Contains("Which API should own this behavior?", markdown);
         Assert.DoesNotContain("TELEGRAM_BOT_TOKEN", markdown);
         Assert.DoesNotContain("GITHUB_TOKEN", markdown);
+    }
+
+    [Fact]
+    public void BlockedReportIncludesPreservedWorkspaceAndRetryDetails()
+    {
+        var report = new IssueExecutionReport("Partial implementation retained.", [],
+            HumanInput: "The required NuGet feed api.nuget.org is unreachable.",
+            ExecutionId: Guid.NewGuid(), RecoveryBranch: "feature/issue-122", WorkspacePreserved: true, RetryAvailable: true);
+
+        var markdown = report.ToMarkdown(IssueOutcomeKind.Blocked);
+
+        Assert.Contains("The required NuGet feed api.nuget.org is unreachable.", markdown);
+        Assert.Contains("### Recovery", markdown);
+        Assert.Contains("feature/issue-122", markdown);
+        Assert.Contains("- **Workspace:** Preserved\n- **Retry/resume:** Available", markdown);
     }
 
     [Fact]

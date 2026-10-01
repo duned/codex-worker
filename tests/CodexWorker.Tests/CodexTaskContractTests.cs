@@ -18,7 +18,8 @@ public sealed class CodexTaskContractTests
         Assert.Contains("identify the check and reason it could not run", prompt);
         Assert.Contains("authoritative validation gate", prompt);
         Assert.Contains("Use `failed` only when you could not complete the implementation", prompt);
-        Assert.Contains("Use `blocked` only when a requirement is missing or a human decision/input is needed", prompt);
+        Assert.Contains("external prerequisite", prompt);
+        Assert.Contains("Do not treat optional self-validation restrictions", prompt);
     }
 
     [Fact]
@@ -39,7 +40,7 @@ public sealed class CodexTaskContractTests
     public void SuccessCanReportOptionalCheckUnavailable()
     {
         var result = CodexResultParser.Parse("""
-            {"status":"success","summary":"Implemented the change.","testsOrValidationPerformed":["Could not run dotnet test: package restore to api.nuget.org was blocked in the sandbox."],"needsHumanInput":false,"question":null}
+            {"status":"success","summary":"Implemented the change.","testsOrValidationPerformed":["Could not run dotnet test: package restore to api.nuget.org was blocked in the sandbox."],"needsHumanInput":false,"question":null,"blockerType":null}
             """);
 
         Assert.Equal("success", result.Status);
