@@ -30,13 +30,15 @@ public static class Program
         }
         if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
         {
-            PrintHelp(args.Length > 0 && (args[0] is "--help" or "-h") ? "root" : commandLine.Command);
+            var helpCommand = args.Length > 0 && (args[0] is "--help" or "-h") ? "root" : commandLine.Command;
+            if (helpCommand == "config" && commandLine.Arguments.FirstOrDefault() == "set") helpCommand = "config-set";
+            PrintHelp(helpCommand);
             return ProcessExitCodes.Success;
         }
         if (commandLine.Command == "register") return await RegisterAsync(args, output);
         if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output);
         if (commandLine.Command == "status") return await ShowStatusAsync(commandLine, output);
-        if (commandLine.Command == "config") return ShowConfiguration(commandLine, output);
+        if (commandLine.Command == "config") return AdministerConfiguration(commandLine, output);
         if (commandLine.Command == "capabilities") return await ShowCapabilitiesAsync(commandLine, output);
         if (args.Length > 0 && args[0].StartsWith("-", StringComparison.Ordinal) && args[0] != "--config")
         {
@@ -190,7 +192,7 @@ public static class Program
             output.InfrastructureFailure($"Unexpected {commandLine.Command} arguments. Use 'codex-worker {commandLine.Command} --help' for usage.");
             return ProcessExitCodes.StartupFailure;
         }
-        var path = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
+        var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
         try
         {
             var configuration = GlobalWorkerConfiguration.Load(path);
@@ -199,7 +201,6 @@ public static class Program
             Console.WriteLine($"Ownership: {configuration.Projects.Ownership}");
             Console.WriteLine($"Projects: {projects.Count}");
             Console.WriteLine($"Server: {(configuration.Server.Enabled ? "enabled" : "disabled")}");
-            if (commandLine.Command == "config") Console.WriteLine("Configuration is valid.");
             return ProcessExitCodes.Success;
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
@@ -229,6 +230,59 @@ public static class Program
         {
             output.InfrastructureFailure($"Status collection failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
             return ProcessExitCodes.Success;
+        }
+    }
+
+    private static int AdministerConfiguration(WorkerCommandLine commandLine, WorkerConsole output)
+    {
+        var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
+        var arguments = commandLine.Arguments;
+        var operation = arguments.Count == 0 ? "show" : arguments[0];
+        try
+        {
+            switch (operation)
+            {
+                case "show":
+                {
+                    var json = arguments.Count == 2 && arguments[1] == "--json";
+                    if (arguments.Count > 1 && !json) throw new ArgumentException("Usage: codex-worker config show [--json] [--config <path>]");
+                    Console.WriteLine(WorkerConfigurationAdministration.Show(path, json));
+                    return ProcessExitCodes.Success;
+                }
+                case "validate":
+                {
+                    var json = arguments.Count == 2 && arguments[1] == "--json";
+                    if (arguments.Count > 1 && !json) throw new ArgumentException("Usage: codex-worker config validate [--json] [--config <path>]");
+                    var diagnostics = WorkerConfigurationAdministration.Validate(path);
+                    if (json)
+                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            valid = diagnostics.Count == 0,
+                            configurationPath = path,
+                            diagnostics
+                        }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                    else if (diagnostics.Count == 0)
+                        Console.WriteLine($"Configuration is valid: {path}");
+                    else
+                    {
+                        output.InfrastructureFailure("Configuration validation failed:\n- " + string.Join("\n- ", diagnostics));
+                    }
+                    return diagnostics.Count == 0 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
+                }
+                case "set":
+                    if (arguments.Count != 3)
+                        throw new ArgumentException("Usage: codex-worker config set <setting> <value> [--config <path>]");
+                    WorkerConfigurationAdministration.Set(path, arguments[1], arguments[2]);
+                    Console.WriteLine($"Updated {arguments[1]} in {path}. Restart the Worker service for the change to take effect.");
+                    return ProcessExitCodes.Success;
+                default:
+                    throw new ArgumentException($"Unknown config command '{operation}'. Use 'codex-worker config --help' for usage.");
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            output.InfrastructureFailure($"Configuration administration failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            return ProcessExitCodes.StartupFailure;
         }
     }
 
@@ -290,9 +344,15 @@ public static class Program
                 Console.WriteLine("Examples: codex-worker status; codex-worker status --config /path/to/worker.yml --json");
                 break;
             case "config":
-                Console.WriteLine($"Usage: codex-worker config {configOption}");
-                Console.WriteLine("Validate configuration and show its resolved project summary.");
-                Console.WriteLine("Example: codex-worker config --config /path/to/worker.yml");
+                Console.WriteLine(WorkerConfigurationAdministration.HelpText);
+                Console.WriteLine("Example: codex-worker config show --json");
+                Console.WriteLine("Example: codex-worker config set worker.provisioning.enabled true");
+                break;
+            case "config-set":
+                Console.WriteLine("Usage: codex-worker config set <setting> <value> [--config <path>]");
+                Console.WriteLine("Updates a bounded known Worker setting after validating the complete candidate configuration.");
+                Console.WriteLine("Action policy settings accept comma-separated keys; an empty value clears a list.");
+                Console.WriteLine("A service restart is required for the change to take effect.");
                 break;
             case "capabilities":
                 Console.WriteLine($"Usage: codex-worker capabilities {configOption}");

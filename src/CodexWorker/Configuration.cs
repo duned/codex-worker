@@ -125,6 +125,11 @@ public sealed class GlobalWorkerConfiguration
             var value = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
                 .WithDuplicateKeyChecking().Build().Deserialize<GlobalWorkerConfiguration>(File.ReadAllText(fullPath))
                 ?? throw new InvalidDataException("Configuration YAML is empty.");
+            if (value.Worker is null) throw new InvalidDataException("worker must be a YAML mapping.");
+            if (value.Projects is null) throw new InvalidDataException("projects must be a YAML mapping.");
+            if (value.Telegram is null) throw new InvalidDataException("telegram must be a YAML mapping.");
+            if (value.Api is null) throw new InvalidDataException("api must be a YAML mapping.");
+            if (value.Server is null) throw new InvalidDataException("server must be a YAML mapping.");
             if (string.IsNullOrWhiteSpace(value.Projects.Directory)) throw new InvalidDataException("projects.directory is required.");
             if (!Path.IsPathRooted(value.Projects.Directory)) value.Projects.Directory = Path.GetFullPath(value.Projects.Directory, Path.GetDirectoryName(fullPath)!);
             if (!string.IsNullOrWhiteSpace(value.Server.IdentityFile))
