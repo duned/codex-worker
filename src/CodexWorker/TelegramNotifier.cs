@@ -65,9 +65,11 @@ public sealed class TelegramNotifier : IDisposable
         var mode = execution.Resumed ? "resume" : "restart";
         var retry = execution.AttemptNumber <= 1 ? "" : $"\nIntento {execution.AttemptNumber} · {mode} · ejecución actual {ExecutionFormatting.Display(execution.ExecutionId)}" +
             (execution.RetryOfExecutionId is { } id ? $"\nejecución anterior {ExecutionFormatting.Display(id)}" : "");
+        var profile = execution.CodexProfile is { } settings
+            ? $"\nCodex · {settings.Model ?? "CLI default"} · {settings.Effort}" : "";
         return SendTaskAsync(project, repository, issue, "▶",
             execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action,
-            $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}", ct);
+            $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}{profile}", ct);
     }
 
     public Task SuccessAsync(string project, string repository, GitHubIssue issue, TimeSpan duration, Guid executionId, string summary, CancellationToken ct) =>

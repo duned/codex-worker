@@ -21,9 +21,15 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     {
         var execution = context.Execution;
         var issue = context.Issue;
+        var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
         try
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
+            if (execution.MetadataError is { } metadataError)
+            {
+                return new IssueProcessingResult(IssueOutcomeKind.Blocked,
+                    new IssueExecutionReport(null, [], HumanInput: metadataError));
+            }
             if (context.IntegrationRecovery)
                 return await RunIntegrationRecoveryAsync(context, ct);
             await _repositoryGate.WaitAsync(ct);
@@ -55,7 +61,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             finally { _repositoryGate.Release(); }
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
-                codex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
+                executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
                     execution.Resumed, execution.AttemptNumber, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
@@ -103,7 +109,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 repairAttempts++;
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
                 outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", execution), () =>
-                    codex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
+                    executionCodex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
                         failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
                     completion: x => x.Status, succeeded: x => x.Status == "success",
                     warning: x => x.Status == "blocked", ct: ct);
@@ -156,7 +162,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                         async (details, token) =>
                         {
                             var resolution = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                                () => codex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile,
+                                () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile,
                                     issue, details, token), x => x.Status, x => x.Status == "success", ct: token);
                             return resolution.Status == "success";
                         }, ct),
@@ -210,6 +216,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     {
         var execution = context.Execution;
         var issue = context.Issue;
+        var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
         var source = context.RetryOf ?? throw new WorkerInfrastructureException("Integration recovery has no source execution history.");
         await _repositoryGate.WaitAsync(ct);
         try
@@ -237,7 +244,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     async (details, token) =>
                     {
                         var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                            () => codex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
+                            () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
                             x => x.Status, x => x.Status == "success", ct: token);
                         return resolved.Status == "success";
                     }, ct), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
@@ -369,7 +376,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
-            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId);
+            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.Model, EffectiveEffort: execution.CodexProfile?.Effort,
+            AssignmentId: execution.AssignmentId);
 
     private static string? Extract(string? text, string pattern)
     {

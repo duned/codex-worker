@@ -70,6 +70,7 @@ public interface IGitRepository : IDisposable
 
 public interface ICodexExecutor
 {
+    ICodexExecutor WithProfile(CodexExecutionProfile profile) => this;
     Task PreflightAsync(CancellationToken ct);
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct);
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunAsync(projectDirectory, instructionsFile, issue, ct);

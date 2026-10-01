@@ -115,7 +115,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 retryOfExecutionId: source.ExecutionId, attemptNumber: allHistory.Where(entry =>
                     entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)
                     .Select(entry => entry.AttemptNumber).DefaultIfEmpty(0).Max() + 1,
-                featureBranchOverride: source.FeatureBranch);
+                featureBranchOverride: source.FeatureBranch, codexSettings: config.Codex, settingsSource: source);
             await CreateHistoryAsync(execution, ct);
             claimedExecution = execution;
             await _output.StopWaitingAsync();
@@ -183,7 +183,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
-            ownershipGeneration: ownershipGeneration);
+            ownershipGeneration: ownershipGeneration, codexSettings: config.Codex, settingsSource: retryOf);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -259,7 +259,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
-                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed };
+                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.Model,
+                EffectiveEffort = execution.CodexProfile?.Effort };
             await ReportResultAsync(issue, result with { Report = report }, ct);
             await CompleteHistoryAsync(execution, report, result.Kind switch
             {
@@ -505,7 +506,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
-            ServerExecutionId: execution.ServerExecutionId, AssignmentId: execution.AssignmentId,
+            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.Model, EffectiveEffort: execution.CodexProfile?.Effort,
+            AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration);
 
     private static string? Extract(string? text, string pattern)

@@ -1152,6 +1152,67 @@ public sealed class WorkerV011Tests
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
+    [Theory]
+    [InlineData("restart")]
+    [InlineData("resume")]
+    public async Task RetryPreservesRecordedProfileDespiteIssueAndProjectEdits(string mode)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, telegramEnabled: true);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\nmodel: task-model\neffort: low" };
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.");
+        h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial work", [], false, null);
+        Assert.Equal(IssueOutcomeKind.Failed, (await h.ProcessOneAsync())!.Kind);
+        h.Worker.Configuration.Worker.RetryMode = mode;
+        h.Worker.Configuration.Codex.Model = "new-project-model";
+        h.Worker.Configuration.Codex.ReasoningEffort = "xhigh";
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\nmodel: edited-model\neffort: invalid" };
+        h.GitHub.ReadyIssueCount = 2;
+        h.Codex.InitialOutcome = Success("Completed");
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())!.Kind);
+        Assert.Equal(2, h.Codex.Profiles.Count);
+        Assert.All(h.Codex.Profiles, profile => Assert.Equal(new CodexExecutionProfile("task-model", "low"), profile));
+        Assert.All(await history.ReadAllAsync(), entry =>
+        {
+            Assert.Equal("task-model", entry.EffectiveModel);
+            Assert.Equal("low", entry.EffectiveEffort);
+        });
+        Assert.Contains(h.TelegramMessages, message => message.Contains("Codex · task-model · low", StringComparison.Ordinal));
+        Assert.Contains("Codex · model task-model · effort low", h.Output.ToString());
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `task-model` · effort: `low`", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ImplementationAndValidationRepairUseTheSameProfile()
+    {
+        using var h = new Harness();
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\neffort: high" };
+        h.Worker.Configuration.Codex.Model = "project-model";
+        h.Validation.Results.Enqueue(new ValidationResult(new ValidationFailure(1, "check", 1, "failed", "", false)));
+        h.Codex.Repairs.Enqueue(Success("Repaired"));
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())!.Kind);
+        Assert.Single(h.Codex.RepairAttempts);
+        Assert.All(h.Codex.Profiles, profile => Assert.Equal(new CodexExecutionProfile("project-model", "high"), profile));
+    }
+
+    [Fact]
+    public async Task InvalidMetadataBlocksBeforePreparingGitAndCanBeCorrected()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\neffort: invalid" };
+        Assert.Equal(IssueOutcomeKind.Blocked, (await h.ProcessOneAsync())!.Kind);
+        Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.Codex.Profiles);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("effort must be low, medium, high, or xhigh", StringComparison.Ordinal));
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\neffort: low" };
+        h.GitHub.ReadyIssueCount = 2;
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())!.Kind);
+        Assert.Equal("low", Assert.Single(h.Codex.Profiles).Effort);
+    }
+
     private static CodexOutcome Success(string summary) => new("success", summary, [], false, null);
 
     private sealed class Harness : IDisposable
@@ -1250,7 +1311,7 @@ public sealed class WorkerV011Tests
         public string RecoveryLabel { get; set; } = "codex-integration-recovery";
         public IReadOnlyList<string> IssueLabels { get; set; } = [];
         public List<string> RemovedLabels { get; } = [];
-        public GitHubIssue Issue { get; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
+        public GitHubIssue Issue { get; set; } = new(17, "Example task", "Implement this request", DateTimeOffset.UtcNow);
         public int FindCalls { get; private set; }
         public List<string> Labels { get; } = [];
         public List<string> Comments { get; } = [];
@@ -1362,6 +1423,12 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
+        public List<CodexExecutionProfile> Profiles { get; } = [];
+        public ICodexExecutor WithProfile(CodexExecutionProfile profile)
+        {
+            Profiles.Add(profile);
+            return this;
+        }
         public WorkerInfrastructureException? PreflightException { get; set; }
         public Exception? InitialException { get; set; }
         public CodexOutcome InitialOutcome { get; set; } = Success("implemented");

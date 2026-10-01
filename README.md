@@ -103,9 +103,22 @@ Parent Issue
   blocked by #103
 ```
 
-`codex-blocked` means Codex started work and requires human intervention; it is unrelated to dependency waiting.
+`codex-blocked` means the task requires human intervention (including invalid execution metadata); it is unrelated to dependency waiting.
 
 In standalone mode, project YAML owns repository, checkout, base branch, Git behavior, GitHub labels, `worker.maxParallelTasks`, `worker.retryMode`, `worker.recoveryRetentionDays`, Codex instructions/model/reasoning/timeout, and validation commands/timeout/repair limit. In managed mode, Server project definitions own project name, repository, default branch, declared requirements, and revision; the matching YAML supplies the checkout and other machine-local execution settings. Recovery retention defaults to 7 days and accepts 1–3650 days. Set the project limit in that project's YAML under `worker`; it defaults to `1`. A project may use a higher limit when its checkout and repository setup support concurrent executions, while the global limit remains the ceiling across all projects. There is no mutable current-project configuration. Telegram enablement, polling interval, the global concurrency limit, and provisioning authorization are worker-global/local policy.
+
+An Issue can override the execution model and/or effort with a single explicit section:
+
+```md
+## Codex
+
+model: <model-id>
+effort: high
+```
+
+Both keys are optional and resolve independently: Issue override, then project `codex.model` / `codex.reasoningEffort`, then existing defaults (CLI-selected model and `medium` effort). Use plain unquoted key/value lines; effort accepts `low`, `medium`, `high`, or `xhigh` (case-insensitive). Model IDs accept up to 128 letters, digits, dots, underscores, and hyphens, starting with a letter or digit. The CLI remains authoritative for model availability and authentication; the worker does not maintain a model catalog. Unknown or duplicate keys, duplicate sections, invalid values, and other content in the section block the task with an actionable diagnostic before workspace preparation. End the section with a new level 1 or 2 heading before adding prose. Fenced examples outside the section and unrelated prose/headings do not select settings. Issues without the section retain existing behavior.
+
+The resolved profile is recorded in execution history and shown in the execution API/dashboard, console, Issue report, and Telegram start message. Implementation, validation repairs, and integration recovery use the same snapshot. Restart/resume retries inherit the recorded profile even if the Issue or project settings change; a fresh execution after completion or explicit ready after integration conflict resolves settings again. History created before profile snapshots uses project/default settings once on recovery, without applying edited Issue metadata. An execution blocked for invalid metadata has no snapshot, so correcting its section applies on the next attempt.
 
 Each project may configure an `environment.file` dotenv file. Its values are loaded and validated before startup proceeds to GitHub label or Issue queue access, then passed only to that project's Codex and validation child processes. Values are not added to the worker process environment and are not shared with other projects. Codex still filters GitHub authentication and protects its isolated Git credential configuration.
 

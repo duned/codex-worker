@@ -6,6 +6,50 @@ namespace CodexWorker.Tests;
 public sealed class CodexServiceEnvironmentTests
 {
     [Fact]
+    public async Task ExecutionProfileControlsImplementationRepairAndConflictInvocationArguments()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = CreateDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        try
+        {
+            var executable = Path.Combine(directory, "codex");
+            await File.WriteAllTextAsync(executable, """
+                #!/bin/sh
+                printf '%s\n' "$@" >> "$0.args"
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = --output-last-message ]; then shift; output=$1; fi
+                  shift
+                done
+                printf '%s' '{"status":"success","summary":"Done","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null}' > "$output"
+                """);
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Project instructions");
+            var defaults = new CodexSettings { Model = "project-model", ReasoningEffort = "high" };
+            var executor = new CodexExecutor(new ProcessRunner(), defaults);
+            var scoped = executor.WithProfile(new CodexExecutionProfile("task-model", "low"));
+            var issue = new GitHubIssue(1, "Task", "Task body", DateTimeOffset.UnixEpoch);
+            await scoped.RunAsync(directory, instructions, issue, null, false, 1, CancellationToken.None);
+            await scoped.RepairAsync(directory, instructions, issue,
+                new ValidationFailure(1, "check", 1, "failed", "", false), 1, 2, CancellationToken.None);
+            await scoped.ResolveIntegrationConflictAsync(directory, instructions, issue, "Conflict details", CancellationToken.None);
+            var arguments = await File.ReadAllLinesAsync(executable + ".args");
+            Assert.Equal(3, arguments.Count(argument => argument == "task-model"));
+            Assert.Equal(3, arguments.Count(argument => argument == "model_reasoning_effort=\"low\""));
+            Assert.DoesNotContain("project-model", arguments);
+            Assert.Equal("project-model", defaults.Model);
+            Assert.Equal("high", defaults.ReasoningEffort);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task ResolutionUsesChildPathAndDoesNotDependOnInteractivePath()
     {
         if (OperatingSystem.IsWindows()) return;

@@ -114,6 +114,8 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     {
         _waiting = false;
         WriteLine(ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId), ConsoleColor.Cyan, "▶");
+        if (execution.CodexProfile is { } profile)
+            WriteLine($"Codex · model {profile.Model ?? "CLI default"} · effort {profile.Effort}", ConsoleColor.DarkGray, "↳");
         if (execution.AttemptNumber > 1 && execution.RetryOfExecutionId is { } previousId)
         {
             var mode = execution.Resumed ? "resume" : "restart";

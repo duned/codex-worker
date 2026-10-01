@@ -22,7 +22,7 @@ public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, stri
     string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
     long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
-    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc);
+    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -172,7 +172,7 @@ public sealed class WorkerRuntimeReadModel
                 Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus,
                 e.RetryOfExecutionId, e.AttemptNumber, e.Resumed,
                 e.RecoveryState is "recoverable" or "cleanup-pending"
-                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc);
+                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc, e.EffectiveModel, e.EffectiveEffort);
         }).ToArray();
     }
 

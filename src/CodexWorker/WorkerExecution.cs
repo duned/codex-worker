@@ -8,7 +8,7 @@ public sealed class WorkerExecution
         {
             [ExecutionState.Created] = [ExecutionState.Claimed, ExecutionState.Cancelled, ExecutionState.InfrastructureFailure],
             [ExecutionState.Claimed] = [ExecutionState.Preparing, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
-            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.Integrating, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
+            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Implementing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Validating] = [ExecutionState.Repairing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Repairing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
@@ -57,18 +57,26 @@ public sealed class WorkerExecution
     public string? ServerExecutionId { get; }
     public string? AssignmentId { get; }
     public long? OwnershipGeneration { get; }
+    public CodexExecutionProfile? CodexProfile { get; private set; }
+    public string? MetadataError { get; private set; }
     public ExecutionState State { get; private set; } = ExecutionState.Created;
     public bool IsTerminal => AllowedTransitions[State].Length == 0;
 
     public static WorkerExecution Create(ProjectSettings project, GitSettings git, GitHubIssue issue,
         DateTimeOffset? startedAtUtc = null, Guid? retryOfExecutionId = null, int attemptNumber = 1, bool resumed = false,
         string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null,
-        string? featureBranchOverride = null)
+        string? featureBranchOverride = null, CodexSettings? codexSettings = null, ExecutionHistoryEntry? settingsSource = null)
     {
         var featureBranch = featureBranchOverride ?? GitRepository.FeatureBranchName(git, issue);
         if (featureBranchOverride is null && attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
-        return new(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
+        var execution = new WorkerExecution(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
         retryOfExecutionId, attemptNumber, resumed, serverExecutionId, assignmentId, ownershipGeneration);
+        if (codexSettings is not null)
+        {
+            try { execution.CodexProfile = CodexExecutionProfile.Resolve(issue.Body, codexSettings, settingsSource); }
+            catch (InvalidDataException ex) { execution.MetadataError = ex.Message; }
+        }
+        return execution;
     }
 
     public void TransitionTo(ExecutionState next)

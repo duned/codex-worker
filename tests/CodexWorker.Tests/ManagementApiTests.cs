@@ -33,7 +33,7 @@ public sealed class ManagementApiTests
             "feature/4", "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1200, null, "failed", 1,
             [new ValidationRepairRecord("dotnet test", 1, 2, "private repair output", false)], null, null, null, "failed",
             "recoverable", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery.", Guid.NewGuid(), 2, true,
-            DateTimeOffset.UtcNow.AddDays(7)));
+            DateTimeOffset.UtcNow.AddDays(7), EffectiveModel: "task-model", EffectiveEffort: "low"));
         model.Events.Publish("one", "one");
         model.Events.Publish("two", "two");
         model.Events.Publish("three", "three");
@@ -63,6 +63,8 @@ public sealed class ManagementApiTests
             var executions = JsonDocument.Parse(await client.GetStringAsync("/api/executions")).RootElement;
             Assert.Equal(executionId.ToString(), executions[0].GetProperty("executionId").GetString());
             Assert.Equal("Failed", executions[0].GetProperty("state").GetString());
+            Assert.Equal("task-model", executions[0].GetProperty("effectiveModel").GetString());
+            Assert.Equal("low", executions[0].GetProperty("effectiveEffort").GetString());
             Assert.Equal("recoverable", executions[0].GetProperty("recoveryState").GetString());
             Assert.Equal("base-sha", executions[0].GetProperty("recoveryBaseCommit").GetString());
             Assert.Contains("Workspace retained", executions[0].GetProperty("recoveryStatus").GetString());

@@ -32,6 +32,12 @@ public static class CodexResultParser
 public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     IReadOnlyDictionary<string, string>? projectEnvironment = null) : ICodexExecutor
 {
+    public ICodexExecutor WithProfile(CodexExecutionProfile profile) => new CodexExecutor(runner, new CodexSettings
+    {
+        Model = profile.Model, ReasoningEffort = profile.Effort,
+        InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes
+    }, projectEnvironment);
+
     private static string Executable
     {
         get

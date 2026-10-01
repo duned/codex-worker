@@ -10,7 +10,7 @@ public sealed class ExecutionHistoryStoreTests
         using var database = new TemporaryDatabase();
         var executionId = Guid.NewGuid();
         var started = DateTimeOffset.UtcNow;
-        var initial = Entry(executionId, started);
+        var initial = Entry(executionId, started) with { EffectiveModel = "task-model", EffectiveEffort = "low" };
         using (var store = new ExecutionHistoryStore(database.Path))
             await store.CreateAsync(initial);
 
@@ -30,6 +30,8 @@ public sealed class ExecutionHistoryStoreTests
         using var reopened = new ExecutionHistoryStore(database.Path);
         var actual = Assert.Single(await reopened.ReadAllAsync());
         Assert.Equal(executionId, actual.ExecutionId);
+        Assert.Equal("task-model", actual.EffectiveModel);
+        Assert.Equal("low", actual.EffectiveEffort);
         Assert.Equal("Completed", actual.State);
         Assert.Equal(started.AddMinutes(3), actual.CompletedAtUtc);
         Assert.Equal((long?)180_000, actual.DurationMilliseconds);
@@ -42,6 +44,42 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("base-sha", actual.RecoveryBaseCommit);
         Assert.Contains("Workspace retained", actual.RecoveryStatus);
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => reopened.UpdateAsync(actual with { State = "Failed" }));
+    }
+
+    [Fact]
+    public async Task VersionSixDatabaseMigratesWithoutInventingHistoricalSettings()
+    {
+        using var database = new TemporaryDatabase();
+        var legacy = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow);
+        using (var store = new ExecutionHistoryStore(database.Path))
+            await store.CreateAsync(legacy);
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database.Path }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; PRAGMA user_version = 6;";
+            await command.ExecuteNonQueryAsync();
+        }
+        using var migrated = new ExecutionHistoryStore(database.Path);
+        var entry = Assert.Single(await migrated.ReadAllAsync());
+        Assert.Equal(legacy.ExecutionId, entry.ExecutionId);
+        Assert.Null(entry.EffectiveModel);
+        Assert.Null(entry.EffectiveEffort);
+        await migrated.UpdateAsync(entry with { EffectiveModel = "resolved-model", EffectiveEffort = "high" });
+        Assert.Equal("high", Assert.Single(await migrated.ReadAllAsync()).EffectiveEffort);
+    }
+
+    [Fact]
+    public async Task UpdatesCannotChangeAnExistingProfileIncludingCliDefaultSelection()
+    {
+        using var database = new TemporaryDatabase();
+        using var store = new ExecutionHistoryStore(database.Path);
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { EffectiveEffort = "low" };
+        await store.CreateAsync(entry);
+        await store.UpdateAsync(entry with { EffectiveModel = "changed", EffectiveEffort = "high" });
+        var actual = Assert.Single(await store.ReadAllAsync());
+        Assert.Null(actual.EffectiveModel);
+        Assert.Equal("low", actual.EffectiveEffort);
     }
 
     [Theory]
@@ -170,7 +208,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(6L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(7L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

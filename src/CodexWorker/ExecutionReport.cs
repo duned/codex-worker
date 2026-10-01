@@ -21,7 +21,9 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     bool WorkspacePreserved = false,
     bool RetryAvailable = false,
     IReadOnlyList<string>? SecretValues = null,
-    string? FailureCategory = null)
+    string? FailureCategory = null,
+    string? EffectiveModel = null,
+    string? EffectiveEffort = null)
 {
     public string ToMarkdown(IssueOutcomeKind kind)
     {
@@ -31,6 +33,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             sections.Add("### Execution");
             sections.Add($"Execution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
         }
+        if (EffectiveEffort is not null)
+            sections.Add($"Codex model: `{EffectiveModel ?? "CLI default"}` · effort: `{EffectiveEffort}`.");
         if (AttemptNumber > 1)
             sections.Add($"### Attempt history\n\nCurrent execution " +
                 (ExecutionId is { } currentId ? $"`{ExecutionFormatting.Display(currentId)}` (`{currentId}`)" : "identity unavailable") +
