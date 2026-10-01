@@ -4,6 +4,26 @@
 
 Linux x64 self-contained Server and Worker release archives can be built with [`packaging/release-linux-x64.sh`](packaging/release-linux-x64.sh). Run `packaging/release.sh X.Y.Z` from a clean checkout to build and publish a versioned GitHub Release. See [Linux release packaging](docs/release-packaging.md) for prerequisites, artifact contents, and recovery steps.
 
+## Local developer operations
+
+From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local and does not install a global executable.
+
+```sh
+./cw --help
+./cw status       # or: ./cw s
+./cw deploy       # or: ./cw d
+./cw log          # or: ./cw l
+./cw log -f       # follow the journal
+./cw log -n 300   # show the last 300 lines
+./cw projects     # or: ./cw p
+```
+
+`cw status` summarizes the checkout, Git worktrees, and the `codex-worker` systemd service. `cw projects` reads `projects.directory` from `/etc/codex-worker/worker.yml` and lists the project YAML paths without displaying configuration contents. Set `CW_WORKER_CONFIG` when the local Worker uses a different global configuration.
+
+`cw deploy` publishes this checkout in Release configuration, stages output before replacing `~/apps/codex-worker`, then starts and verifies the systemd service. It may require elevated filesystem or systemd permissions; permission errors are reported directly. Set `CW_DEPLOY_DIR` to use another deployment directory. On successful replacement, the prior deployment is retained beside the target for inspection. This command deploys the local development Worker; it is **not** the GitHub/product release process and does not change the product version. For a host with systemd configured for this local deployment, smoke-test with `./cw deploy`, `systemctl is-active codex-worker`, `./cw status`, and `./cw log`.
+
+The production release workflow remains [`packaging/release.sh`](packaging/release.sh).
+
 ## Install Server + Worker
 
 Use Ubuntu 24.04 x86_64 with sudo, systemd, `curl`, `tar`, and `sha256sum` (plus OpenSSL on the Server). Release archives include .NET; no checkout or .NET SDK/runtime is needed. Run A and B on the Server host and C on the Worker host.
