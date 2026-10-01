@@ -94,6 +94,11 @@ public sealed class WorkerConfigurationAdministrationService : IWorkerConfigurat
         {
             return UpdateFailed(fullPath, setting, "configuration-not-found", ex.Message);
         }
+        catch (UnauthorizedAccessException)
+        {
+            return UpdateFailed(fullPath, setting, "configuration-elevation-required",
+                "Updating the protected Worker configuration requires elevated permissions. Run 'sudo codex-worker config set <setting> <value>' (add '--config <path>' when using a non-default file). The Worker service account can read configuration but cannot write it.");
+        }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
             return UpdateFailed(fullPath, setting, "configuration-update-failed", ex.Message);

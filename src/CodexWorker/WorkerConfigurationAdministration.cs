@@ -1,11 +1,12 @@
 namespace CodexWorker;
 
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using YamlDotNet.RepresentationModel;
 
 /// <summary>Local administration operations for the installed global Worker configuration.</summary>
-public static class WorkerConfigurationAdministration
+public static partial class WorkerConfigurationAdministration
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -205,6 +206,43 @@ public static class WorkerConfigurationAdministration
 
     private static void PreserveUnixMode(string source, string destination)
     {
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        if (OperatingSystem.IsWindows()) return;
+
+        if (OperatingSystem.IsLinux()) PreserveLinuxOwnership(source, destination);
+        File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+    }
+
+    private static void PreserveLinuxOwnership(string source, string destination)
+    {
+        if (NativeMethods.Statx(-100, source, 0, 0x7ff, out var metadata) != 0)
+            throw new IOException("Could not inspect the existing configuration file ownership.", new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError()));
+
+        if (NativeMethods.Chown(destination, metadata.UserId, metadata.GroupId) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            var cause = new System.ComponentModel.Win32Exception(error);
+            if (error is 1 or 13)
+                throw new UnauthorizedAccessException("Elevated permissions are required to preserve the existing configuration file ownership.", cause);
+            throw new IOException("Could not preserve the existing configuration file ownership.", cause);
+        }
+    }
+
+    private static partial class NativeMethods
+    {
+        [LibraryImport("libc", EntryPoint = "statx", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial int Statx(int directoryFileDescriptor, string path, int flags, uint mask, out StatxMetadata metadata);
+
+        [LibraryImport("libc", EntryPoint = "chown", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial int Chown(string path, uint owner, uint group);
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 256)]
+    private struct StatxMetadata
+    {
+        [FieldOffset(20)]
+        public uint UserId;
+
+        [FieldOffset(24)]
+        public uint GroupId;
     }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Diagnostics;
 using CodexWorker;
 
 namespace CodexWorker.Tests;
@@ -136,6 +137,87 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.True(configuration.Worker.Provisioning.Enabled);
         Assert.Equal(new[] { "tool:git:install", "tool:docker:update" }, configuration.Worker.Provisioning.AllowedPrivilegedActions);
         Assert.Empty(Directory.EnumerateFiles(fixture.Root, "*.tmp", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
+    public async Task SetPreservesInstalledUnixAccessModeAndLeavesUpdatedConfigurationReadable()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var fixture = new Fixture();
+        fixture.Write("worker:\n  maxParallelTasks: 1\nprojects:\n  directory: ./projects\n");
+        File.SetUnixFileMode(fixture.Root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        File.SetUnixFileMode(fixture.ConfigPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        var originalOwner = OperatingSystem.IsLinux() ? ReadOwnerGroup(fixture.ConfigPath) : null;
+
+        WorkerConfigurationAdministration.Set(fixture.ConfigPath, "worker.maxParallelTasks", "3");
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead,
+            File.GetUnixFileMode(fixture.ConfigPath));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute, File.GetUnixFileMode(fixture.Root));
+        Assert.Equal(3, GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.MaxParallelTasks);
+        if (originalOwner is not null) Assert.Equal(originalOwner, ReadOwnerGroup(fixture.ConfigPath));
+
+        var (exitCode, output) = await RunAsync("config", "show", "--config", fixture.ConfigPath);
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        Assert.Contains("worker.maxParallelTasks: 3", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SetOnReadOnlyInstalledConfigurationReturnsElevationRemediation()
+    {
+        if (OperatingSystem.IsWindows() || IsRoot()) return;
+
+        using var fixture = new Fixture();
+        fixture.Write("worker:\n  maxParallelTasks: 1\nprojects:\n  directory: ./projects\n");
+        File.SetUnixFileMode(fixture.Root, UnixFileMode.UserRead | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        File.SetUnixFileMode(fixture.ConfigPath, UnixFileMode.UserRead | UnixFileMode.GroupRead);
+
+        try
+        {
+            var result = new WorkerConfigurationAdministrationService().Set(fixture.ConfigPath, "worker.maxParallelTasks", "3");
+
+            Assert.False(result.Succeeded);
+            Assert.Equal("configuration-elevation-required", result.Diagnostic?.Code);
+            Assert.Contains("sudo codex-worker config set", result.Diagnostic?.Message ?? string.Empty, StringComparison.Ordinal);
+            Assert.Equal(1, GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.MaxParallelTasks);
+        }
+        finally
+        {
+            File.SetUnixFileMode(fixture.Root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        }
+    }
+
+    private static string ReadOwnerGroup(string path)
+    {
+        using var process = Process.Start(new ProcessStartInfo("stat")
+        {
+            ArgumentList = { "-c", "%u:%g", path },
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        }) ?? throw new InvalidOperationException("Could not start stat to inspect the configuration file owner.");
+        var ownerGroup = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
+        return ownerGroup;
+    }
+
+    private static bool IsRoot()
+    {
+        using var process = Process.Start(new ProcessStartInfo("id")
+        {
+            ArgumentList = { "-u" },
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        }) ?? throw new InvalidOperationException("Could not start id to inspect the current test user.");
+        var userId = process.StandardOutput.ReadToEnd().Trim();
+        process.WaitForExit();
+        Assert.Equal(0, process.ExitCode);
+        return userId == "0";
     }
 
     [Theory]
