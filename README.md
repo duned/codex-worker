@@ -153,11 +153,13 @@ A structured task failure or exhausted validation repair is safely reported and 
 
 ## Configuration and migration
 
-Copy [`config/worker.example.yml`](config/worker.example.yml) to `~/.codex-worker/worker.yml`, then create its `projects/` directory and add one YAML file per project based on [`config/project.example.yml`](config/project.example.yml). Run:
+Copy [`config/worker.example.yml`](config/worker.example.yml) to `~/.codex-worker/worker.yml` (installed Linux workers default to `/etc/codex-worker/worker.yml`), then create its `projects/` directory and add one YAML file per project based on [`config/project.example.yml`](config/project.example.yml). Run:
 
 ```sh
-CodexWorker ~/.codex-worker/worker.yml
+CodexWorker run --config ~/.codex-worker/worker.yml
 ```
+
+The installed Linux default needs no path: `/opt/codex-worker/CodexWorker run`. Use `CodexWorker --help` to list commands; `status`, `config`, and `capabilities` provide local administration views, while `provision` and `register` retain their typed local provisioning and enrollment flows. The legacy `CodexWorker <worker.yml>` service invocation remains supported. Configuration-taking commands accept `--config <path>`.
 
 Relative `projects.directory` paths resolve from the global config file. Project `directory` paths resolve from their project YAML file; relative `codex.instructionsFile` paths resolve from the checkout. Only `.yml` and `.yaml` files are discovered, sorted by filename; unrelated files are ignored. Any malformed project file fails startup. Standalone mode requires at least one project. Managed mode may start with an empty project directory: it registers, reports zero active projects, and remains healthy and idle while it synchronizes Server configuration. When Server projects are added later, add their matching machine-local project YAML to the configured directory so the Worker has checkout and execution settings; the running Worker discovers it during its next managed configuration sync. Duplicate project names, GitHub repositories, or checkout paths are rejected. `worker.preflightTimeoutSeconds` applies to global execution-readiness preflight and is bounded to 1–300 seconds.
 

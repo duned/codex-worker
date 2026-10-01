@@ -16,6 +16,43 @@ public sealed class CommandLineTests
     }
 
     [Theory]
+    [MemberData(nameof(CommandHelpArguments))]
+    public async Task CommandHelpShowsCommandSpecificUsage(string[] args)
+    {
+        var (exitCode, output) = await RunAsync(args);
+
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        Assert.Contains(args[0] is "--help" or "-h" ? "Usage: codex-worker [command]" : $"Usage: codex-worker {args[0]}", output);
+        Assert.DoesNotContain("--token", output);
+    }
+
+    [Fact]
+    public void CommandLineResolvesLegacyAndExplicitConfigurationForms()
+    {
+        Assert.Equal("legacy.yml", WorkerCommandLine.Parse(["legacy.yml"]).ConfigurationPath);
+        Assert.Equal("override.yml", WorkerCommandLine.Parse(["run", "--config", "override.yml"]).ConfigurationPath);
+        var provisioning = WorkerCommandLine.Parse(["provision", "legacy.yml", "git", "detect"]);
+        Assert.Equal("legacy.yml", provisioning.ConfigurationPath);
+        Assert.Equal(new[] { "git", "detect" }, provisioning.Arguments);
+        Assert.Equal(OperatingSystem.IsLinux() ? WorkerCommandLine.LinuxDefaultConfigurationPath :
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worker.yml"),
+            WorkerCommandLine.DefaultConfigurationPath);
+    }
+
+    [Theory]
+    [InlineData("run", "codex-worker run")]
+    [InlineData("status", "codex-worker status")]
+    [InlineData("config", "codex-worker config")]
+    [InlineData("capabilities", "codex-worker capabilities")]
+    public async Task InvalidCommandArgumentsPointToRelevantHelp(string command, string expectedHelp)
+    {
+        var (exitCode, output) = await RunAsync([command, "unexpected"]);
+
+        Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
+        Assert.Contains(expectedHelp, output);
+    }
+
+    [Theory]
     [InlineData("--help")]
     [InlineData("-h")]
     public async Task RegisterHelpSucceedsAndDocumentsArgumentsAndExampleWithoutRegistration(string help)
@@ -55,6 +92,16 @@ public sealed class CommandLineTests
         new[] { "--help" },
         new[] { "-h" },
         new[] { "worker.yml", "--help" }
+    };
+
+    public static TheoryData<string[]> CommandHelpArguments => new()
+    {
+        new[] { "--help" },
+        new[] { "run", "--help" },
+        new[] { "status", "--help" },
+        new[] { "config", "--help" },
+        new[] { "capabilities", "--help" },
+        new[] { "provision", "--help" }
     };
 
     public static TheoryData<string[]> InvalidRegisterArguments => new()

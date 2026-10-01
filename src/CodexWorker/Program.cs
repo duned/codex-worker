@@ -8,13 +8,6 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var output = new WorkerConsole();
-        if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
-        {
-            PrintHelp(args.Length > 0 && args[0] == "register");
-            return ProcessExitCodes.Success;
-        }
-        if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
-        if (args.Length > 0 && args[0] == "provision") return await ProvisionAsync(args, output);
         if (args is ["--codex-preflight"])
         {
             try
@@ -28,18 +21,39 @@ public static class Program
                 return ProcessExitCodes.StartupFailure;
             }
         }
-        if (args.Length != 1 || args[0].StartsWith("-", StringComparison.Ordinal))
+        WorkerCommandLine commandLine;
+        try { commandLine = WorkerCommandLine.Parse(args); }
+        catch (ArgumentException ex)
         {
-            output.InfrastructureFailure("Invalid command line arguments.");
-            PrintHelp(false);
+            output.InfrastructureFailure($"{ex.Message} Use 'codex-worker --help' for usage.");
             return ProcessExitCodes.StartupFailure;
         }
+        if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
+        {
+            PrintHelp(args.Length > 0 && (args[0] is "--help" or "-h") ? "root" : commandLine.Command);
+            return ProcessExitCodes.Success;
+        }
+        if (commandLine.Command == "register") return await RegisterAsync(args, output);
+        if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output);
+        if (commandLine.Command is "status" or "config") return ShowConfiguration(commandLine, output);
+        if (commandLine.Command == "capabilities") return await ShowCapabilitiesAsync(commandLine, output);
+        if (args.Length > 0 && args[0].StartsWith("-", StringComparison.Ordinal) && args[0] != "--config")
+        {
+            output.InfrastructureFailure($"Unknown option '{args[0]}'. Use 'codex-worker --help' for usage.");
+            return ProcessExitCodes.StartupFailure;
+        }
+        if (commandLine.Arguments.Count > 0)
+        {
+            output.InfrastructureFailure("Unexpected run arguments. Use 'codex-worker run --help' for usage.");
+            return ProcessExitCodes.StartupFailure;
+        }
+        var configurationPath = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
 
         GlobalWorkerConfiguration? global = null;
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects = [];
         try
         {
-            global = GlobalWorkerConfiguration.Load(args[0]);
+            global = GlobalWorkerConfiguration.Load(configurationPath);
             TelegramNotifier.ValidateConfiguration(global.Telegram.Enabled,
                 Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"), Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID"));
             projects = ProjectConfigurationDiscovery.LoadForWorker(global);
@@ -68,18 +82,19 @@ public static class Program
         catch (Exception ex) { return ExitCodeFor(ex); }
     }
 
-    private static async Task<int> ProvisionAsync(string[] args, WorkerConsole output)
+    private static async Task<int> ProvisionAsync(WorkerCommandLine commandLine, WorkerConsole output)
     {
         try
         {
-            if (args.Length is not (4 or 5) || args.Length == 5 && args[4] != "--allow-elevation" ||
-                !Enum.TryParse<CodexProvisioning.ProvisioningCommandAction>(args[3], true, out var action) ||
-                !Enum.IsDefined(action) || !args[3].All(char.IsAsciiLetter))
-                throw new ArgumentException("Usage: codex-worker provision <worker.yml> <capability-id> <action> [--allow-elevation]");
-            var configuration = GlobalWorkerConfiguration.Load(args[1]);
+            var args = commandLine.Arguments;
+            var allowElevation = args.Count == 3 && args[2] == "--allow-elevation";
+            if (args.Count is not (2 or 3) || args.Count == 3 && !allowElevation ||
+                !Enum.TryParse<CodexProvisioning.ProvisioningCommandAction>(args[1], true, out var action) ||
+                !Enum.IsDefined(action) || !args[1].All(char.IsAsciiLetter))
+                throw new ArgumentException("Invalid provisioning arguments. Use 'codex-worker provision --help' for usage.");
+            var configuration = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath);
             var identity = await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath);
-            var request = new CodexProvisioning.ProvisioningCommandRequest(identity, args[2], action,
-                AllowElevation: args.Length == 5);
+            var request = new CodexProvisioning.ProvisioningCommandRequest(identity, args[0], action, AllowElevation: allowElevation);
             using var stop = new CancellationTokenSource();
             using var signal = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM,
                 context => { context.Cancel = true; stop.Cancel(); });
@@ -162,36 +177,117 @@ public static class Program
         catch (Exception ex)
         {
             output.InfrastructureFailure($"Worker registration failed: {FailureDiagnosticRedactor.Redact(ex.Message, [token ?? string.Empty])}");
-            if (ex is ArgumentException) PrintHelp(true);
+            if (ex is ArgumentException) PrintHelp("register");
             return ProcessExitCodes.StartupFailure;
         }
     }
 
-    private static void PrintHelp(bool register)
+    private static int ShowConfiguration(WorkerCommandLine commandLine, WorkerConsole output)
     {
-        if (!register)
+        if (commandLine.Arguments.Count != 0)
         {
-            Console.WriteLine("Usage: codex-worker <worker.yml> | codex-worker register [options]");
-            Console.WriteLine("Use 'codex-worker register --help' for registration options and examples.");
-            Console.WriteLine("  -h, --help                     Show help without running an operation.");
-            Console.WriteLine("  provision <worker.yml> <capability-id> <action> [--allow-elevation]");
-            Console.WriteLine("                                Run a typed capability operation under local provisioning policy.");
-            Console.WriteLine("  --codex-preflight              Check Codex execution/authentication without projects or Server access.");
+            output.InfrastructureFailure($"Unexpected {commandLine.Command} arguments. Use 'codex-worker {commandLine.Command} --help' for usage.");
+            return ProcessExitCodes.StartupFailure;
+        }
+        var path = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
+        try
+        {
+            var configuration = GlobalWorkerConfiguration.Load(path);
+            var projects = ProjectConfigurationDiscovery.LoadForWorker(configuration);
+            Console.WriteLine($"Configuration: {Path.GetFullPath(path)}");
+            Console.WriteLine($"Ownership: {configuration.Projects.Ownership}");
+            Console.WriteLine($"Projects: {projects.Count}");
+            Console.WriteLine($"Server: {(configuration.Server.Enabled ? "enabled" : "disabled")}");
+            if (commandLine.Command == "config") Console.WriteLine("Configuration is valid.");
+            return ProcessExitCodes.Success;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            output.InfrastructureFailure($"Configuration error: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            return ProcessExitCodes.StartupFailure;
+        }
+    }
+
+    private static async Task<int> ShowCapabilitiesAsync(WorkerCommandLine commandLine, WorkerConsole output)
+    {
+        if (commandLine.Arguments.Count != 0)
+        {
+            output.InfrastructureFailure("Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
+            return ProcessExitCodes.StartupFailure;
+        }
+        try
+        {
+            if (commandLine.ConfigurationPath is not null)
+                _ = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath);
+            var capabilities = await new WorkerCapabilityDiscovery().DiscoverAsync();
+            foreach (var capability in capabilities)
+                Console.WriteLine($"{capability.Type}/{capability.Name}{(capability.Version is null ? "" : $" {capability.Version}")}");
+            return ProcessExitCodes.Success;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            output.InfrastructureFailure($"Capability discovery failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            return ProcessExitCodes.StartupFailure;
+        }
+    }
+
+    private static void PrintHelp(string command)
+    {
+        if (command == "register")
+        {
+            Console.WriteLine("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
+            Console.WriteLine();
+            Console.WriteLine("Options:");
+            Console.WriteLine("  --server <url>                 Required. Codex Server base URL (HTTP or HTTPS).");
+            Console.WriteLine("  --token <registration-token>   Required unless --token-stdin. One-time registration token.");
+            Console.WriteLine("  --token-stdin                  Read the token from stdin; mutually exclusive with --token.");
+            Console.WriteLine("  --capacity <1..8>              Optional. Execution capacity; defaults to 1.");
+            Console.WriteLine("  --identity-file <path>         Optional. Worker identity path; defaults to ~/.codex-worker/worker-id.");
+            Console.WriteLine("  -h, --help                     Show help without contacting the Server or writing identity files.");
+            Console.WriteLine();
+            Console.WriteLine("Example:");
+            Console.WriteLine("  codex-worker register --server https://server.example --token <registration-token>");
+            Console.WriteLine("  codex-worker register --server https://server.example --token-stdin --capacity 2");
             return;
         }
-        Console.WriteLine("Usage: codex-worker register --server <url> (--token <registration-token> | --token-stdin) [--capacity 1..8] [--identity-file <path>]");
-        Console.WriteLine();
-        Console.WriteLine("Options:");
-        Console.WriteLine("  --server <url>                 Required. Codex Server base URL (HTTP or HTTPS).");
-        Console.WriteLine("  --token <registration-token>   Required unless --token-stdin. One-time registration token.");
-        Console.WriteLine("  --token-stdin                  Read the token from stdin; mutually exclusive with --token.");
-        Console.WriteLine("  --capacity <1..8>              Optional. Execution capacity; defaults to 1.");
-        Console.WriteLine("  --identity-file <path>         Optional. Worker identity path; defaults to ~/.codex-worker/worker-id.");
-        Console.WriteLine("  -h, --help                     Show help without contacting the Server or writing identity files.");
-        Console.WriteLine();
-        Console.WriteLine("Example:");
-        Console.WriteLine("  codex-worker register --server https://server.example --token <registration-token>");
-        Console.WriteLine("  codex-worker register --server https://server.example --token-stdin --capacity 2");
+        var configOption = "[--config <path>]";
+        switch (command)
+        {
+            case "run":
+                Console.WriteLine($"Usage: codex-worker run {configOption}");
+                Console.WriteLine("Start normal Worker execution.");
+                Console.WriteLine($"Default configuration: {WorkerCommandLine.DefaultConfigurationPath}");
+                Console.WriteLine("Example: codex-worker run --config /path/to/worker.yml");
+                break;
+            case "status":
+                Console.WriteLine($"Usage: codex-worker status {configOption}");
+                Console.WriteLine("Show local Worker configuration status without starting execution.");
+                Console.WriteLine("Example: codex-worker status");
+                break;
+            case "config":
+                Console.WriteLine($"Usage: codex-worker config {configOption}");
+                Console.WriteLine("Validate configuration and show its resolved project summary.");
+                Console.WriteLine("Example: codex-worker config --config /path/to/worker.yml");
+                break;
+            case "capabilities":
+                Console.WriteLine($"Usage: codex-worker capabilities {configOption}");
+                Console.WriteLine("Discover locally available execution tools and versions.");
+                Console.WriteLine("Example: codex-worker capabilities");
+                break;
+            case "provision":
+                Console.WriteLine($"Usage: codex-worker provision {configOption} <capability-id> <action> [--allow-elevation]");
+                Console.WriteLine("Run a typed local capability operation under Worker provisioning policy.");
+                Console.WriteLine("Example: codex-worker provision --config /etc/codex-worker/worker.yml git detect");
+                break;
+            default:
+                Console.WriteLine("Usage: codex-worker [command] [options]");
+                Console.WriteLine("Commands: run, status, config, capabilities, provision, register");
+                Console.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
+                Console.WriteLine($"Normal execution defaults to {WorkerCommandLine.DefaultConfigurationPath}.");
+                Console.WriteLine("Legacy: codex-worker <worker.yml>");
+                break;
+        }
+        Console.WriteLine("Options: -h, --help  Show this help.");
     }
 
     internal static int ExitCodeFor(Exception? failure) => failure switch
