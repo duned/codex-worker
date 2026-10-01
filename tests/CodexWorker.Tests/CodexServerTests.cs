@@ -4,11 +4,14 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
+using CodexProvisioning;
 using CodexServer;
+using CodexWorker;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using ServerWorkerCapability = CodexServer.WorkerCapability;
+using WorkerCapability = CodexServer.WorkerCapability;
 
 [CollectionDefinition("ServerTokenEnvironment", DisableParallelization = true)]
 public sealed class ServerTokenEnvironmentCollection { }
@@ -374,6 +377,77 @@ public sealed class CodexServerTests
             using var workers = JsonDocument.Parse(await management.GetStringAsync("/api/v1/workers"));
             Assert.Single(workers.RootElement.EnumerateArray());
             Assert.Equal(identity, workers.RootElement[0].GetProperty("workerId").GetString());
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
+    }
+
+    [Fact]
+    public async Task ManagedNotReadyHeartbeatIsAcceptedAndWorkerRemainsOnlineButCannotReceiveWork()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "not-ready-management-token");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "not-ready.db")));
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var project = await store.CreateProjectAsync(new CentralProjectDefinition("Agent project", "team/project", "main", "",
+                [new("agent-provider", "codex")]));
+            await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "130")));
+            var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
+            var identityPath = Path.Combine(temporary.Path, "worker-id");
+            var settings = new WorkerServerSettings
+            {
+                Enabled = true,
+                Url = url,
+                IdentityFile = identityPath
+            };
+            using var workerClient = new HttpClient { BaseAddress = new Uri(url) };
+            var registration = new WorkerRegistrationClient(workerClient, TestCapabilityDiscovery.Create());
+            await registration.BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
+            var workerId = await WorkerIdentity.LoadOrCreateAsync(identityPath);
+
+            await registration.HeartbeatAsync(settings, 1, 0, [], WorkerLifecycleStates.NotReady, CancellationToken.None, []);
+            await registration.HeartbeatAsync(settings, 1, 0, [], WorkerLifecycleStates.NotReady, CancellationToken.None, []);
+
+            var worker = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(workerId));
+            Assert.Equal("online", worker.Availability);
+            Assert.Equal(WorkerLifecycleStates.NotReady, worker.LifecycleState);
+            using var managementClient = new HttpClient { BaseAddress = new Uri(url) };
+            managementClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer", "not-ready-management-token");
+            var diagnostics = await managementClient.GetFromJsonAsync<WorkerDiagnostics>($"/api/v1/workers/{workerId}/diagnostics");
+            Assert.NotNull(diagnostics);
+            Assert.Equal("online", diagnostics.Availability);
+            Assert.False(Assert.Single(diagnostics.Projects).IsEligible);
+            Assert.Contains(diagnostics.Reasons, reason => reason.Contains("AI agent unavailable", StringComparison.Ordinal));
+
+            workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer", WorkerAuthentication.GetToken(settings));
+            var assignmentResponse = await workerClient.PostAsJsonAsync($"/api/v1/workers/{workerId}/assignments/request",
+                new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 }));
+            Assert.Equal(HttpStatusCode.OK, assignmentResponse.StatusCode);
+            var assignment = await assignmentResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>();
+            Assert.NotNull(assignment);
+            Assert.False(assignment.HasWork);
+            Assert.Equal("Queued", Assert.Single(await store.GetExecutionsAsync()).State);
+
+            var invalidHeartbeat = new
+            {
+                contractVersion = 2,
+                workerId,
+                workerVersion = "1.0",
+                lifecycleState = "unknown-state",
+                activeExecutions = 0,
+                maximumCapacity = 1,
+                capabilities = Array.Empty<object>(),
+                activeProjects = Array.Empty<string>()
+            };
+            Assert.Equal(HttpStatusCode.BadRequest, (await workerClient.PostAsJsonAsync(
+                $"/api/v1/workers/{workerId}/heartbeat", invalidHeartbeat)).StatusCode);
+            await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
@@ -1579,9 +1653,9 @@ public sealed class CodexServerTests
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private static WorkerCapability[] AuthenticationCapabilities(string repository) =>
+    private static ServerWorkerCapability[] AuthenticationCapabilities(string repository) =>
         [.. WorkerAuthenticationRequirements.ForRepository(repository).Select(requirement =>
-            new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)), new WorkerCapability("agent-provider", "codex")];
+            new ServerWorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)), new ServerWorkerCapability("agent-provider", "codex")];
 
     private sealed class TemporaryDirectory : IDisposable
     {

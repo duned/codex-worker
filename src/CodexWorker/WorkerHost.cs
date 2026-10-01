@@ -1,5 +1,7 @@
 namespace CodexWorker;
 
+using CodexProvisioning;
+
 /// <summary>Global host with bounded execution concurrency across independently configured projects.</summary>
 public sealed class WorkerHost
 {
@@ -53,7 +55,7 @@ public sealed class WorkerHost
         var active = new Dictionary<Task<IssueProcessingResult?>, ProjectRuntime>();
         var leaseRenewals = new Dictionary<Task<IssueProcessingResult?>, (CancellationTokenSource Stop, Task Run)>();
         CancellationTokenSource? executionCancellation = null;
-        WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), "starting");
+        WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), WorkerLifecycleStates.Starting);
         IReadOnlyList<WorkerCapabilityContract> heartbeatCapabilities = [];
         WorkerHeartbeatLoop? heartbeat = null;
         async Task ReportProvisionedCapabilitiesAsync(IReadOnlyList<WorkerCapabilityContract> capabilities, CancellationToken token)
@@ -228,7 +230,7 @@ public sealed class WorkerHost
                     .Distinct().ToArray());
                 if (_global.Server.Enabled)
                     await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
-                        Array.Empty<string>(), "starting", token, heartbeatCapabilities, managedConfiguration?.Status);
+                        Array.Empty<string>(), WorkerLifecycleStates.Starting, token, heartbeatCapabilities, managedConfiguration?.Status);
                 await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, token);
                 if (healthyRuntimes.Count > 0)
                 {
@@ -267,7 +269,8 @@ public sealed class WorkerHost
                     (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration)));
                 lifecycle.SetExecutionReadiness(ready);
                 runtimeReadModel.State = runtimeReadModel.Registry.WorkerDraining
-                    ? (active.Count == 0 ? "drained" : "draining") : ready ? "running" : "not-ready";
+                    ? (active.Count == 0 ? WorkerLifecycleStates.Drained : WorkerLifecycleStates.Draining) :
+                    ready ? WorkerLifecycleStates.Running : WorkerLifecycleStates.NotReady;
                 Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = runtimeReadModel.State });
                 await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
             }
@@ -342,7 +345,7 @@ public sealed class WorkerHost
                     runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
                     ReportCapacity();
                     runtimeReadModel.Events.Publish("execution.finished", "Execution finished.", project.Configuration.Project.Name);
-                    Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
+                    Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), WorkerLifecycleStates.Running));
                 }
 
                 if (_global.Server.Enabled && _global.Projects.Ownership == "managed" && active.Count == 0 &&
@@ -515,7 +518,7 @@ public sealed class WorkerHost
                         active.Add(assignedExecution, assignedProject);
                         ReportCapacity();
                         leaseRenewals.Add(assignedExecution, (leaseStop, leaseRenewal));
-                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
+                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), WorkerLifecycleStates.Running));
                         runtimeReadModel.Events.Publish("execution.started", $"Server assignment {assignment.AssignmentId} started.", assignedProject.Configuration.Project.Name);
                         foundWork = true;
                         continue;
@@ -545,7 +548,7 @@ public sealed class WorkerHost
                         if (execution is null) { runtimeReadModel.Registry.Release(project.Configuration.Project.Name); continue; }
                         active.Add(execution, project);
                         ReportCapacity();
-                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), "running"));
+                        Volatile.Write(ref heartbeatStatus, new WorkerHeartbeatStatus(active.Count, active.Values.Select(value => value.Configuration.Project.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), WorkerLifecycleStates.Running));
                         runtimeReadModel.Events.Publish("execution.started", "Execution claimed.", project.Configuration.Project.Name);
                         scheduler.Selected(index);
                         selected = true;
