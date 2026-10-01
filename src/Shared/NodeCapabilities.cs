@@ -32,8 +32,8 @@ public static class CapabilityCatalog
 {
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
-        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration"]),
-        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "checkauthentication", "logout"]),
+        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
+        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "checkauthentication", "logout"]),
         new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "checkauthentication", "logout"])
     ]);
 
@@ -66,7 +66,7 @@ public static class CapabilityCatalog
             (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
             state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" &&
             state.Operation.DiagnosticCode is null or "operation-failed" &&
-            state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration");
+            state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration" or "prepareauthentication" or "generatesshkey" or "inspectsshkey" or "removesshkey" or "verifyrepositoryaccess");
     }
 }
 
@@ -114,7 +114,7 @@ public sealed class NodeCapabilityDiscovery
                     }
                     if (version.ExitCode == 0 && definition.RequiresAuthentication)
                     {
-                        var auth = await _run(definition.Executable, definition.Id == "github-cli" ? ["auth", "status"] : ["login", "status"], cancellationToken);
+                        var auth = await _run(definition.Executable, definition.Id == "github-cli" ? ["auth", "status", "--hostname", "github.com"] : ["login", "status"], cancellationToken);
                         state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
                             DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
                     }
@@ -129,7 +129,7 @@ public sealed class NodeCapabilityDiscovery
                 {
                     state = state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
                 }
-                catch (Exception ex) when (ex is TimeoutException or InvalidOperationException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or IOException or UnauthorizedAccessException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
                 {
                     state = state with { Health = CapabilityHealth.Error, DiagnosticCode = "probe-failed" };
                 }
@@ -193,6 +193,7 @@ public sealed class NodeCapabilityDiscovery
             { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["LC_ALL"] = "C";
+        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, cancellationToken);
         process.Start();
         var stdout = DrainAsync(process.StandardOutput, timeout.Token);
         var stderr = DrainAsync(process.StandardError, timeout.Token);

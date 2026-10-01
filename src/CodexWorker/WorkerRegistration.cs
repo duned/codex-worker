@@ -396,8 +396,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 command.DeadlineUtc > command.StartedAtUtc.Value.AddSeconds(command.Request.TimeoutSeconds))
                 throw new InvalidDataException("Invalid provisioning command identity or deadline.");
             var action = command.Request.Action;
-            var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration;
-            var type = action is ProvisioningCommandAction.Logout or ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
+            var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess;
+            var type = NodeGitHubSetup.Handles(command.Request) || action == ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
             var key = $"{type}:{command.Request.CapabilityId}:{action}".ToLowerInvariant();
             var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
             var permitted = !policy.DeniedActions.Contains(key, StringComparer.OrdinalIgnoreCase) &&

@@ -77,7 +77,7 @@ public sealed class ProvisioningCommandTests
         Assert.Equal(2, calls.Count);
         Assert.All(calls, call => Assert.Equal("/usr/bin/sudo", call.Executable));
         Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "update" }, calls[0].Arguments);
-        Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "git" }, calls[1].Arguments);
+        Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "git", "openssh-client" }, calls[1].Arguments);
     }
 
     [Fact]
@@ -218,6 +218,14 @@ public sealed class ProvisioningCommandTests
             Assert.True(await registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None));
             Assert.Equal(ProvisioningDiagnostic.Denied, handler.Report!.Diagnostic);
             Assert.Equal(0, probes);
+            foreach (var action in new[] { ProvisioningCommandAction.GenerateSshKey, ProvisioningCommandAction.PrepareAuthentication })
+            {
+                handler.Operation = Running(new(workerId, action == ProvisioningCommandAction.GenerateSshKey ? "git" : "github-cli", action));
+                Assert.True(await registration.ExecuteProvisioningCommandAsync(settings,
+                    new ProvisioningPolicy { Enabled = true, AllowNonPrivileged = true }, CancellationToken.None));
+                Assert.Equal(ProvisioningDiagnostic.Denied, handler.Report!.Diagnostic);
+                Assert.Equal(0, probes);
+            }
             handler.Operation = handler.Operation with { Request = handler.Operation.Request with { NodeId = new string('b', 32) } };
             await Assert.ThrowsAsync<InvalidDataException>(() => registration.ExecuteProvisioningCommandAsync(settings, new(), CancellationToken.None));
             Assert.Equal(0, probes);

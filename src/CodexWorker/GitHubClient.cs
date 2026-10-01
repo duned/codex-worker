@@ -12,8 +12,9 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
 
     public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds)
-        : this(repository, (arguments, ct) => runner.RunAsync("gh", arguments,
-            Environment.CurrentDirectory, TimeSpan.FromSeconds(timeoutSeconds), ct)) { }
+        : this(repository, async (arguments, ct) => await runner.RunAsync("gh", arguments,
+            Environment.CurrentDirectory, TimeSpan.FromSeconds(timeoutSeconds), ct,
+            environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct))) { }
 
     internal GitHubClient(string repository,
         Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand)

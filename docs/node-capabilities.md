@@ -44,8 +44,9 @@ Worker operation state is projected from the latest applicable provisioning
 plan, including the current action and a fixed failure diagnostic code. Running
 operations and disconnected Workers expose no available actions. The initial
 catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
-tools, plus `checkconfiguration` for Git and `checkauthentication`/`logout` for
-GitHub CLI and Codex CLI. These indicate registered operations, not permission to mutate a node:
+tools, plus `checkconfiguration` and SSH key/access actions for Git,
+`prepareauthentication`/`checkauthentication`/`logout` for GitHub CLI, and
+`checkauthentication`/`logout` for Codex CLI. These indicate registered operations, not permission to mutate a node:
 local policy and platform support are checked at execution.
 
 The registry retains the latest Worker report in its existing registration and
@@ -54,8 +55,9 @@ snapshot, not authoritative machine configuration; disconnected snapshots and ob
 marked stale. Server facts are never persisted. Detection drains bounded process
 output but exports only parsed numeric versions and fixed diagnostic codes.
 Inventory input validation rejects arbitrary diagnostic strings and unknown IDs;
-credentials, keys, tokens, user identities, and raw command output are not API
-metadata.
+credentials, private keys, tokens, user identities, and raw command output are not
+API metadata. Validated public SSH identities are returned only by explicit
+generate/inspect commands.
 
 ## Managed tool lifecycle policy
 
@@ -122,12 +124,98 @@ remains available. Running commands are never automatically replayed, including
 when a deadline passes or an acknowledgement is lost. Existing API reconciliation
 still requires verified node quiescence.
 
-The command API currently supports checking authentication and logout, but does
-not expose remote login/device authorization. The dashboard states that limitation
-and directs operators to authenticate in the service account environment and
-re-detect afterward. It does not collect credentials, fetch secret-delivery
+GitHub login preparation directs operators to complete browser/device authorization
+in a terminal on the node as the service account, then check authentication.
+Codex authentication is completed in the service account environment and checked
+afterward. The dashboard does not collect credentials, fetch secret-delivery
 endpoints, or display raw process logs, tokens or private keys. Operation status
 and fixed diagnostic codes are the supported sanitized progress/error record.
 
 Dashboard behavior checks run without external services:
 `node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.
+
+## Git/GitHub node setup
+
+The Server dashboard's **Node provisioning** panel uses the existing
+management-authenticated command queue for both Server and Worker nodes. It shows
+installation/version/update, authentication, Git identity and operation states.
+Tool removal retains authentication, configuration and repositories. Git install
+also ensures the distribution `openssh-client` package; uninstall leaves it in
+place. Git identity (`user.name`/`user.email`) remains node-local configuration,
+separate from installation and repository access.
+
+### GitHub CLI authentication
+
+`github-cli:PrepareAuthentication` creates a mode-0700 product directory under
+the effective service account's `$HOME/.local/share/codex-provisioning/github`.
+An ownership marker distinguishes this directory from unrelated authentication;
+preexisting unowned directories and linked paths are rejected. The dashboard
+then directs the operator to a terminal on that node **as the service account**:
+
+```sh
+env -u GH_TOKEN -u GITHUB_TOKEN \
+  GH_CONFIG_DIR="$HOME/.local/share/codex-provisioning/github" \
+  gh auth login --hostname github.com --git-protocol ssh --web \
+    --skip-ssh-key
+```
+
+The browser/device flow runs entirely on the node. Neither device codes nor
+login output nor tokens traverse Server reports or the UI. gh uses its default
+credential storage; configure a secure node-local credential store for the service
+account. Setup refuses existing unrelated gh authentication configuration to avoid
+sharing or overwriting operator keyring credentials. Node provisioning requires
+Linux; the interactive flow requires a local terminal and a compatible gh. Choose **Check authentication** after completion:
+`gh auth status --hostname github.com` verifies live CLI authentication, and
+inventory is refreshed. Once prepared, trusted Worker gh calls and local
+capability probes select this product directory; existing operator gh config is
+untouched. Existing environment credentials can still satisfy CLI authentication
+and are not removed or revoked by product logout. Codex's child environment
+continues to exclude GitHub authentication.
+
+`github-cli:Logout` invokes gh logout for github.com within the verified product
+context, then checks that authentication is no longer satisfied. It preserves
+unrelated accounts and refuses unrelated gh authentication configurations. Log out
+before uninstalling gh (or reinstall gh to log out). It removes cached
+authentication, not the GitHub-side authorization;
+revoke that separately when needed. The existing assigned-credential delivery
+flow retains its existing authorization boundary and uses the prepared product
+context when present. Trusted Git calls pass that context to gh credential helpers.
+This setup adds no central secret storage.
+
+### Dedicated repository SSH identity
+
+Git supports `GenerateSshKey`, `InspectSshKey`, `RemoveSshKey`, and
+`VerifyRepositoryAccess`. Generation explicitly creates an unencrypted Ed25519
+service key at `$HOME/.local/share/codex-provisioning/ssh/github_ed25519`, owned by
+the node service account, with mode 0600 in a mode-0700 directory. Private keys
+never enter the registry, API, dashboard or reports. Generate/inspect reports
+contain only a validated public key and its SHA256 fingerprint. Register the
+public key as an appropriately scoped GitHub account or deploy key.
+
+Generation refuses any existing key or public-key file. Inspection/removal
+requires the product ownership comment, safe permissions, and a matching public
+key derived from the private key. Linked paths are rejected. Replacement is an
+explicit remove followed by generate; remove the old GitHub registration
+separately. Partial or invalid keypairs left after interruption are preserved for
+node-local inspection/reconciliation, never automatically overwritten/deleted.
+Existing `~/.ssh` identities and SSH configuration are untouched.
+
+Verification accepts only a bounded `owner/repository` identifier. It runs a
+read-only `git ls-remote` against fixed `github.com`, using the dedicated key,
+`IdentitiesOnly=yes`, `BatchMode=yes`, `StrictHostKeyChecking=yes` and no SSH
+configuration file. Establish a trusted GitHub host key in the service account's
+known_hosts through your normal node administration process first. There is no
+trust-on-first-use bypass or automatic key scan. A successful read does not
+establish push permission or Worker execution readiness. To select this key for
+execution, configure the canonical checkout's repository-local `core.sshCommand`
+as that service account, with the same SSH options and absolute key path; keep
+this configuration outside task worktrees. No remote-supplied filesystem path,
+host, URL, executable, package, or shell command is accepted.
+
+Worker authentication mutations require provisioning enabled, `allow_credentials`
+and `allow_non_privileged`; denied action keys use
+`authentication:<capability>:<action>` in lowercase. Inspection and verification
+are read-only actions (still subject to denied-action policy). Server mutations
+require `enable_local_provisioning`; package changes additionally require local
+elevation permission. Deadlines, cancellation, at-most-once dispatch and
+uncertain-operation reconciliation follow the existing provisioning contracts.

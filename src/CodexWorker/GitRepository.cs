@@ -769,7 +769,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         try
         {
-            var result = await runner.RunAsync("git", args, workingDirectory, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct);
+            var result = await runner.RunAsync("git", args, workingDirectory, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct,
+                environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct));
             if (result.ExitCode != 0 && !(allowExitCodes?.Contains(result.ExitCode) ?? false))
             {
                 var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;

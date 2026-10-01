@@ -90,15 +90,21 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         CancellationToken token = default) => await ChangeAsync(id, operation =>
     {
         if (!ProvisioningCommandProtocol.ValidReport(report)) throw new InvalidDataException("Invalid operation report.");
+        if (report.PublicIdentity is not null && operation.Request.Action is not
+            (ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey))
+            throw new InvalidDataException("Unexpected public identity.");
+        if (report.Status == ProvisioningCommandStatus.Succeeded && report.PublicIdentity is null &&
+            operation.Request.Action is ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey)
+            throw new InvalidDataException("Public identity is required for this action.");
         if (operation.Request.NodeId != node) throw new InvalidOperationException("Operation is not owned by this node.");
         if (ProvisioningCommandProtocol.Terminal(operation.Status))
         {
-            if (operation.Status == report.Status && operation.Diagnostic == report.Diagnostic) return operation;
+            if (operation.Status == report.Status && operation.Diagnostic == report.Diagnostic && operation.PublicIdentity == report.PublicIdentity) return operation;
             throw new InvalidOperationException("Operation is already terminal.");
         }
         if (operation.Status != ProvisioningCommandStatus.Running) throw new InvalidOperationException("Operation has not been dispatched.");
         return operation with { Status = report.Status, Diagnostic = report.Diagnostic,
-            CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
+            PublicIdentity = report.PublicIdentity, CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
     }, token);
 
     public async Task<ProvisioningCommand?> CancelAsync(string id, CancellationToken token = default) => await ChangeAsync(id, operation =>

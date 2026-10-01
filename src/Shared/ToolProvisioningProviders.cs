@@ -31,7 +31,7 @@ internal static class ToolProvisioningProviders
         var remove = action == ProvisioningCommandAction.Uninstall;
         if (AptPackage(id) is { } package)
             return remove ? [Apt("remove", "-y", package)] :
-                [Apt("update"), Apt("install", "-y", "--no-install-recommends", package)];
+                [Apt("update"), new("/usr/bin/apt-get", ["install", "-y", "--no-install-recommends", package, .. id == "git" ? new[] { "openssh-client" } : Array.Empty<string>()])];
         if (id != "codex-cli") throw new InvalidOperationException("Unsupported tool provider.");
         // Use the stable official npm channel, a system prefix and private product cache.
         // No nvm, shell initialization, operator HOME, npmrc, purge or autoremove.

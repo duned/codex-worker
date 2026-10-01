@@ -11,8 +11,9 @@ public sealed class GitHubAuthenticationProvisioner : IAuthenticationActionExecu
     public GitHubAuthenticationProvisioner(ProcessRunner runner, Func<string, GitHubClient?> githubForRepository,
         Func<string, GitRepository?> gitForRepository,
         Func<string, CancellationToken, Task<WorkerCredentialContract?>> retrieveCredential)
-        : this((executable, arguments, directory, timeout, cancellationToken, input) =>
-                runner.RunAsync(executable, arguments, directory, timeout, cancellationToken, standardInput: input),
+        : this(async (executable, arguments, directory, timeout, cancellationToken, input) =>
+                await runner.RunAsync(executable, arguments, directory, timeout, cancellationToken,
+                    environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(cancellationToken), standardInput: input),
             githubForRepository, gitForRepository, retrieveCredential) { }
 
     internal GitHubAuthenticationProvisioner(

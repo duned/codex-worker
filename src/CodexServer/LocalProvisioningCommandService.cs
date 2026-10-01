@@ -15,8 +15,9 @@ public sealed class LocalProvisioningCommandService(ProvisioningCommandStore sto
             if (command is not null)
             {
                 var permitted = command.Request.Action is ProvisioningCommandAction.Detect or
-                    ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration ||
-                    configuration.EnableLocalProvisioning && (command.Request.Action == ProvisioningCommandAction.Logout ||
+                    ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or
+                    ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess ||
+                    configuration.EnableLocalProvisioning && (NodeGitHubSetup.Handles(command.Request) ||
                         configuration.AllowLocalProvisioningElevation && command.Request.AllowElevation);
                 var report = await executor.ExecuteAsync(command, permitted, stoppingToken);
                 await store.ReportAsync(command.Id, "server", report, CancellationToken.None);

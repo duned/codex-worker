@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Text.Json.Serialization;
 
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandAction>))]
-public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration }
+public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration, PrepareAuthentication, GenerateSshKey, InspectSshKey, RemoveSshKey, VerifyRepositoryAccess }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandStatus>))]
 public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Cancelled, TimedOut }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
@@ -13,33 +13,39 @@ public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, 
 // No free-form arguments, shell text, credentials, paths or package names cross this boundary.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ProvisioningCommandRequest(string NodeId, string CapabilityId, ProvisioningCommandAction Action,
-    int TimeoutSeconds = 120, bool AllowElevation = false);
+    int TimeoutSeconds = 120, bool AllowElevation = false, string? Repository = null);
 public sealed record ProvisioningCommand(string Id, ProvisioningCommandRequest Request, DateTimeOffset CreatedAtUtc,
     ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, DateTimeOffset? StartedAtUtc = null,
-    DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null);
+    DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null, SshPublicIdentity? PublicIdentity = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic);
+public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, SshPublicIdentity? PublicIdentity = null);
 
 public static class ProvisioningCommandProtocol
 {
     public static bool Valid(ProvisioningCommandRequest? request) => request is not null &&
         (request.NodeId == "server" || Guid.TryParseExact(request.NodeId, "N", out _)) &&
         CapabilityCatalog.Definitions.Any(item => item.Id == request.CapabilityId) && Enum.IsDefined(request.Action) &&
-        request.TimeoutSeconds is >= 5 and <= 600;
+        request.TimeoutSeconds is >= 5 and <= 600 &&
+        (request.Action == ProvisioningCommandAction.VerifyRepositoryAccess
+            ? request.Repository is not null && request.Repository.Length <= 140 && System.Text.RegularExpressions.Regex.IsMatch(request.Repository, @"\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}\z") && !request.Repository.EndsWith("/..", StringComparison.Ordinal) && !request.Repository.EndsWith("/.", StringComparison.Ordinal) && !request.Repository.EndsWith("/.git", StringComparison.Ordinal)
+            : request.Repository is null);
 
     public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
     {
         ProvisioningCommandAction.Detect => true,
         ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId is "git" or "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
-        ProvisioningCommandAction.CheckConfiguration => request.CapabilityId == "git",
+        ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
+            ProvisioningCommandAction.RemoveSshKey or ProvisioningCommandAction.VerifyRepositoryAccess => request.CapabilityId == "git",
+        ProvisioningCommandAction.PrepareAuthentication => request.CapabilityId == "github-cli",
         _ => false
     };
 
     public static bool Terminal(ProvisioningCommandStatus status) => status is ProvisioningCommandStatus.Succeeded or
         ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.Cancelled or ProvisioningCommandStatus.TimedOut;
 
-    public static bool ValidReport(ProvisioningCommandReport? report) => report is not null && (report.Status, report.Diagnostic) switch
+    public static bool ValidReport(ProvisioningCommandReport? report) => report is not null && (report.PublicIdentity is null ||
+        report.Status == ProvisioningCommandStatus.Succeeded && NodeGitHubSetup.ValidIdentity(report.PublicIdentity)) && (report.Status, report.Diagnostic) switch
     {
         (ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing) => true,
         (ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed) => true,
@@ -59,13 +65,15 @@ public sealed class NodeProvisioningCommandExecutor
     private readonly Func<bool> _supportsApt;
     private readonly Func<bool> _isRoot;
     private readonly Func<bool> _npmAvailable;
+    private readonly NodeGitHubSetup _githubSetup;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
 
     public NodeProvisioningCommandExecutor(NodeCapabilityDiscovery discovery,
         Func<string, IReadOnlyList<string>, CancellationToken, Task<int>>? run = null,
-        Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null)
+        Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null)
     {
         _discovery = discovery;
+        _githubSetup = githubSetup ?? new NodeGitHubSetup();
         _run = run ?? RunAsync;
         _supportsApt = supportsApt ?? (() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version"));
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
@@ -100,6 +108,13 @@ public sealed class NodeProvisioningCommandExecutor
                 return states.Single(state => state.Id == request.CapabilityId).Health == CapabilityHealth.Error
                     ? new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed)
                     : new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
+            }
+            if (NodeGitHubSetup.Handles(request))
+            {
+                var result = await _githubSetup.ExecuteAsync(request, timeout.Token);
+                await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+                refreshed = true;
+                return result;
             }
             string executable;
             IReadOnlyList<string> arguments;
@@ -138,9 +153,8 @@ public sealed class NodeProvisioningCommandExecutor
                 arguments = request.Action switch
                 {
                     ProvisioningCommandAction.CheckConfiguration => ["config", "--get", "user.name"],
-                    ProvisioningCommandAction.CheckAuthentication when request.CapabilityId == "github-cli" => ["auth", "status"],
+                    ProvisioningCommandAction.CheckAuthentication when request.CapabilityId == "github-cli" => ["auth", "status", "--hostname", "github.com"],
                     ProvisioningCommandAction.CheckAuthentication => ["login", "status"],
-                    ProvisioningCommandAction.Logout when request.CapabilityId == "github-cli" => ["auth", "logout", "--hostname", "github.com"],
                     _ => ["logout"]
                 };
             }
@@ -182,6 +196,7 @@ public sealed class NodeProvisioningCommandExecutor
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["DEBIAN_FRONTEND"] = "noninteractive";
         process.StartInfo.Environment["LC_ALL"] = "C";
+        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, token);
         process.Start();
         process.StandardInput.Close();
         using var drainCancellation = new CancellationTokenSource();
