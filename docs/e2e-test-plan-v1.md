@@ -1,12 +1,13 @@
 # E2E Test Plan v1
 
 **Target:** Codex Worker + Codex Server release under test (record exact versions)
-**Campaign:** V0.14 E2E Hardening input  
+**Campaign:** v0.15 hardening checkpoint; execution scenarios require an already-provisioned host
+
 **Document owner:** update during execution; do not put credentials or secret values in this file.
 
 ## Purpose and scope
 
-This is a step-by-step manual plan for exercising a small, real deployment across the Server, a clean Worker host, Codex, Git, and GitHub. Run scenarios in order where later steps depend on earlier setup, and record each scenario independently. Use released self-contained artifacts on clean Ubuntu 24.04 x86_64 hosts. Source builds are for release production only; they are not part of the E2E host setup. This plan does not prescribe fixes.
+This is a step-by-step manual plan for exercising a small, real deployment across the Server, a clean Worker host, Codex, Git, and GitHub. Run scenarios in order where later steps depend on earlier setup, and record each scenario independently. Use released self-contained artifacts on clean Ubuntu 24.04 x86_64 hosts. Source builds are for release production only; they are not part of the E2E host setup. This plan does not prescribe fixes. For v0.15, the clean-node campaign ends at successful installation/registration and accurate missing-capability diagnosis. An unprovisioned node need not remain online. Do not manually install tools or copy/login credentials to turn that campaign into an execution test. Run execution scenarios separately on an already-provisioned host; capability inventory and Server-driven tool/authentication provisioning are v0.16 work. See the [review checkpoint](v0.15-release-readiness.md).
 
 The primary target is the safe test repository `duned/codex-worker-test` (or another explicitly approved disposable test repository). Do not use Finance or this Worker repository for destructive execution tests. Use a dedicated GitHub account or test organization with no production credentials or data.
 
@@ -26,8 +27,8 @@ Clean Server VM (Ubuntu 24.04 x86_64, systemd, persistent disk)
 Clean Worker VM (Ubuntu 24.04 x86_64, systemd)
      ├── install released self-contained Codex Worker (no .NET SDK/runtime)
      ├── register/bootstrap against Server; persist Worker identity/token
-     ├── discover capabilities; provision only supported missing requirements
-     ├── later configure Git + GitHub CLI (gh) + Codex CLI/authentication
+     ├── diagnose missing execution capabilities; retain registered identity
+     ├── v0.15 clean-node boundary (Server-driven provisioning is v0.16)
      └── GitHub ── duned/codex-worker-test
 ```
 
@@ -40,8 +41,8 @@ Record hostnames, OS/image version, architecture, Worker and Server versions, de
 - Approval to create test Issues, branches, labels, and commits in the designated test repository. Confirm it can be safely modified and reset by the campaign operator.
 - Ubuntu 24.04 x86_64 Server and Worker VMs. Before each clean-install campaign, use the documented `uninstall-server.sh --purge` and `uninstall-worker.sh --purge` commands to remove installer-owned state on the respective hosts; snapshot or rebuild only if the VM itself is no longer usable.
 - On both service VMs: systemd and the installer utilities `curl`, `tar`, and `sha256sum`; the installer must run as root. Network access to GitHub releases and raw GitHub content is required. The release installers install self-contained binaries; **do not install .NET SDK or runtime** on either host. Explicitly record that `dotnet --info` is unavailable on the clean Worker before and after Worker installation.
-- Keep project/runtime dependencies absent at the start of the Worker campaign wherever possible. In particular, do not preinstall Git, `gh`, Codex CLI, or project-specific runtimes before baseline capability discovery. The V0.12 Worker provisioning implementation supports a limited set of fixed package mappings; it does not provision .NET, `gh`, or Codex CLI. Install unsupported execution prerequisites later using the approved host setup process and record them as manually provisioned, not as Worker provisioning coverage.
-- A GitHub repository checkout on the Worker dedicated to this Worker, clean and on the configured default branch. Create/configure it after baseline capability discovery and before execution. Keep `gh` authentication and Codex authentication available to the `codex-worker` system account.
+- Keep project/runtime dependencies absent at the start of the Worker campaign wherever possible. In particular, do not preinstall Git, `gh`, Codex CLI, or project-specific runtimes before baseline capability discovery. The V0.12 Worker provisioning implementation supports a limited set of fixed package mappings; it does not provision .NET, `gh`, or Codex CLI. Do not fill those gaps to pass the v0.15 clean-node checkpoint. Use a separate already-provisioned environment for execution regression coverage.
+- A GitHub repository checkout on the Worker dedicated to this Worker, clean and on the configured default branch. This is required only on the already-provisioned execution host, not for clean-node installation/registration. Keep `gh` authentication and Codex authentication available to the `codex-worker` system account.
 - Distinct Server management credentials and a short-lived, single-use Worker bootstrap authorization created by the Server. Bootstrap generates and stores a persistent Worker identity and authentication token locally; protect the identity directory. If testing Server-managed credential delivery, also configure a distinct Worker credential-delivery token and Server encryption key. Store long-lived service secrets in protected environment files or a secret manager. Enter the one-time bootstrap authorization only at the CLI step below; avoid shell tracing/history and do not retain its output or process arguments. Do not record secret values or copy them into this plan/result record.
 - Network access from Worker to Server, GitHub API, configured Git remote, and the Codex service. Synchronized clocks are useful for correlating logs.
 - A designated operator able to inspect systemd journals, Server dashboard/API, Worker dashboard/API, Worker filesystem, and GitHub state.
@@ -69,7 +70,7 @@ Server configuration uses `Server__ListenUrl` and `Server__DataDirectory`; set t
 
 On Worker 01, use the installed managed starter configuration as the basis. It sets managed project ownership, local project directory, Server URL placeholder, and persistent identity path. Set the actual HTTPS Server URL. Bootstrap is an explicit CLI operation: create a single-use token on the Server with `sudo codex-server worker-token create`, then run `sudo -u codex-worker /opt/codex-worker/CodexWorker register --server "$SERVER_BASE_URL" --token-stdin --identity-file /var/lib/codex-worker/.codex-worker/worker-id`. Supply the bootstrap token through standard input from a protected secret source. Avoid shell tracing/history and do not capture terminal output containing the token. The bootstrap command stores the stable Worker ID and generated per-Worker token alongside that identity. This generated token is what later managed heartbeats use; the one-time bootstrap token is consumed and is not the persistent Worker credential. See [release packaging](release-packaging.md) and the CLI usage in the installed application.
 
-Before the systemd service starts, create a local project YAML matching the central project name, with its dedicated checkout, GitHub, Codex, and validation settings. The Server's project definition owns project name, repository, default branch, requirements, and revision; the local YAML retains machine-local settings. The Worker provisioning policy defaults to disabled; enable only the specific safe action being exercised. Keep privileged provisioning disabled unless separately approved. Do not add `CODEX_SERVER_REGISTRATION_TOKEN` to `worker.env` when the bootstrap-generated token exists: the Worker reads its token from the protected identity token file.
+On the already-provisioned execution host, before the systemd service starts, create a local project YAML matching the central project name, with its dedicated checkout, GitHub, Codex, and validation settings. For the clean-node checkpoint, retain an empty managed project snapshot. The Server's project definition owns project name, repository, default branch, requirements, and revision; the local YAML retains machine-local settings. The Worker provisioning policy defaults to disabled; enable only the specific safe action being exercised. Keep privileged provisioning disabled unless separately approved. Do not add `CODEX_SERVER_REGISTRATION_TOKEN` to `worker.env` when the bootstrap-generated token exists: the Worker reads its token from the protected identity token file.
 
 The systemd commands below are the documented service controls. `curl` examples intentionally avoid passing secrets inline. For authenticated management API calls, use the dashboard token prompt or an approved secret-aware HTTP client; do not paste token values into terminal transcripts. The endpoints referenced below are documented in the README and implemented by the Server/Worker APIs.
 
@@ -77,7 +78,7 @@ The systemd commands below are the documented service controls. `curl` examples 
 
 Create one record per scenario using the template below. Redact authorization headers, environment assignments, URLs containing credentials, and any secret output before storing evidence. Prefer timestamped journal excerpts, dashboard screenshots with tokens hidden, API responses with sensitive fields removed, GitHub Issue/branch links, execution IDs, and checksums or paths for preserved workspaces. Store raw logs in an access-controlled campaign location, not necessarily in this repository; put only safe references here.
 
-For every issue, record whether it is a current-release defect, an expected current limitation, a test-environment problem, or a future hardening opportunity. File unexpected product findings as separate V0.14 E2E Hardening / Extra Issues where appropriate. Do not silently change product code as part of executing this plan.
+For every issue, record whether it is a current-release defect, an expected current limitation, a test-environment problem, or a future hardening opportunity. Record hardening regressions as focused 15.x follow-ups and provisioning features as v0.16 work; unresolved hardening blockers prevent closure. Do not silently change product code as part of executing this plan.
 
 ```text
 Scenario:
@@ -135,18 +136,20 @@ Verify each host is clear before reinstalling: `systemctl show codex-server.serv
 3. Set `server.url` in `/etc/codex-worker/worker.yml` to `$SERVER_BASE_URL`. The installed starter already uses managed project ownership and stores identity under `/var/lib/codex-worker/.codex-worker`. Leave project dependencies absent. Do not start the service yet.
 4. On Server, create a fresh bootstrap authorization as the Server service account: `sudo codex-server worker-token create`. Capture the generated token directly into a protected operator terminal/secret manager; it expires after 15 minutes and can be used once.
 5. On Worker, bootstrap as the service account so identity/token files have correct ownership. In a protected terminal, run `sudo -u codex-worker /opt/codex-worker/CodexWorker register --server "$SERVER_BASE_URL" --token-stdin --identity-file /var/lib/codex-worker/.codex-worker/worker-id`. Do not enable shell tracing or history for secret-bearing input, capture process arguments, or retain token output. Confirm the identity file, adjacent `.token` and `.server` files exist with service-account ownership and private permissions; do not read or copy their contents. The bootstrap CLI creates a stable identity and per-Worker authentication token; the one-time registration authorization is not used for later heartbeats.
-6. Start the service with `sudo systemctl enable --now codex-worker`. Inspect `sudo systemctl status codex-worker` and a bounded `sudo journalctl -u codex-worker`. Check the local API through the host or an SSH tunnel: `GET /api/status`, `GET /api/capabilities`, and `GET /api/configuration-sync`. Record baseline capabilities while Git, `gh`, and Codex are absent.
+6. Start the service with `sudo systemctl enable --now codex-worker`. Inspect `sudo systemctl status codex-worker` and a bounded `sudo journalctl -u codex-worker`. When Codex is absent, verify the journal identifies the missing execution capability, exit status is 2, and systemd does not restart-loop. Confirm the identity, credential, and Server URL files remain unchanged without printing their contents. The local API and continuing heartbeats are not required after startup stops; do not treat their absence as registration corruption.
 7. Confirm the Server dashboard/API lists this Worker. Record the stable Worker ID from the authorized registry view, not from a secret-bearing configuration dump. Verify no .NET SDK/runtime was installed to run the Worker.
 
 **Negative bootstrap case:** on a separate disposable clean Worker or a fresh identity directory, try an invalid bootstrap token and confirm registration is rejected and no Worker appears in the Server registry. Then, with another fresh token/identity, successfully bootstrap once and retry that same token against a separate fresh identity; the second attempt must be rejected because the authorization is single-use. Record HTTP/journal evidence and confirm no token value is retained. An expired-token case can be run by waiting at least 15 minutes before use instead of the reused-token case. Do not reuse the valid campaign Worker identity for negative cases.
 
-**Expected:** released installer verifies the archive checksum, creates the unprivileged service account, directories, managed starter config, and systemd unit, and installs a self-contained binary. No .NET SDK/runtime or project tool is required to run it. Bootstrap persists identity and a generated Worker credential, registers with the Server using a short-lived one-use authorization, and a bad/expired/reused authorization is rejected. A clean Worker becomes online with baseline capabilities even before project dependencies are installed. Findings in installer/bootstrap behavior become separate V0.14 hardening Issues; do not repair product code as part of this plan.
+**Expected:** released installer verifies the archive checksum, creates the unprivileged service account, directories, managed starter config, and systemd unit, and installs a self-contained binary. No .NET SDK/runtime or project tool is required to run it. Bootstrap persists identity and a generated Worker credential, registers with the Server using a short-lived one-use authorization, and a bad/expired/reused authorization is rejected. A clean Worker registers successfully but may stop at global authenticated Codex preflight even with zero projects. Missing tools/authentication do not invalidate registration; no installer tool provisioning or credential copying is expected. Findings in installer/bootstrap behavior become separate 15.x hardening Issues; do not repair product code as part of this plan.
 
 **Collect:** clean-image and pre/post-install dependency inventory, released artifact version/checksum, installed paths/owners/modes, `dotnet --info` absence, service status/journal, bootstrap/negative-case outcome (redacted), Worker status/capability/configuration-sync responses, Server Worker detail.
 
 **Status:** NOT TESTED
 
 ### 3. Worker registration and heartbeat
+
+**Prerequisite for scenarios 3–5 and 7 onward:** use an already-provisioned Worker service account with authenticated Codex preflight available. Do not require these runtime scenarios to pass on the unprovisioned clean node from scenario 2.
 
 **Steps**
 
@@ -193,17 +196,19 @@ Verify each host is clear before reinstalling: `systemctl show codex-server.serv
 
 ### 6. Provisioning path
 
+**Deferred from the v0.15 clean-node checkpoint:** the following historical limited-policy scenario is optional regression coverage on an already-provisioned host. It is not a workaround for missing Git, `gh`, Codex or authentication. General clean-node provisioning belongs to v0.16.
+
 **Destructive / privileged:** provisioning runs an installer on Worker 01. Use only a safe, reversible dependency and an approved policy. Do not use credentials or privileged actions in the first provisioning exercise.
 
 **Steps**
 
-1. Select one dependency/capability supported by the current Worker provisioning installer and absent from Worker 01. Git is a mapped tool on Ubuntu/Debian and is a useful real case for the clean-host campaign. Confirm the installer's planned effects and removeability before execution; do not assume every requirement type has an installer.
+1. Select one dependency/capability supported by the current Worker provisioning installer and absent from Worker 01. Use a supported project dependency such as the PostgreSQL client on the separate regression host; do not use this scenario to fill the clean-node execution-tool gap. Confirm the installer's planned effects and removeability before execution; do not assume every requirement type has an installer.
 2. Configure Worker-local provisioning policy for that non-privileged action. Worker global configuration controls whether provisioning is enabled and whether non-privileged actions are allowed; privileged and credential provisioning have separate controls/allowlists.
 3. Through the supported Server management path, create a provisioning plan for Worker 01 with an `ensure` action for that dependency. Inspect the plan before allowing execution. Use current dashboard/API contract; provisioning API paths are `POST/GET /api/v1/provisioning` and `POST /api/v1/provisioning/{planId}/state`.
 4. Observe Worker plan pickup and execution. Confirm the plan history reaches a terminal result; check capability refresh on Worker heartbeat and Server Worker detail.
 5. Inspect Worker and Server logs, plan history, API/dashboard output for leaked values. No secrets should be part of this plan.
 
-**Expected (V0.13):** plan generation and state are visible centrally; Worker policy decides whether the action is allowed; supported installer runs; Worker verifies the capability afterward and reports refreshed capabilities. Unsupported installers, disabled policy, failed install, or undetected result should yield a useful failed plan, not a false success. The current fixed installer mappings cover Git, Node.js, Docker, and the PostgreSQL client; .NET, `gh`, Codex CLI, and arbitrary package names are unsupported. Install `gh` and Codex CLI later through the approved host setup process, after observing baseline capabilities/provisioning, and record that separately from Worker provisioning coverage. Server-managed credential provisioning is a separate optional path requiring encryption and delivery-token setup; mark NOT TESTED unless explicitly configured.
+**Expected (V0.13):** plan generation and state are visible centrally; Worker policy decides whether the action is allowed; supported installer runs; Worker verifies the capability afterward and reports refreshed capabilities. Unsupported installers, disabled policy, failed install, or undetected result should yield a useful failed plan, not a false success. The current fixed installer mappings cover Git, Node.js, Docker, and the PostgreSQL client; .NET, `gh`, Codex CLI, and arbitrary package names are unsupported. Missing `gh`, Codex CLI, and their authentication remain outside the v0.15 clean-node acceptance boundary. Server-managed credential provisioning is a separate optional path requiring encryption and delivery-token setup; mark NOT TESTED unless explicitly configured.
 
 **Collect:** redacted plan/action IDs, policy settings (no secrets), state transitions, installer and capability diagnostics, before/after capabilities, redacted journal.
 

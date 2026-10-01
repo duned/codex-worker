@@ -149,15 +149,45 @@ public sealed class StartupCoordinatorTests
         Assert.IsType<OperationCanceledException>(failure.InnerException);
     }
 
+    [Theory]
+    [InlineData("capabilities")]
+    [InlineData("query")]
+    [InlineData("create")]
+    [InlineData("initialize")]
+    public async Task IsolatedStartupFailureDoesNotPreventHealthyProjectInitialization(string phase)
+    {
+        var events = new List<string>();
+        var error = new WorkerInfrastructureException("unavailable dependency");
+        var result = await StartupCoordinator.RunIsolatedAsync([
+            Plan("A", events, missing: [new RequiredGitHubLabel("a-ready", "123456", "ready")],
+                githubError: phase == "capabilities" ? error : null,
+                queryError: phase == "query" ? error : null,
+                createError: phase == "create" ? error : null,
+                initializeError: phase == "initialize" ? error : null),
+            Plan("B", events, missing: [new RequiredGitHubLabel("b-ready", "123456", "ready")])
+        ], CancellationToken.None);
+
+        var failure = Assert.Single(result.UnavailableProjects);
+        Assert.Equal("A", failure.Name);
+        Assert.Contains("unavailable dependency", failure.Reason);
+        Assert.Equal(phase == "initialize" ? 2 : 1, result.CreatedLabels);
+        Assert.Equal("initialize:B", events[^1]);
+        Assert.Contains($"{phase}:A" + (phase == "create" ? ":a-ready" : ""), events);
+        if (phase != "initialize") Assert.DoesNotContain("initialize:A", events);
+        Assert.True(events.IndexOf("validate:B") < events.IndexOf("capabilities:A"));
+        Assert.True(events.IndexOf("query:B") < events.IndexOf("create:B:b-ready"));
+    }
+
     private static ProjectStartupPlan Plan(string name, List<string> events,
         Exception? validateError = null, IReadOnlyList<RequiredGitHubLabel>? missing = null,
-        Exception? queryError = null, Exception? createError = null, Exception? githubError = null) => new(
+        Exception? queryError = null, Exception? createError = null, Exception? githubError = null,
+        Exception? initializeError = null) => new(
         $"{name}.yml", name,
         _ => { events.Add($"validate:{name}"); return Return(validateError); },
         _ => { events.Add($"capabilities:{name}"); return Return(githubError); },
         _ => { events.Add($"query:{name}"); return queryError is null ? Task.FromResult(missing ?? []) : Task.FromException<IReadOnlyList<RequiredGitHubLabel>>(queryError); },
         (label, _) => { events.Add($"create:{name}:{label.Name}"); return Return(createError); },
-        _ => { events.Add($"initialize:{name}"); return Task.CompletedTask; });
+        _ => { events.Add($"initialize:{name}"); return Return(initializeError); });
 
     private static Task Return(Exception? exception) => exception is null ? Task.CompletedTask : Task.FromException(exception);
 }
