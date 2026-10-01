@@ -10,6 +10,16 @@ public sealed class WorkerLifecycle
 
     public void SetReady(string readinessResult = "ready") => Update("ready", false, readinessResult: readinessResult);
 
+    public void SetExecutionReadiness(bool ready)
+    {
+        lock (_gate)
+        {
+            if (_snapshot.DrainRequested) return;
+            _snapshot = _snapshot with { State = ready ? "ready" : "not-ready",
+                ReconnectReadinessResult = ready ? "ready" : "Execution capabilities are unavailable." };
+        }
+    }
+
     public void RequestDrain() => Update("drain-requested", true);
 
     public void CancelDrain(int activeExecutions)

@@ -223,6 +223,31 @@ public sealed class WorkerRegistrationTests
     }
 
     [Fact]
+    public async Task BootstrapWithoutExecutionDependenciesReportsMissingCapabilities()
+    {
+        using var temporary = new TemporaryDirectory();
+        var inventory = new CodexProvisioning.NodeCapabilityDiscovery((_, _, _) =>
+            Task.FromException<(int, string)>(new FileNotFoundException()));
+        var capabilities = new WorkerCapabilityDiscovery((executable, _, _, _, _) =>
+            Task.FromException<ProcessResult>(new InvalidOperationException($"Executable '{executable}' is not installed/resolvable in the effective service PATH.")));
+        var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+        using var client = new HttpClient(handler);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+
+        await new WorkerRegistrationClient(client, inventory, capabilities).BootstrapAsync(settings, 1,
+            "bootstrap-test-token", CancellationToken.None);
+
+        var registration = JsonSerializer.Deserialize<WorkerRegistrationContract>(handler.Body ?? "",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new InvalidDataException();
+        Assert.DoesNotContain(registration.Capabilities, capability => capability.Type is "agent-provider" or "runtime" or "tool");
+        Assert.All(registration.CapabilityInventory ?? [], state =>
+            Assert.Equal(CodexProvisioning.InstallationState.Missing, state.Installation));
+        Assert.Equal(3, registration.CapabilityInventory?.Count);
+        Assert.True(File.Exists(settings.IdentityFile + ".token"));
+    }
+
+    [Fact]
     public async Task MissingCodexDoesNotInvalidateSuccessfulBootstrapOrPersistentIdentity()
     {
         using var temporary = new TemporaryDirectory();

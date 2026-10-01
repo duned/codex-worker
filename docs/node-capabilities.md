@@ -156,15 +156,32 @@ installations must keep the executable and home accessible to their service user
 Logout uses Codex's own logout operation in that identity; uninstall retains the
 local auth/configuration as described above.
 
-A managed Worker with known missing Codex or required authentication remains
-registered and heartbeating in `starting` state while it processes provisioning
-commands. It cannot request execution assignments until real Codex execution
-preflight passes. Before Codex mutations on an idle running Worker,
-agent readiness is withdrawn, missing/authentication states return to this
-provisioning wait, and normal preflight must pass again before scheduling resumes.
-Probe errors and Codex execution/authentication preflight failures retain their
-existing infrastructure-failure behavior; this adds no Codex service retries.
-Standalone startup retains its existing ownership and failure behavior.
+A managed Worker with missing tools, unknown/probe errors or failed Codex
+CLI/authentication execution preflight remains registered and heartbeating in
+`not-ready` state. Configuration synchronization and typed provisioning commands
+and plans continue. It cannot request execution assignments until real Codex
+execution preflight passes; project-scoped readiness is required separately.
+Before capability mutations on an idle Worker, advertised readiness is withdrawn.
+Provisioning refreshes observations and rechecks readiness before scheduling resumes.
+A failed execution preflight is not retried against unchanged observations; changed
+observations or an explicit provisioning request allow a new readiness check.
+Task-time Codex infrastructure failures still stop scheduling and preserve recovery
+state. Standalone startup retains its existing ownership and failure behavior.
+
+The same bounded `NodeProvisioningCommandExecutor` handlers serve Server commands
+and the local Worker CLI, under the same Worker provisioning policy:
+
+```sh
+/opt/codex-worker/CodexWorker provision /etc/codex-worker/worker.yml codex-cli detect
+/opt/codex-worker/CodexWorker provision /etc/codex-worker/worker.yml codex-cli install --allow-elevation
+```
+
+Drain and stop the service before local mutations. Run local operations as the
+Worker service account with its service environment;
+installation requires the configured elevation allowlist and node-local permission.
+The CLI accepts catalog capability IDs and typed actions, never shell text or
+arbitrary executable/package paths. Installation and authentication remain separate
+operations. Server control transport is not required for a local operation.
 
 Dashboard behavior checks run without external services:
 `node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.

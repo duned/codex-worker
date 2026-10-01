@@ -153,9 +153,11 @@ public static class WorkerAuthentication
     }
 }
 
-public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null)
+public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null,
+    WorkerCapabilityDiscovery? capabilityDiscovery = null)
 {
-    private static readonly WorkerCapabilityDiscovery CapabilityDiscovery = WorkerCapabilityDiscovery.Shared;
+    internal WorkerCapabilityDiscovery CapabilityDiscovery => capabilityDiscovery ?? WorkerCapabilityDiscovery.Shared;
+    internal NodeCapabilityDiscovery InventoryDiscovery => provisioningDiscovery ?? ProvisioningDiscovery;
     internal static readonly NodeCapabilityDiscovery ProvisioningDiscovery = new();
 
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
@@ -174,7 +176,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-                capabilities, await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken)));
+                capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken)));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -210,7 +212,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
             var registration = new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
-                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities, await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken));
+                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), "api/v1/workers/register"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
             request.Headers.Add("X-Codex-Worker-Token", workerToken);
@@ -323,7 +325,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
                 lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
                 configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
-                await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken)));
+                await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken)));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
@@ -377,7 +379,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     }
 
     public async Task<bool> ExecuteProvisioningCommandAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
-        CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCodexMutation = null)
+        CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCapabilityMutation = null)
     {
         if (!settings.Enabled) return false;
         var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
@@ -396,18 +398,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 command.DeadlineUtc > command.StartedAtUtc.Value.AddSeconds(command.Request.TimeoutSeconds))
                 throw new InvalidDataException("Invalid provisioning command identity or deadline.");
             var action = command.Request.Action;
-            var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess;
-            var type = NodeGitHubSetup.Handles(command.Request) || action is ProvisioningCommandAction.Login or ProvisioningCommandAction.Logout or ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
-            var key = $"{type}:{command.Request.CapabilityId}:{action}".ToLowerInvariant();
-            var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
-            var permitted = !policy.DeniedActions.Contains(key, StringComparer.OrdinalIgnoreCase) &&
-                (readOnly || policy.Enabled && (type != "authentication" || policy.AllowCredentials) &&
-                    (privileged ? command.Request.AllowElevation && policy.AllowedPrivilegedActions.Contains(key, StringComparer.OrdinalIgnoreCase) : policy.AllowNonPrivileged));
-            if (permitted && command.Request.CapabilityId == "codex-cli" &&
-                action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or
-                    ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Login or ProvisioningCommandAction.Logout &&
-                beforeCodexMutation is not null)
-                await beforeCodexMutation(cancellationToken);
+            var permitted = WorkerProvisioning.Permitted(command.Request, policy);
+            if (permitted && action is not (ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or
+                    ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess) &&
+                beforeCapabilityMutation is not null)
+                await beforeCapabilityMutation(cancellationToken);
             async Task ReportAsync(ProvisioningCommandReport report, CancellationToken token)
             {
                 using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
@@ -415,7 +410,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 using var acknowledgement = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
                 acknowledgement.EnsureSuccessStatusCode();
             }
-            var result = await new NodeProvisioningCommandExecutor(provisioningDiscovery ?? ProvisioningDiscovery)
+            var result = await new NodeProvisioningCommandExecutor(InventoryDiscovery)
                 .ExecuteAsync(command, permitted, cancellationToken, ReportAsync);
             // A terminal acknowledgement is safe to resend; execution itself is never retried.
             await ReportAsync(result, cancellationToken);
@@ -555,11 +550,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
 public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capacity,
     Func<WorkerHeartbeatStatus> snapshot, Action<string>? report = null,
     Func<IReadOnlyList<WorkerCapabilityContract>>? capabilities = null,
-    Func<WorkerConfigurationSyncStatus?>? configurationSync = null)
+    Func<WorkerConfigurationSyncStatus?>? configurationSync = null, WorkerRegistrationClient? client = null)
 {
     private readonly CancellationTokenSource _stop = new();
     private Task? _run;
-    private readonly WorkerRegistrationClient _client = new();
+    private readonly WorkerRegistrationClient _client = client ?? new();
     private bool _degraded;
 
     public void Start() => _run ??= RunAsync();

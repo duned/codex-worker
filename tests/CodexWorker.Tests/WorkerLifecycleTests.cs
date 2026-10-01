@@ -5,6 +5,21 @@ namespace CodexWorker.Tests;
 public sealed class WorkerLifecycleTests
 {
     [Fact]
+    public void ReadinessTransitionsDoNotCancelAnOperatorDrain()
+    {
+        var lifecycle = new WorkerLifecycle();
+        lifecycle.SetExecutionReadiness(false);
+        Assert.Equal("not-ready", lifecycle.Snapshot.State);
+        lifecycle.SetExecutionReadiness(true);
+        Assert.Equal("ready", lifecycle.Snapshot.State);
+        lifecycle.RequestDrain();
+        lifecycle.SetExecutionReadiness(false);
+        lifecycle.SetExecutionReadiness(true);
+        Assert.True(lifecycle.Snapshot.DrainRequested);
+        Assert.Equal("drain-requested", lifecycle.Snapshot.State);
+    }
+
+    [Fact]
     public void DrainCannotFinishUntilActiveExecutionsHaveReleased()
     {
         var lifecycle = new WorkerLifecycle();

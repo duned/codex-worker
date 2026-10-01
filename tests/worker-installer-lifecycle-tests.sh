@@ -108,6 +108,14 @@ for command in chown getent id; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$test_dir/bin/$command"
 done
 printf '#!/usr/bin/env bash\necho x86_64\n' > "$test_dir/bin/uname"
+# Execution dependencies must never be invoked by installation/bootstrap.
+for execution_tool in dotnet gh codex node; do
+  cat > "$test_dir/bin/$execution_tool" <<'STUB'
+#!/usr/bin/env bash
+echo "installer invoked an execution dependency" >&2
+exit 99
+STUB
+done
 chmod +x "$test_dir/bin/"*
 export PATH="$test_dir/bin:$PATH"
 export LIFECYCLE_TEMPLATE="$repo_root/packaging/linux/worker.managed.example.yml"

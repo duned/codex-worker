@@ -2,19 +2,33 @@ namespace CodexWorker;
 
 using CodexProvisioning;
 
-/// <summary>Keep the registered agent provisionable for known missing CLI/authentication states.
-/// Unknown/probe errors proceed to the normal authoritative preflight; they are not service retries.</summary>
-internal static class ManagedCodexReadiness
+/// <summary>Tracks execution readiness without making unavailable tools fatal to managed node liveness.</summary>
+internal sealed class ManagedCodexReadiness(IAgentAuthenticationProvider provider)
 {
-    internal static async Task WaitAsync(NodeCapabilityDiscovery discovery,
-        Func<CancellationToken, Task<bool>> executeCommand, TimeProvider clock, CancellationToken token)
+    private CapabilityState? _lastObservation;
+    private bool _ready;
+
+    internal async Task<bool> EvaluateAsync(NodeCapabilityDiscovery discovery, bool changed,
+        CancellationToken token)
     {
-        while (true)
+        var observation = (await discovery.GetAsync(cancellationToken: token))
+            .Single(state => state.Id == "codex-cli") with { DetectedAtUtc = null };
+        if (!changed && observation == _lastObservation) return _ready;
+        _lastObservation = observation;
+        _ready = false;
+        if (observation.Installation != InstallationState.Installed ||
+            observation.Authentication != RequirementState.Satisfied ||
+            observation.Health != CapabilityHealth.Healthy) return false;
+        try
         {
-            var codex = (await discovery.GetAsync(cancellationToken: token)).Single(state => state.Id == "codex-cli");
-            if (codex.Installation != InstallationState.Missing &&
-                !(codex.Installation == InstallationState.Installed && codex.Authentication == RequirementState.Required)) return;
-            if (!await executeCommand(token)) await Task.Delay(TimeSpan.FromSeconds(1), clock, token);
+            await provider.ValidateAsync(token);
+            _ready = true;
         }
+        catch (WorkerInfrastructureException)
+        {
+            // A failed readiness probe does not kill a provisionable node. Retry only
+            // after an observation changes or an explicit provisioning operation.
+        }
+        return _ready;
     }
 }

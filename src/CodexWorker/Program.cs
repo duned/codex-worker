@@ -14,6 +14,7 @@ public static class Program
             return ProcessExitCodes.Success;
         }
         if (args.Length > 0 && args[0] == "register") return await RegisterAsync(args, output);
+        if (args.Length > 0 && args[0] == "provision") return await ProvisionAsync(args, output);
         if (args is ["--codex-preflight"])
         {
             try
@@ -65,6 +66,48 @@ public static class Program
         });
         try { await new WorkerHost(global, projects, output, operationalLog: message => Trace.WriteLine(message)).RunAsync(shutdown.Token); return ProcessExitCodes.Success; }
         catch (Exception ex) { return ExitCodeFor(ex); }
+    }
+
+    private static async Task<int> ProvisionAsync(string[] args, WorkerConsole output)
+    {
+        try
+        {
+            if (args.Length is not (4 or 5) || args.Length == 5 && args[4] != "--allow-elevation" ||
+                !Enum.TryParse<CodexProvisioning.ProvisioningCommandAction>(args[3], true, out var action) ||
+                !Enum.IsDefined(action) || !args[3].All(char.IsAsciiLetter))
+                throw new ArgumentException("Usage: codex-worker provision <worker.yml> <capability-id> <action> [--allow-elevation]");
+            var configuration = GlobalWorkerConfiguration.Load(args[1]);
+            var identity = await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath);
+            var request = new CodexProvisioning.ProvisioningCommandRequest(identity, args[2], action,
+                AllowElevation: args.Length == 5);
+            using var stop = new CancellationTokenSource();
+            using var signal = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM,
+                context => { context.Cancel = true; stop.Cancel(); });
+            void OnCancel(object? sender, ConsoleCancelEventArgs eventArgs)
+            {
+                eventArgs.Cancel = true;
+                stop.Cancel();
+            }
+            Console.CancelKeyPress += OnCancel;
+            try
+            {
+                var result = await WorkerProvisioning.ExecuteLocalAsync(request, configuration.Worker.Provisioning,
+                    new CodexProvisioning.NodeCapabilityDiscovery(), stop.Token, (progress, _) =>
+                    {
+                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(progress));
+                        return Task.CompletedTask;
+                    });
+                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(result));
+                return result.Status == CodexProvisioning.ProvisioningCommandStatus.Succeeded
+                    ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
+            }
+            finally { Console.CancelKeyPress -= OnCancel; }
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            output.InfrastructureFailure(FailureDiagnosticRedactor.Redact(ex.Message));
+            return ProcessExitCodes.StartupFailure;
+        }
     }
 
     private static async Task<int> RegisterAsync(string[] args, WorkerConsole output)
@@ -131,6 +174,8 @@ public static class Program
             Console.WriteLine("Usage: codex-worker <worker.yml> | codex-worker register [options]");
             Console.WriteLine("Use 'codex-worker register --help' for registration options and examples.");
             Console.WriteLine("  -h, --help                     Show help without running an operation.");
+            Console.WriteLine("  provision <worker.yml> <capability-id> <action> [--allow-elevation]");
+            Console.WriteLine("                                Run a typed capability operation under local provisioning policy.");
             Console.WriteLine("  --codex-preflight              Check Codex execution/authentication without projects or Server access.");
             return;
         }

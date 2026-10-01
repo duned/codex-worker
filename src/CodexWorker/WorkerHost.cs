@@ -9,11 +9,16 @@ public sealed class WorkerHost
     private readonly TimeProvider _timeProvider;
     private readonly Action<string> _operationalLog;
     private readonly ProcessRunner _runner = new();
+    private readonly WorkerRegistrationClient _registration;
+    private readonly IAgentAuthenticationProvider? _agentAuthentication;
 
     public WorkerHost(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
-        TimeProvider? timeProvider = null, Action<string>? operationalLog = null)
+        TimeProvider? timeProvider = null, Action<string>? operationalLog = null,
+        WorkerRegistrationClient? registrationClient = null, IAgentAuthenticationProvider? agentAuthentication = null)
     {
+        _registration = registrationClient ?? new WorkerRegistrationClient();
+        _agentAuthentication = agentAuthentication;
         _global = global;
         _projects = projects;
         _output = output ?? new WorkerConsole();
@@ -57,7 +62,7 @@ public sealed class WorkerHost
             if (_global.Server.Enabled)
             {
                 var status = Volatile.Read(ref heartbeatStatus);
-                await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
+                await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
                     status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
             }
         }
@@ -72,7 +77,7 @@ public sealed class WorkerHost
         {
             if (configuredProjects.Count == 0 && _global.Projects.Ownership != "managed")
                 throw new InvalidDataException("At least one project must be configured in standalone mode.");
-            discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.GetCachedAsync(ct);
+            discoveredCapabilities = await _registration.CapabilityDiscovery.GetCachedAsync(ct);
             heartbeatCapabilities = discoveredCapabilities;
             if (managedConfiguration?.HasCachedSnapshot == true)
             {
@@ -84,7 +89,7 @@ public sealed class WorkerHost
             }
             if (_global.Server.Enabled)
             {
-                var registration = new WorkerRegistrationClient();
+                var registration = _registration;
                 var registered = false;
                 try
                 {
@@ -116,7 +121,7 @@ public sealed class WorkerHost
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
                     message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities),
-                    () => managedConfiguration?.Status);
+                    () => managedConfiguration?.Status, _registration);
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore();
@@ -130,7 +135,7 @@ public sealed class WorkerHost
                     // expiry reconciliation can fence retries and retain uncertain integration.
                     if (IsShutdownInterruption(entry)) continue;
                     var serverState = entry.State == "Completed" ? "Completed" : "Failed";
-                    try { await new WorkerRegistrationClient().ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
+                    try { await _registration.ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                     { _output.Warning($"Codex Server result reporting remains pending for execution {entry.ExecutionId}: {ex.Message}"); }
                 }
@@ -151,9 +156,10 @@ public sealed class WorkerHost
                 allRuntimes.Add(project);
             }
 
+            var managed = _global.Server.Enabled && _global.Projects.Ownership == "managed";
             if (_global.Server.Enabled)
             {
-                var registration = new WorkerRegistrationClient();
+                var registration = _registration;
                 var initialPlan = await registration.RequestProvisioningPlanAsync(_global.Server, ct);
                 if (initialPlan is not null)
                 {
@@ -163,99 +169,129 @@ public sealed class WorkerHost
                         (report, token) => ReportProvisioningStateAsync(registration, initialPlan.Id, report, token), ct);
                     runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {initialPlan.Id} finished.");
                     if (result.State != "Completed")
-                        throw new WorkerInfrastructureException($"Provisioning plan {initialPlan.Id} failed at action '{result.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
+                    {
+                        if (!managed) throw new WorkerInfrastructureException($"Provisioning plan {initialPlan.Id} failed before execution readiness.");
+                        _output.Warning($"Provisioning plan {initialPlan.Id} did not complete; missing readiness remains unavailable.");
+                    }
                 }
             }
 
-            if (_global.Server.Enabled && _global.Projects.Ownership == "managed")
+            async Task InitializeProjectsAsync(CancellationToken token)
             {
-                await ManagedCodexReadiness.WaitAsync(WorkerRegistrationClient.ProvisioningDiscovery,
-                    token => new WorkerRegistrationClient().ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, token),
-                    _timeProvider, ct);
-                discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.RefreshAsync(ct);
-                heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
-                    capability => capability.Type == "authentication")).Distinct().ToArray();
-                await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, ct);
-            }
+                var startupPlans = runtimes.Where(project => !validatedConfigurations.Contains(project.Configuration))
+                    .Select(project => new ProjectStartupPlan(
+                    project.Path,
+                    project.Configuration.Project.Name,
+                    async token => { activeProject = project.Configuration.Project.Name; await project.Git.ValidateStartupReadOnlyAsync(token); },
+                    async token => { activeProject = project.Configuration.Project.Name; await project.GitHub.ValidateCapabilitiesAsync(token); },
+                    async token =>
+                    {
+                        activeProject = project.Configuration.Project.Name;
+                        return await project.GitHub.FindMissingLabelsAsync(project.Configuration.GitHub.RequiredLabels, token);
+                    },
+                    async (label, token) =>
+                    {
+                        activeProject = project.Configuration.Project.Name;
+                        await project.GitHub.CreateLabelAsync(label, token);
+                    },
+                    async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
+                )).ToArray();
+                var startupResult = await StartupCoordinator.RunIsolatedAsync(startupPlans, token);
+                var createdLabels = startupResult.CreatedLabels;
+                foreach (var failure in startupResult.UnavailableProjects)
+                {
+                    activeProject = failure.Name;
+                    runtimeReadModel.Registry.MarkUnavailable(failure.Name, failure.Reason);
+                    var message = $"Project '{failure.Name}' is unavailable after startup validation: {failure.Reason}";
+                    _output.Warning(message);
+                    _operationalLog($"Scheduler · {failure.Name} · unavailable · {failure.Reason}");
+                }
+                var unavailableNames = startupResult.UnavailableProjects.Select(failure => failure.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var healthyRuntimes = runtimes.Where(project => startupPlans.Any(plan => plan.Name == project.Configuration.Project.Name) &&
+                    !unavailableNames.Contains(project.Configuration.Project.Name)).ToList();
+                if (!managed && configuredProjects.Count > 0 && healthyRuntimes.Count == 0)
+                {
+                    var failure = startupResult.UnavailableProjects[0];
+                    var message = failure.Reason.StartsWith("read-only startup validation failed:", StringComparison.Ordinal)
+                        ? $"Project configuration '{failure.Path}' failed read-only startup validation: {failure.Reason["read-only startup validation failed:".Length..].Trim()}"
+                        : $"All configured projects are unavailable; '{failure.Name}' could not start: {failure.Reason}";
+                    throw new WorkerInfrastructureException(message);
+                }
+                foreach (var project in healthyRuntimes)
+                    if (runtimeReadModel.Registry.Status().Any(state => state.Name == project.Configuration.Project.Name &&
+                        state.State == ProjectLifecycleState.Unavailable))
+                        runtimeReadModel.Registry.Enable(project.Configuration.Project.Name);
+                validatedConfigurations.UnionWith(healthyRuntimes
+                    .Select(project => project.Configuration));
+                Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(healthyRuntimes.SelectMany(project =>
+                    WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
+                    .Distinct().ToArray());
+                if (_global.Server.Enabled)
+                    await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
+                        Array.Empty<string>(), "starting", token, heartbeatCapabilities, managedConfiguration?.Status);
+                await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, token);
+                if (healthyRuntimes.Count > 0)
+                {
+                    _output.GitHubCliReady();
+                    _output.GitHubAuthenticationReady();
+                    _output.GitRepositoryAuthenticationReady(healthyRuntimes.Count);
+                    _output.GitHubLabelsReady(healthyRuntimes.Count, createdLabels);
+                    _output.GitHubDependenciesReady();
+                }
 
-            var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
-                project.Path,
-                project.Configuration.Project.Name,
-                async token => { activeProject = project.Configuration.Project.Name; await project.Git.ValidateStartupReadOnlyAsync(token); },
-                async token => { activeProject = project.Configuration.Project.Name; await project.GitHub.ValidateCapabilitiesAsync(token); },
-                async token =>
-                {
-                    activeProject = project.Configuration.Project.Name;
-                    return await project.GitHub.FindMissingLabelsAsync(project.Configuration.GitHub.RequiredLabels, token);
-                },
-                async (label, token) =>
-                {
-                    activeProject = project.Configuration.Project.Name;
-                    await project.GitHub.CreateLabelAsync(label, token);
-                },
-                async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
-            )).ToArray();
-            var startupResult = await StartupCoordinator.RunIsolatedAsync(startupPlans, ct);
-            var createdLabels = startupResult.CreatedLabels;
-            foreach (var failure in startupResult.UnavailableProjects)
-            {
-                activeProject = failure.Name;
-                runtimeReadModel.Registry.MarkUnavailable(failure.Name, failure.Reason);
-                var message = $"Project '{failure.Name}' is unavailable after startup validation: {failure.Reason}";
-                _output.Warning(message);
-                _operationalLog($"Scheduler · {failure.Name} · unavailable · {failure.Reason}");
             }
-            var unavailableNames = startupResult.UnavailableProjects.Select(failure => failure.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var healthyRuntimes = runtimes.Where(project => !unavailableNames.Contains(project.Configuration.Project.Name)).ToList();
-            if (configuredProjects.Count > 0 && healthyRuntimes.Count == 0)
-            {
-                var failure = startupResult.UnavailableProjects[0];
-                var message = failure.Reason.StartsWith("read-only startup validation failed:", StringComparison.Ordinal)
-                    ? $"Project configuration '{failure.Path}' failed read-only startup validation: {failure.Reason["read-only startup validation failed:".Length..].Trim()}"
-                    : $"All configured projects are unavailable; '{failure.Name}' could not start: {failure.Reason}";
-                throw new WorkerInfrastructureException(message);
-            }
-            validatedConfigurations.UnionWith(healthyRuntimes
-                .Select(project => project.Configuration));
-            Volatile.Write(ref heartbeatCapabilities, heartbeatCapabilities.Concat(healthyRuntimes.SelectMany(project =>
-                WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
-                .Distinct().ToArray());
-            if (_global.Server.Enabled)
-                await new WorkerRegistrationClient().HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
-                    Array.Empty<string>(), "starting", ct, heartbeatCapabilities, managedConfiguration?.Status);
-            await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, ct);
+            await InitializeProjectsAsync(ct);
             if (configurationService is not null)
                 configurationWatcher = new ProjectConfigurationWatcher(_global.Projects.Directory, configurationService, runtimeReadModel.Registry);
-            _output.GitHubCliReady();
-            _output.GitHubAuthenticationReady();
-            _output.GitRepositoryAuthenticationReady(healthyRuntimes.Count);
-            _output.GitHubLabelsReady(healthyRuntimes.Count, createdLabels);
-            _output.GitHubDependenciesReady();
 
             _output.GlobalPreflight();
             activeProject = null;
-            IAgentAuthenticationProvider agentAuthentication = new CodexAgentAuthenticationProvider(
+            IAgentAuthenticationProvider agentAuthentication = _agentAuthentication ?? new CodexAgentAuthenticationProvider(
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
-            await _output.RunProgressAsync("Codex preflight", async () =>
+            var readiness = new ManagedCodexReadiness(agentAuthentication);
+            var agentReady = managed
+                ? await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct)
+                : await ValidateStandaloneAgentAsync(ct);
+            async Task<bool> ValidateStandaloneAgentAsync(CancellationToken token)
             {
-                await agentAuthentication.ValidateAsync(ct);
+                await agentAuthentication.ValidateAsync(token);
                 return true;
-            }, ct: ct);
-            heartbeatCapabilities = heartbeatCapabilities
-                .Append(WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
-            await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, ct);
-            lifecycle.BeginReconnect();
-            var synchronization = managedConfiguration?.Status;
-            var configurationCompatible = synchronization?.SynchronizationStatus != "error";
-            if (!lifecycle.CompleteReadiness(discoveredCapabilities, heartbeatCapabilities, configurationCompatible,
-                    synchronization?.Error ?? "Server-managed configuration is incompatible."))
-                throw new WorkerInfrastructureException($"Worker readiness failed: {lifecycle.Snapshot.ReconnectReadinessResult}");
+            }
+            async Task PublishReadinessAsync(CancellationToken token)
+            {
+                heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider").ToArray();
+                if (agentReady)
+                    heartbeatCapabilities = heartbeatCapabilities.Append(
+                        WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
+                var ready = agentReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
+                    (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration)));
+                lifecycle.SetExecutionReadiness(ready);
+                runtimeReadModel.State = runtimeReadModel.Registry.WorkerDraining
+                    ? (active.Count == 0 ? "drained" : "draining") : ready ? "running" : "not-ready";
+                Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = runtimeReadModel.State });
+                await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
+            }
+            async Task RevokeReadinessAsync(CancellationToken token)
+            {
+                agentReady = false;
+                validatedConfigurations.Clear();
+                heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "authentication").ToArray();
+                await PublishReadinessAsync(token);
+            }
+            async Task RefreshProvisionedReadinessAsync(CancellationToken token)
+            {
+                discoveredCapabilities = await _registration.CapabilityDiscovery.RefreshAsync(token);
+                heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
+                    capability => capability.Type == "authentication")).Distinct().ToArray();
+                await InitializeProjectsAsync(token);
+                agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, true, token);
+                await PublishReadinessAsync(token);
+            }
+            await PublishReadinessAsync(ct);
             await telegram.StartedAsync(runtimes.Count, ct);
             if (runtimes.Count == 0) _output.NoProjectsConfigured();
             _output.Started();
-            runtimeReadModel.State = "running";
-            Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "running" });
-            runtimeReadModel.Events.Publish("worker.started", "Worker is ready.");
+            runtimeReadModel.Events.Publish("worker.started", "Worker control loop is online.");
             operational = true;
 
             executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -269,6 +305,10 @@ public sealed class WorkerHost
                     group.First().Configuration.Worker.MaxParallelTasks)));
             ReportCapacity();
             var idleHeartbeat = new IdleWorkerHeartbeat(_timeProvider.GetUtcNow());
+            var projectObservations = managed
+                ? (await _registration.InventoryDiscovery.GetAsync(cancellationToken: ct))
+                    .Select(state => state with { DetectedAtUtc = null }).ToArray()
+                : [];
             while (!ct.IsCancellationRequested)
             {
                 var runtimeVersion = runtimeReadModel.Registry.Version;
@@ -311,7 +351,7 @@ public sealed class WorkerHost
                     nextManagedConfigurationSync = _timeProvider.GetUtcNow().AddSeconds(_global.Server.HeartbeatIntervalSeconds);
                     try
                     {
-                        var registration = new WorkerRegistrationClient();
+                        var registration = _registration;
                         var desired = await registration.GetManagedConfigurationAsync(_global.Server, executionToken);
                         var previousVersion = managedConfiguration!.Status.AppliedVersion;
                         var localProjects = ProjectConfigurationDiscovery.Load(_global.Projects.Directory, allowEmpty: true);
@@ -355,6 +395,9 @@ public sealed class WorkerHost
                         .Where(project => validatedConfigurations.Contains(project.Configuration))
                         .SelectMany(project => WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
                         .Distinct().ToArray());
+                    if (managed && active.Count == 0) await InitializeProjectsAsync(executionToken);
+                    if (agentReady) heartbeatCapabilities = heartbeatCapabilities.Append(
+                        WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
                     scheduler.Reconfigure(runtimes.Count);
                     capacityLog.Reconfigure(_global.Worker.MaxParallelTasks);
                     ReportCapacity();
@@ -363,47 +406,44 @@ public sealed class WorkerHost
                 var foundWork = false;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
                 {
-                    var registration = new WorkerRegistrationClient();
-                    var codexChanged = false;
-                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, executionToken, async token =>
+                    var registration = _registration;
+                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning,
+                        executionToken, RevokeReadinessAsync))
                     {
-                        codexChanged = true;
-                        // No executions are active. Revoke advertised readiness until the service
-                        // CLI/authentication and real execution preflight have been verified again.
-                        heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability !=
-                            WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).ToArray();
-                        runtimeReadModel.State = "starting";
-                        Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "starting" });
-                        await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
-                    }))
-                    {
-                        if (!codexChanged) continue;
-                        await ManagedCodexReadiness.WaitAsync(WorkerRegistrationClient.ProvisioningDiscovery,
-                            token => registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, token),
-                            _timeProvider, executionToken);
-                        await agentAuthentication.ValidateAsync(executionToken);
-                        discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.RefreshAsync(executionToken);
-                        heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
-                            capability => capability.Type == "authentication")).Append(
-                            WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
-                        await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, executionToken);
-                        runtimeReadModel.State = "running";
-                        Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "running" });
+                        await RefreshProvisionedReadinessAsync(executionToken);
                         continue;
                     }
                     var provisioningPlan = await registration.RequestProvisioningPlanAsync(_global.Server, executionToken);
                     if (provisioningPlan is not null)
                     {
+                        await RevokeReadinessAsync(executionToken);
                         runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
                         var provisioningResult = await CreateProvisioningExecutor(registration, runtimes, ReportProvisionedCapabilitiesAsync).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
                             (report, token) => ReportProvisioningStateAsync(registration, provisioningPlan.Id, report, token), executionToken);
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")
-                            throw new WorkerInfrastructureException($"Provisioning plan {provisioningPlan.Id} failed at action '{provisioningResult.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
+                            _output.Warning($"Provisioning plan {provisioningPlan.Id} did not complete; the Worker remains online.");
+                        await RefreshProvisionedReadinessAsync(executionToken);
                         continue;
                     }
                 }
-                while (!ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
+                if (managed && active.Count == 0)
+                {
+                    var observations = (await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken))
+                        .Select(state => state with { DetectedAtUtc = null }).ToArray();
+                    if (!observations.SequenceEqual(projectObservations))
+                    {
+                        projectObservations = observations;
+                        discoveredCapabilities = await _registration.CapabilityDiscovery.RefreshAsync(executionToken);
+                        validatedConfigurations.Clear();
+                        heartbeatCapabilities = discoveredCapabilities;
+                        await InitializeProjectsAsync(executionToken);
+                    }
+                    agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
+                    await PublishReadinessAsync(executionToken);
+                }
+                while ((!managed || agentReady && managedConfiguration?.Status.SynchronizationStatus != "error") &&
+                    !ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
                     if (_global.Projects.Ownership == "managed")
                     {
@@ -413,7 +453,8 @@ public sealed class WorkerHost
                         {
                             var name = candidate.Configuration.Project.Name;
                             var activeForProject = active.Values.Count(value => string.Equals(value.Configuration.Project.Name, name, StringComparison.OrdinalIgnoreCase));
-                            if (projectLifecycles.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
+                            if (validatedConfigurations.Contains(candidate.Configuration) &&
+                                projectLifecycles.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
                                 activeForProject < candidate.Configuration.Worker.MaxParallelTasks)
                             {
                                 if (!projectCapacities.TryAdd(ServerProjectId(name), candidate.Configuration.Worker.MaxParallelTasks - activeForProject))
@@ -425,7 +466,7 @@ public sealed class WorkerHost
                         // The Server may accept the assignment before a cancelled request returns.
                         // Treat interruption here as uncertain so shutdown preserves that state for inspection.
 
-                        var assignmentResponse = await new WorkerRegistrationClient().RequestAssignmentAsync(_global.Server,
+                        var assignmentResponse = await _registration.RequestAssignmentAsync(_global.Server,
                             !runtimeReadModel.Registry.WorkerDraining, _global.Worker.MaxParallelTasks - active.Count,
                             projectCapacities, executionToken);
                         if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { break; }
@@ -656,7 +697,7 @@ public sealed class WorkerHost
     private async Task RenewLeaseWhileActiveAsync(ServerExecutionLeaseContract lease, CancellationTokenSource leaseStop)
     {
         var cancellationToken = leaseStop.Token;
-        var client = new WorkerRegistrationClient();
+        var client = _registration;
         var interval = TimeSpan.FromSeconds(Math.Clamp(lease.RenewalIntervalSeconds, 10, 3600));
         var expiresAtUtc = lease.ExpiresAtUtc;
         var renewalRetryDue = false;
@@ -787,13 +828,13 @@ public sealed class WorkerHost
         ProvisioningWorkerReportContract report, CancellationToken token)
     {
         if (report.State is "Completed" or "Failed")
-            await WorkerRegistrationClient.ProvisioningDiscovery.GetAsync(refresh: true, cancellationToken: token);
+            await _registration.InventoryDiscovery.GetAsync(refresh: true, cancellationToken: token);
         await registration.ReportProvisioningPlanAsync(_global.Server, planId, report, token);
     }
 
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
         IReadOnlyList<ProjectRuntime> runtimes,
-        Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(WorkerCapabilityDiscovery.Shared,
+        Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(_registration.CapabilityDiscovery,
         policy: _global.Worker.Provisioning,
         authenticationExecutor: new GitHubAuthenticationProvisioner(_runner,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
@@ -801,7 +842,7 @@ public sealed class WorkerHost
             (credentialId, token) => registration.RetrieveCredentialAsync(_global.Server, credentialId, token)),
         capabilitiesChanged: async (capabilities, token) =>
         {
-            await WorkerRegistrationClient.ProvisioningDiscovery.GetAsync(refresh: true, cancellationToken: token);
+            await _registration.InventoryDiscovery.GetAsync(refresh: true, cancellationToken: token);
             await capabilitiesChanged(capabilities, token);
         });
 

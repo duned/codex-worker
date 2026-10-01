@@ -1111,6 +1111,11 @@ public sealed class CodexServerTests
         pending = Assert.Single(await store.GetExecutionsAsync());
         Assert.Equal("compatible workers currently at capacity", pending.PendingReason);
 
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, laterWorkerId, "1.0", "not-ready", 0, 1,
+            matchingCapabilities, []));
+        Assert.False((await store.RequestAssignmentAsync(laterRequest)).HasWork);
+        Assert.Equal("Queued", Assert.Single(await store.GetExecutionsAsync()).State);
+
         await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, laterWorkerId, "1.0", "running", 0, 1,
             matchingCapabilities, []));
         var assignment = (await store.RequestAssignmentAsync(laterRequest)).Assignment;

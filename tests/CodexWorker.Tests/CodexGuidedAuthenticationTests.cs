@@ -117,14 +117,14 @@ public sealed class CodexGuidedAuthenticationTests
             return Task.FromResult((executable == CodexServiceEnvironment.Executable &&
                 args.SequenceEqual(new[] { "login", "status" }) && !authenticated ? 1 : 0, "1.0.0"));
         });
-        await ManagedCodexReadiness.WaitAsync(discovery, async token =>
+        var readiness = new ManagedCodexReadiness(new ReadyProvider());
+        while (!await readiness.EvaluateAsync(discovery, false, CancellationToken.None))
         {
             commands++;
             if (!installed) installed = true;
             else authenticated = true;
-            await discovery.GetAsync(refresh: true, cancellationToken: token);
-            return true;
-        }, TimeProvider.System, CancellationToken.None);
+            await discovery.GetAsync(refresh: true);
+        }
         Assert.Equal(expectedCommands, commands);
     }
 
@@ -167,6 +167,12 @@ public sealed class CodexGuidedAuthenticationTests
             Environment.SetEnvironmentVariable("CODEX_HOME", previousHome);
             Directory.Delete(directory, true);
         }
+    }
+
+    private sealed class ReadyProvider : IAgentAuthenticationProvider
+    {
+        public string Provider => "codex";
+        public Task ValidateAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class LoginClock : TimeProvider

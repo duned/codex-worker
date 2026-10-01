@@ -43,6 +43,18 @@ public sealed class WorkerCapabilityDiscoveryTests
     }
 
     [Fact]
+    public async Task ServicePathResolutionFailuresAreUnavailableCapabilities()
+    {
+        var runner = new ProcessRunner();
+        var discovery = new WorkerCapabilityDiscovery((executable, arguments, directory, timeout, token) =>
+            runner.RunAsync(executable, arguments, directory, timeout, token,
+                environment: new Dictionary<string, string?> { ["PATH"] = "/nonexistent-worker-tools" }));
+
+        Assert.Equal(new WorkerCapabilityContract("integration", "github-issues"),
+            Assert.Single(await discovery.DiscoverAsync()));
+    }
+
+    [Fact]
     public async Task CachedCapabilitiesRefreshAfterConfiguredInterval()
     {
         var calls = 0;

@@ -99,8 +99,8 @@ public sealed class WorkerCapabilityDiscovery
     }
 
     private static bool IsUnavailableToolFailure(Exception exception) => exception is
-        System.ComponentModel.Win32Exception or FileNotFoundException or DirectoryNotFoundException or ProcessTimeoutException ||
-        exception is InvalidOperationException && exception.Message.StartsWith("Could not start", StringComparison.Ordinal);
+        System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or
+        ProcessTimeoutException or InvalidOperationException;
 
     public static string? ParseVersion(string output)
     {
