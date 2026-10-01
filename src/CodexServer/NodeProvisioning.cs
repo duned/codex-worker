@@ -33,20 +33,27 @@ public static class NodeProvisioning
             stale, capabilities, !connected ? "unknown" : worker.Availability == "draining" ? "degraded" : "healthy");
     }
 
-    public static ProvisionableNode WithCommands(ProvisionableNode node, IReadOnlyList<ProvisioningCommand> commands)
+    public static ProvisionableNode WithCommands(ProvisionableNode node, IReadOnlyList<ProvisioningCommand> commands,
+        IReadOnlyList<ProvisioningPlan>? plans = null)
     {
+        plans ??= [];
         var capabilities = node.Capabilities.Select(capability =>
         {
-            var latest = commands.LastOrDefault(command => command.Request.NodeId == node.Id &&
-                command.Request.CapabilityId == capability.Definition.Id);
+            var latest = commands.Where(command => command.Request.NodeId == node.Id &&
+                    command.Request.CapabilityId == capability.Definition.Id)
+                .OrderByDescending(command => command.CreatedAtUtc).FirstOrDefault();
             if (latest is null) return capability;
+            var latestPlan = plans.Where(plan => plan.WorkerId == node.Id && plan.Actions.Any(action =>
+                    Matches(action, capability.Definition.Id)))
+                .OrderByDescending(plan => plan.CreatedAtUtc).FirstOrDefault();
+            if (latestPlan is not null && latestPlan.CreatedAtUtc > latest.CreatedAtUtc) return capability;
             var busy = !ProvisioningCommandProtocol.Terminal(latest.Status);
             var failed = latest.Status is ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut;
-            if (!busy && !failed) return capability;
             return capability with
             {
-                State = capability.State with { Operation = new(busy ? CapabilityOperationState.Running : CapabilityOperationState.Failed,
-                    latest.Request.Action.ToString().ToLowerInvariant(), failed ? "operation-failed" : null) },
+                State = capability.State with { Operation = new(busy ? CapabilityOperationState.Running : failed
+                        ? CapabilityOperationState.Failed : CapabilityOperationState.Idle,
+                    latest.Request.Action.ToString().ToLowerInvariant(), failed ? latest.Diagnostic.ToString().ToLowerInvariant() : null) },
                 AvailableActions = busy ? [] : capability.AvailableActions
             };
         }).ToArray();

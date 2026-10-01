@@ -12,6 +12,7 @@ public static class Program
                CodexServer diagnostics [--json] [Server configuration options]
                CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
+               CodexServer provision <list|show|create|cancel|reconcile> [arguments]
                CodexServer worker-token create [database-path]
                CodexServer worker-token revoke <registration-token> [database-path]
                CodexServer worker-token revoke-worker <worker-id> [database-path]
@@ -27,7 +28,7 @@ public static class Program
         create/update take a CentralProjectDefinition JSON file and mutations require a revision.
         Backup restore requires the service to be stopped.
 
-        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|worker <operation>
+        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|provision <operation>|worker <operation>
         The installed helper uses /etc/codex-server/server.env and the service account
         for local administration, Worker administration and token commands, even while codex-server.service is running.
         Create a Worker token with sudo codex-server worker-token create.
@@ -52,7 +53,7 @@ public static class Program
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
             return 0;
         }
-        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects")
+        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "provision")
             return await RunLocalAdministrationAsync(args);
         if (args.Length > 0 && args[0] is "backup" or "worker-token" or "worker")
         {
@@ -98,8 +99,12 @@ public static class Program
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(userCancellation.Token, timeout.Token);
         try
         {
-            var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(), new LocalServerAdministrationServiceFactory());
-            var exitCode = await cli.RunAsync(args.Skip(1).ToArray(), cancellation.Token);
+            var configuration = new ServerConfigurationAdministrationService();
+            var exitCode = args[0] == "provision"
+                ? await new ServerProvisioningCommandCli(configuration, new LocalProvisioningCommandAdministrationServiceFactory())
+                    .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
+                : await new ServerAdministrationCli(configuration, new LocalServerAdministrationServiceFactory())
+                    .RunAsync(args.Skip(1).ToArray(), cancellation.Token);
             if (userCancellation.IsCancellationRequested)
             {
                 Console.Error.WriteLine("Server administration command canceled.");

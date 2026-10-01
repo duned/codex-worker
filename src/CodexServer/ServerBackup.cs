@@ -44,7 +44,7 @@ public sealed class ServerBackup(string? databasePath = null)
                 await using (var stream = manifest.Open())
                     await JsonSerializer.SerializeAsync(stream, new BackupManifest(CurrentFormatVersion, DateTimeOffset.UtcNow,
                         RegistrySchemaVersion: SqliteRegistryStore.CurrentSchemaVersion,
-                        Contents: ["workers", "projects", "execution metadata and history", "execution queue and leases", "provisioning plans", "credential metadata"]), ManifestJson, cancellationToken);
+                        Contents: ["workers", "projects", "execution metadata and history", "execution queue and leases", "legacy provisioning plans", "typed provisioning command history when present", "credential metadata"]), ManifestJson, cancellationToken);
                 archive.CreateEntryFromFile(databaseCopy, DatabaseName, CompressionLevel.Optimal);
             }
             File.Move(temporaryArchive, target, overwrite: true);

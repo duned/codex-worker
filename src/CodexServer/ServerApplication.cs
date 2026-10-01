@@ -102,7 +102,7 @@ public static class ServerApplication
             foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
                 nodes.Add(NodeProvisioning.Describe(worker, plans));
             var operations = await commands.ListAsync(context.RequestAborted);
-            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, operations)));
+            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, operations, plans)));
         });
         app.MapPost("/api/v1/nodes/server/capabilities/refresh", async (HttpContext context, ServerConfiguration settings,
             NodeCapabilityDiscovery discovery) =>
@@ -134,7 +134,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/provisioning/commands/{id}", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
-            var operation = (await commands.ListAsync(context.RequestAborted)).FirstOrDefault(item => item.Id == id);
+            var operation = await commands.GetAsync(id, context.RequestAborted);
             return operation is null ? Results.NotFound() : Results.Ok(operation);
         });
         app.MapPost("/api/v1/provisioning/commands/{id}/cancel", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
@@ -448,14 +448,16 @@ public static class ServerApplication
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
         app.MapGet("/api/v1/workers/{workerId}/diagnostics", async (string workerId, HttpContext context,
-            ServerConfiguration settings, IRegistryStore store) =>
+            ServerConfiguration settings, IRegistryStore store, ProvisioningCommandStore commands) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
-            return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans, ManagedConfigurationVersion(projects)));
+            var typedCommands = await commands.ListAsync(context.RequestAborted);
+            return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans,
+                ManagedConfigurationVersion(projects), typedCommands));
         });
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>

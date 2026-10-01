@@ -120,6 +120,13 @@ else
   bash "$temp_dir/helper-command.sh" config show
 fi
 tail -n 2 "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf 'config\nshow\n')
+if [[ $EUID == 0 ]]; then
+  bash "$temp_dir/codex-server" provision list
+else
+  sed -n '/^exec systemd-run/,$p' "$temp_dir/codex-server" > "$temp_dir/provision-command.sh"
+  bash "$temp_dir/provision-command.sh" provision list
+fi
+tail -n 3 "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf '/opt/codex-server/current/CodexServer\nprovision\nlist\n')
 # Help/version bypass sudo and systemd and dispatch directly to the executable.
 cat > "$temp_dir/server-cli" <<'EOF'
 #!/usr/bin/env bash

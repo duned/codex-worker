@@ -1,25 +1,32 @@
 namespace CodexServer;
 
+using CodexProvisioning;
+
 /// <summary>Operational, secret-free view derived from the existing worker registry and project models.</summary>
 public sealed record WorkerProjectReadiness(string ProjectId, string ProjectName, bool IsEligible,
     IReadOnlyList<string> MissingRequirements);
+
+public sealed record ProvisioningOperationSummary(string Source, string Id, string Status, string? Action,
+    string Diagnostic, DateTimeOffset CreatedAtUtc);
 
 public sealed record WorkerDiagnostics(string WorkerId, string WorkerVersion, string Availability,
     DateTimeOffset? LastHeartbeatAtUtc, string LifecycleState, int ActiveExecutions, int Capacity,
     int AvailableCapacity, string ConfigurationSynchronization, string ProvisioningState,
     bool GitHubReady, bool GitReady, bool AiAgentReady, IReadOnlyList<WorkerProjectReadiness> Projects,
-    IReadOnlyList<string> Reasons, string? RecentOperationalError);
+    IReadOnlyList<string> Reasons, string? RecentOperationalError, ProvisioningOperationSummary? LatestProvisioningOperation = null);
 
 /// <summary>Deterministically explains whether a registered worker can accept work.</summary>
 public static class WorkerDiagnosticsDerivation
 {
     public static WorkerDiagnostics Derive(WorkerRegistrationResponse worker, IReadOnlyList<CentralProject> projects,
-        IReadOnlyList<ProvisioningPlan> provisioningPlans, string expectedConfigurationVersion)
+        IReadOnlyList<ProvisioningPlan> provisioningPlans, string expectedConfigurationVersion,
+        IReadOnlyList<ProvisioningCommand>? provisioningCommands = null)
     {
         ArgumentNullException.ThrowIfNull(worker);
         ArgumentNullException.ThrowIfNull(projects);
         ArgumentNullException.ThrowIfNull(provisioningPlans);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedConfigurationVersion);
+        var typedCommands = provisioningCommands ?? [];
 
         var capabilities = worker.Capabilities;
         var githubReady = projects.Count == 0
@@ -52,12 +59,27 @@ public static class WorkerDiagnosticsDerivation
                 reasons.Add("Missing requirement: " + requirement);
         }
 
-        var latestProvisioning = provisioningPlans.Where(plan => plan.WorkerId == worker.WorkerId)
+        var latestPlan = provisioningPlans.Where(plan => plan.WorkerId == worker.WorkerId)
             .OrderByDescending(plan => plan.CreatedAtUtc).FirstOrDefault();
-        var provisioningState = latestProvisioning?.State ?? "not-required";
-        if (latestProvisioning?.State is "Pending" or "Accepted" or "Running") reasons.Add("Provisioning required");
-        if (latestProvisioning?.State == "Failed") reasons.Add("Provisioning failed");
-        var recentError = latestProvisioning?.Failure;
+        var latestCommand = typedCommands.Where(command => command.Request.NodeId == worker.WorkerId)
+            .OrderByDescending(command => command.CreatedAtUtc).FirstOrDefault();
+        var planSummary = latestPlan is null ? null : new ProvisioningOperationSummary("legacy-plan", latestPlan.Id,
+            latestPlan.State, latestPlan.CurrentActionId, latestPlan.State == "Failed" ? "operation-failed" : latestPlan.State.ToLowerInvariant(),
+            latestPlan.CreatedAtUtc);
+        var commandSummary = latestCommand is null ? null : new ProvisioningOperationSummary("typed-command", latestCommand.Id,
+            latestCommand.Status.ToString(), latestCommand.Request.Action.ToString(),
+            latestCommand.Diagnostic.ToString().ToLowerInvariant(), latestCommand.CreatedAtUtc);
+        ProvisioningOperationSummary? latestProvisioning;
+        if (planSummary is null) latestProvisioning = commandSummary;
+        else if (commandSummary is null || planSummary.CreatedAtUtc > commandSummary.CreatedAtUtc) latestProvisioning = planSummary;
+        else latestProvisioning = commandSummary;
+        var provisioningState = latestProvisioning?.Status ?? "not-required";
+        string? recentError = null;
+        if (latestProvisioning?.Source == "legacy-plan" && latestPlan is { State: "Failed" } failedPlan)
+            recentError = failedPlan.Failure;
+        else if (latestProvisioning?.Source == "typed-command" && latestCommand is
+            { Status: ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut } failedCommand)
+            recentError = $"Typed provisioning {failedCommand.Request.Action.ToString().ToLowerInvariant()} for {failedCommand.Request.CapabilityId} ended with {failedCommand.Diagnostic.ToString().ToLowerInvariant()}.";
         var configurationSynchronization = worker.ConfigurationSynchronization switch
         {
             "error" => "error",
@@ -77,7 +99,7 @@ public static class WorkerDiagnosticsDerivation
         return new WorkerDiagnostics(worker.WorkerId, worker.WorkerVersion, worker.Availability, worker.LastHeartbeatAtUtc,
             worker.LifecycleState, worker.ActiveExecutions, worker.MaximumCapacity, worker.AvailableCapacity,
             configurationSynchronization, provisioningState, githubReady, gitReady, aiReady, readiness, reasons.Distinct(StringComparer.Ordinal).ToArray(),
-            recentError);
+            recentError, latestProvisioning);
     }
 
     private static bool Has(IReadOnlyList<WorkerCapability> capabilities, string type, string name, string? scope = null) =>

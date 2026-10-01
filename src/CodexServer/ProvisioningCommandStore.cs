@@ -68,6 +68,22 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         return operations;
     }
 
+    public async Task<ProvisioningCommand?> GetAsync(string id, CancellationToken token = default)
+    {
+        await using var connection = await OpenAsync(token);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT body FROM provisioning_commands WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", id);
+        var body = await command.ExecuteScalarAsync(token) as string;
+        if (body is null) return null;
+        var operation = JsonSerializer.Deserialize<ProvisioningCommand>(body)!;
+        if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow &&
+            _loginInstructions.TryGetValue(operation.Id, out var instructions))
+            return operation with { LoginInstructions = instructions };
+        _loginInstructions.TryRemove(operation.Id, out _);
+        return operation;
+    }
+
     // SQLite's immediate transaction serializes claims and all state transitions across service instances.
     public async Task<ProvisioningCommand?> ClaimAsync(string node, CancellationToken token = default)
     {

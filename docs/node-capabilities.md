@@ -40,8 +40,8 @@ Install/update/uninstall/logout executors use the same
 re-detection boundary after both successful and failed changes. Never infer
 success from an operation result alone.
 
-Worker operation state is projected from the latest applicable provisioning
-plan, including the current action and a fixed failure diagnostic code. Running
+Worker operation state is projected from the latest applicable legacy plan or
+typed command, including its source, action and bounded diagnostic code. Running
 operations and disconnected Workers expose no available actions. The initial
 catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
 tools, plus `checkconfiguration` and SSH key/access actions for Git,
@@ -120,9 +120,25 @@ node are disabled during submission or pending/running operations, and when
 refresh fails. Polling every five seconds restores operation state after reload
 and displays queued, started, deadline and completion timestamps. Failed, timed
 out and cancelled commands offer an explicit retry only while the original action
-remains available. Running commands are never automatically replayed, including
-when a deadline passes or an acknowledgement is lost. Existing API reconciliation
-still requires verified node quiescence.
+remains available. The history panel presents legacy plans and typed commands
+with distinct labels. Queued typed commands can be cancelled. A running command
+can be reconciled only after its deadline and an operator confirms node
+quiescence. Running commands are never automatically replayed, including when a
+deadline passes or an acknowledgement is lost. Provisioning readiness describes
+whether node actions can be dispatched; Worker diagnostics keep it separate from
+project eligibility and execution readiness.
+
+## Legacy plan compatibility
+
+`/api/v1/provisioning` and the Worker plan executor remain supported for existing
+clients and persisted history. Plan creation is deprecated for new operator
+integrations; use `/api/v1/provisioning/commands` or the Server's local
+`codex-server provision` commands for new work. Plans and typed commands retain
+separate contracts and storage because accepted/running plan replay and typed
+command at-most-once reconciliation have different safety semantics. There is
+no automatic conversion or merged lifecycle. Server backups retain plan history
+and include typed command history when that table is present; older backups
+without typed command history remain restorable.
 
 GitHub login preparation directs operators to complete browser/device authorization
 in a terminal on the node as the service account, then check authentication.
@@ -198,7 +214,7 @@ contracts provide a reusable boundary for a future secure Server transport
 adapter, but this design does not add that transport or remote command execution.
 
 Dashboard behavior checks run without external services:
-`node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.
+`node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs tests/dashboard/server-provisioning-admin.test.cjs`.
 
 ## Git/GitHub node setup
 

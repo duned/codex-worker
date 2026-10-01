@@ -73,6 +73,18 @@ public sealed class CodexServerTests
             Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId })).StatusCode);
             await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0", "running", 0, 1, [], []));
+            var queuedResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands",
+                request with { NodeId = workerId, CapabilityId = "codex-cli" });
+            var queued = await queuedResponse.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
+            Assert.NotNull(queued);
+            var cancelledResponse = await client.PostAsync($"/api/v1/provisioning/commands/{queued.Id}/cancel", null);
+            Assert.Equal(HttpStatusCode.OK, cancelledResponse.StatusCode);
+            var cancelled = await cancelledResponse.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
+            Assert.Equal(CodexProvisioning.ProvisioningCommandStatus.Cancelled, cancelled?.Status);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync(
+                $"/api/v1/provisioning/commands/{queued.Id}/reconcile?nodeQuiescent=false", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync(
+                $"/api/v1/provisioning/commands/{queued.Id}/reconcile?nodeQuiescent=true", null)).StatusCode);
             var workerResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId });
             Assert.Equal(HttpStatusCode.Created, workerResponse.StatusCode);
             using var workerClient = new HttpClient { BaseAddress = new Uri(url) };
@@ -341,6 +353,10 @@ public sealed class CodexServerTests
         const string deliveryToken = "worker-delivery-token-value-that-is-long-enough";
         var workerId = Guid.NewGuid().ToString("N");
         await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "backup worker", "1.0.0", "test", 1, [new WorkerCapability("tool", "git")]));
+        var legacyPlan = await registry.CreateProvisioningPlanAsync(new CreateProvisioningPlanRequest(workerId, []));
+        var typedCommands = new ProvisioningCommandStore(database);
+        await typedCommands.InitializeAsync();
+        var typedCommand = await typedCommands.CreateAsync(new(workerId, "git", ProvisioningCommandAction.Detect));
         var workerBootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
         Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(workerBootstrap, workerId, "backup-worker-api-token"));
         await registry.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining);
@@ -358,6 +374,8 @@ public sealed class CodexServerTests
             {
                 Assert.Equal(1, manifest.RootElement.GetProperty("formatVersion").GetInt32());
                 Assert.Equal(SqliteRegistryStore.CurrentSchemaVersion, manifest.RootElement.GetProperty("registrySchemaVersion").GetInt32());
+                Assert.Contains("legacy provisioning plans", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
+                Assert.Contains("typed provisioning command history when present", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
             }
             var entry = Assert.IsType<System.IO.Compression.ZipArchiveEntry>(archive.GetEntry("state.sqlite"));
             await using var stream = entry.Open();
@@ -378,6 +396,12 @@ public sealed class CodexServerTests
         var restoredWorker = await restoredRegistry.GetWorkerAsync(workerId);
         Assert.Equal("backup worker", restoredWorker?.DisplayName);
         Assert.Equal(WorkerSchedulingPolicy.Draining, restoredWorker?.SchedulingPolicy);
+        Assert.Equal("Pending", (await restoredRegistry.GetProvisioningPlanAsync(legacyPlan.Id))?.State);
+        var restoredCommands = new ProvisioningCommandStore(restoredDatabase);
+        await restoredCommands.InitializeAsync();
+        var restoredTypedCommand = Assert.Single(await restoredCommands.ListAsync());
+        Assert.Equal(typedCommand.Id, restoredTypedCommand.Id);
+        Assert.Equal(ProvisioningCommandStatus.Pending, restoredTypedCommand.Status);
         Assert.Equal("revoked", restoredWorker?.AuthenticationCredentialStatus);
         var restoredCredentials = new SqliteCredentialStore(restoredDatabase, encryptionKey);
         await restoredCredentials.InitializeAsync();
