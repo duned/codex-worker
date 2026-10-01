@@ -377,7 +377,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     }
 
     public async Task<bool> ExecuteProvisioningCommandAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCodexMutation = null)
     {
         if (!settings.Enabled) return false;
         var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
@@ -397,19 +397,28 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 throw new InvalidDataException("Invalid provisioning command identity or deadline.");
             var action = command.Request.Action;
             var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess;
-            var type = NodeGitHubSetup.Handles(command.Request) || action == ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
+            var type = NodeGitHubSetup.Handles(command.Request) || action is ProvisioningCommandAction.Login or ProvisioningCommandAction.Logout or ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
             var key = $"{type}:{command.Request.CapabilityId}:{action}".ToLowerInvariant();
             var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
             var permitted = !policy.DeniedActions.Contains(key, StringComparer.OrdinalIgnoreCase) &&
                 (readOnly || policy.Enabled && (type != "authentication" || policy.AllowCredentials) &&
                     (privileged ? command.Request.AllowElevation && policy.AllowedPrivilegedActions.Contains(key, StringComparer.OrdinalIgnoreCase) : policy.AllowNonPrivileged));
+            if (permitted && command.Request.CapabilityId == "codex-cli" &&
+                action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or
+                    ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Login or ProvisioningCommandAction.Logout &&
+                beforeCodexMutation is not null)
+                await beforeCodexMutation(cancellationToken);
+            async Task ReportAsync(ProvisioningCommandReport report, CancellationToken token)
+            {
+                using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
+                message.Content = JsonContent.Create(report);
+                using var acknowledgement = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
+                acknowledgement.EnsureSuccessStatusCode();
+            }
             var result = await new NodeProvisioningCommandExecutor(provisioningDiscovery ?? ProvisioningDiscovery)
-                .ExecuteAsync(command, permitted, cancellationToken);
+                .ExecuteAsync(command, permitted, cancellationToken, ReportAsync);
             // A terminal acknowledgement is safe to resend; execution itself is never retried.
-            using var reportRequest = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
-            reportRequest.Content = JsonContent.Create(result);
-            using var reportResponse = await client.SendAsync(reportRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            reportResponse.EnsureSuccessStatusCode();
+            await ReportAsync(result, cancellationToken);
             return true;
         }
         finally { if (httpClient is null) client.Dispose(); }

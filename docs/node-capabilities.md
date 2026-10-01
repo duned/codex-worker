@@ -46,7 +46,7 @@ operations and disconnected Workers expose no available actions. The initial
 catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
 tools, plus `checkconfiguration` and SSH key/access actions for Git,
 `prepareauthentication`/`checkauthentication`/`logout` for GitHub CLI, and
-`checkauthentication`/`logout` for Codex CLI. These indicate registered operations, not permission to mutate a node:
+`login`/`checkauthentication`/`logout` for Codex CLI. These indicate registered operations, not permission to mutate a node:
 local policy and platform support are checked at execution.
 
 The registry retains the latest Worker report in its existing registration and
@@ -126,10 +126,45 @@ still requires verified node quiescence.
 
 GitHub login preparation directs operators to complete browser/device authorization
 in a terminal on the node as the service account, then check authentication.
-Codex authentication is completed in the service account environment and checked
-afterward. The dashboard does not collect credentials, fetch secret-delivery
-endpoints, or display raw process logs, tokens or private keys. Operation status
-and fixed diagnostic codes are the supported sanitized progress/error record.
+The dashboard does not collect credentials or display raw process logs, tokens or private keys.
+
+Codex CLI also advertises **Sign in with device code** (`Login`). With local
+provisioning enabled and Worker credential/nonprivileged actions authorized,
+the node runs the [supported device authentication flow](https://developers.openai.com/codex/auth)
+(`codex login --device-auth`) as the actual service account, without elevation.
+Enable device code login in ChatGPT security settings or workspace permissions.
+The management-authenticated dashboard shows the fixed OpenAI verification URL
+and one-time user code while the command is running. Approve only the login you
+started for the selected node. This flow does not collect passwords or copy
+another user's credentials. Unsupported or disabled device authentication fails
+with the existing sanitized diagnostic; it does not fall back to credential copying.
+
+The dashboard gives login a ten-minute deadline. Queued/running commands represent
+pending authentication; successful login must also pass `codex login status`.
+Failed, cancelled and timed-out logins clear instructions; timeout represents an
+expired attempt and requires an explicit new login. Instructions exist only in
+Server memory, never in SQLite command history, inventory or logs, and are hidden
+at the deadline. After a Server restart the operation is not replayed and its
+instructions are unavailable; use the existing quiescence/reconciliation process
+for unacknowledged operations. No raw CLI output or access/refresh tokens cross
+the provisioning API. Credentials remain in the service's local Codex storage.
+
+Detection, login, logout and execution share `CODEX_HOME` (or the service account's
+`.codex` directory) and the absolute `CODEX_WORKER_CODEX_EXECUTABLE` override when
+configured. Packaged service PATH includes the system npm prefix. Custom
+installations must keep the executable and home accessible to their service user.
+Logout uses Codex's own logout operation in that identity; uninstall retains the
+local auth/configuration as described above.
+
+A managed Worker with known missing Codex or required authentication remains
+registered and heartbeating in `starting` state while it processes provisioning
+commands. It cannot request execution assignments until real Codex execution
+preflight passes. Before Codex mutations on an idle running Worker,
+agent readiness is withdrawn, missing/authentication states return to this
+provisioning wait, and normal preflight must pass again before scheduling resumes.
+Probe errors and Codex execution/authentication preflight failures retain their
+existing infrastructure-failure behavior; this adds no Codex service retries.
+Standalone startup retains its existing ownership and failure behavior.
 
 Dashboard behavior checks run without external services:
 `node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.

@@ -7,6 +7,7 @@ using System.Text.Json;
 /// <summary>Durable, at-most-once dispatch. Running commands are never replayed after reconnect.</summary>
 public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? timeProvider = null)
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CodexLoginInstructions> _loginInstructions = new();
     private DateTimeOffset UtcNow => (timeProvider ?? TimeProvider.System).GetUtcNow();
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken token)
@@ -55,7 +56,15 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         command.CommandText = "SELECT body FROM provisioning_commands ORDER BY rowid;";
         await using var reader = await command.ExecuteReaderAsync(token);
         var operations = new List<ProvisioningCommand>();
-        while (await reader.ReadAsync(token)) operations.Add(JsonSerializer.Deserialize<ProvisioningCommand>(reader.GetString(0))!);
+        while (await reader.ReadAsync(token))
+        {
+            var operation = JsonSerializer.Deserialize<ProvisioningCommand>(reader.GetString(0))!;
+            if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow &&
+                _loginInstructions.TryGetValue(operation.Id, out var instructions))
+                operation = operation with { LoginInstructions = instructions };
+            else _loginInstructions.TryRemove(operation.Id, out _);
+            operations.Add(operation);
+        }
         return operations;
     }
 
@@ -96,6 +105,9 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         if (report.Status == ProvisioningCommandStatus.Succeeded && report.PublicIdentity is null &&
             operation.Request.Action is ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey)
             throw new InvalidDataException("Public identity is required for this action.");
+        if (report.LoginInstructions is not null && (operation.Request.Action != ProvisioningCommandAction.Login ||
+            operation.Request.CapabilityId != "codex-cli" || operation.DeadlineUtc <= UtcNow))
+            throw new InvalidDataException("Login instructions do not belong to an active Codex login.");
         if (operation.Request.NodeId != node) throw new InvalidOperationException("Operation is not owned by this node.");
         if (ProvisioningCommandProtocol.Terminal(operation.Status))
         {
@@ -103,6 +115,8 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
             throw new InvalidOperationException("Operation is already terminal.");
         }
         if (operation.Status != ProvisioningCommandStatus.Running) throw new InvalidOperationException("Operation has not been dispatched.");
+        if (report.LoginInstructions is { } instructions) _loginInstructions[id] = instructions;
+        if (ProvisioningCommandProtocol.Terminal(report.Status)) _loginInstructions.TryRemove(id, out _);
         return operation with { Status = report.Status, Diagnostic = report.Diagnostic,
             PublicIdentity = report.PublicIdentity, CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
     }, token);

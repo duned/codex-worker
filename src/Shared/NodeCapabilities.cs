@@ -34,7 +34,7 @@ public static class CapabilityCatalog
     [
         new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
         new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "checkauthentication", "logout"]),
-        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "checkauthentication", "logout"])
+        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"])
     ]);
 
     public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,
@@ -98,7 +98,8 @@ public sealed class NodeCapabilityDiscovery
                 var state = CapabilityCatalog.Unknown(definition);
                 try
                 {
-                    var version = await _run(definition.Executable, ["--version"], cancellationToken);
+                    var executable = definition.Id == "codex-cli" ? CodexServiceEnvironment.Executable : definition.Executable;
+                    var version = await _run(executable, ["--version"], cancellationToken);
                     var match = Regex.Match(version.Output, @"(?<![\w])v?(\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?)(?![\w])");
                     state = state with { Installation = version.ExitCode == 0 ? InstallationState.Installed : InstallationState.Unknown,
                         DetectedVersion = version.ExitCode == 0 && match.Success ? match.Groups[1].Value : null,
@@ -106,15 +107,15 @@ public sealed class NodeCapabilityDiscovery
                         DiagnosticCode = version.ExitCode == 0 ? null : "probe-failed" };
                     if (version.ExitCode == 0 && definition.RequiresConfiguration)
                     {
-                        var name = await _run(definition.Executable, ["config", "--get", "user.name"], cancellationToken);
-                        var email = await _run(definition.Executable, ["config", "--get", "user.email"], cancellationToken);
+                        var name = await _run(executable, ["config", "--get", "user.name"], cancellationToken);
+                        var email = await _run(executable, ["config", "--get", "user.email"], cancellationToken);
                         state = state with { Configuration = name.ExitCode == 0 && email.ExitCode == 0 &&
                             !string.IsNullOrWhiteSpace(name.Output) && !string.IsNullOrWhiteSpace(email.Output)
                             ? RequirementState.Satisfied : RequirementState.Required };
                     }
                     if (version.ExitCode == 0 && definition.RequiresAuthentication)
                     {
-                        var auth = await _run(definition.Executable, definition.Id == "github-cli" ? ["auth", "status", "--hostname", "github.com"] : ["login", "status"], cancellationToken);
+                        var auth = await _run(executable, definition.Id == "github-cli" ? ["auth", "status", "--hostname", "github.com"] : ["login", "status"], cancellationToken);
                         state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
                             DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
                     }
@@ -194,6 +195,7 @@ public sealed class NodeCapabilityDiscovery
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["LC_ALL"] = "C";
         await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, cancellationToken);
+        if (executable == CodexServiceEnvironment.Executable) CodexServiceEnvironment.Apply(process.StartInfo);
         process.Start();
         var stdout = DrainAsync(process.StandardOutput, timeout.Token);
         var stderr = DrainAsync(process.StandardError, timeout.Token);

@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Text.Json.Serialization;
 
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandAction>))]
-public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration, PrepareAuthentication, GenerateSshKey, InspectSshKey, RemoveSshKey, VerifyRepositoryAccess }
+public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration, PrepareAuthentication, GenerateSshKey, InspectSshKey, RemoveSshKey, VerifyRepositoryAccess, Login }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandStatus>))]
 public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Cancelled, TimedOut }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
@@ -16,9 +16,9 @@ public sealed record ProvisioningCommandRequest(string NodeId, string Capability
     int TimeoutSeconds = 120, bool AllowElevation = false, string? Repository = null);
 public sealed record ProvisioningCommand(string Id, ProvisioningCommandRequest Request, DateTimeOffset CreatedAtUtc,
     ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, DateTimeOffset? StartedAtUtc = null,
-    DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null, SshPublicIdentity? PublicIdentity = null);
+    DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null, SshPublicIdentity? PublicIdentity = null, CodexLoginInstructions? LoginInstructions = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, SshPublicIdentity? PublicIdentity = null);
+public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, SshPublicIdentity? PublicIdentity = null, CodexLoginInstructions? LoginInstructions = null);
 
 public static class ProvisioningCommandProtocol
 {
@@ -33,6 +33,7 @@ public static class ProvisioningCommandProtocol
     public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
     {
         ProvisioningCommandAction.Detect => true,
+        ProvisioningCommandAction.Login => request.CapabilityId == "codex-cli",
         ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId is "git" or "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
@@ -45,7 +46,8 @@ public static class ProvisioningCommandProtocol
         ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.Cancelled or ProvisioningCommandStatus.TimedOut;
 
     public static bool ValidReport(ProvisioningCommandReport? report) => report is not null && (report.PublicIdentity is null ||
-        report.Status == ProvisioningCommandStatus.Succeeded && NodeGitHubSetup.ValidIdentity(report.PublicIdentity)) && (report.Status, report.Diagnostic) switch
+        report.Status == ProvisioningCommandStatus.Succeeded && NodeGitHubSetup.ValidIdentity(report.PublicIdentity)) && (report.LoginInstructions is null ||
+        report.Status == ProvisioningCommandStatus.Running && CodexDeviceLogin.Valid(report.LoginInstructions)) && (report.Status, report.Diagnostic) switch
     {
         (ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing) => true,
         (ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed) => true,
@@ -66,22 +68,26 @@ public sealed class NodeProvisioningCommandExecutor
     private readonly Func<bool> _isRoot;
     private readonly Func<bool> _npmAvailable;
     private readonly NodeGitHubSetup _githubSetup;
+    private readonly Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>> _login;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
 
     public NodeProvisioningCommandExecutor(NodeCapabilityDiscovery discovery,
         Func<string, IReadOnlyList<string>, CancellationToken, Task<int>>? run = null,
-        Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null)
+        Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null,
+        Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>>? login = null)
     {
         _discovery = discovery;
         _githubSetup = githubSetup ?? new NodeGitHubSetup();
         _run = run ?? RunAsync;
         _supportsApt = supportsApt ?? (() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version"));
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
+        _login = login ?? CodexDeviceLogin.RunAsync;
         _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/npm"));
     }
 
     public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommand command, bool permitted,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<ProvisioningCommandReport, CancellationToken, Task>? reportProgress = null)
     {
         if (!ProvisioningCommandProtocol.Valid(command.Request) || !ProvisioningCommandProtocol.Supported(command.Request))
             return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
@@ -116,6 +122,19 @@ public sealed class NodeProvisioningCommandExecutor
                 refreshed = true;
                 return result;
             }
+            if (request.Action == ProvisioningCommandAction.Login)
+            {
+                if (reportProgress is null) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+                var code = await _login(async (instructions, token) =>
+                {
+                    if (!CodexDeviceLogin.Valid(instructions)) throw new InvalidOperationException("Invalid login instructions.");
+                    await reportProgress(new(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing, LoginInstructions: instructions), token);
+                }, timeout.Token);
+                // Login completion alone is not proof of service authentication.
+                if (code == 0) code = await _run(CodexServiceEnvironment.Executable, ["login", "status"], timeout.Token);
+                return code == 0 ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
+                    : new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed);
+            }
             string executable;
             IReadOnlyList<string> arguments;
             if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall)
@@ -149,7 +168,8 @@ public sealed class NodeProvisioningCommandExecutor
             }
             else
             {
-                executable = CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
+                executable = request.CapabilityId == "codex-cli" ? CodexServiceEnvironment.Executable
+                    : CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
                 arguments = request.Action switch
                 {
                     ProvisioningCommandAction.CheckConfiguration => ["config", "--get", "user.name"],
@@ -197,6 +217,7 @@ public sealed class NodeProvisioningCommandExecutor
         process.StartInfo.Environment["DEBIAN_FRONTEND"] = "noninteractive";
         process.StartInfo.Environment["LC_ALL"] = "C";
         await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, token);
+        if (executable == CodexServiceEnvironment.Executable) CodexServiceEnvironment.Apply(process.StartInfo);
         process.Start();
         process.StandardInput.Close();
         using var drainCancellation = new CancellationTokenSource();

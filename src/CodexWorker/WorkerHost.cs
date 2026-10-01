@@ -167,6 +167,17 @@ public sealed class WorkerHost
                 }
             }
 
+            if (_global.Server.Enabled && _global.Projects.Ownership == "managed")
+            {
+                await ManagedCodexReadiness.WaitAsync(WorkerRegistrationClient.ProvisioningDiscovery,
+                    token => new WorkerRegistrationClient().ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, token),
+                    _timeProvider, ct);
+                discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.RefreshAsync(ct);
+                heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
+                    capability => capability.Type == "authentication")).Distinct().ToArray();
+                await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, ct);
+            }
+
             var startupPlans = runtimes.Select(project => new ProjectStartupPlan(
                 project.Path,
                 project.Configuration.Project.Name,
@@ -353,8 +364,33 @@ public sealed class WorkerHost
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
                 {
                     var registration = new WorkerRegistrationClient();
-                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, executionToken))
+                    var codexChanged = false;
+                    if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, executionToken, async token =>
+                    {
+                        codexChanged = true;
+                        // No executions are active. Revoke advertised readiness until the service
+                        // CLI/authentication and real execution preflight have been verified again.
+                        heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability !=
+                            WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).ToArray();
+                        runtimeReadModel.State = "starting";
+                        Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "starting" });
+                        await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
+                    }))
+                    {
+                        if (!codexChanged) continue;
+                        await ManagedCodexReadiness.WaitAsync(WorkerRegistrationClient.ProvisioningDiscovery,
+                            token => registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning, token),
+                            _timeProvider, executionToken);
+                        await agentAuthentication.ValidateAsync(executionToken);
+                        discoveredCapabilities = await WorkerCapabilityDiscovery.Shared.RefreshAsync(executionToken);
+                        heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
+                            capability => capability.Type == "authentication")).Append(
+                            WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
+                        await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, executionToken);
+                        runtimeReadModel.State = "running";
+                        Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = "running" });
                         continue;
+                    }
                     var provisioningPlan = await registration.RequestProvisioningPlanAsync(_global.Server, executionToken);
                     if (provisioningPlan is not null)
                     {

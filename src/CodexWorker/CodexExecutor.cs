@@ -38,17 +38,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes
     }, projectEnvironment);
 
-    private static string Executable
-    {
-        get
-        {
-            var configured = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
-            if (string.IsNullOrWhiteSpace(configured)) return "codex";
-            if (!Path.IsPathFullyQualified(configured))
-                throw new WorkerInfrastructureException("CODEX_WORKER_CODEX_EXECUTABLE must be an absolute path accessible to the service account.");
-            return configured;
-        }
-    }
+    private static string Executable => CodexProvisioning.CodexServiceEnvironment.Executable;
     internal const string OutputSchema = """
         {
           "type": "object",
@@ -342,8 +332,7 @@ internal sealed class CodexEnvironment : IDisposable
                 key.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase) ||
                 key.StartsWith("ACTIONS_ID_TOKEN_", StringComparison.OrdinalIgnoreCase)) variables[key] = null;
         }
-        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
-        if (string.IsNullOrWhiteSpace(codexHome)) codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        var codexHome = CodexProvisioning.CodexServiceEnvironment.Home;
         variables["HOME"] = directory;
         variables["USERPROFILE"] = directory;
         variables["GH_CONFIG_DIR"] = Path.Combine(directory, "gh");

@@ -18,8 +18,10 @@ public sealed class LocalProvisioningCommandService(ProvisioningCommandStore sto
                     ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or
                     ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess ||
                     configuration.EnableLocalProvisioning && (NodeGitHubSetup.Handles(command.Request) ||
+                    command.Request.Action is ProvisioningCommandAction.Logout or ProvisioningCommandAction.Login ||
                         configuration.AllowLocalProvisioningElevation && command.Request.AllowElevation);
-                var report = await executor.ExecuteAsync(command, permitted, stoppingToken);
+                var report = await executor.ExecuteAsync(command, permitted, stoppingToken,
+                    async (progress, token) => { await store.ReportAsync(command.Id, "server", progress, token); });
                 await store.ReportAsync(command.Id, "server", report, CancellationToken.None);
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));

@@ -34,7 +34,7 @@ test('pending operations block every action, including duplicate submissions',as
 test('destructive actions require confirmation and installation requires elevation',async()=>{
  const s=setup();await s.run("runNodeAction('server','github-cli','install')");assert.equal(s.calls.length,0);assert.match(s.$('node-message').textContent,/Authorize elevation/);
  s.setConfirmation(false);await s.run("runNodeAction('server','github-cli','logout')");assert.equal(s.calls.length,0);
- s.$('node-elevation').checked=true;await s.run("runNodeAction('server','github-cli','install')");const payload=JSON.parse(s.calls[0].options.body);assert.deepEqual(payload,{nodeId:'server',capabilityId:'github-cli',action:'Install',allowElevation:true});
+ s.$('node-elevation').checked=true;await s.run("runNodeAction('server','github-cli','install')");const payload=JSON.parse(s.calls[0].options.body);assert.deepEqual(payload,{nodeId:'server',capabilityId:'github-cli',action:'Install',timeoutSeconds:120,allowElevation:true});
 });
 test('retries failed commands only while their action remains advertised',()=>{
  const s=setup();s.context.commands=[{...s.command,status:'Failed',diagnostic:'Denied'}];s.run('nodeCommands=commands;renderNode()');assert.ok(s.buttons().some(b=>b.textContent==='Retry Install'));
@@ -52,4 +52,14 @@ test('Worker selection uses Worker identity and stale observations stay visible'
  const s=setup();s.node.id='0123456789abcdef0123456789abcdef';s.node.kind='worker';s.node.executionReadiness='not-ready';s.node.observationsStale=true;s.$('node-select').value=s.node.id;s.run('renderNode()');
  assert.match(s.$('node-detail').innerHTML,/Stale/);assert.match(s.$('node-detail').innerHTML,/not-ready/);
  await s.run(`runNodeAction('${s.node.id}','github-cli','refresh')`);assert.equal(JSON.parse(s.calls[0].options.body).nodeId,s.node.id);
+});
+
+test('Codex device login displays escaped instructions only during the active deadline',()=>{
+ const s=setup();const cap=s.node.capabilities[0];cap.definition.id='codex-cli';cap.availableActions=['login','checkauthentication'];
+ s.context.commands=[{...s.command,request:{nodeId:'server',capabilityId:'codex-cli',action:'Login'},status:'Running',deadlineUtc:new Date(Date.now()+60000).toISOString(),loginInstructions:{userCode:'ABCD-EFGH'}}];
+ s.run('nodeCommands=commands;renderNode()');
+ assert.ok(s.$('node-detail').children[0].children.some(e=>e.innerHTML.includes('ABCD-EFGH')&&e.innerHTML.includes('https://auth.openai.com/codex/device')));
+ assert.ok(s.buttons().every(b=>b.disabled));
+ s.context.commands[0].status='Succeeded';s.run('renderNode()');
+ assert.ok(!s.$('node-detail').children[0].children.some(e=>e.innerHTML.includes('ABCD-EFGH')));
 });

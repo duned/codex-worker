@@ -50,7 +50,7 @@ public sealed class WorkerCapabilityDiscovery
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var result = await _run(executable, arguments, Environment.CurrentDirectory,
+                var result = await _run(name == "codex-cli" ? CodexProvisioning.CodexServiceEnvironment.Executable : executable, arguments, Environment.CurrentDirectory,
                     TimeSpan.FromSeconds(3), cancellationToken);
                 if (result.ExitCode != ProcessExitCodes.Success) continue;
                 var version = ParseVersion(result.StandardOutput) ?? ParseVersion(result.StandardError);
