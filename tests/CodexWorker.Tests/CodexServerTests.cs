@@ -693,6 +693,11 @@ public sealed class CodexServerTests
             Assert.Contains("Codex Server", await dashboardResponse.Content.ReadAsStringAsync());
             Assert.Contains("/api/v1/events/stream", await dashboardResponse.Content.ReadAsStringAsync());
             Assert.Contains("Worker details", await dashboardResponse.Content.ReadAsStringAsync());
+            var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
+            Assert.Contains("Node provisioning", dashboard);
+            Assert.Contains("/api/v1/nodes", dashboard);
+            Assert.Contains("/api/v1/provisioning/commands", dashboard);
+
             using var statusResponse = await client.GetAsync("/api/status");
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
             using var status = JsonDocument.Parse(await statusResponse.Content.ReadAsStringAsync());

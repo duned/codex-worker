@@ -24,6 +24,29 @@ public sealed class ProvisioningCommandTests
     }
 
     [Fact]
+    public void AdvertisedActionsHaveRegisteredCommandExecutors()
+    {
+        foreach (var definition in CapabilityCatalog.Definitions)
+        {
+            var capability = CapabilityCatalog.Describe(definition, CapabilityCatalog.Unknown(definition), connected: true);
+            foreach (var action in capability.AvailableActions)
+            {
+                var command = action == "refresh" ? ProvisioningCommandAction.Detect
+                    : Enum.Parse<ProvisioningCommandAction>(action, ignoreCase: true);
+                Assert.True(ProvisioningCommandProtocol.Supported(new("server", definition.Id, command)));
+            }
+            if (definition.RequiresAuthentication)
+            {
+                Assert.Contains("checkauthentication", capability.AvailableActions);
+                Assert.Contains("logout", capability.AvailableActions);
+            }
+            if (definition.RequiresConfiguration)
+                Assert.Contains("checkconfiguration", capability.AvailableActions);
+            Assert.Empty(CapabilityCatalog.Describe(definition, capability.State, connected: false).AvailableActions);
+        }
+    }
+
+    [Fact]
     public void WireProtocolRejectsCommandsAndSecretFields()
     {
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ProvisioningCommandRequest>("""

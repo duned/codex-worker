@@ -44,7 +44,8 @@ Worker operation state is projected from the latest applicable provisioning
 plan, including the current action and a fixed failure diagnostic code. Running
 operations and disconnected Workers expose no available actions. The initial
 catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
-tools. These indicate registered operations, not permission to mutate a node:
+tools, plus `checkconfiguration` for Git and `checkauthentication`/`logout` for
+GitHub CLI and Codex CLI. These indicate registered operations, not permission to mutate a node:
 local policy and platform support are checked at execution.
 
 The registry retains the latest Worker report in its existing registration and
@@ -100,3 +101,33 @@ output. Inspect refreshed installation/version facts after `ProcessFailed`,
 or local authorization failures, and explicitly retry install/update/uninstall.
 The command store's existing acknowledgement/reconciliation rules prevent
 automatic replay of an uncertain operation.
+
+## Server dashboard
+
+Open the Server dashboard and connect with its management token, then select the
+Server or any registered Worker under **Node provisioning**. The view shows
+connectivity and service health separately from execution and provisioning
+readiness, including stale observations, installation/version, update,
+authentication/configuration, and sanitized diagnostic codes. Refresh view reads
+the latest API snapshot; **Refresh / Re-detect** queues node-local detection.
+
+Actions come from each capability's API `availableActions`. Tool mutations require
+an explicit elevation checkbox; local policy still decides whether execution is
+permitted. Uninstall and logout require confirmation. Actions for the selected
+node are disabled during submission or pending/running operations, and when
+refresh fails. Polling every five seconds restores operation state after reload
+and displays queued, started, deadline and completion timestamps. Failed, timed
+out and cancelled commands offer an explicit retry only while the original action
+remains available. Running commands are never automatically replayed, including
+when a deadline passes or an acknowledgement is lost. Existing API reconciliation
+still requires verified node quiescence.
+
+The command API currently supports checking authentication and logout, but does
+not expose remote login/device authorization. The dashboard states that limitation
+and directs operators to authenticate in the service account environment and
+re-detect afterward. It does not collect credentials, fetch secret-delivery
+endpoints, or display raw process logs, tokens or private keys. Operation status
+and fixed diagnostic codes are the supported sanitized progress/error record.
+
+Dashboard behavior checks run without external services:
+`node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.

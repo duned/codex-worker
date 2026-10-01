@@ -32,9 +32,9 @@ public static class CapabilityCatalog
 {
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
-        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall"]),
-        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall"]),
-        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall"])
+        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration"]),
+        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "checkauthentication", "logout"]),
+        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "checkauthentication", "logout"])
     ]);
 
     public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,
