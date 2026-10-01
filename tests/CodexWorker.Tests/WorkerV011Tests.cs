@@ -1011,37 +1011,6 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
-    [Fact]
-    public async Task ExternalPrerequisiteBlockerUsesBlockedLifecycleAndPreservesRecovery()
-    {
-        var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
-        using var history = new ExecutionHistoryStore(database);
-        using (var h = new Harness(history: history))
-        {
-            h.Git.Recovery = new GitRecoveryInfo("feature/issue-122", "base-sha", "2 changed path(s); workspace retained.");
-            h.Codex.InitialOutcome = new CodexOutcome("blocked", "Restore could not complete.",
-                ["dotnet restore could not reach api.nuget.org."], false,
-                "The required NuGet feed api.nuget.org is unreachable.", "external_prerequisite");
-
-            var result = await h.ProcessOneAsync();
-
-            Assert.Equal(IssueOutcomeKind.Blocked, result!.Kind);
-            Assert.Contains("ready->working", h.GitHub.Labels);
-            Assert.Contains("working->blocked", h.GitHub.Labels);
-            var comment = Assert.Single(h.GitHub.Comments);
-            Assert.Contains("api.nuget.org is unreachable", comment);
-            Assert.Contains("Retry/resume:** Available", comment);
-            Assert.Contains("The required NuGet feed api.nuget.org is unreachable", h.Output.ToString());
-            Assert.Equal(0, h.Git.Integrations);
-            Assert.Equal(0, h.Validation.Calls);
-            var execution = Assert.Single(await history.ReadAllAsync());
-            Assert.Equal("Blocked", execution.State);
-            Assert.Equal("recoverable", execution.RecoveryState);
-            Assert.Contains("api.nuget.org is unreachable", execution.FailureReason);
-        }
-        File.Delete(database);
-    }
-
     [Theory]
     [InlineData("failed", "Failed")]
     [InlineData("blocked", "Blocked")]

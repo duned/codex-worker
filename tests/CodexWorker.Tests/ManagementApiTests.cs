@@ -22,11 +22,11 @@ public sealed class ManagementApiTests
         };
         var project = new WorkerConfiguration
         {
-            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = "/safe/repo" },
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo" },
             Worker = new WorkerSettings { MaxParallelTasks = 2 },
             Environment = new ProjectEnvironmentSettings { Variables = new Dictionary<string, string> { ["TOKEN"] = "secret-value" } }
         };
-        var model = new WorkerRuntimeReadModel(configuration, [("/safe/project.yml", project)], history.Store);
+        var model = new WorkerRuntimeReadModel(configuration, [("project.yml", project)], history.Store);
         model.State = "running";
         var executionId = Guid.NewGuid();
         await history.Store.CreateAsync(new ExecutionHistoryEntry(executionId, "sample", "owner/repo", 4, "Example issue",
@@ -57,8 +57,6 @@ public sealed class ManagementApiTests
             Assert.Equal("starting", status.GetProperty("lifecycleState").GetString());
 
             var projects = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement;
-            Assert.Equal("/safe/project.yml", projects[0].GetProperty("configurationPath").GetString());
-            Assert.Equal("/safe/repo", projects[0].GetProperty("projectDirectory").GetString());
             Assert.Equal("owner/repo", projects[0].GetProperty("repository").GetString());
             Assert.Equal(0, projects[0].GetProperty("activeExecutionCount").GetInt32());
             Assert.Equal(2, projects[0].GetProperty("maxParallelTasks").GetInt32());

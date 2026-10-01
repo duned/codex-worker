@@ -2,6 +2,10 @@
 
 The Linux x64 packaging script creates self-contained .NET 10 archives for Ubuntu 24.04. Build on a machine with the .NET 10 SDK and the Linux x64 publishing workload/runtime packs available:
 
+See the [release artifact size investigation](release-artifact-size.md) for the
+current benchmark status and the compatibility questions that must be resolved
+before changing publish settings.
+
 ```sh
 packaging/release-linux-x64.sh [--set-version VERSION] [output-directory]
 ```

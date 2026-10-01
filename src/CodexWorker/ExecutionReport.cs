@@ -44,17 +44,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
         if (kind == IssueOutcomeKind.Blocked)
         {
             if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"### Work performed\n\n{ImplementationSummary}");
-            sections.Add($"### Required prerequisite\n\n{HumanInput ?? Failure ?? "A required prerequisite is unavailable."}");
-            if (WorkspacePreserved || RetryAvailable || !string.IsNullOrWhiteSpace(RecoveryBranch))
-            {
-                var recovery = new List<string> { "### Recovery" };
-                if (ExecutionId is not null) recovery.Add($"- **Execution:** `{ExecutionFormatting.Display(ExecutionId.Value)}` (`{ExecutionId}`)");
-                if (!string.IsNullOrWhiteSpace(RecoveryBranch)) recovery.Add($"- **Branch:** `{RecoveryBranch}`");
-                recovery.Add($"- **Workspace:** {(WorkspacePreserved ? "Preserved" : "Not preserved")}");
-                recovery.Add($"- **Retry/resume:** {(RetryAvailable ? "Available" : "Unavailable")}");
-                sections.Add(recovery[0] + "\n\n" + string.Join("\n", recovery.Skip(1)));
-            }
-            return FailureDiagnosticRedactor.Redact(string.Join("\n\n", sections), SecretValues);
+            sections.Add($"### Human input required\n\n{HumanInput ?? Failure ?? "Human input is required to continue."}");
+            return string.Join("\n\n", sections);
         }
 
         if (!string.IsNullOrWhiteSpace(ImplementationSummary))

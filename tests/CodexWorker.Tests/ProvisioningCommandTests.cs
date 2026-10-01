@@ -145,7 +145,7 @@ public sealed class ProvisioningCommandTests
     }
 
     [Fact]
-    public async Task ExpiredOperationIsReconciledWhenNodeReconnectsAndRequestsWork()
+    public async Task ExpiredUnacknowledgedOperationRequiresExplicitReconciliationBeforeReplacement()
     {
         var path = Path.Combine(Path.GetTempPath(), "provisioning-reconcile-" + Guid.NewGuid().ToString("N") + ".db");
         try
@@ -158,7 +158,8 @@ public sealed class ProvisioningCommandTests
             await store.ClaimAsync("server");
             clock.Now = clock.Now.AddSeconds(6);
             Assert.Null(await store.ClaimAsync("server"));
-            var reconciled = Assert.Single(await store.ListAsync(), item => item.Id == operation.Id);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.CreateAsync(request));
+            var reconciled = await store.ReconcileAsync(operation.Id);
             Assert.Equal(ProvisioningDiagnostic.Interrupted, reconciled!.Diagnostic);
             Assert.Equal(ProvisioningCommandStatus.Failed, reconciled.Status);
             await store.CreateAsync(request);
