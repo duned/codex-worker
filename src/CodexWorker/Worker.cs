@@ -463,6 +463,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             execution.IsTerminal ? DateTimeOffset.UtcNow : null, execution.State.ToString(),
             execution.IsTerminal ? (long)(duration ?? (DateTimeOffset.UtcNow - execution.StartedAtUtc)).TotalMilliseconds : null,
             report?.ImplementationSummary,
+            report?.FailureCategory == "Post-rebase validation failed" ? "failed: post-rebase validation (2 attempts)" :
             report?.Integration is not null || report?.FailureCategory == "Integration conflict" ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
                 report is { ValidationRepairs.Count: > 0 } ? "failed or interrupted" : null,
             report?.ValidationRepairs.Count ?? 0, report?.ValidationRepairs ?? [],
@@ -517,7 +518,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.IntegrationConflictLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
-                    result.Report.ExecutionId!.Value, "Implementation is complete; integration conflict recovery is required.", ct);
+                    result.Report.ExecutionId!.Value, "Implementation is complete; integration recovery is required.", ct);
                 var conflictDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.WorkspacePreserved ? $" · implementation workspace preserved on {result.Report.RecoveryBranch} · integration recovery available" :
                         " · implementation workspace preservation could not be verified");

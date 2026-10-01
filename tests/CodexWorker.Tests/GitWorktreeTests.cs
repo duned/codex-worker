@@ -432,10 +432,13 @@ public sealed class GitWorktreeTests
         await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
         await fixture.AdvanceBaseAsync();
 
-        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+        var failure = await Assert.ThrowsAsync<PostRebaseValidationException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
             _ => Task.FromResult(new ValidationResult(new ValidationFailure(1, "configured check", 1, "", "failed", false))),
             CancellationToken.None));
 
+        Assert.Contains("Attempt 1/2", failure.Message);
+        Assert.Contains("Attempt 2/2", failure.Message);
+        Assert.NotNull(await git.PreserveIntegrationConflictAsync(CancellationToken.None));
         Assert.Equal("base", await fixture.Git("show", "main:base.txt"));
         Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
         Assert.True(Directory.Exists(git.ExecutionDirectory));
@@ -661,6 +664,226 @@ public sealed class GitWorktreeTests
 
         Assert.True(Directory.Exists(git.ExecutionDirectory));
         Assert.Contains(id.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
+    }
+
+    [Fact]
+    public async Task PostRebaseValidationDoesNotRetryWhenSourceChanges()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+        await fixture.AdvanceBaseAsync();
+        var attempts = 0;
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            async _ =>
+            {
+                attempts++;
+                await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "changed during validation");
+                return new ValidationResult(new ValidationFailure(1, "local-check", 1, "", "failed test", false));
+            }, CancellationToken.None));
+        Assert.Equal(1, attempts);
+        Assert.Contains("source changed", failure.Message);
+        Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PreservedValidationFailureCanRetryIntegrationWithoutAnotherRebase(bool retrySucceeds)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await original.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(original.ExecutionDirectory, "implemented.txt"), "implementation");
+        await fixture.AdvanceBaseAsync();
+        var attempts = 0;
+        await Assert.ThrowsAsync<PostRebaseValidationException>(() => original.CommitAndIntegrateAsync(fixture.Issue, _ =>
+        {
+            attempts++;
+            return Task.FromResult(new ValidationResult(new ValidationFailure(1, "local-check", 1, "", "failed test", false)));
+        }, CancellationToken.None));
+        Assert.Equal(2, attempts);
+        var preserved = await original.PreserveIntegrationConflictAsync(CancellationToken.None);
+        Assert.NotNull(preserved);
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "Implemented", "failed: post-rebase validation", 0, [], preserved.BaseCommit, "main", null, null,
+            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit);
+        using var recovery = original.CreateExecutionRepository();
+        await recovery.StartIntegrationRecoveryAsync(entry, CancellationToken.None);
+        attempts = 0;
+        async Task<ValidationResult> Validate(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            Assert.Equal(preserved.BaseCommit, await fixture.GitAt(recovery.ExecutionDirectory, "rev-parse", "HEAD"));
+            return ++attempts == 2 && retrySucceeds ? ValidationResult.Success :
+                new ValidationResult(new ValidationFailure(1, "local-check", 1, "", $"failed test: attempt {attempts}", false));
+        }
+        if (retrySucceeds)
+            Assert.True((await recovery.CommitAndIntegrateAsync(fixture.Issue, Validate, CancellationToken.None)).HasChanges);
+        else
+        {
+            await Assert.ThrowsAsync<PostRebaseValidationException>(() => recovery.CommitAndIntegrateAsync(fixture.Issue, Validate, CancellationToken.None));
+            Assert.Equal(preserved.BaseCommit, (await recovery.PreserveIntegrationConflictAsync(CancellationToken.None))!.BaseCommit);
+        }
+        Assert.Equal(2, attempts);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConcurrentExecutionsRetryRebasedValidationAndReleaseCapacity(bool retrySucceeds)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var settings = new GitSettings { AutoMerge = true };
+        using var git = fixture.CreateRepository(settings);
+        await git.InitializeAsync(CancellationToken.None);
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = settings,
+            GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done", FailedLabel = "failed", BlockedLabel = "blocked" },
+            Codex = new CodexSettings { InstructionsFile = "unused" },
+            Validation = new ValidationSettings { Commands = ["local-check"] },
+            Worker = new WorkerSettings { MaxParallelTasks = 2 }
+        };
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../history.db"));
+        var github = new ConcurrentGitHub(fixture.Issue);
+        var validation = new RebaseValidation(fixture, retrySucceeds);
+        using var output = new StringWriter();
+        using var errors = new StringWriter();
+        var console = new WorkerConsole(output, false, errors);
+        using var telegram = new TelegramNotifier(false, console);
+        var worker = new Worker(config, github, git, new FileCodex(), validation, telegram, console, history);
+        var registry = new ProjectRuntimeRegistry([("sample.yml", config)], new RuntimeEventLog());
+
+        Assert.True(registry.TryReserve("sample"));
+        var first = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(first);
+        await validation.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(registry.TryReserve("sample"));
+        var second = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(second);
+        await validation.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(2, registry.WorkerActiveExecutionCount);
+        validation.ReleaseFirst.SetResult();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await first)!.Kind);
+        registry.Release("sample");
+
+        // Independent work remains active throughout B's integration and failed retry.
+        Assert.True(registry.TryReserve("sample"));
+        var independent = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(independent);
+        await validation.IndependentStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        validation.ReleaseSecond.SetResult();
+        var result = await second;
+        Assert.NotNull(result);
+        registry.Release("sample");
+        Assert.False(independent.IsCompleted);
+        Assert.Equal(retrySucceeds ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict, result.Kind);
+        Assert.Equal(2, validation.RebasedHeads.Count);
+        Assert.Equal(validation.RebasedHeads[0], validation.RebasedHeads[1]);
+        Assert.All(validation.RebasedParents, parent => Assert.Equal(validation.FirstIntegratedHead, parent));
+        Assert.Contains("attempt 1/2", output.ToString());
+        Assert.Contains("attempt 2/2", output.ToString());
+        if (!retrySucceeds)
+        {
+            Assert.True(result.Report.WorkspacePreserved);
+            Assert.Equal("Post-rebase validation failed", result.Report.FailureCategory);
+            Assert.Contains("Attempt 1/2", result.Summary);
+            Assert.Contains("Attempt 2/2", result.Summary);
+            var entry = (await history.ReadAllAsync()).Single(row => row.IssueNumber == 18);
+            Assert.Equal("IntegrationConflict", entry.State);
+            Assert.Equal("integration-conflict", entry.RecoveryState);
+            Assert.Equal("failed: post-rebase validation (2 attempts)", entry.ValidationOutcome);
+            Assert.Equal(validation.RebasedHeads[0], entry.RecoveryBaseCommit);
+            Assert.Contains((18, config.GitHub.IntegrationConflictLabel), github.Labels);
+            Assert.DoesNotContain("issue-18.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+        }
+        Assert.DoesNotContain("infrastructure failure", errors.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        // The same worker can poll and claim again while unrelated work is still running.
+        Assert.True(registry.TryReserve("sample"));
+        var next = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(next);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await next)!.Kind);
+        registry.Release("sample");
+        validation.ReleaseIndependent.SetResult();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await independent)!.Kind);
+        registry.Release("sample");
+        Assert.Equal(0, registry.Get("sample")!.ActiveExecutionCount);
+    }
+
+    private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
+    {
+        private int _number = 16;
+        public List<(int Issue, string Label)> Labels { get; } = [];
+        public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
+            Task.FromResult<GitHubIssue?>(label == "ready" ? template with { Number = ++_number } : null);
+        public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
+        { Labels.Add((issueNumber, add)); return Task.CompletedTask; }
+        public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) => Task.CompletedTask;
+        public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class FileCodex : ICodexExecutor
+    {
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
+        {
+            await File.WriteAllTextAsync(Path.Combine(projectDirectory, $"issue-{issue.Number}.txt"), "implementation", ct);
+            return new CodexOutcome("success", "Implemented", [], false, null);
+        }
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
+            throw new InvalidOperationException("Post-rebase validation must not run implementation repair.");
+    }
+
+    private sealed class RebaseValidation(RepositoryFixture fixture, bool retrySucceeds) : IValidationRunner
+    {
+        public TaskCompletionSource FirstStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource IndependentStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFirst { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseSecond { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseIndependent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public List<string> RebasedHeads { get; } = [];
+        public List<string> RebasedParents { get; } = [];
+        public string? FirstIntegratedHead { get; private set; }
+        private int _secondCalls;
+        public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+        {
+            var branch = await fixture.GitAt(directory, "branch", "--show-current");
+            if (branch.EndsWith("-17", StringComparison.Ordinal))
+            {
+                FirstStarted.TrySetResult();
+                await ReleaseFirst.Task.WaitAsync(ct);
+            }
+            else if (branch.EndsWith("-19", StringComparison.Ordinal))
+            {
+                IndependentStarted.TrySetResult();
+                await ReleaseIndependent.Task.WaitAsync(ct);
+            }
+            else if (branch.EndsWith("-18", StringComparison.Ordinal))
+            {
+                if (++_secondCalls == 1)
+                {
+                    SecondStarted.TrySetResult();
+                    await ReleaseSecond.Task.WaitAsync(ct);
+                    FirstIntegratedHead = await fixture.Git("rev-parse", "main");
+                    return ValidationResult.Success;
+                }
+                RebasedHeads.Add(await fixture.GitAt(directory, "rev-parse", "HEAD"));
+                RebasedParents.Add(await fixture.GitAt(directory, "rev-parse", "HEAD^"));
+                if (RebasedHeads.Count == 1 || !retrySucceeds)
+                    return new ValidationResult(new ValidationFailure(1, "local-check", 1, "", $"failed test: attempt {RebasedHeads.Count}", false));
+            }
+            return ValidationResult.Success;
+        }
     }
 
     private sealed class RepositoryFixture : IDisposable

@@ -5,7 +5,10 @@ namespace CodexWorker;
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary);
-public sealed class GitIntegrationConflictException(string message) : Exception(message);
+public class GitIntegrationConflictException(string message) : Exception(message);
+
+/// <summary>Validation exhausted its bounded retry on a preserved implementation commit.</summary>
+public sealed class PostRebaseValidationException(string message) : GitIntegrationConflictException(message);
 
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
@@ -530,19 +533,11 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 if (featureContainsBase.ExitCode != 0)
                 {
                     await RebaseForIntegrationAsync(issue.Number, resolveConflict, ct);
-                    var validation = await validateAfterRebase(ct);
-                    if (!validation.Succeeded)
-                    {
-                        var message = $"Validation failed after rebasing Issue #{issue.Number}; integration was stopped. {validation.Failure!.ToSummary()}";
-                        if (_forcePostRebaseValidation) throw new GitIntegrationConflictException(message);
-                        throw new WorkerInfrastructureException(message);
-                    }
+                    await ValidateRebasedSourceAsync(issue.Number, validateAfterRebase, ct);
                 }
                 else if (_forcePostRebaseValidation)
                 {
-                    var validation = await validateAfterRebase(ct);
-                    if (!validation.Succeeded)
-                        throw new GitIntegrationConflictException($"Validation failed during Issue #{issue.Number} integration recovery; integration was stopped. {validation.Failure!.ToSummary()}");
+                    await ValidateRebasedSourceAsync(issue.Number, validateAfterRebase, ct);
                 }
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
@@ -584,6 +579,32 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (GitIntegrationConflictException) { throw; }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git commit/integration for Issue #{issue.Number} failed; checkout state is preserved for diagnosis: {ex.Message}", ex); }
+    }
+
+    private async Task ValidateRebasedSourceAsync(int issueNumber,
+        Func<CancellationToken, Task<ValidationResult>> validate, CancellationToken ct)
+    {
+        var head = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+        var diagnostics = new List<string>();
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
+            var current = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+            if (current != head || !string.IsNullOrWhiteSpace(status))
+                throw new WorkerInfrastructureException("Rebased validation source changed; integration stopped and workspace preserved for inspection.");
+            var result = await validate(ct);
+            // Verify again even after success: validation must not mutate the source being integrated.
+            current = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+            if (current != head || !string.IsNullOrWhiteSpace(status))
+                throw new WorkerInfrastructureException("Rebased validation source changed; integration stopped and workspace preserved for inspection.");
+            if (result.Succeeded) return;
+            diagnostics.Add($"Attempt {attempt}/2: {result.Failure!.ToSummary()}");
+        }
+        throw new PostRebaseValidationException($"Validation after rebase failed twice for Issue #{issueNumber}; integration stopped and the implementation was preserved.\n\n" +
+            string.Join("\n\n", diagnostics));
     }
 
     private async Task RebaseForIntegrationAsync(int issueNumber, CancellationToken ct) =>
