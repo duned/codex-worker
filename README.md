@@ -6,7 +6,14 @@ Linux x64 self-contained Server and Worker release archives can be built with [`
 
 ## Local developer operations
 
-From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local and does not install a global executable.
+From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local. You can optionally expose it through a PATH directory:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/cw" ~/.local/bin/cw
+```
+
+Make sure `~/.local/bin` is in `PATH`. The helper resolves the repository from the real script path, so the symlink can be used from another working directory.
 
 ```sh
 ./cw --help

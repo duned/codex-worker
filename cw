@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+readonly SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
+readonly REPO_ROOT="$SCRIPT_DIR"
+readonly CALLER_DIR="$PWD"
 readonly service_name=${CW_SERVICE_NAME:-codex-worker}
 readonly worker_config=${CW_WORKER_CONFIG:-/etc/codex-worker/worker.yml}
 readonly deploy_dir=${CW_DEPLOY_DIR:-$HOME/apps/codex-worker}
@@ -37,12 +40,21 @@ need_command() {
 }
 
 git_value() {
-  git -C "$repo_root" "$@"
+  git -C "$REPO_ROOT" "$@"
+}
+
+validate_repository() {
+  [[ -r $REPO_ROOT/Directory.Build.props && -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
+    error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
+    error 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj beside the cw script'
+    return 1
+  }
 }
 
 status_command() {
   need_command git || return 1
   printf 'Repository\n'
+  printf '  root     %s\n' "$REPO_ROOT"
   local branch commit dirty
   branch=$(git_value branch --show-current 2>/dev/null || true)
   [[ -n $branch ]] || branch='(detached or unavailable)'
@@ -78,7 +90,7 @@ status_command() {
 }
 
 read_version() {
-  awk -F'[<>]' '/<Version>[[:space:]]*[^<]+[[:space:]]*<\/Version>/ { gsub(/[[:space:]]/, "", $3); print $3; exit }' "$repo_root/Directory.Build.props"
+  awk -F'[<>]' '/<Version>[[:space:]]*[^<]+[[:space:]]*<\/Version>/ { gsub(/[[:space:]]/, "", $3); print $3; exit }' "$REPO_ROOT/Directory.Build.props"
 }
 
 deploy_command() {
@@ -122,7 +134,7 @@ deploy_command() {
   trap cleanup_deploy EXIT
 
   printf 'Publishing Worker %s (%s)...\n' "$version" "$commit"
-  dotnet publish "$repo_root/src/CodexWorker/CodexWorker.csproj" -c Release -o "$stage/publish" || {
+  dotnet publish "$REPO_ROOT/src/CodexWorker/CodexWorker.csproj" -c Release -o "$stage/publish" || {
     error 'publish failed; active deployment was not changed'; return 1;
   }
   [[ -x $stage/publish/CodexWorker || -f $stage/publish/CodexWorker.dll ]] || {
@@ -221,6 +233,10 @@ projects_command() {
 main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
+  case $command in
+    --help|-h|help) ;;
+    *) validate_repository || return 1 ;;
+  esac
   case $command in
     --help|-h|help) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
     status|s) (($# == 0)) || { error 'status does not accept options'; help_hint; return 2; }; status_command ;;

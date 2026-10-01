@@ -45,6 +45,7 @@ MOCK
 cat > "$bin/dotnet" <<'MOCK'
 #!/usr/bin/env bash
 [[ ! -f $CW_TEST_ROOT/fail-publish ]] || exit 1
+printf '%s\n' "$*" > "$CW_TEST_ROOT/dotnet.args"
 while (($#)); do
   if [[ $1 == -o ]]; then out=$2; shift 2; else shift; fi
 done
@@ -53,6 +54,73 @@ printf '#!/bin/sh\nexit 0\n' > "$out/CodexWorker"
 chmod +x "$out/CodexWorker"
 MOCK
 chmod +x "$bin"/*
+
+# Exercise repository resolution independently of the checkout running this test.
+fixture_repo="$test_root/repository with spaces"
+fixture_bin="$test_root/path bin"
+caller_dir="$test_root/unrelated caller directory"
+mkdir -p "$fixture_repo/src/CodexWorker" "$fixture_repo/projects" "$fixture_bin" "$caller_dir"
+cp "$repo_root/cw" "$fixture_repo/cw"
+cat > "$fixture_repo/Directory.Build.props" <<'XML'
+<Project>
+  <PropertyGroup>
+    <Version>9.8.7</Version>
+  </PropertyGroup>
+</Project>
+XML
+cat > "$fixture_repo/src/CodexWorker/CodexWorker.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>
+XML
+cat > "$fixture_repo/projects/fixture.yml" <<'YAML'
+project:
+  name: Fixture
+YAML
+git -C "$fixture_repo" init -q
+git -C "$fixture_repo" config user.email cw-tests@example.invalid
+git -C "$fixture_repo" config user.name cw-tests
+git -C "$fixture_repo" add cw Directory.Build.props src projects
+git -C "$fixture_repo" commit -qm 'fixture repository'
+ln -s "$fixture_repo/cw" "$fixture_bin/cw"
+export CW_WORKER_CONFIG="$fixture_repo/worker.yml"
+cat > "$CW_WORKER_CONFIG" <<'YAML'
+projects:
+  directory: projects
+YAML
+export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
+(
+  cd "$caller_dir"
+  "$fixture_bin/cw" --help | grep -Fq 'status, s'
+  "$fixture_bin/cw" status > "$test_root/symlink-status.out"
+  grep -Fq "  root     $fixture_repo" "$test_root/symlink-status.out"
+  "$fixture_bin/cw" s > "$test_root/symlink-short-status.out"
+  grep -Fq "  root     $fixture_repo" "$test_root/symlink-short-status.out"
+  "$fixture_repo/cw" status > "$test_root/direct-status.out"
+  grep -Fq "  root     $fixture_repo" "$test_root/direct-status.out"
+  "$fixture_bin/cw" projects > "$test_root/symlink-projects.out"
+  grep -Fq 'Fixture' "$test_root/symlink-projects.out"
+  "$fixture_bin/cw" p >/dev/null
+  "$fixture_bin/cw" log -n 23
+  grep -Fxq -- '-u cw-test -n 23 --no-pager' "$test_root/journal.args"
+  "$fixture_bin/cw" l >/dev/null
+  grep -Fxq -- '-u cw-test -n 100 --no-pager' "$test_root/journal.args"
+  "$fixture_bin/cw" deploy > "$test_root/symlink-deploy.out"
+  grep -Fq "$fixture_repo/src/CodexWorker/CodexWorker.csproj" "$test_root/dotnet.args"
+  grep -Fq '9.8.7' "$CW_DEPLOY_DIR/VERSION"
+  "$fixture_bin/cw" d >/dev/null
+)
+
+mkdir -p "$test_root/invalid target"
+cp "$repo_root/cw" "$test_root/invalid target/cw"
+ln -s "$test_root/invalid target/cw" "$fixture_bin/cw-invalid"
+if "$fixture_bin/cw-invalid" status > "$test_root/invalid.out" 2>&1; then
+  echo 'invalid repository unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq "not a Codex Worker repository: $test_root/invalid target" "$test_root/invalid.out"
+grep -Fq 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj' "$test_root/invalid.out"
+
+# Restore defaults for the original-checkout command coverage below.
+export CW_WORKER_CONFIG="$test_root/worker.yml"
+export CW_DEPLOY_DIR="$test_root/apps/worker"
 
 "$repo_root/cw" --help | grep -Fq 'status, s'
 "$repo_root/cw" -h >/dev/null
