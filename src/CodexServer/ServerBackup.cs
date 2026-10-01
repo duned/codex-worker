@@ -121,7 +121,7 @@ public sealed class ServerBackup(string? databasePath = null)
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "UPDATE credentials SET status=CASE WHEN status='Ready' THEN 'NeedsReprovision' ELSE status END, assigned_worker_id=NULL, nonce=X'', ciphertext=X'', tag=X''; DELETE FROM worker_credential_auth;";
+        command.CommandText = "UPDATE credentials SET status=CASE WHEN status='Ready' THEN 'NeedsReprovision' ELSE status END, assigned_worker_id=NULL, nonce=X'', ciphertext=X'', tag=X''; DELETE FROM worker_credential_auth; UPDATE worker_auth_tokens SET token_hash=zeroblob(length(token_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now')); DELETE FROM worker_bootstrap_tokens;";
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
@@ -146,6 +146,12 @@ public sealed class ServerBackup(string? databasePath = null)
         command.CommandText = "SELECT COUNT(*) FROM worker_credential_auth;";
         if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
             throw new InvalidDataException("Backup contains Worker credential delivery authentication material.");
+        command.CommandText = "SELECT COUNT(*) FROM worker_auth_tokens WHERE revoked_at_utc IS NULL OR token_hash != zeroblob(length(token_hash));";
+        if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            throw new InvalidDataException("Backup contains an active Worker API authentication token.");
+        command.CommandText = "SELECT COUNT(*) FROM worker_bootstrap_tokens;";
+        if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            throw new InvalidDataException("Backup contains reusable Worker bootstrap authorizations.");
     }
 
     private string RequireDatabasePath() => _databasePath ?? throw new InvalidOperationException("This backup operation requires a Server database path.");

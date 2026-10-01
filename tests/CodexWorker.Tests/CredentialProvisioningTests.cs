@@ -30,6 +30,7 @@ public sealed class CredentialProvisioningTests
         Assert.Equal(workerId, assigned!.AssignedWorkerId);
         const string workerToken = "fake-worker-delivery-token-with-sufficient-entropy";
         await store.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(workerToken));
+        Assert.Equal("active", (await store.GetWorkerDeliveryAuthorizationStatusAsync(workerId)).Status);
         Assert.True(await store.IsWorkerDeliveryTokenValidAsync(workerId, workerToken));
         Assert.False(await store.IsWorkerDeliveryTokenValidAsync(workerId, "wrong-worker-token"));
         Assert.False(await store.IsWorkerDeliveryTokenValidAsync(otherWorkerId, workerToken));
@@ -43,6 +44,7 @@ public sealed class CredentialProvisioningTests
         var restarted = new SqliteCredentialStore(database, key);
         await restarted.InitializeAsync();
         Assert.True(await restarted.IsWorkerDeliveryTokenValidAsync(workerId, workerToken));
+        Assert.Equal("active", (await restarted.GetWorkerDeliveryAuthorizationStatusAsync(workerId)).Status);
         Assert.Equal(secretValue, await restarted.RetrieveForWorkerAsync(created.Id, workerId));
         Assert.DoesNotContain(secretValue, JsonSerializer.Serialize(await restarted.ListAsync()), StringComparison.Ordinal);
 
@@ -55,6 +57,13 @@ public sealed class CredentialProvisioningTests
         Assert.Equal("Revoked", revoked!.Status);
         Assert.NotNull(revoked.RevokedAtUtc);
         Assert.Null(revoked.AssignedWorkerId);
+        Assert.Null(await restarted.RetrieveForWorkerAsync(created.Id, workerId));
+
+        Assert.True(await restarted.RevokeWorkerDeliveryTokenAsync(workerId));
+        Assert.False(await restarted.IsWorkerDeliveryTokenValidAsync(workerId, workerToken));
+        var deliveryStatus = await restarted.GetWorkerDeliveryAuthorizationStatusAsync(workerId);
+        Assert.Equal("revoked", deliveryStatus.Status);
+        Assert.NotNull(deliveryStatus.RevokedAtUtc);
         Assert.Null(await restarted.RetrieveForWorkerAsync(created.Id, workerId));
     }
 

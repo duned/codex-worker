@@ -36,6 +36,10 @@ public static class WorkerDiagnosticsDerivation
         }).ToArray();
 
         var reasons = new List<string>();
+        if (worker.SchedulingPolicy == WorkerSchedulingPolicy.Disabled) reasons.Add("Scheduling disabled by Server operator");
+        if (worker.SchedulingPolicy == WorkerSchedulingPolicy.Draining)
+            reasons.Add(worker.ActiveAssignments == 0 ? "Drain complete; scheduling remains paused" :
+                $"Draining; {worker.ActiveAssignments} active assignments retain their leases");
         if (worker.Availability is "stale" or "offline") reasons.Add("Offline");
         if (worker.Availability == "draining" || worker.Availability == "online" && worker.LifecycleState == "draining") reasons.Add("Draining");
         if (worker.Availability == "online" && worker.AvailableCapacity == 0 && worker.LifecycleState == "running") reasons.Add("At capacity");

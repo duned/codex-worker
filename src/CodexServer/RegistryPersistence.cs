@@ -24,6 +24,7 @@ public interface IRegistryStore
     Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkersAsync(CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> GetWorkerAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
     Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);
     Task<CentralProject> CreateProjectAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default);
@@ -275,7 +276,20 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
     IReadOnlyList<string> ActiveProjects, DateTimeOffset? LastHeartbeatAtUtc = null,
-    string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null);
+    string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null,
+    string SchedulingPolicy = WorkerSchedulingPolicy.Enabled, int ActiveAssignments = 0,
+    string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null);
+
+public static class WorkerSchedulingPolicy
+{
+    public const string Enabled = "Enabled";
+    public const string Draining = "Draining";
+    public const string Disabled = "Disabled";
+    public static bool IsValid(string? value) => value is Enabled or Draining or Disabled;
+}
+
+public sealed record WorkerSchedulingPolicyRequest(string Policy);
+public sealed record WorkerCredentialAccessStatus(string Status, DateTimeOffset? RevokedAtUtc = null);
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
@@ -337,7 +351,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     int leaseDurationSeconds = 900, int leaseRenewalIntervalSeconds = 60) : IRegistryStore
 {
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery FROM execution_requests";
-    public const int CurrentSchemaVersion = 11;
+    public const int CurrentSchemaVersion = 12;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -362,7 +376,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 11);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 12);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -427,6 +441,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             {
                 command.CommandText = "UPDATE schema_metadata SET schema_version = 11 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 11;
+            }
+            if (schemaVersion == 11)
+            {
+                command.CommandText = "ALTER TABLE workers ADD COLUMN scheduling_policy TEXT NOT NULL DEFAULT 'Enabled' CHECK (scheduling_policy IN ('Enabled','Draining','Disabled')); UPDATE schema_metadata SET schema_version = 12 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -436,7 +456,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     status_json TEXT NULL,
                     registration_json TEXT NULL,
                     last_seen_at_utc TEXT NULL,
-                    heartbeat_json TEXT NULL
+                    heartbeat_json TEXT NULL,
+                    scheduling_policy TEXT NOT NULL DEFAULT 'Enabled' CHECK (scheduling_policy IN ('Enabled','Draining','Disabled'))
                 );
                 CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token_hash TEXT NOT NULL PRIMARY KEY, expires_at_utc TEXT NOT NULL, consumed_at_utc TEXT NULL);
                 CREATE TABLE IF NOT EXISTS worker_auth_tokens (worker_id TEXT NOT NULL PRIMARY KEY, token_hash TEXT NOT NULL, created_at_utc TEXT NOT NULL, revoked_at_utc TEXT NULL);
@@ -553,10 +574,11 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "SELECT heartbeat_json, last_seen_at_utc FROM workers WHERE worker_id = $worker AND registration_json IS NOT NULL;";
+        command.CommandText = "SELECT heartbeat_json, last_seen_at_utc, scheduling_policy FROM workers WHERE worker_id = $worker AND registration_json IS NOT NULL;";
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         string? heartbeatJson;
         DateTimeOffset? lastSeen;
+        string schedulingPolicy;
         await using (var workerReader = await command.ExecuteReaderAsync(cancellationToken))
         {
             if (!await workerReader.ReadAsync(cancellationToken))
@@ -566,6 +588,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             }
             heartbeatJson = workerReader.IsDBNull(0) ? null : workerReader.GetString(0);
             lastSeen = workerReader.IsDBNull(1) ? null : DateTimeOffset.Parse(workerReader.GetString(1));
+            schedulingPolicy = workerReader.GetString(2);
+        }
+        if (schedulingPolicy != WorkerSchedulingPolicy.Enabled)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return new(false, null);
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
@@ -630,7 +658,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var expires = now.Add(_leaseDuration);
         var assignmentId = Guid.NewGuid().ToString("N");
         command.Parameters.Clear();
-        command.CommandText = "UPDATE execution_requests SET state = 'Assigned', assigned_worker_id = $worker, assigned_at_utc = $now, assignment_id = $assignment WHERE id = $id AND state = 'Queued';";
+        command.CommandText = "UPDATE execution_requests SET state = 'Assigned', assigned_worker_id = $worker, assigned_at_utc = $now, assignment_id = $assignment WHERE id = $id AND state = 'Queued' AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Enabled');";
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         command.Parameters.AddWithValue("$assignment", assignmentId);
@@ -691,7 +719,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
-        var eligible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
+        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
+        var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
+        if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
         var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running").ToArray();
         if (accepting.Length == 0 || accepting.Any(worker => worker.AvailableCapacity > 0)) return "waiting for available worker";
@@ -1233,13 +1263,16 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT registration_json, registered_at_utc, last_seen_at_utc, heartbeat_json FROM workers WHERE registration_json IS NOT NULL ORDER BY worker_id;";
+        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.registration_json IS NOT NULL ORDER BY w.worker_id;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var workers = new List<WorkerRegistrationResponse>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var request = JsonSerializer.Deserialize<WorkerRegistrationRequest>(reader.GetString(0))!;
-            workers.Add(ToResponse(request, DateTimeOffset.Parse(reader.GetString(1)), DateTimeOffset.Parse(reader.GetString(2)), reader.IsDBNull(3) ? null : reader.GetString(3)));
+            var request = JsonSerializer.Deserialize<WorkerRegistrationRequest>(reader.GetString(0)) ?? throw new InvalidDataException("Stored Worker registration is invalid.");
+            workers.Add(ToResponse(request, DateTimeOffset.Parse(reader.GetString(1)), DateTimeOffset.Parse(reader.GetString(2)),
+                reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
+                reader.IsDBNull(6) ? "not-configured" : reader.IsDBNull(7) ? "active" : "revoked",
+                reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7))));
         }
         return workers;
     }
@@ -1249,15 +1282,35 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT registration_json, registered_at_utc, last_seen_at_utc, heartbeat_json FROM workers WHERE worker_id = $id AND registration_json IS NOT NULL;";
+        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.worker_id = $id AND w.registration_json IS NOT NULL;";
         command.Parameters.AddWithValue("$id", workerId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        var request = JsonSerializer.Deserialize<WorkerRegistrationRequest>(reader.GetString(0))!;
-        return ToResponse(request, DateTimeOffset.Parse(reader.GetString(1)), DateTimeOffset.Parse(reader.GetString(2)), reader.IsDBNull(3) ? null : reader.GetString(3));
+        var request = JsonSerializer.Deserialize<WorkerRegistrationRequest>(reader.GetString(0)) ?? throw new InvalidDataException("Stored Worker registration is invalid.");
+        return ToResponse(request, DateTimeOffset.Parse(reader.GetString(1)), DateTimeOffset.Parse(reader.GetString(2)),
+            reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
+            reader.IsDBNull(6) ? "not-configured" : reader.IsDBNull(7) ? "active" : "revoked",
+            reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7)));
     }
 
-    private WorkerRegistrationResponse ToResponse(WorkerRegistrationRequest request, DateTimeOffset registered, DateTimeOffset seen, string? heartbeatJson)
+    public async Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(workerId, "N", out _) || !WorkerSchedulingPolicy.IsValid(policy))
+            throw new InvalidDataException("Worker identity or scheduling policy is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE workers SET scheduling_policy=$policy WHERE worker_id=$worker AND registration_json IS NOT NULL;";
+        command.Parameters.AddWithValue("$policy", policy);
+        command.Parameters.AddWithValue("$worker", workerId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0) return null;
+        return await GetWorkerAsync(workerId, cancellationToken);
+    }
+
+    private WorkerRegistrationResponse ToResponse(WorkerRegistrationRequest request, DateTimeOffset registered, DateTimeOffset seen,
+        string? heartbeatJson, string schedulingPolicy, int activeAssignments, string authenticationCredentialStatus,
+        DateTimeOffset? authenticationCredentialRevokedAtUtc)
     {
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         var online = heartbeat is not null && _timeProvider.GetUtcNow() - seen <= _staleAfter;
@@ -1274,7 +1327,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             request.Platform, request.Capacity, heartbeat?.Capabilities ?? request.Capabilities, registered, seen,
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
             online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat is null ? null : seen,
-            heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory);
+            heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory,
+            schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc);
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

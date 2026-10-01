@@ -30,6 +30,8 @@ Create a single-use Worker registration token using the installed operator helpe
 sudo codex-server worker-token create
 ```
 
+Inspect and administer enrolled Workers with `sudo codex-server worker show <worker-id>`, `worker enable`, `worker drain`, and `worker disable`. These update the Server's scheduling policy and preserve active assignment leases. Use `worker revoke-token` for the generated Worker API token and `worker revoke-delivery-token` for the separate credential-delivery token. The local administration guide defines the drain, revocation, and shared registration-token fallback behavior.
+
 The installed `codex-server` helper runs token commands as the Server service account using the same `/etc/codex-server/server.env` and published application configuration as the service. It requires systemd and root (`sudo`); no binary or database path is needed. Token creation writes only the token to stdout; lifetime and the selected database path go to stderr. Copy only the token value. Surrounding spaces and CRLF line endings are accepted by Worker registration; embedded whitespace is rejected before staging credentials.
 
 Token commands can run while the service is running. Direct binary invocations require a configured `Server__DataDirectory` / `Server__DatabasePath` or an explicit database path; they fail rather than silently selecting the caller's home directory. The helper explicitly permits the service-account default for retained installations without overriding data paths in the service environment file or published application configuration.

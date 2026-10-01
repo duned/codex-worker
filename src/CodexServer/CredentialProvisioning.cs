@@ -22,6 +22,7 @@ public sealed record CredentialDeliveryResponse(string Id, string Provider, stri
 {
     public override string ToString() => $"CredentialDeliveryResponse {{ Id = {Id}, Provider = {Provider}, Type = {Type}, Version = {Version}, Secret = [redacted] }}";
 }
+public sealed record WorkerDeliveryAuthorizationStatus(string Status, DateTimeOffset? RevokedAtUtc = null);
 
 /// <summary>Reusable redaction for credential-like values in externally supplied operational text.</summary>
 public static class SecretSanitizer
@@ -52,6 +53,8 @@ public interface ICredentialStore
     Task<CredentialMetadata?> ReplaceSecretAsync(string credentialId, CredentialSecretInput secret, CancellationToken cancellationToken = default);
     Task<CredentialMetadata?> RevokeAsync(string credentialId, CancellationToken cancellationToken = default);
     Task SetWorkerDeliveryTokenAsync(string workerId, CredentialSecretInput token, CancellationToken cancellationToken = default);
+    Task<bool> RevokeWorkerDeliveryTokenAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerDeliveryAuthorizationStatus> GetWorkerDeliveryAuthorizationStatusAsync(string workerId, CancellationToken cancellationToken = default);
     Task<bool> IsWorkerDeliveryTokenValidAsync(string workerId, string? token, CancellationToken cancellationToken = default);
     /// <summary>Call only after the transport has authenticated the caller as <paramref name="workerId"/>.</summary>
     Task<string?> RetrieveForWorkerAsync(string credentialId, string workerId, CancellationToken cancellationToken = default);
@@ -76,8 +79,18 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, provider TEXT NOT NULL, credential_type TEXT NOT NULL, secret_reference TEXT NOT NULL UNIQUE, status TEXT NOT NULL, created_at_utc TEXT NOT NULL, updated_at_utc TEXT NOT NULL, assigned_worker_id TEXT NULL, revoked_at_utc TEXT NULL, version INTEGER NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, tag BLOB NOT NULL); CREATE TABLE IF NOT EXISTS worker_credential_auth (worker_id TEXT PRIMARY KEY, token_hash BLOB NOT NULL);";
+        command.CommandText = "CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, provider TEXT NOT NULL, credential_type TEXT NOT NULL, secret_reference TEXT NOT NULL UNIQUE, status TEXT NOT NULL, created_at_utc TEXT NOT NULL, updated_at_utc TEXT NOT NULL, assigned_worker_id TEXT NULL, revoked_at_utc TEXT NULL, version INTEGER NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, tag BLOB NOT NULL); CREATE TABLE IF NOT EXISTS worker_credential_auth (worker_id TEXT PRIMARY KEY, token_hash BLOB NOT NULL, revoked_at_utc TEXT NULL);";
         await command.ExecuteNonQueryAsync(cancellationToken);
+        command.CommandText = "PRAGMA table_info(worker_credential_auth);";
+        var hasRevokedAt = false;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken))
+                if (reader.GetString(1) == "revoked_at_utc") hasRevokedAt = true;
+        if (!hasRevokedAt)
+        {
+            command.CommandText = "ALTER TABLE worker_credential_auth ADD COLUMN revoked_at_utc TEXT NULL;";
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     public async Task<CredentialMetadata> CreateAsync(CreateCredentialRequest request, CancellationToken cancellationToken = default)
@@ -158,11 +171,41 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO worker_credential_auth(worker_id,token_hash) VALUES($worker,$hash) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash;";
+        command.CommandText = "INSERT INTO worker_credential_auth(worker_id,token_hash,revoked_at_utc) VALUES($worker,$hash,NULL) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash,revoked_at_utc=NULL;";
         command.Parameters.AddWithValue("$worker", workerId);
         command.Parameters.AddWithValue("$hash", hash);
         await command.ExecuteNonQueryAsync(cancellationToken);
         CryptographicOperations.ZeroMemory(hash);
+    }
+
+    public async Task<bool> RevokeWorkerDeliveryTokenAsync(string workerId, CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(workerId, "N", out _)) throw new InvalidDataException("Worker identity is invalid.");
+        var replacementHash = RandomNumberGenerator.GetBytes(32);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE worker_credential_auth SET token_hash=$replacement,revoked_at_utc=$now WHERE worker_id=$worker AND revoked_at_utc IS NULL;";
+        command.Parameters.AddWithValue("$replacement", replacementHash);
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$worker", workerId);
+        var changed = await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+        CryptographicOperations.ZeroMemory(replacementHash);
+        return changed;
+    }
+
+    public async Task<WorkerDeliveryAuthorizationStatus> GetWorkerDeliveryAuthorizationStatusAsync(string workerId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(workerId, "N", out _)) throw new InvalidDataException("Worker identity is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT revoked_at_utc FROM worker_credential_auth WHERE worker_id=$worker;";
+        command.Parameters.AddWithValue("$worker", workerId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return new("not-configured");
+        return reader.IsDBNull(0) ? new("active") : new("revoked", DateTimeOffset.Parse(reader.GetString(0)));
     }
 
     public async Task<bool> IsWorkerDeliveryTokenValidAsync(string workerId, string? token, CancellationToken cancellationToken = default)
@@ -171,7 +214,7 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT token_hash FROM worker_credential_auth WHERE worker_id=$worker;";
+        command.CommandText = "SELECT token_hash FROM worker_credential_auth WHERE worker_id=$worker AND revoked_at_utc IS NULL;";
         command.Parameters.AddWithValue("$worker", workerId);
         var stored = await command.ExecuteScalarAsync(cancellationToken) as byte[];
         if (stored is null) return false;

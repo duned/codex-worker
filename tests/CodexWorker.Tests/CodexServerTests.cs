@@ -126,6 +126,68 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task WorkerAdministrationApiProjectsPolicyAndSeparatesApiAndDeliveryRevocation()
+    {
+        using var temporary = new TemporaryDirectory();
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        var priorRegistration = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "worker-admin-management-token");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "shared-worker-registration-token");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "worker-admin-api.db")));
+            await app.StartAsync();
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "worker-admin-management-token");
+            var workerId = Guid.NewGuid().ToString("N");
+            const string workerToken = "worker-api-token-with-sufficient-entropy";
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(2, workerId, "admin worker", "1.0", "test", 1, []));
+            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+            Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
+            var credentials = app.Services.GetRequiredService<ICredentialStore>();
+            const string deliveryToken = "worker-delivery-token-with-sufficient-entropy";
+            await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
+
+            using var policyResponse = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/scheduling-policy",
+                new WorkerSchedulingPolicyRequest(WorkerSchedulingPolicy.Draining));
+            Assert.Equal(HttpStatusCode.OK, policyResponse.StatusCode);
+            var projected = await policyResponse.Content.ReadFromJsonAsync<WorkerRegistrationResponse>();
+            Assert.NotNull(projected);
+            Assert.Equal(WorkerSchedulingPolicy.Draining, projected.SchedulingPolicy);
+            Assert.Equal("unknown", projected.LifecycleState);
+
+            using var revokeApi = await management.PostAsync($"/api/v1/workers/{workerId}/authentication/revoke", null);
+            Assert.Equal(HttpStatusCode.OK, revokeApi.StatusCode);
+            var revoked = await revokeApi.Content.ReadFromJsonAsync<WorkerRegistrationResponse>();
+            Assert.NotNull(revoked);
+            Assert.Equal("revoked", revoked.AuthenticationCredentialStatus);
+            Assert.NotNull(revoked.AuthenticationCredentialRevokedAtUtc);
+            Assert.True(await credentials.IsWorkerDeliveryTokenValidAsync(workerId, deliveryToken));
+
+            using var workerClient = new HttpClient { BaseAddress = new Uri(url) };
+            workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", workerToken);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await workerClient.GetAsync($"/api/v1/workers/{workerId}/configuration")).StatusCode);
+            workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "shared-worker-registration-token");
+            Assert.Equal(HttpStatusCode.OK, (await workerClient.GetAsync($"/api/v1/workers/{workerId}/configuration")).StatusCode);
+
+            using var deliveryStatus = await management.GetAsync($"/api/v1/workers/{workerId}/credential-access");
+            Assert.Equal("active", (await deliveryStatus.Content.ReadFromJsonAsync<WorkerDeliveryAuthorizationStatus>())!.Status);
+            using var revokeDelivery = await management.PostAsync($"/api/v1/workers/{workerId}/credential-access/revoke", null);
+            Assert.Equal(HttpStatusCode.OK, revokeDelivery.StatusCode);
+            Assert.Equal("revoked", (await revokeDelivery.Content.ReadFromJsonAsync<WorkerDeliveryAuthorizationStatus>())!.Status);
+            Assert.Equal("revoked", (await registry.GetWorkerAsync(workerId))!.AuthenticationCredentialStatus);
+            await app.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", priorRegistration);
+        }
+    }
+
+    [Fact]
     public async Task DirectTokenCommandRejectsImplicitHomeState()
     {
         var priorDirectory = Environment.GetEnvironmentVariable("Server__DataDirectory");
@@ -279,6 +341,9 @@ public sealed class CodexServerTests
         const string deliveryToken = "worker-delivery-token-value-that-is-long-enough";
         var workerId = Guid.NewGuid().ToString("N");
         await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "backup worker", "1.0.0", "test", 1, [new WorkerCapability("tool", "git")]));
+        var workerBootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+        Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(workerBootstrap, workerId, "backup-worker-api-token"));
+        await registry.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining);
         var credential = await credentials.CreateAsync(new CreateCredentialRequest("github", "api", new CredentialSecretInput(secret)));
         await credentials.AssignAsync(credential.Id, workerId);
         await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
@@ -310,7 +375,10 @@ public sealed class CodexServerTests
         Assert.Equal(project.Id, restoredProject.Id);
         Assert.Equal(project.Name, restoredProject.Name);
         Assert.Equal(project.Repository, restoredProject.Repository);
-        Assert.Equal("backup worker", (await restoredRegistry.GetWorkerAsync(workerId))?.DisplayName);
+        var restoredWorker = await restoredRegistry.GetWorkerAsync(workerId);
+        Assert.Equal("backup worker", restoredWorker?.DisplayName);
+        Assert.Equal(WorkerSchedulingPolicy.Draining, restoredWorker?.SchedulingPolicy);
+        Assert.Equal("revoked", restoredWorker?.AuthenticationCredentialStatus);
         var restoredCredentials = new SqliteCredentialStore(restoredDatabase, encryptionKey);
         await restoredCredentials.InitializeAsync();
         var metadata = Assert.Single(await restoredCredentials.ListAsync());
@@ -1205,6 +1273,155 @@ public sealed class CodexServerTests
         Assert.NotNull(updatedWorkerAssignment);
         Assert.Equal(nextExecution.Id, updatedWorkerAssignment.ServerExecutionId);
         Assert.Equal(workerId, updatedWorkerAssignment.WorkerId);
+    }
+
+    [Fact]
+    public async Task WorkerSchedulingPolicyPersistsAndDrainPreservesActiveLeaseAndLifecycleObservations()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "worker-policy.db");
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
+        var store = new SqliteRegistryStore(database, timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Policy project", "team/policy", "main", "", []));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(2, workerId, "policy worker", "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(2, workerId, "1.0", "running", 0, 2, capabilities, []));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var request = new WorkerAssignmentRequest(workerId, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var assignment = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(assignment);
+        Assert.Equal(first.Id, assignment.ServerExecutionId);
+
+        var draining = await store.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining);
+        Assert.NotNull(draining);
+        Assert.Equal("running", draining.LifecycleState);
+        Assert.Equal("online", draining.Availability);
+        Assert.Equal(1, draining.ActiveAssignments);
+
+        var restarted = new SqliteRegistryStore(database, timeProvider: clock);
+        await restarted.InitializeAsync();
+        var persisted = await restarted.GetWorkerAsync(workerId);
+        Assert.NotNull(persisted);
+        Assert.Equal(WorkerSchedulingPolicy.Draining, persisted.SchedulingPolicy);
+        Assert.Equal(1, persisted.ActiveAssignments);
+        persisted = await restarted.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Disabled);
+        Assert.NotNull(persisted);
+        Assert.Equal(1, persisted.ActiveAssignments);
+        Assert.Equal("running", persisted.LifecycleState);
+        Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        Assert.Equal("compatible Workers are disabled or draining", Assert.Single(await restarted.GetExecutionsAsync(), x => x.Id == second.Id).PendingReason);
+
+        var renewed = await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(workerId, assignment.Lease!.Generation));
+        Assert.NotNull(renewed);
+        Assert.NotNull(await restarted.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining));
+        var completed = await restarted.ReportExecutionAsync(first.Id, new WorkerExecutionReport(workerId, assignment.AssignmentId,
+            "worker-run-1", "Completed", CompletedAtUtc: clock.GetUtcNow(), Generation: assignment.Lease.Generation));
+        Assert.NotNull(completed);
+        persisted = await restarted.GetWorkerAsync(workerId);
+        Assert.Equal(0, persisted!.ActiveAssignments);
+        Assert.Equal(WorkerSchedulingPolicy.Draining, persisted.SchedulingPolicy);
+        Assert.Equal("online", persisted.Availability);
+
+        Assert.NotNull(await restarted.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Disabled));
+        Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        Assert.NotNull(await restarted.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Enabled));
+        var enabledAssignment = (await restarted.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(enabledAssignment);
+        Assert.Equal(second.Id, enabledAssignment.ServerExecutionId);
+    }
+
+    [Fact]
+    public async Task WorkerApiTokenRevocationIsPersistentAndSeparateFromCredentialDeliveryAuthorization()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "worker-auth.db");
+        var workerId = Guid.NewGuid().ToString("N");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "auth worker", "1.0", "test", 1, []));
+        var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+        Assert.True(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, new string('w', 40)));
+        Assert.True(await store.IsWorkerTokenValidAsync(workerId, new string('w', 40)));
+
+        var credentialStore = new SqliteCredentialStore(database);
+        await credentialStore.InitializeAsync();
+        const string deliveryToken = "worker-delivery-token-with-adequate-entropy";
+        await credentialStore.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
+        Assert.Equal("active", (await credentialStore.GetWorkerDeliveryAuthorizationStatusAsync(workerId)).Status);
+
+        Assert.True(await store.RevokeWorkerTokenAsync(workerId));
+        Assert.False(await store.IsWorkerTokenValidAsync(workerId, new string('w', 40)));
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        var worker = await restarted.GetWorkerAsync(workerId);
+        Assert.Equal("revoked", worker!.AuthenticationCredentialStatus);
+        Assert.NotNull(worker.AuthenticationCredentialRevokedAtUtc);
+        Assert.True(await credentialStore.IsWorkerDeliveryTokenValidAsync(workerId, deliveryToken));
+        Assert.True(await credentialStore.RevokeWorkerDeliveryTokenAsync(workerId));
+        Assert.False(await credentialStore.IsWorkerDeliveryTokenValidAsync(workerId, deliveryToken));
+        Assert.Equal("revoked", (await credentialStore.GetWorkerDeliveryAuthorizationStatusAsync(workerId)).Status);
+        Assert.Equal("revoked", (await restarted.GetWorkerAsync(workerId))!.AuthenticationCredentialStatus);
+    }
+
+    [Fact]
+    public async Task LocalWorkerAdministrationCliPersistsSchedulingChanges()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "worker-admin-cli.db");
+        var workerId = Guid.NewGuid().ToString("N");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "cli worker", "1.0", "test", 1, []));
+        var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+        Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, "cli-worker-api-token"));
+        var credentials = new SqliteCredentialStore(database);
+        await credentials.InitializeAsync();
+        await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput("cli-worker-delivery-token-with-sufficient-entropy"));
+
+        Assert.Equal(0, await CodexServer.Program.Main(["worker", "drain", workerId, database]));
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.Equal(WorkerSchedulingPolicy.Draining, (await restarted.GetWorkerAsync(workerId))!.SchedulingPolicy);
+        Assert.Equal(0, await CodexServer.Program.Main(["worker", "enable", workerId, database]));
+        Assert.Equal(WorkerSchedulingPolicy.Enabled, (await restarted.GetWorkerAsync(workerId))!.SchedulingPolicy);
+        var originalOutput = Console.Out;
+        using var output = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            Assert.Equal(0, await CodexServer.Program.Main(["worker", "show", workerId, database]));
+        }
+        finally { Console.SetOut(originalOutput); }
+        using var projection = JsonDocument.Parse(output.ToString());
+        Assert.Equal("Enabled", projection.RootElement.GetProperty("worker").GetProperty("schedulingPolicy").GetString());
+        Assert.Equal("active", projection.RootElement.GetProperty("worker").GetProperty("authenticationCredentialStatus").GetString());
+        Assert.Equal("active", projection.RootElement.GetProperty("credentialDeliveryAuthorization").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task RegistryUpgradeDefaultsExistingWorkersToEnabledScheduling()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "worker-policy-upgrade.db");
+        var workerId = Guid.NewGuid().ToString("N");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "existing worker", "1.0", "test", 1, []));
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE workers DROP COLUMN scheduling_policy; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var upgraded = new SqliteRegistryStore(database);
+        await upgraded.InitializeAsync();
+        var worker = await upgraded.GetWorkerAsync(workerId);
+        Assert.Equal(WorkerSchedulingPolicy.Enabled, worker!.SchedulingPolicy);
     }
 
     [Fact]

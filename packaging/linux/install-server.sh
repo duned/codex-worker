@@ -58,8 +58,8 @@ if [[ $EUID -ne 0 ]]; then
   echo 'Run Server local administration and token commands with sudo.' >&2
   exit 1
 fi
-if [[ ${1:-} != worker-token && ${1:-} != status && ${1:-} != diagnostics && ${1:-} != config ]]; then
-  echo 'Usage: sudo codex-server <status|diagnostics|config|worker-token> [arguments]' >&2
+if [[ ${1:-} != worker-token && ${1:-} != worker && ${1:-} != status && ${1:-} != diagnostics && ${1:-} != config ]]; then
+  echo 'Usage: sudo codex-server <status|diagnostics|config|worker-token|worker> [arguments]' >&2
   exit 2
 fi
 # Let systemd parse its EnvironmentFile syntax; never source secrets as shell code.

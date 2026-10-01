@@ -244,6 +244,21 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             return Results.NoContent();
         });
+        app.MapGet("/api/v1/workers/{workerId}/credential-access", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore registry, ICredentialStore credentials) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
+            return Results.Ok(await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId, context.RequestAborted));
+        });
+        app.MapPost("/api/v1/workers/{workerId}/credential-access/revoke", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore registry, ICredentialStore credentials) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
+            await credentials.RevokeWorkerDeliveryTokenAsync(workerId, context.RequestAborted);
+            return Results.Ok(await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId, context.RequestAborted));
+        });
         app.MapGet("/api/v1/workers/{workerId}/credentials/{credentialId}", async (string workerId, string credentialId,
             HttpContext context, ICredentialStore store) =>
         {
@@ -303,6 +318,28 @@ public static class ServerApplication
                 return Results.BadRequest(new { error = "Invalid worker heartbeat contract." });
             try { await store.HeartbeatWorkerAsync(request, context.RequestAborted); }
             catch (InvalidOperationException) { return Results.NotFound(); }
+            return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
+        });
+        app.MapPut("/api/v1/workers/{workerId}/scheduling-policy", async (string workerId, WorkerSchedulingPolicyRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (request is null || !WorkerSchedulingPolicy.IsValid(request.Policy))
+                return Results.BadRequest(new { error = "Policy must be Enabled, Draining, or Disabled." });
+            try
+            {
+                var worker = await store.SetWorkerSchedulingPolicyAsync(workerId, request.Policy, context.RequestAborted);
+                return worker is null ? Results.NotFound() : Results.Ok(worker);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/workers/{workerId}/authentication/revoke", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
+            if (worker is null) return Results.NotFound();
+            await store.RevokeWorkerTokenAsync(workerId, context.RequestAborted);
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
         app.MapPost("/api/v1/workers/{workerId}/assignments/request", async (string workerId, WorkerAssignmentRequest request,

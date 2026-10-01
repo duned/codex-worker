@@ -14,6 +14,7 @@ public static class Program
                CodexServer worker-token create [database-path]
                CodexServer worker-token revoke <registration-token> [database-path]
                CodexServer worker-token revoke-worker <worker-id> [database-path]
+               CodexServer worker <show|enable|drain|disable|revoke-token|revoke-delivery-token> <worker-id> [database-path]
                CodexServer backup <export|restore> <archive-path> <database-path>
                CodexServer backup validate <archive-path>
 
@@ -23,14 +24,14 @@ public static class Program
         Configuration show and validate are offline and do not open the database.
         Backup restore requires the service to be stopped.
 
-        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate
+        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|worker <operation>
         The installed helper uses /etc/codex-server/server.env and the service account
-        for local administration and token commands, even while codex-server.service is running.
+        for local administration, Worker administration and token commands, even while codex-server.service is running.
         Create a Worker token with sudo codex-server worker-token create.
         The one-use bootstrap token is printed only to stdout and expires in 15 minutes.
         Protect that output; use codex-worker register --token-stdin to register.
 
-        Direct token commands require an explicit database-path or configured
+        Direct token and Worker administration commands require an explicit database-path or configured
         Server:DataDirectory / Server:DatabasePath (environment: Server__DataDirectory /
         Server__DatabasePath). They never silently select the invoking user's home.
         --help (-h) prints this help; --version prints the Server version.
@@ -38,7 +39,7 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        if (args is ["--help"] or ["-h"] || args is ["worker-token", "--help"] or ["backup", "--help"])
+        if (args is ["--help"] or ["-h"] || args is ["worker-token", "--help"] or ["worker", "--help"] or ["backup", "--help"])
         {
             Console.WriteLine(Help);
             return 0;
@@ -50,12 +51,13 @@ public static class Program
         }
         if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config")
             return await RunLocalAdministrationAsync(args);
-        if (args.Length > 0 && args[0] is "backup" or "worker-token")
+        if (args.Length > 0 && args[0] is "backup" or "worker-token" or "worker")
         {
             try
             {
                 if (args[0] == "backup") await ServerBackupCommand.RunAsync(args);
-                else await WorkerTokenCommand.RunAsync(args);
+                else if (args[0] == "worker-token") await WorkerTokenCommand.RunAsync(args);
+                else await WorkerAdministrationCommand.RunAsync(args);
                 return 0;
             }
             catch (ArgumentException)
@@ -134,6 +136,72 @@ public static class Program
     }
 }
 
+internal static class WorkerAdministrationCommand
+{
+    public static async Task RunAsync(string[] args)
+    {
+        if (args.Length < 3 || args.Length > 4 || args[1] is not ("show" or "enable" or "drain" or "disable" or "revoke-token" or "revoke-delivery-token") ||
+            !Guid.TryParseExact(args[2], "N", out _))
+            throw new ArgumentException("Usage: codex-server worker <show|enable|drain|disable|revoke-token|revoke-delivery-token> <worker-id> [database-path]");
+        var configuration = new ServerConfiguration();
+        var section = ServerApplication.CreateBuilder([]).Configuration.GetSection("Server");
+        section.Bind(configuration);
+        var serviceContext = Environment.GetEnvironmentVariable("CODEX_SERVER_OPERATOR_SERVICE_CONTEXT") == "1";
+        if (args.Length == 3 && !serviceContext && section["DataDirectory"] is null && section["DatabasePath"] is null)
+            throw new InvalidDataException("Worker administration requires explicit service state configuration.");
+        configuration.Validate();
+        var database = args.Length == 4 ? Path.GetFullPath(args[3]) : configuration.ResolveDatabasePath();
+        var registry = new SqliteRegistryStore(database, configuration.WorkerStaleAfterSeconds,
+            leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
+            leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds);
+        var credentials = new SqliteCredentialStore(database);
+        await registry.InitializeAsync();
+        await credentials.InitializeAsync();
+        var workerId = args[2];
+        var worker = await registry.GetWorkerAsync(workerId);
+        if (worker is null)
+        {
+            Console.WriteLine("Worker was not found.");
+            return;
+        }
+        switch (args[1])
+        {
+            case "show":
+                var delivery = await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId);
+                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Worker = worker, CredentialDeliveryAuthorization = delivery },
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }));
+                break;
+            case "enable":
+            case "drain":
+            case "disable":
+                var policy = args[1] switch
+                {
+                    "enable" => WorkerSchedulingPolicy.Enabled,
+                    "drain" => WorkerSchedulingPolicy.Draining,
+                    _ => WorkerSchedulingPolicy.Disabled
+                };
+                worker = await registry.SetWorkerSchedulingPolicyAsync(workerId, policy) ?? worker;
+                var drainState = worker.SchedulingPolicy == WorkerSchedulingPolicy.Draining
+                    ? worker.ActiveAssignments == 0 ? "drained" : $"draining; {worker.ActiveAssignments} active assignments retain their leases"
+                    : worker.SchedulingPolicy.ToLowerInvariant();
+                Console.WriteLine($"Worker scheduling policy: {drainState}.");
+                break;
+            case "revoke-token":
+                var apiTokenRevoked = await registry.RevokeWorkerTokenAsync(workerId);
+                Console.WriteLine(apiTokenRevoked
+                    ? "Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery. The shared Server registration-token fallback remains server-wide if configured."
+                    : "No active per-Worker API authentication token was found.");
+                break;
+            case "revoke-delivery-token":
+                var deliveryTokenRevoked = await credentials.RevokeWorkerDeliveryTokenAsync(workerId);
+                Console.WriteLine(deliveryTokenRevoked
+                    ? "Worker credential-delivery authorization revoked. Worker API authentication is unchanged."
+                    : "No active Worker credential-delivery authorization was found.");
+                break;
+        }
+    }
+}
+
 internal static class WorkerTokenCommand
 {
     public static async Task RunAsync(string[] args)
@@ -164,7 +232,8 @@ internal static class WorkerTokenCommand
             Console.WriteLine(token);
         }
         else if (args[1] == "revoke" && await store.RevokeWorkerBootstrapTokenAsync(args[2])) Console.WriteLine("Worker registration token revoked.");
-        else if (args[1] == "revoke-worker" && await store.RevokeWorkerTokenAsync(args[2])) Console.WriteLine("Worker authentication credential revoked.");
+        else if (args[1] == "revoke-worker" && await store.RevokeWorkerTokenAsync(args[2]))
+            Console.WriteLine("Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery. The shared Server registration-token fallback remains server-wide if configured.");
         else Console.WriteLine("Credential was not active.");
     }
 }
