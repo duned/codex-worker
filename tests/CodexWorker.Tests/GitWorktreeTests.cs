@@ -96,6 +96,85 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task RetryResumeReappliesOnlyPreservedDeltaOnAdvancedBaseBeforeIntegration()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var originalId = Guid.NewGuid();
+        await original.StartIssueAsync(originalId, fixture.Issue, CancellationToken.None);
+        var originalDirectory = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(originalDirectory, "task.txt"), "recovered task change");
+        var recovery = await original.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        Assert.NotNull(recovery);
+        var previous = new ExecutionHistoryEntry(originalId, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, "partial implementation",
+            null, 0, [], null, null, null, "validation failed", "recoverable", recovery.BaseCommit, recovery.StatusSummary);
+
+        await fixture.AddAndPushAsync("cw", "#!/bin/sh\nprintf 'new executable\\n'\n", executable: true);
+        await fixture.AddAndPushAsync("base.txt", "newer source modification");
+        await fixture.AddAndPushAsync("src/example.cs", "newer source change");
+        await fixture.AddAndPushAsync("tests/example.cs", "newer test change");
+        var baseBeforeRetry = await fixture.Git("rev-parse", "main");
+
+        using var retry = original.CreateExecutionRepository();
+        await retry.StartIssueAsync(Guid.NewGuid(), fixture.Issue, previous, true, 2, CancellationToken.None);
+        Assert.Equal("newer source change", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "src", "example.cs")));
+        Assert.Equal("newer test change", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "tests", "example.cs")));
+        Assert.Equal("newer source modification", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "base.txt")));
+        Assert.Equal("recovered task change", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "task.txt")));
+        Assert.True(File.Exists(Path.Combine(retry.ExecutionDirectory, "cw")));
+        Assert.Equal(baseBeforeRetry, await fixture.GitAt(retry.ExecutionDirectory, "rev-parse", "HEAD"));
+
+        // Normal execution validation runs against the prepared source before integration.
+        var validatedHead = await fixture.GitAt(retry.ExecutionDirectory, "rev-parse", "HEAD");
+        Assert.Equal(baseBeforeRetry, validatedHead);
+        var result = await retry.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+
+        Assert.True(result.HasChanges);
+        Assert.Equal("newer source change", await fixture.Git("show", "main:src/example.cs"));
+        Assert.Equal("newer test change", await fixture.Git("show", "main:tests/example.cs"));
+        Assert.Equal("newer source modification", await fixture.Git("show", "main:base.txt"));
+        Assert.Equal("recovered task change", await fixture.Git("show", "main:task.txt"));
+        Assert.Equal("#!/bin/sh\nprintf 'new executable\\n'\n", await File.ReadAllTextAsync(Path.Combine(fixture.Checkout, "cw")));
+        Assert.StartsWith("100755", await fixture.Git("ls-tree", "main", "cw"));
+        Assert.Equal(baseBeforeRetry, await fixture.Git("rev-parse", "main^"));
+        Assert.Equal("task.txt", await fixture.Git("diff", "--name-only", baseBeforeRetry, "main"));
+        Assert.NotEmpty(validatedHead);
+        Assert.True(Directory.Exists(originalDirectory));
+        Assert.Equal("recovered task change", await File.ReadAllTextAsync(Path.Combine(originalDirectory, "task.txt")));
+    }
+
+    [Fact]
+    public async Task RetryResumeConflictStopsAndPreservesOriginalRecoveryWorkspace()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await original.InitializeAsync(CancellationToken.None);
+        var originalId = Guid.NewGuid();
+        await original.StartIssueAsync(originalId, fixture.Issue, CancellationToken.None);
+        var originalDirectory = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(originalDirectory, "base.txt"), "task replacement");
+        var recovery = await original.PreserveFailedIssueChangesAsync(CancellationToken.None);
+        Assert.NotNull(recovery);
+        var previous = new ExecutionHistoryEntry(originalId, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, "partial implementation",
+            null, 0, [], null, null, null, "validation failed", "recoverable", recovery.BaseCommit, recovery.StatusSummary);
+        await fixture.AddAndPushAsync("base.txt", "incompatible newer base change");
+
+        using var retry = original.CreateExecutionRepository();
+        var conflict = await Assert.ThrowsAsync<IssuePreparationRejectedException>(() =>
+            retry.StartIssueAsync(Guid.NewGuid(), fixture.Issue, previous, true, 2, CancellationToken.None));
+
+        Assert.Contains("conflict", conflict.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("task replacement", await File.ReadAllTextAsync(Path.Combine(originalDirectory, "base.txt")));
+        Assert.Equal("incompatible newer base change", await fixture.Git("show", "main:base.txt"));
+        Assert.True(Directory.Exists(originalDirectory));
+        Assert.DoesNotContain("retry-2", await fixture.Git("branch", "--list"));
+    }
+
+    [Fact]
     public async Task RetryRestartUsesCurrentBaseWithoutCopyingPreviousPartialFiles()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
@@ -1000,6 +1079,23 @@ public sealed class GitWorktreeTests
             await File.WriteAllTextAsync(Path.Combine(Checkout, path), content);
             await RunGit(Checkout, "add", path);
             await RunGit(Checkout, "commit", "-m", "advance base independently");
+            await RunGit(Checkout, "push", "origin", "main");
+        }
+        public async Task AddAndPushAsync(string path, string content, bool executable = false)
+        {
+            var fullPath = Path.Combine(Checkout, path);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            await File.WriteAllTextAsync(fullPath, content);
+            if (executable)
+            {
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(fullPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                        UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                await RunGit(Checkout, "add", "--chmod=+x", "--", path);
+            }
+            else
+                await RunGit(Checkout, "add", "--", path);
+            await RunGit(Checkout, "commit", "-m", $"advance base with {path}");
             await RunGit(Checkout, "push", "origin", "main");
         }
         public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
