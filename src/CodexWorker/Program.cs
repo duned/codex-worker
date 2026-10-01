@@ -35,7 +35,8 @@ public static class Program
         }
         if (commandLine.Command == "register") return await RegisterAsync(args, output);
         if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output);
-        if (commandLine.Command is "status" or "config") return ShowConfiguration(commandLine, output);
+        if (commandLine.Command == "status") return await ShowStatusAsync(commandLine, output);
+        if (commandLine.Command == "config") return ShowConfiguration(commandLine, output);
         if (commandLine.Command == "capabilities") return await ShowCapabilitiesAsync(commandLine, output);
         if (args.Length > 0 && args[0].StartsWith("-", StringComparison.Ordinal) && args[0] != "--config")
         {
@@ -208,6 +209,29 @@ public static class Program
         }
     }
 
+    private static async Task<int> ShowStatusAsync(WorkerCommandLine commandLine, WorkerConsole output)
+    {
+        var json = commandLine.Arguments.Count == 1 && commandLine.Arguments[0] == "--json";
+        if (commandLine.Arguments.Count != (json ? 1 : 0))
+        {
+            output.InfrastructureFailure("Unexpected status arguments. Use 'codex-worker status --help' for usage.");
+            return ProcessExitCodes.StartupFailure;
+        }
+        var path = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
+        try
+        {
+            var status = await WorkerStatusReporter.CreateAsync(path);
+            WorkerStatusReporter.Write(status, json);
+            return ProcessExitCodes.Success;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            output.InfrastructureFailure($"Status collection failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            return ProcessExitCodes.Success;
+        }
+    }
+
     private static async Task<int> ShowCapabilitiesAsync(WorkerCommandLine commandLine, WorkerConsole output)
     {
         if (commandLine.Arguments.Count != 0)
@@ -261,8 +285,9 @@ public static class Program
                 break;
             case "status":
                 Console.WriteLine($"Usage: codex-worker status {configOption}");
-                Console.WriteLine("Show local Worker configuration status without starting execution.");
-                Console.WriteLine("Example: codex-worker status");
+                Console.WriteLine("Show local Worker status without contacting Codex Server or starting execution.");
+                Console.WriteLine("Options: --json  Write the stable versioned status contract as JSON.");
+                Console.WriteLine("Examples: codex-worker status; codex-worker status --config /path/to/worker.yml --json");
                 break;
             case "config":
                 Console.WriteLine($"Usage: codex-worker config {configOption}");

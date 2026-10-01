@@ -1,5 +1,6 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using YamlDotNet.RepresentationModel;
 
 namespace CodexWorker;
 
@@ -21,11 +22,31 @@ public sealed class WorkerConfiguration
             .WithDuplicateKeyChecking()
             .Build();
         WorkerConfiguration config;
-        try { config = deserializer.Deserialize<WorkerConfiguration>(File.ReadAllText(path)) ?? throw new InvalidDataException("Configuration YAML is empty."); }
+        try
+        {
+            var yaml = File.ReadAllText(path);
+            RejectUnknownRootProperties(yaml, ["project", "git", "github", "codex", "validation", "environment", "worker"]);
+            config = deserializer.Deserialize<WorkerConfiguration>(yaml) ?? throw new InvalidDataException("Configuration YAML is empty.");
+        }
         catch (YamlDotNet.Core.YamlException ex) { throw new InvalidDataException($"Invalid YAML configuration: {ex.Message}", ex); }
         config.ResolvePaths(Path.GetFullPath(path));
         config.Validate();
         return config;
+    }
+
+    private static void RejectUnknownRootProperties(string yaml, IEnumerable<string> allowedProperties)
+    {
+        var stream = new YamlStream();
+        using var reader = new StringReader(yaml);
+        stream.Load(reader);
+        if (stream.Documents.Count == 0 || stream.Documents[0].RootNode is not YamlMappingNode root) return;
+        var allowed = allowedProperties.ToHashSet(StringComparer.Ordinal);
+
+        foreach (var key in root.Children.Keys.OfType<YamlScalarNode>())
+        {
+            if (key.Value is null || !allowed.Contains(key.Value))
+                throw new InvalidDataException("Configuration contains an unknown top-level property.");
+        }
     }
 
     public void Validate()
@@ -164,7 +185,8 @@ public static class ProjectConfigurationDiscovery
     public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadForWorker(GlobalWorkerConfiguration global) =>
         Load(global.Projects.Directory, allowEmpty: global.Server.Enabled && global.Projects.Ownership == "managed");
 
-    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory, bool allowEmpty = false)
+    public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory, bool allowEmpty = false,
+        bool validateExecutionResources = true)
     {
         if (!Directory.Exists(directory)) throw new InvalidDataException($"Projects directory does not exist: {directory}");
         var files = Directory.EnumerateFiles(directory).Where(x =>
@@ -178,15 +200,26 @@ public static class ProjectConfigurationDiscovery
             try { projects.Add((Path.GetFullPath(file), WorkerConfiguration.Load(file))); }
             catch (Exception ex) { throw new InvalidDataException($"Project configuration '{file}' is invalid: {ex.Message}", ex); }
         }
-        ValidateSet(projects);
+        ValidateUniqueSet(projects);
+        if (validateExecutionResources) ValidateExecutionResources(projects);
         return projects;
     }
 
     public static void ValidateSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)
     {
+        ValidateUniqueSet(projects);
+        ValidateExecutionResources(projects);
+    }
+
+    private static void ValidateUniqueSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)
+    {
         Duplicate(projects, p => p.Configuration.Project.Name, "project name");
         Duplicate(projects, p => p.Configuration.Project.Repository, "GitHub repository");
         Duplicate(projects, p => Path.GetFullPath(p.Configuration.Project.Directory), "checkout directory");
+    }
+
+    private static void ValidateExecutionResources(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)
+    {
         foreach (var (path, config) in projects)
         {
             if (!Directory.Exists(config.Project.Directory)) throw new InvalidDataException($"Project configuration '{path}': checkout directory does not exist: {config.Project.Directory}");
