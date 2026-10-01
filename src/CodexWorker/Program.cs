@@ -268,7 +268,6 @@ public static class Program
                 Console.WriteLine("Commands: run, status, config, capabilities, provision, register");
                 Console.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 Console.WriteLine($"Normal execution defaults to {WorkerCommandLine.DefaultConfigurationPath}.");
-                Console.WriteLine("Legacy: codex-worker <worker.yml>");
                 break;
         }
         Console.WriteLine("Options: -h, --help  Show this help.");

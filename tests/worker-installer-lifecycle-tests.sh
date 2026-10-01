@@ -183,7 +183,7 @@ run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
 [[ $(grep -n '^register$' "$LIFECYCLE_ROOT/events" | cut -d: -f1) -lt \
    $(grep -n '^enable --now' "$LIFECYCLE_ROOT/events" | cut -d: -f1) ]]
-grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
+grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
   "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 # The fake Worker accepts only --help and register: any Codex preflight gate
 # would fail this clean installation instead of leaving registration coherent.
@@ -252,6 +252,8 @@ cp "$test_dir/artifact/CodexWorker" "$LIFECYCLE_ROOT/opt/codex-worker/"
 printf 'previous\n' > "$LIFECYCLE_ROOT/opt/codex-worker/VERSION"
 cp "$LIFECYCLE_TEMPLATE" "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"
 cp "$LIFECYCLE_ROOT/scripts/codex-worker.service" "$LIFECYCLE_ROOT/etc/systemd/system/"
+# Start from the obsolete pre-17.x service command and verify upgrade migration.
+sed -i 's| run --config||' "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 touch "$LIFECYCLE_ROOT/active" "$LIFECYCLE_ROOT/enabled" "$LIFECYCLE_ROOT/previous-runtime"
 if REGISTRATION_FAIL=true run_install; then exit 1; fi
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
@@ -265,4 +267,12 @@ if START_FAIL=true run_install; then exit 1; fi
 [[ $(cat "$LIFECYCLE_ROOT/opt/codex-worker/VERSION") == previous ]]
 cmp "$LIFECYCLE_ROOT/previous.service" "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 cmp "$LIFECYCLE_TEMPLATE" "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"
+# A successful upgrade replaces the legacy service command while preserving
+# the operator's configuration and stable registered identity.
+identity=$(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id")
+run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+cmp "$LIFECYCLE_TEMPLATE" "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"
+[[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id") == "$identity" ]]
+grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
+  "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 echo 'Worker installer lifecycle checks passed.'

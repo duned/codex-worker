@@ -356,7 +356,7 @@ if [[ -f $script_dir/codex-worker.service ]]; then
 else
   curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/codex-worker.service" --output "$temporary_dir/codex-worker.service" || fail "could not download the systemd unit"
 fi
-grep -Fxq "ExecStart=$install_root/CodexWorker $config_root/worker.yml" "$temporary_dir/codex-worker.service" || fail "systemd ExecStart does not match the packaged Worker executable and configuration"
+grep -Fxq "ExecStart=$install_root/CodexWorker run --config $config_root/worker.yml" "$temporary_dir/codex-worker.service" || fail "systemd ExecStart does not match the packaged Worker executable and configuration"
 
 if [[ $register_requested == true ]]; then
   [[ -n $requested_server ]] && validate_server_url "$requested_server" || fail "registration requires a valid server.url in Worker configuration or --server URL"

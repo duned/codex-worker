@@ -70,6 +70,14 @@ if ! mv "$stage_dir" /opt/codex-worker; then
   exit 1
 fi
 
+unit_file=/etc/systemd/system/codex-worker.service
+legacy_exec_start='ExecStart=/opt/codex-worker/CodexWorker /etc/codex-worker/worker.yml'
+canonical_exec_start='ExecStart=/opt/codex-worker/CodexWorker run --config /etc/codex-worker/worker.yml'
+if [[ -f $unit_file ]] && grep -Fxq "$legacy_exec_start" "$unit_file"; then
+  sed -i "s|^$legacy_exec_start$|$canonical_exec_start|" "$unit_file"
+  systemctl daemon-reload
+fi
+
 if systemctl start codex-worker; then
   ready=false
   for _ in $(seq 1 60); do

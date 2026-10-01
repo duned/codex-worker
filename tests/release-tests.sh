@@ -57,7 +57,7 @@ done
 mkdir "$temp_dir/worker-layout"
 tar -xzf "$explicit_output/codex-worker-1.2.3-linux-x64.tar.gz" -C "$temp_dir/worker-layout"
 [[ -x $temp_dir/worker-layout/CodexWorker ]]
-grep -Fxq 'ExecStart=/opt/codex-worker/CodexWorker /etc/codex-worker/worker.yml' "$repo_root/packaging/linux/codex-worker.service"
+grep -Fxq 'ExecStart=/opt/codex-worker/CodexWorker run --config /etc/codex-worker/worker.yml' "$repo_root/packaging/linux/codex-worker.service"
 if PATH="$fake_bin:$PATH" TMPDIR="$temp_dir" RELEASE_CASE=missing-apphost \
   "$repo_root/packaging/release-linux-x64.sh" >"$temp_dir/layout.out" 2>&1; then exit 1; fi
 grep -q 'missing the executable' "$temp_dir/layout.out"

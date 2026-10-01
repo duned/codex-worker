@@ -27,16 +27,33 @@ public sealed class CommandLineTests
     }
 
     [Fact]
-    public void CommandLineResolvesLegacyAndExplicitConfigurationForms()
+    public void CommandLineResolvesExplicitConfigurationForms()
     {
-        Assert.Equal("legacy.yml", WorkerCommandLine.Parse(["legacy.yml"]).ConfigurationPath);
-        Assert.Equal("override.yml", WorkerCommandLine.Parse(["run", "--config", "override.yml"]).ConfigurationPath);
+        var run = WorkerCommandLine.Parse(["run", "--config", "override.yml"]);
+        Assert.Equal("run", run.Command);
+        Assert.Equal("override.yml", run.ConfigurationPath);
+        Assert.Empty(run.Arguments);
         var provisioning = WorkerCommandLine.Parse(["provision", "install", "git", "--config", "override.yml", "--allow-elevation"]);
         Assert.Equal("override.yml", provisioning.ConfigurationPath);
         Assert.Equal(new[] { "install", "git", "--allow-elevation" }, provisioning.Arguments);
         Assert.Equal(OperatingSystem.IsLinux() ? WorkerCommandLine.LinuxDefaultConfigurationPath :
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worker.yml"),
             WorkerCommandLine.DefaultConfigurationPath);
+    }
+
+    [Fact]
+    public async Task RunConfigOptionUsesTheExecutionCommandWhilePositionalConfigIsRejected()
+    {
+        var missingConfiguration = Path.Combine(Path.GetTempPath(), $"missing-worker-{Guid.NewGuid():N}.yml");
+
+        var (runExitCode, runOutput) = await RunAsync(["run", "--config", missingConfiguration]);
+        Assert.Equal(ProcessExitCodes.StartupFailure, runExitCode);
+        Assert.Contains("Configuration error:", runOutput);
+        Assert.DoesNotContain("Unexpected run arguments", runOutput);
+
+        var (legacyExitCode, legacyOutput) = await RunAsync([missingConfiguration]);
+        Assert.Equal(ProcessExitCodes.StartupFailure, legacyExitCode);
+        Assert.Contains("Unexpected run arguments", legacyOutput);
     }
 
     [Theory]
