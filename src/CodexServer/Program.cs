@@ -8,6 +8,9 @@ public static class Program
         Codex Server
         Usage: CodexServer [--Server:<setting>=<value>] [--Logging:<setting>=<value>]
                CodexServer --help | --version
+               CodexServer status [--json] [Server configuration options]
+               CodexServer diagnostics [--json] [Server configuration options]
+               CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer worker-token create [database-path]
                CodexServer worker-token revoke <registration-token> [database-path]
                CodexServer worker-token revoke-worker <worker-id> [database-path]
@@ -15,11 +18,15 @@ public static class Program
                CodexServer backup validate <archive-path>
 
         No arguments starts the web Server. Help, version and administrative commands
-        do not start the Server. Backup restore requires the service to be stopped.
+        do not start the Server. Status and diagnostics inspect configured local state;
+        they do not contact the running loopback Server. Process health is not observed.
+        Configuration show and validate are offline and do not open the database.
+        Backup restore requires the service to be stopped.
 
-        Installed Linux Server: sudo codex-server worker-token create
+        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate
         The installed helper uses /etc/codex-server/server.env and the service account
-        to select the service database, even while codex-server.service is running.
+        for local administration and token commands, even while codex-server.service is running.
+        Create a Worker token with sudo codex-server worker-token create.
         The one-use bootstrap token is printed only to stdout and expires in 15 minutes.
         Protect that output; use codex-worker register --token-stdin to register.
 
@@ -41,6 +48,8 @@ public static class Program
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
             return 0;
         }
+        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config")
+            return await RunLocalAdministrationAsync(args);
         if (args.Length > 0 && args[0] is "backup" or "worker-token")
         {
             try
@@ -69,6 +78,46 @@ public static class Program
         await using var app = await ServerApplication.BuildAsync(args);
         await app.RunAsync();
         return 0;
+    }
+
+    private static async Task<int> RunLocalAdministrationAsync(string[] args)
+    {
+        using var userCancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            userCancellation.Cancel();
+        };
+        Console.CancelKeyPress += cancelHandler;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(userCancellation.Token, timeout.Token);
+        try
+        {
+            var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(), new LocalServerAdministrationServiceFactory());
+            var exitCode = await cli.RunAsync(args.Skip(1).ToArray(), cancellation.Token);
+            if (userCancellation.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Server administration command canceled.");
+                return ServerAdministrationExitCodes.Canceled;
+            }
+            if (timeout.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("Server administration command timed out after 15 seconds. Check local database availability and try again.");
+                return ServerAdministrationExitCodes.OperationalFailure;
+            }
+            return exitCode;
+        }
+        catch (OperationCanceledException) when (userCancellation.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Server administration command canceled.");
+            return ServerAdministrationExitCodes.Canceled;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Server administration command timed out after 15 seconds. Check local database availability and try again.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+        finally { Console.CancelKeyPress -= cancelHandler; }
     }
 
     private static bool ValidHostArguments(string[] args)

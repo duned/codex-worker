@@ -219,6 +219,8 @@ The standalone `CodexServer` application hosts the central control plane API and
 
 For an evidence-based capability map and proposed administration follow-ups, see the [18.1 Server control-plane audit](docs/server-control-plane-audit-18.1.md).
 
+Local Server operators can use `codex-server status`, `codex-server diagnostics`, and `codex-server config show|validate`; each supports `--json`. These commands inspect the configured local registry and do not contact the running Server. On packaged Linux installations, use `sudo codex-server ...` so the helper loads `/etc/codex-server/server.env` and selects the service database. See the [Server local administration guide](docs/server-local-administration.md) for configuration resolution, readiness semantics, redaction, and exit codes.
+
 Run the server independently from the worker:
 
 ```sh

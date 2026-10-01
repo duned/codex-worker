@@ -85,7 +85,7 @@ else
   if bash "$temp_dir/codex-server" worker-token create > "$temp_dir/helper-nonroot.out" 2>&1; then
     echo 'Operator helper accepted execution without root.' >&2; exit 1
   fi
-  grep -q 'sudo codex-server worker-token create' "$temp_dir/helper-nonroot.out"
+  grep -q 'local administration and token commands with sudo' "$temp_dir/helper-nonroot.out"
   # Exercise the emitted exec command independently of its root-only guard.
   sed -n '/^exec systemd-run/,$p' "$temp_dir/codex-server" > "$temp_dir/helper-command.sh"
   bash "$temp_dir/helper-command.sh" worker-token create
@@ -106,6 +106,20 @@ worker-token
 create
 EOF
 diff -u "$temp_dir/expected-helper-arguments" "$CODEX_HELPER_ARGUMENTS"
+for admin_command in status diagnostics; do
+  if [[ $EUID == 0 ]]; then
+    bash "$temp_dir/codex-server" "$admin_command"
+  else
+    bash "$temp_dir/helper-command.sh" "$admin_command"
+  fi
+  grep -Fxq "$admin_command" "$CODEX_HELPER_ARGUMENTS"
+done
+if [[ $EUID == 0 ]]; then
+  bash "$temp_dir/codex-server" config show
+else
+  bash "$temp_dir/helper-command.sh" config show
+fi
+tail -n 2 "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf 'config\nshow\n')
 # Help/version bypass sudo and systemd and dispatch directly to the executable.
 cat > "$temp_dir/server-cli" <<'EOF'
 #!/usr/bin/env bash

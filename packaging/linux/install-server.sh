@@ -55,11 +55,11 @@ if [[ $# == 1 && ( $1 == --help || $1 == -h || $1 == --version ) ]]; then
   exec /opt/codex-server/current/CodexServer "$@"
 fi
 if [[ $EUID -ne 0 ]]; then
-  echo 'Run with sudo: sudo codex-server worker-token create' >&2
+  echo 'Run Server local administration and token commands with sudo.' >&2
   exit 1
 fi
-if [[ ${1:-} != worker-token ]]; then
-  echo 'Usage: sudo codex-server worker-token <create|revoke|revoke-worker> [arguments]' >&2
+if [[ ${1:-} != worker-token && ${1:-} != status && ${1:-} != diagnostics && ${1:-} != config ]]; then
+  echo 'Usage: sudo codex-server <status|diagnostics|config|worker-token> [arguments]' >&2
   exit 2
 fi
 # Let systemd parse its EnvironmentFile syntax; never source secrets as shell code.

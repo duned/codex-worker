@@ -22,6 +22,8 @@ Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-ser
 
 Run `codex-server --help` (or `/opt/codex-server/current/CodexServer --help`) for CLI usage, and `codex-server --version` for the version. Both exit without starting a web host, reading service secrets, or creating persistent state, and work without sudo while the service is running. Invalid commands fail without starting a second Server.
 
+Use `sudo codex-server status` and `sudo codex-server diagnostics` to inspect local control-plane persistence, or `sudo codex-server config show` / `sudo codex-server config validate` to inspect the effective configuration. These commands run as the Server service account with `/etc/codex-server/server.env`, use the configured data directory and database, and do not contact loopback or start another Server process. Status reports persistence readiness; it cannot observe the separate service process. Paths and credentials are redacted. See the [local administration guide](server-local-administration.md) for JSON output and exit codes.
+
 Create a single-use Worker registration token using the installed operator helper; it expires after 15 minutes and can be revoked before use:
 
 ```sh
