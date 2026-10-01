@@ -234,9 +234,10 @@ public static class Program
                 Console.WriteLine("Example: codex-worker config set worker.provisioning.enabled true");
                 break;
             case "config-set":
-                Console.WriteLine("Usage: codex-worker config set <setting> <value> [--config <path>]");
+                Console.WriteLine("Usage: codex-worker config set <setting> <value> [--config <path>] [--json]");
                 Console.WriteLine("Updates a bounded known Worker setting after validating the complete candidate configuration.");
                 Console.WriteLine("Action policy settings accept comma-separated keys; an empty value clears a list.");
+                Console.WriteLine("Options: --json  Write the versioned update result as JSON.");
                 Console.WriteLine("A service restart is required for the change to take effect.");
                 break;
             case "capabilities":

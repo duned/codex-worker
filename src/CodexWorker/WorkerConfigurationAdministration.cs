@@ -138,7 +138,7 @@ public static class WorkerConfigurationAdministration
         "Usage: codex-worker config <show|validate|set> [options]" + Environment.NewLine +
         "  show [--json]                         Inspect the installed global configuration." + Environment.NewLine +
         "  validate [--json]                     Validate global and project configuration." + Environment.NewLine +
-        "  set <setting> <value>                 Atomically update a supported Worker setting." + Environment.NewLine +
+        "  set <setting> <value> [--json]        Atomically update a supported Worker setting." + Environment.NewLine +
         "Use --config <path> to select a configuration file; otherwise the installed default is used." + Environment.NewLine +
         "Set supports worker.pollingSeconds, worker.preflightTimeoutSeconds, worker.maxParallelTasks, " +
         "worker.provisioning.enabled, worker.provisioning.allowNonPrivileged, worker.provisioning.allowCredentials, " +

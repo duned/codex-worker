@@ -33,6 +33,23 @@ public sealed class WorkerAdministrationCliTests
 
         Assert.Equal(ProcessExitCodes.Success, await cli.ShowCapabilitiesAsync(new WorkerCommandLine("capabilities", "worker.yml", ["refresh", "--json"])));
         Assert.Equal(("worker.yml", true), capabilities.Request);
+
+        Assert.Equal(ProcessExitCodes.Success, await cli.ShowCapabilitiesAsync(new WorkerCommandLine("capabilities", null, [])));
+        Assert.Equal((WorkerCommandLine.DefaultConfigurationPath, false), capabilities.Request);
+    }
+
+    [Fact]
+    public async Task StatusCollectionFailuresReturnFailureExitCode()
+    {
+        var status = new StubStatusService { Failure = new IOException("status unavailable") };
+        var stderr = new StringWriter();
+        var cli = new WorkerAdministrationCli(status, new StubConfigurationService(), new StubCapabilityService(),
+            new WorkerConsole(new StringWriter(), interactive: false, errorWriter: stderr));
+
+        var exitCode = await cli.ShowStatusAsync(new WorkerCommandLine("status", "worker.yml", []));
+
+        Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
+        Assert.Contains("Status collection failed", stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -69,9 +86,11 @@ public sealed class WorkerAdministrationCliTests
     private sealed class StubStatusService : IWorkerStatusService
     {
         public string? Path { get; private set; }
+        public Exception? Failure { get; init; }
         public Task<WorkerStatusDocument> GetStatusAsync(string configurationPath, CancellationToken cancellationToken = default)
         {
             Path = configurationPath;
+            if (Failure is { } failure) return Task.FromException<WorkerStatusDocument>(failure);
             return Task.FromResult(new WorkerStatusDocument(1, "test", "test", new("valid", configurationPath, 0, "standalone", "disabled", null),
                 new("standalone", "disabled", "not-applicable", null), new("not-running", "ready", "local"),
                 new(null, null, "local"), new(false, false, false, 0, 0), [], []));

@@ -52,9 +52,13 @@ public sealed class WorkerConfigurationAdministrationTests
 
         Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
         using var json = JsonDocument.Parse(output);
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
         Assert.False(json.RootElement.GetProperty("valid").GetBoolean());
         Assert.Contains(json.RootElement.GetProperty("diagnostics").EnumerateArray().Select(item => item.GetString()),
-            diagnostic => diagnostic is not null && diagnostic.Contains("worker.pollingSeconds", StringComparison.Ordinal));
+            message => message is not null && message.Contains("worker.pollingSeconds", StringComparison.Ordinal));
+        var diagnostic = Assert.Single(json.RootElement.GetProperty("diagnosticDetails").EnumerateArray());
+        Assert.Equal("configuration-invalid", diagnostic.GetProperty("code").GetString());
+        Assert.Contains("worker.pollingSeconds", diagnostic.GetProperty("message").GetString() ?? string.Empty, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -74,8 +78,10 @@ public sealed class WorkerConfigurationAdministrationTests
 
         Assert.Equal(ProcessExitCodes.Success, exitCode);
         using var json = JsonDocument.Parse(output);
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
         Assert.True(json.RootElement.GetProperty("valid").GetBoolean());
         Assert.Empty(json.RootElement.GetProperty("diagnostics").EnumerateArray());
+        Assert.Empty(json.RootElement.GetProperty("diagnosticDetails").EnumerateArray());
     }
 
     [Fact]
@@ -89,6 +95,23 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Equal(ProcessExitCodes.Success, exitCode);
         Assert.Equal(3, GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.MaxParallelTasks);
         Assert.Contains("Restart the Worker service", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SetJsonReturnsVersionedUpdateContractAndAppliesTheSetting()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("worker:\n  maxParallelTasks: 1\nprojects:\n  directory: ./projects\n");
+
+        var (exitCode, output) = await RunAsync("config", "set", "worker.maxParallelTasks", "3", "--json", "--config", fixture.ConfigPath);
+
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        using var json = JsonDocument.Parse(output);
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+        Assert.True(json.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.True(json.RootElement.GetProperty("restartRequired").GetBoolean());
+        Assert.Equal("worker.maxParallelTasks", json.RootElement.GetProperty("setting").GetString());
+        Assert.Equal(3, GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.MaxParallelTasks);
     }
 
     [Fact]

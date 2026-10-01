@@ -28,7 +28,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
         {
             output.InfrastructureFailure($"Status collection failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
-            return ProcessExitCodes.Success;
+            return ProcessExitCodes.StartupFailure;
         }
     }
 
@@ -64,10 +64,13 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
                     if (json)
                         _writer.WriteLine(JsonSerializer.Serialize(new
                         {
+                            contractVersion = validation.ContractVersion,
                             valid = validation.IsValid,
                             configurationPath = validation.ConfigurationPath,
-                            diagnostics = validation.Diagnostics.Select(diagnostic => diagnostic.Message)
-                        }, new JsonSerializerOptions { WriteIndented = true }));
+                            diagnostics = validation.Diagnostics.Select(diagnostic => diagnostic.Message),
+                            diagnosticDetails = validation.Diagnostics
+                        },
+                            new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
                     else if (validation.IsValid)
                         _writer.WriteLine($"Configuration is valid: {path}");
                     else
@@ -75,15 +78,21 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
                     return validation.IsValid ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
                 }
                 case "set":
-                    if (arguments.Count != 3)
-                        throw new ArgumentException("Usage: codex-worker config set <setting> <value> [--config <path>]");
+                    var outputJson = arguments.Count == 4 && arguments[3] == "--json";
+                    if (arguments.Count != (outputJson ? 4 : 3))
+                        throw new ArgumentException("Usage: codex-worker config set <setting> <value> [--config <path>] [--json]");
                     var update = configurationService.Set(path, arguments[1], arguments[2]);
+                    if (outputJson)
+                        _writer.WriteLine(JsonSerializer.Serialize(update,
+                            new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
                     if (!update.Succeeded)
                     {
-                        output.InfrastructureFailure($"Configuration update failed: {update.Diagnostic?.Message ?? "configuration update was rejected"}");
+                        if (!outputJson)
+                            output.InfrastructureFailure($"Configuration update failed: {update.Diagnostic?.Message ?? "configuration update was rejected"}");
                         return ProcessExitCodes.StartupFailure;
                     }
-                    _writer.WriteLine($"Updated {update.Setting} in {update.ConfigurationPath}. Restart the Worker service for the change to take effect.");
+                    if (!outputJson)
+                        _writer.WriteLine($"Updated {update.Setting} in {update.ConfigurationPath}. Restart the Worker service for the change to take effect.");
                     return ProcessExitCodes.Success;
                 default:
                     throw new ArgumentException($"Unknown config command '{operation}'. Use 'codex-worker config --help' for usage.");
@@ -114,7 +123,8 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         }
         try
         {
-            var inventory = await capabilityService.GetCapabilitiesAsync(commandLine.ConfigurationPath, action == "refresh", cancellationToken);
+            var configurationPath = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
+            var inventory = await capabilityService.GetCapabilitiesAsync(configurationPath, action == "refresh", cancellationToken);
             CapabilityInventoryReporter.Write(inventory, json, _writer);
             return ProcessExitCodes.Success;
         }

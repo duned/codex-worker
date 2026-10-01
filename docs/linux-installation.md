@@ -99,7 +99,7 @@ The installer pipes the token to the registration command over standard input. I
 
 Registration and an executable check run as the service account from a staged release before the runtime and systemd unit are activated. A failed clean installation stops/disables and removes the Worker unit and runtime, while retaining the system account, configuration, identity, and durable recovery credentials. It does not start an empty rollback directory. Retry the same installer command with `--register --start`, the same Server URL and identity, and a protected valid bootstrap token (create a fresh token if the previous one was rejected). Do not delete the staged identity or credentials: they allow recovery if the Server accepted registration but its response was lost. The installer reports retained paths and this retry procedure. Failed upgrades restore the previous binaries, unit, and YAML and only restart a previously active service.
 
-This installs only the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are not installer prerequisites. Existing limited Server provisioning handlers support selected dependencies under Worker-local policy; they do not install project-specific .NET SDKs, GitHub CLI or Codex CLI. General clean-node tooling/authentication provisioning belongs to v0.16.
+This installs the Worker process. Git, GitHub CLI (`gh`), Codex CLI and its service-account authentication, and outbound HTTPS access are needed for normal task execution. Tools such as Node.js, Docker, PostgreSQL, and project-specific .NET SDKs are not installer prerequisites. The local administration CLI can inspect and provision its catalogued tools under Worker-local policy; project-specific SDKs remain outside its supported operations.
 
 Installation and registration succeed on an **unprovisioned** node without .NET, GitHub CLI, Codex, Node.js or project runtimes. The released Worker is self-contained. Registration establishes node identity and Server authentication; capability detection is observational and unavailable execution tools do not fail registration. Managed startup keeps the service, local API, heartbeats, configuration synchronization and typed provisioning paths online while reporting `not-ready`. Missing Codex, missing authentication, probe errors and failed execution preflight withhold `agent-provider/codex` and prevent Issue assignments. Project Git/GitHub failures withhold scoped readiness. Provisioning refreshes observations and readiness without reinstalling or re-registering. No tools or authentication are installed merely to make bootstrap succeed. Standalone ownership retains its startup-failure behavior.
 
@@ -132,6 +132,46 @@ The installer is repeatable and preserves existing configuration and environment
 | Execution worktrees | `/var/lib/codex-worker/.codex-worker/worktrees` | codex-worker |
 
 Edit `/etc/codex-worker/worker.yml`: set `server.url`, retain the persistent `server.identityFile`, and add local project YAML files under `projects.directory`. Each project configuration must identify its checkout and credentials through the supported local authentication setup. Managed enrollment requires `projects.ownership: managed` and `server.enabled: true`; the installed starter configuration selects those values. Keep `/etc/codex-worker/worker.env` root-owned with mode `0640` and put any required service environment values there. Do not put credentials in YAML or persistent service configuration.
+
+### Local administration CLI
+
+The installed executable reads `/etc/codex-worker/worker.yml` by default. Administration commands accept `--config <path>` to inspect or operate on another Worker configuration. Help is available without contacting the Server:
+
+```sh
+/opt/codex-worker/CodexWorker --help
+/opt/codex-worker/CodexWorker status --help
+/opt/codex-worker/CodexWorker config --help
+/opt/codex-worker/CodexWorker capabilities --help
+/opt/codex-worker/CodexWorker provision --help
+```
+
+Inspect status, validate or update configuration, and list or refresh capability observations with:
+
+```sh
+/opt/codex-worker/CodexWorker status
+/opt/codex-worker/CodexWorker config show
+/opt/codex-worker/CodexWorker config validate
+/opt/codex-worker/CodexWorker capabilities list
+/opt/codex-worker/CodexWorker capabilities refresh --json
+
+# An explicit configuration path works on every administration command.
+/opt/codex-worker/CodexWorker status --config /srv/codex-worker/worker.yml --json
+/opt/codex-worker/CodexWorker config show --config /srv/codex-worker/worker.yml
+```
+
+`config set` updates only its documented settings and validates the complete YAML before replacing it. Provisioning mutations require both an enabled local policy, an allowlisted action key, and an explicit `--allow-elevation`; on Linux, a non-root invocation also needs non-interactive sudo permission for the product-owned package commands. For example, as an administrator:
+
+```sh
+sudo /opt/codex-worker/CodexWorker config set worker.provisioning.enabled true
+sudo /opt/codex-worker/CodexWorker config set worker.provisioning.allowedPrivilegedActions 'tool:git:install,tool:git:update,tool:git:uninstall'
+sudo /opt/codex-worker/CodexWorker config validate
+sudo /opt/codex-worker/CodexWorker provision status --json
+sudo /opt/codex-worker/CodexWorker provision install git --allow-elevation --json
+sudo /opt/codex-worker/CodexWorker provision upgrade git --allow-elevation
+sudo /opt/codex-worker/CodexWorker provision uninstall git --allow-elevation
+```
+
+Supported typed actions include capability detection, package install/upgrade/uninstall, Git configuration checks, GitHub CLI authentication setup and checks, and bounded SSH key/repository-access operations. Package operations are available on Debian-based Linux systems; this installer supports Ubuntu 24.04 x86_64. A denied operation reports the controlling Worker policy and a remediation. `--json` writes versioned status, configuration, capability-inventory, and provisioning contracts to standard output; progress for interactive authentication remains separate from the final JSON result. The commands do not expose shell text or caller-selected packages.
 
 Create a one-time registration token on the Server, then bootstrap the Worker before starting its service. Use `--token-stdin` and supply the token through standard input from a protected secret source; do not capture it in shell history, tracing, or logs. It stores a stable identity, Server URL, and separate durable Worker credential beside the identity file with owner-only permissions before contacting the Server. This local staging makes a lost response recoverable: retry with the same identity file, and the Worker will authenticate with its durable credential if the Server already committed registration. An invalid, expired, or reused bootstrap token leaves staged credentials in place but creates no Server Worker; create a fresh token and rerun the command with the same identity file. Server bootstrap commits token consumption, durable authentication, and Worker visibility atomically. After successful bootstrap, the Worker uses the durable credential, so `CODEX_SERVER_REGISTRATION_TOKEN` does not need to be set in `worker.env`.
 
