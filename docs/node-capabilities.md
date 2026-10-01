@@ -183,6 +183,20 @@ The CLI accepts catalog capability IDs and typed actions, never shell text or
 arbitrary executable/package paths. Installation and authentication remain separate
 operations. Server control transport is not required for a local operation.
 
+Local administration commands are adapters over Worker application services.
+Status, configuration show/validate/set, capability list/refresh, and typed
+provisioning expose versionable result records with bounded diagnostic codes and
+messages. The CLI owns argument parsing and human/JSON formatting; it does not
+maintain separate status, configuration, discovery, or provisioning behavior.
+Configuration validation/update diagnostics use fixed codes such as
+`configuration-invalid`, `configuration-not-found`,
+`configuration-setting-rejected`, and `configuration-update-failed`; provisioning
+reports reuse the shared typed status and diagnostic enums.
+Provisioning authorization is evaluated by the Worker from its node-local
+configuration before the shared `NodeProvisioningCommandExecutor` runs. These
+contracts provide a reusable boundary for a future secure Server transport
+adapter, but this design does not add that transport or remote command execution.
+
 Dashboard behavior checks run without external services:
 `node --test --test-isolation=none tests/dashboard/node-provisioning.test.cjs`.
 

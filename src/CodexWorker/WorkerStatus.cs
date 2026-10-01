@@ -89,30 +89,31 @@ public static class WorkerStatusReporter
                 provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics);
     }
 
-    public static void Write(WorkerStatusDocument status, bool json)
+    public static void Write(WorkerStatusDocument status, bool json, TextWriter? writer = null)
     {
+        writer ??= Console.Out;
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(status, new JsonSerializerOptions
+            writer.WriteLine(JsonSerializer.Serialize(status, new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             }));
             return;
         }
 
-        Console.WriteLine($"Worker {status.WorkerVersion} ({status.Platform})");
-        Console.WriteLine($"Configuration: {status.Configuration.Validity} ({status.Configuration.Path})");
+        writer.WriteLine($"Worker {status.WorkerVersion} ({status.Platform})");
+        writer.WriteLine($"Configuration: {status.Configuration.Validity} ({status.Configuration.Path})");
         if (status.Configuration.ProjectCount is int projectCount)
-            Console.WriteLine($"Projects: {projectCount}; ownership: {status.Configuration.Ownership}");
-        Console.WriteLine($"Server: {status.Registration.ServerConfiguration}; connectivity: {status.Registration.ServerConnectivity}; registration: {status.Registration.State}");
-        Console.WriteLine($"Lifecycle: {status.Operation.Lifecycle}; readiness: {status.Operation.Readiness} ({status.Operation.ObservationScope})");
-        Console.WriteLine($"Capacity: {status.Capacity.Active?.ToString() ?? "unknown"}/{status.Capacity.Maximum?.ToString() ?? "unknown"}");
-        Console.WriteLine($"Provisioning: {(status.Provisioning.Enabled ? "enabled" : "disabled")}; non-privileged: {status.Provisioning.AllowNonPrivileged}; credentials: {status.Provisioning.AllowCredentials}; allow rules: {status.Provisioning.AllowedPrivilegedActionCount}; deny rules: {status.Provisioning.DeniedActionCount}");
-        Console.WriteLine("Capabilities:");
+            writer.WriteLine($"Projects: {projectCount}; ownership: {status.Configuration.Ownership}");
+        writer.WriteLine($"Server: {status.Registration.ServerConfiguration}; connectivity: {status.Registration.ServerConnectivity}; registration: {status.Registration.State}");
+        writer.WriteLine($"Lifecycle: {status.Operation.Lifecycle}; readiness: {status.Operation.Readiness} ({status.Operation.ObservationScope})");
+        writer.WriteLine($"Capacity: {status.Capacity.Active?.ToString() ?? "unknown"}/{status.Capacity.Maximum?.ToString() ?? "unknown"}");
+        writer.WriteLine($"Provisioning: {(status.Provisioning.Enabled ? "enabled" : "disabled")}; non-privileged: {status.Provisioning.AllowNonPrivileged}; credentials: {status.Provisioning.AllowCredentials}; allow rules: {status.Provisioning.AllowedPrivilegedActionCount}; deny rules: {status.Provisioning.DeniedActionCount}");
+        writer.WriteLine("Capabilities:");
         foreach (var capability in status.Capabilities)
-            Console.WriteLine($"  {capability.Type}/{capability.Name}: {capability.State}{(capability.Version is null ? "" : $" ({capability.Version})")}");
+            writer.WriteLine($"  {capability.Type}/{capability.Name}: {capability.State}{(capability.Version is null ? "" : $" ({capability.Version})")}");
         foreach (var diagnostic in status.Diagnostics)
-            Console.WriteLine($"Diagnostic: {DiagnosticText(diagnostic)}");
+            writer.WriteLine($"Diagnostic: {DiagnosticText(diagnostic)}");
     }
 
     private static string DiagnosticText(string code) => code switch

@@ -47,34 +47,7 @@ public static class WorkerConfigurationAdministration
     {
         var configuration = GlobalWorkerConfiguration.Load(path);
         var fullPath = Path.GetFullPath(path);
-        var view = new
-        {
-            configurationPath = fullPath,
-            worker = new
-            {
-                configuration.Worker.PollingSeconds,
-                configuration.Worker.PreflightTimeoutSeconds,
-                configuration.Worker.MaxParallelTasks,
-                provisioning = new
-                {
-                    configuration.Worker.Provisioning.Enabled,
-                    configuration.Worker.Provisioning.AllowNonPrivileged,
-                    configuration.Worker.Provisioning.AllowCredentials,
-                    configuration.Worker.Provisioning.AllowedPrivilegedActions,
-                    configuration.Worker.Provisioning.DeniedActions
-                }
-            },
-            projects = new { configuration.Projects.Directory, configuration.Projects.Ownership },
-            telegram = new { configuration.Telegram.Enabled },
-            api = new { configuration.Api.Enabled, listenUrl = SafeUrl(configuration.Api.ListenUrl), configuration.Api.EventHistoryLimit },
-            server = new
-            {
-                configuration.Server.Enabled,
-                url = SafeUrl(configuration.Server.Url),
-                configuration.Server.HeartbeatIntervalSeconds,
-                identityFile = string.IsNullOrWhiteSpace(configuration.Server.IdentityFile) ? null : "[redacted]"
-            }
-        };
+        var view = CreateDocument(fullPath, configuration);
 
         if (json) return JsonSerializer.Serialize(view, JsonOptions);
         return $"Configuration: {fullPath}{Environment.NewLine}" +
@@ -97,6 +70,28 @@ public static class WorkerConfigurationAdministration
             $"server.heartbeatIntervalSeconds: {configuration.Server.HeartbeatIntervalSeconds}{Environment.NewLine}" +
             $"server.identityFile: {(string.IsNullOrWhiteSpace(configuration.Server.IdentityFile) ? "" : "[redacted]")}{Environment.NewLine}" +
             "Sensitive paths are redacted.";
+    }
+
+    internal static WorkerConfigurationDocument CreateDocument(string path, GlobalWorkerConfiguration configuration) => new(
+        1, Path.GetFullPath(path),
+        new WorkerConfigurationWorker(configuration.Worker.PollingSeconds, configuration.Worker.PreflightTimeoutSeconds,
+            configuration.Worker.MaxParallelTasks,
+            new WorkerConfigurationProvisioning(configuration.Worker.Provisioning.Enabled,
+                configuration.Worker.Provisioning.AllowNonPrivileged, configuration.Worker.Provisioning.AllowCredentials,
+                configuration.Worker.Provisioning.AllowedPrivilegedActions, configuration.Worker.Provisioning.DeniedActions)),
+        new WorkerConfigurationProjects(configuration.Projects.Directory, configuration.Projects.Ownership),
+        new WorkerConfigurationTelegram(configuration.Telegram.Enabled),
+        new WorkerConfigurationApi(configuration.Api.Enabled, SafeUrl(configuration.Api.ListenUrl), configuration.Api.EventHistoryLimit),
+        new WorkerConfigurationServer(configuration.Server.Enabled, SafeUrl(configuration.Server.Url),
+            configuration.Server.HeartbeatIntervalSeconds,
+            string.IsNullOrWhiteSpace(configuration.Server.IdentityFile) ? null : "[redacted]"));
+
+    internal static string SafeUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            return string.IsNullOrWhiteSpace(value) ? "" : "[redacted]";
+        var safeUri = new UriBuilder(uri) { UserName = "", Password = "", Query = "", Fragment = "" }.Uri;
+        return safeUri.GetLeftPart(UriPartial.Path);
     }
 
     public static void Set(string path, string setting, string value)
@@ -206,14 +201,6 @@ public static class WorkerConfigurationAdministration
         };
         if (mapping.Children.ContainsKey(finalKey)) mapping.Children[finalKey] = replacement;
         else mapping.Add(finalKey, replacement);
-    }
-
-    private static string SafeUrl(string value)
-    {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            return string.IsNullOrWhiteSpace(value) ? "" : "[redacted]";
-        var safeUri = new UriBuilder(uri) { UserName = "", Password = "", Query = "", Fragment = "" }.Uri;
-        return safeUri.GetLeftPart(UriPartial.Path);
     }
 
     private static void PreserveUnixMode(string source, string destination)

@@ -37,9 +37,18 @@ public static class Program
         }
         if (commandLine.Command == "register") return await RegisterAsync(args, output);
         if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output);
-        if (commandLine.Command == "status") return await ShowStatusAsync(commandLine, output);
-        if (commandLine.Command == "config") return AdministerConfiguration(commandLine, output);
-        if (commandLine.Command == "capabilities") return await ShowCapabilitiesAsync(commandLine, output);
+        if (commandLine.Command is "status" or "config" or "capabilities")
+        {
+            var administrationCli = new WorkerAdministrationCli(new WorkerStatusService(),
+                new WorkerConfigurationAdministrationService(),
+                new WorkerCapabilityAdministrationService(new CodexProvisioning.NodeCapabilityDiscovery()), output);
+            return commandLine.Command switch
+            {
+                "status" => await administrationCli.ShowStatusAsync(commandLine),
+                "config" => administrationCli.AdministerConfiguration(commandLine),
+                _ => await administrationCli.ShowCapabilitiesAsync(commandLine)
+            };
+        }
         if (args.Length > 0 && args[0].StartsWith("-", StringComparison.Ordinal) && args[0] != "--config")
         {
             output.InfrastructureFailure($"Unknown option '{args[0]}'. Use 'codex-worker --help' for usage.");
@@ -105,8 +114,9 @@ public static class Program
             {
                 if (!command.IsStatus)
                     Console.Error.WriteLine($"Running {command.Verb} for {command.CapabilityId}...");
-                var result = await ProvisioningCli.ExecuteAsync(command, configuration.Worker.Provisioning,
-                    new CodexProvisioning.NodeCapabilityDiscovery(), identity, stop.Token, (progress, _) =>
+                var service = new WorkerProvisioningAdministrationService(configuration.Worker.Provisioning,
+                    new CodexProvisioning.NodeCapabilityDiscovery(), identity);
+                var result = await ProvisioningCli.ExecuteAsync(command, service, stop.Token, (progress, _) =>
                     {
                         if (command.Json)
                             Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(progress));
@@ -180,140 +190,6 @@ public static class Program
         {
             output.InfrastructureFailure($"Worker registration failed: {FailureDiagnosticRedactor.Redact(ex.Message, [token ?? string.Empty])}");
             if (ex is ArgumentException) PrintHelp("register");
-            return ProcessExitCodes.StartupFailure;
-        }
-    }
-
-    private static int ShowConfiguration(WorkerCommandLine commandLine, WorkerConsole output)
-    {
-        if (commandLine.Arguments.Count != 0)
-        {
-            output.InfrastructureFailure($"Unexpected {commandLine.Command} arguments. Use 'codex-worker {commandLine.Command} --help' for usage.");
-            return ProcessExitCodes.StartupFailure;
-        }
-        var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
-        try
-        {
-            var configuration = GlobalWorkerConfiguration.Load(path);
-            var projects = ProjectConfigurationDiscovery.LoadForWorker(configuration);
-            Console.WriteLine($"Configuration: {Path.GetFullPath(path)}");
-            Console.WriteLine($"Ownership: {configuration.Projects.Ownership}");
-            Console.WriteLine($"Projects: {projects.Count}");
-            Console.WriteLine($"Server: {(configuration.Server.Enabled ? "enabled" : "disabled")}");
-            return ProcessExitCodes.Success;
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
-        {
-            output.InfrastructureFailure($"Configuration error: {FailureDiagnosticRedactor.Redact(ex.Message)}");
-            return ProcessExitCodes.StartupFailure;
-        }
-    }
-
-    private static async Task<int> ShowStatusAsync(WorkerCommandLine commandLine, WorkerConsole output)
-    {
-        var json = commandLine.Arguments.Count == 1 && commandLine.Arguments[0] == "--json";
-        if (commandLine.Arguments.Count != (json ? 1 : 0))
-        {
-            output.InfrastructureFailure("Unexpected status arguments. Use 'codex-worker status --help' for usage.");
-            return ProcessExitCodes.StartupFailure;
-        }
-        var path = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
-        try
-        {
-            var status = await WorkerStatusReporter.CreateAsync(path);
-            WorkerStatusReporter.Write(status, json);
-            return ProcessExitCodes.Success;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
-        {
-            output.InfrastructureFailure($"Status collection failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
-            return ProcessExitCodes.Success;
-        }
-    }
-
-    private static int AdministerConfiguration(WorkerCommandLine commandLine, WorkerConsole output)
-    {
-        var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
-        var arguments = commandLine.Arguments;
-        var operation = arguments.Count == 0 ? "show" : arguments[0];
-        try
-        {
-            switch (operation)
-            {
-                case "show":
-                {
-                    var json = arguments.Count == 2 && arguments[1] == "--json";
-                    if (arguments.Count > 1 && !json) throw new ArgumentException("Usage: codex-worker config show [--json] [--config <path>]");
-                    Console.WriteLine(WorkerConfigurationAdministration.Show(path, json));
-                    return ProcessExitCodes.Success;
-                }
-                case "validate":
-                {
-                    var json = arguments.Count == 2 && arguments[1] == "--json";
-                    if (arguments.Count > 1 && !json) throw new ArgumentException("Usage: codex-worker config validate [--json] [--config <path>]");
-                    var diagnostics = WorkerConfigurationAdministration.Validate(path);
-                    if (json)
-                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
-                        {
-                            valid = diagnostics.Count == 0,
-                            configurationPath = path,
-                            diagnostics
-                        }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-                    else if (diagnostics.Count == 0)
-                        Console.WriteLine($"Configuration is valid: {path}");
-                    else
-                    {
-                        output.InfrastructureFailure("Configuration validation failed:\n- " + string.Join("\n- ", diagnostics));
-                    }
-                    return diagnostics.Count == 0 ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
-                }
-                case "set":
-                    if (arguments.Count != 3)
-                        throw new ArgumentException("Usage: codex-worker config set <setting> <value> [--config <path>]");
-                    WorkerConfigurationAdministration.Set(path, arguments[1], arguments[2]);
-                    Console.WriteLine($"Updated {arguments[1]} in {path}. Restart the Worker service for the change to take effect.");
-                    return ProcessExitCodes.Success;
-                default:
-                    throw new ArgumentException($"Unknown config command '{operation}'. Use 'codex-worker config --help' for usage.");
-            }
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
-        {
-            output.InfrastructureFailure($"Configuration administration failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
-            return ProcessExitCodes.StartupFailure;
-        }
-    }
-
-    private static async Task<int> ShowCapabilitiesAsync(WorkerCommandLine commandLine, WorkerConsole output)
-    {
-        var arguments = commandLine.Arguments;
-        var hasSubcommand = arguments.Count > 0 && (arguments[0] is "list" or "refresh");
-        var action = hasSubcommand ? arguments[0] : "list";
-        var optionStart = hasSubcommand ? 1 : 0;
-        var json = false;
-        for (var index = optionStart; index < arguments.Count; index++)
-        {
-            if (arguments[index] == "--json" && !json) json = true;
-            else
-            {
-                output.InfrastructureFailure("Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
-                return ProcessExitCodes.StartupFailure;
-            }
-        }
-        try
-        {
-            if (commandLine.ConfigurationPath is not null)
-                _ = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath);
-            var inventory = await CapabilityInventoryReporter.CreateAsync(new CodexProvisioning.NodeCapabilityDiscovery(),
-                refresh: action == "refresh");
-            CapabilityInventoryReporter.Write(inventory, json);
-            return ProcessExitCodes.Success;
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-        {
-            output.InfrastructureFailure($"Capability discovery failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
             return ProcessExitCodes.StartupFailure;
         }
     }

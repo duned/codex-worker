@@ -37,12 +37,13 @@ public static class CapabilityInventoryReporter
         return new(1, items);
     }
 
-    public static void Write(CapabilityInventoryContract inventory, bool json)
+    public static void Write(CapabilityInventoryContract inventory, bool json, TextWriter? writer = null)
     {
         ArgumentNullException.ThrowIfNull(inventory);
+        writer ??= Console.Out;
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(inventory, JsonOptions));
+            writer.WriteLine(JsonSerializer.Serialize(inventory, JsonOptions));
             return;
         }
 
@@ -53,7 +54,7 @@ public static class CapabilityInventoryReporter
             var configuration = capability.Configuration is null ? null : $"config={capability.Configuration.Value.ToString().ToLowerInvariant()}";
             var actions = capability.AvailableActions.Count == 0 ? "none" : string.Join(",", capability.AvailableActions);
             var dimensions = new[] { authentication, configuration }.Where(value => value is not null);
-            Console.WriteLine($"{capability.Id}: installation={capability.Installation.ToString().ToLowerInvariant()} {version} " +
+            writer.WriteLine($"{capability.Id}: installation={capability.Installation.ToString().ToLowerInvariant()} {version} " +
                 $"update={capability.Update.ToString().ToLowerInvariant()} {string.Join(" ", dimensions)} " +
                 $"health={capability.Health.ToString().ToLowerInvariant()} diagnostic={capability.DiagnosticCode ?? "none"} actions={actions}");
         }

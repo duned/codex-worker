@@ -37,7 +37,7 @@ public sealed class ProvisioningCliTests
         Assert.Contains("Unknown capability 'made-up-tool'", unknown.Message);
 
         var command = ProvisioningCli.Parse(["prepare-authentication", "codex-cli"]);
-        var result = await ProvisioningCli.ExecuteAsync(command, new ProvisioningPolicy(), Discovery(), "server", CancellationToken.None);
+        var result = await ExecuteCliAsync(command, new ProvisioningPolicy(), Discovery());
         Assert.Equal("failed", result.Status);
         Assert.Equal(ProvisioningDiagnostic.Unsupported, result.Diagnostic);
         Assert.Contains("not supported", result.Reason ?? string.Empty);
@@ -74,7 +74,7 @@ public sealed class ProvisioningCliTests
             return Task.FromResult((0, "2.0"));
         });
         var command = ProvisioningCli.Parse(["install", "git", "--allow-elevation"]);
-        var result = await ProvisioningCli.ExecuteAsync(command, new ProvisioningPolicy(), discovery, "server", CancellationToken.None);
+        var result = await ExecuteCliAsync(command, new ProvisioningPolicy(), discovery);
 
         Assert.Equal("failed", result.Status);
         Assert.Equal(ProvisioningDiagnostic.Denied, result.Diagnostic);
@@ -101,7 +101,7 @@ public sealed class ProvisioningCliTests
     public async Task StatusRefreshesCapabilitiesAndShowsPolicyForEachSupportedAction()
     {
         var command = ProvisioningCli.Parse(["status"]);
-        var result = await ProvisioningCli.ExecuteAsync(command, new ProvisioningPolicy(), Discovery(), "server", CancellationToken.None);
+        var result = await ExecuteCliAsync(command, new ProvisioningPolicy(), Discovery());
 
         Assert.Equal("succeeded", result.Status);
         var capabilities = result.Capabilities ?? throw new InvalidOperationException("Status result did not include capabilities.");
@@ -122,7 +122,7 @@ public sealed class ProvisioningCliTests
             AllowCredentials = true,
             AllowedPrivilegedActions = ["tool:git:install", "tool:git:update", "tool:git:uninstall"]
         };
-        var result = await ProvisioningCli.ExecuteAsync(ProvisioningCli.Parse(["status"]), policy, Discovery(), "server", CancellationToken.None);
+        var result = await ExecuteCliAsync(ProvisioningCli.Parse(["status"]), policy, Discovery());
         var capabilities = result.Capabilities ?? throw new InvalidOperationException("Status result did not include capabilities.");
         var git = Assert.Single(capabilities, item => item.Id == "git");
         var packageOperationsSupported = NodeProvisioningCommandExecutor.SupportsPackageProvisioning();
@@ -133,4 +133,8 @@ public sealed class ProvisioningCliTests
     }
 
     private static NodeCapabilityDiscovery Discovery() => new((_, _, _) => Task.FromResult((0, "2.0")));
+
+    private static Task<WorkerProvisioningResult> ExecuteCliAsync(ProvisioningCliCommand command, ProvisioningPolicy policy,
+        NodeCapabilityDiscovery discovery) => ProvisioningCli.ExecuteAsync(command,
+        new WorkerProvisioningAdministrationService(policy, discovery, "server"), CancellationToken.None);
 }
