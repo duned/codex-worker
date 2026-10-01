@@ -160,7 +160,7 @@ public sealed class WorkerHost
                     runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {initialPlan.Id} started.");
                     var result = await CreateProvisioningExecutor(registration, runtimes, ReportProvisionedCapabilitiesAsync).ExecuteAsync(initialPlan,
                         initialPlan.WorkerId,
-                        (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, initialPlan.Id, report, token), ct);
+                        (report, token) => ReportProvisioningStateAsync(registration, initialPlan.Id, report, token), ct);
                     runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {initialPlan.Id} finished.");
                     if (result.State != "Completed")
                         throw new WorkerInfrastructureException($"Provisioning plan {initialPlan.Id} failed at action '{result.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
@@ -358,7 +358,7 @@ public sealed class WorkerHost
                     {
                         runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {provisioningPlan.Id} started.");
                         var provisioningResult = await CreateProvisioningExecutor(registration, runtimes, ReportProvisionedCapabilitiesAsync).ExecuteAsync(provisioningPlan, provisioningPlan.WorkerId,
-                            (report, token) => registration.ReportProvisioningPlanAsync(_global.Server, provisioningPlan.Id, report, token), executionToken);
+                            (report, token) => ReportProvisioningStateAsync(registration, provisioningPlan.Id, report, token), executionToken);
                         runtimeReadModel.Events.Publish("provisioning.finished", $"Provisioning plan {provisioningPlan.Id} finished.");
                         if (provisioningResult.State != "Completed")
                             throw new WorkerInfrastructureException($"Provisioning plan {provisioningPlan.Id} failed at action '{provisioningResult.CurrentActionId ?? "unknown"}'; the Worker will stop before claiming execution work.");
@@ -745,6 +745,14 @@ public sealed class WorkerHost
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken), codex, github, repositoryGate);
     }
 
+    private async Task ReportProvisioningStateAsync(WorkerRegistrationClient registration, string planId,
+        ProvisioningWorkerReportContract report, CancellationToken token)
+    {
+        if (report.State is "Completed" or "Failed")
+            await WorkerRegistrationClient.ProvisioningDiscovery.GetAsync(refresh: true, cancellationToken: token);
+        await registration.ReportProvisioningPlanAsync(_global.Server, planId, report, token);
+    }
+
     private ProvisioningPlanExecutor CreateProvisioningExecutor(WorkerRegistrationClient registration,
         IReadOnlyList<ProjectRuntime> runtimes,
         Func<IReadOnlyList<WorkerCapabilityContract>, CancellationToken, Task> capabilitiesChanged) => new(WorkerCapabilityDiscovery.Shared,
@@ -753,7 +761,11 @@ public sealed class WorkerHost
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.GitHub,
             repository => runtimes.FirstOrDefault(project => project.Configuration.Project.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase))?.Git,
             (credentialId, token) => registration.RetrieveCredentialAsync(_global.Server, credentialId, token)),
-        capabilitiesChanged: capabilitiesChanged);
+        capabilitiesChanged: async (capabilities, token) =>
+        {
+            await WorkerRegistrationClient.ProvisioningDiscovery.GetAsync(refresh: true, cancellationToken: token);
+            await capabilitiesChanged(capabilities, token);
+        });
 
     private sealed record ProjectRuntime(string Path, WorkerConfiguration Configuration, GitRepository Git, Worker Worker,
         CodexExecutor Codex, GitHubClient GitHub, SemaphoreSlim RepositoryGate);

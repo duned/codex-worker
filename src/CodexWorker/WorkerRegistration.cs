@@ -1,5 +1,6 @@
 namespace CodexWorker;
 
+using CodexProvisioning;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
@@ -14,7 +15,8 @@ public sealed record WorkerRegistrationContract(
     [property: JsonPropertyName("workerVersion")] string WorkerVersion,
     [property: JsonPropertyName("platform")] string Platform,
     [property: JsonPropertyName("capacity")] int Capacity,
-    [property: JsonPropertyName("capabilities")] IReadOnlyList<WorkerCapabilityContract> Capabilities);
+    [property: JsonPropertyName("capabilities")] IReadOnlyList<WorkerCapabilityContract> Capabilities,
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 
 /// <summary>A runtime, tool, or service currently available to this worker.</summary>
 public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null, string? Scope = null);
@@ -37,7 +39,8 @@ public static class WorkerAgentCapabilities
 
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
-    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null,
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities);
@@ -150,9 +153,10 @@ public static class WorkerAuthentication
     }
 }
 
-public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
+public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null)
 {
     private static readonly WorkerCapabilityDiscovery CapabilityDiscovery = WorkerCapabilityDiscovery.Shared;
+    internal static readonly NodeCapabilityDiscovery ProvisioningDiscovery = new();
 
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
     {
@@ -170,7 +174,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-                capabilities));
+                capabilities, await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken)));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -206,7 +210,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
             var registration = new WorkerRegistrationContract(2, identity,
                 Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
-                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities);
+                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities, await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken));
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), "api/v1/workers/register"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
             request.Headers.Add("X-Codex-Worker-Token", workerToken);
@@ -318,7 +322,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
                 lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
-                configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion));
+                configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
+                await (provisioningDiscovery ?? ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken)));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");

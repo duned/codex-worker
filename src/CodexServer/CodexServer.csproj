@@ -11,4 +11,7 @@
   <ItemGroup>
     <EmbeddedResource Include="dashboard.html" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Shared/CodexProvisioning.csproj" />
+  </ItemGroup>
 </Project>

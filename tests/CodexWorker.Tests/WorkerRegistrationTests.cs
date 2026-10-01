@@ -81,7 +81,7 @@ public sealed class WorkerRegistrationTests
         {
             var handler = new CaptureHandler();
             using var client = new HttpClient(handler);
-            var registration = new WorkerRegistrationClient(client);
+            var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
             var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => registration.RegisterAsync(
                 new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
                 2, CancellationToken.None));
@@ -108,7 +108,7 @@ public sealed class WorkerRegistrationTests
         var handler = new CaptureHandler(HttpStatusCode.BadRequest,
             "{\"error\":\"Invalid worker contract; bearer registration-secret-value\"}");
         using var client = new HttpClient(handler);
-        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(
             new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
             1, token, CancellationToken.None));
 
@@ -128,7 +128,7 @@ public sealed class WorkerRegistrationTests
             JsonSerializer.Serialize(new { error = $"Capacity must be 1..8; credential={token}; password=hidden; https://user:hidden@host" }));
         using var client = new HttpClient(handler);
 
-        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => new WorkerRegistrationClient(client).HeartbeatAsync(
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).HeartbeatAsync(
             settings, 9, 0, [], "idle", CancellationToken.None, []));
 
         Assert.Contains("HTTP 400", failure.Message);
@@ -146,7 +146,7 @@ public sealed class WorkerRegistrationTests
     {
         using var temporary = new TemporaryDirectory();
         using var client = new HttpClient(new CaptureHandler(HttpStatusCode.BadRequest, body));
-        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(
             new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
             1, "bootstrap-secret", CancellationToken.None));
 
@@ -161,7 +161,7 @@ public sealed class WorkerRegistrationTests
         using var temporary = new TemporaryDirectory();
         using var client = new HttpClient(new CaptureHandler(HttpStatusCode.BadRequest,
             JsonSerializer.Serialize(new { error = "private server payload", padding = new string('x', 16 * 1024) })));
-        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).BootstrapAsync(
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(
             new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
             1, "bootstrap-secret", CancellationToken.None));
 
@@ -185,7 +185,7 @@ public sealed class WorkerRegistrationTests
                 Url = "http://127.0.0.1:5090",
                 IdentityFile = Path.Combine(temporary.Path, "state", "worker-id")
             };
-            var registration = new WorkerRegistrationClient(client);
+            var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
 
             await registration.RegisterAsync(settings, 1, CancellationToken.None);
             var firstIdentity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
@@ -209,7 +209,7 @@ public sealed class WorkerRegistrationTests
         using var client = new HttpClient(handler);
         var identityPath = Path.Combine(temporary.Path, "worker-id");
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
-        await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "one-time-bootstrap-secret", CancellationToken.None);
+        await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, "one-time-bootstrap-secret", CancellationToken.None);
 
         var durableToken = WorkerAuthentication.GetToken(settings);
         Assert.NotEqual("one-time-bootstrap-secret", durableToken);
@@ -234,7 +234,7 @@ public sealed class WorkerRegistrationTests
             using var client = new HttpClient(handler);
             var identityPath = Path.Combine(temporary.Path, "worker-id");
             var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
-            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "bootstrap-test-token", CancellationToken.None);
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, "bootstrap-test-token", CancellationToken.None);
             var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath);
             var token = await File.ReadAllTextAsync(identityPath + ".token");
             var url = await File.ReadAllTextAsync(identityPath + ".server");
@@ -266,7 +266,7 @@ public sealed class WorkerRegistrationTests
             IdentityFile = Path.Combine(temporary.Path, "worker-id")
         };
 
-        await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "already-used-bootstrap-token", CancellationToken.None);
+        await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, "already-used-bootstrap-token", CancellationToken.None);
 
         Assert.Equal(2, handler.RequestCount);
         Assert.Equal("PUT", handler.LastMethod);
@@ -285,7 +285,7 @@ public sealed class WorkerRegistrationTests
             var handler = new CaptureHandler(HttpStatusCode.OK, "{\"hasWork\":false,\"assignment\":null}");
             using var client = new HttpClient(handler);
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
-            var registration = new WorkerRegistrationClient(client);
+            var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
             var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile!);
             var noCapacity = await registration.RequestAssignmentAsync(settings, true, 0,
                 new Dictionary<string, int> { ["compiler"] = 1 }, CancellationToken.None);
@@ -319,7 +319,7 @@ public sealed class WorkerRegistrationTests
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090" };
             var lease = new ServerExecutionLeaseContract("execution-123", "worker-456", 7,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(15), "Active", 60);
-            var renewed = await new WorkerRegistrationClient(client).RenewExecutionLeaseAsync(settings, lease, CancellationToken.None);
+            var renewed = await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).RenewExecutionLeaseAsync(settings, lease, CancellationToken.None);
             Assert.Null(renewed);
             Assert.Equal("POST", handler.Method);
             Assert.Equal("http://127.0.0.1:5090/api/v1/workers/worker-456/executions/execution-123/lease/renew", handler.Uri);
@@ -333,7 +333,7 @@ public sealed class WorkerRegistrationTests
             var successHandler = new CaptureHandler(HttpStatusCode.OK,
                 JsonSerializer.Serialize(lease with { ExpiresAtUtc = renewedExpiry }));
             using var successClient = new HttpClient(successHandler);
-            Assert.Equal(renewedExpiry, await new WorkerRegistrationClient(successClient)
+            Assert.Equal(renewedExpiry, await new WorkerRegistrationClient(successClient, TestCapabilityDiscovery.Create())
                 .RenewExecutionLeaseAsync(settings, lease, CancellationToken.None));
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
@@ -354,7 +354,7 @@ public sealed class WorkerRegistrationTests
             var requestHandler = new CaptureHandler(HttpStatusCode.OK, JsonSerializer.Serialize(plan));
             using var requestClient = new HttpClient(requestHandler);
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
-            var registration = new WorkerRegistrationClient(requestClient);
+            var registration = new WorkerRegistrationClient(requestClient, TestCapabilityDiscovery.Create());
             var received = await registration.RequestProvisioningPlanAsync(settings, CancellationToken.None);
             Assert.Equal(planId, received!.Id);
             Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/request", requestHandler.Uri);
@@ -362,7 +362,7 @@ public sealed class WorkerRegistrationTests
 
             var reportHandler = new CaptureHandler(HttpStatusCode.OK, "{}");
             using var reportClient = new HttpClient(reportHandler);
-            await new WorkerRegistrationClient(reportClient).ReportProvisioningPlanAsync(settings, planId,
+            await new WorkerRegistrationClient(reportClient, TestCapabilityDiscovery.Create()).ReportProvisioningPlanAsync(settings, planId,
                 new ProvisioningWorkerReportContract(workerId, "Running", "git"), CancellationToken.None);
             Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/{planId}/report", reportHandler.Uri);
             using var report = JsonDocument.Parse(reportHandler.Body!);

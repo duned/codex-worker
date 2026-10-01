@@ -1,0 +1,178 @@
+namespace CodexProvisioning;
+
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
+
+[JsonConverter(typeof(JsonStringEnumConverter<InstallationState>))]
+public enum InstallationState { Unknown, Missing, Installed }
+[JsonConverter(typeof(JsonStringEnumConverter<UpdateState>))]
+public enum UpdateState { Unknown, Current, Available }
+[JsonConverter(typeof(JsonStringEnumConverter<RequirementState>))]
+public enum RequirementState { Unknown, Required, Satisfied }
+[JsonConverter(typeof(JsonStringEnumConverter<CapabilityHealth>))]
+public enum CapabilityHealth { Healthy, Degraded, Error }
+[JsonConverter(typeof(JsonStringEnumConverter<CapabilityOperationState>))]
+public enum CapabilityOperationState { Idle, Running, Failed }
+
+public sealed record CapabilityDefinition(string Id, string DisplayName, string Executable,
+    bool RequiresAuthentication, bool RequiresConfiguration, IReadOnlyList<string> SupportedActions);
+public sealed record CapabilityOperation(CapabilityOperationState State, string? Action = null, string? DiagnosticCode = null);
+/// <summary>Machine observations only. Diagnostics are codes, never process output or credential material.</summary>
+public sealed record CapabilityState(string Id, InstallationState Installation, string? DetectedVersion,
+    UpdateState Update, RequirementState? Authentication, RequirementState? Configuration,
+    CapabilityHealth Health, CapabilityOperation Operation, DateTimeOffset? DetectedAtUtc,
+    string? DiagnosticCode = null);
+public sealed record NodeCapability(CapabilityDefinition Definition, CapabilityState State, IReadOnlyList<string> AvailableActions);
+public sealed record ProvisionableNode(string Id, string Kind, string DisplayName, string Connectivity,
+    string ExecutionReadiness, string ProvisioningReadiness, bool ObservationsStale, IReadOnlyList<NodeCapability> Capabilities, string Health = "unknown");
+
+public static class CapabilityCatalog
+{
+    public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
+    [
+        new("git", "Git", "git", false, true, ["refresh"]),
+        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh"]),
+        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh"])
+    ]);
+
+    public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,
+        InstallationState.Unknown, null, UpdateState.Unknown,
+        definition.RequiresAuthentication ? RequirementState.Unknown : null,
+        definition.RequiresConfiguration ? RequirementState.Unknown : null,
+        CapabilityHealth.Degraded, new(CapabilityOperationState.Idle), null, "not-detected");
+
+    // Only registered executors may advertise actions; metadata does not imply an installer exists.
+    public static NodeCapability Describe(CapabilityDefinition definition, CapabilityState state, bool connected) =>
+        new(definition, state, connected && state.Operation.State != CapabilityOperationState.Running
+            ? definition.SupportedActions : []);
+
+    public static bool Ready(IEnumerable<CapabilityState> states) => states.All(state =>
+        state.Installation == InstallationState.Installed && state.Health == CapabilityHealth.Healthy &&
+        state.Authentication is null or RequirementState.Satisfied &&
+        state.Configuration is null or RequirementState.Satisfied && state.Operation.State == CapabilityOperationState.Idle);
+
+    public static bool ValidInventory(IReadOnlyList<CapabilityState>? inventory)
+    {
+        if (inventory is null) return true; // Older managed clients do not report observations.
+        if (inventory.Count > 32 || inventory.Any(state => state is null)) return false;
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        return inventory.All(state => ids.Add(state.Id) && Definitions.Any(definition => definition.Id == state.Id) &&
+            Enum.IsDefined(state.Installation) && Enum.IsDefined(state.Update) && Enum.IsDefined(state.Health) &&
+            (state.Authentication is null || Enum.IsDefined(state.Authentication.Value)) &&
+            (state.Configuration is null || Enum.IsDefined(state.Configuration.Value)) &&
+            state.Operation is not null && Enum.IsDefined(state.Operation.State) &&
+            (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
+            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" &&
+            state.Operation.DiagnosticCode is null or "operation-failed" &&
+            state.Operation.Action is null or "refresh" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision");
+    }
+}
+
+/// <summary>Bounded local detection, cached in memory. No release-service lookup or persisted machine facts.</summary>
+public sealed class NodeCapabilityDiscovery
+{
+    private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>> _run;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private IReadOnlyList<CapabilityState>? _cached;
+    private DateTimeOffset _detected;
+    private int _detecting;
+    public NodeCapabilityDiscovery(Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? run = null) =>
+        _run = run ?? RunAsync;
+
+    public async Task<IReadOnlyList<CapabilityState>> GetAsync(bool refresh = false, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!refresh && Volatile.Read(ref _detecting) != 0)
+            return (Volatile.Read(ref _cached) ?? CapabilityCatalog.Definitions.Select(CapabilityCatalog.Unknown).ToArray())
+                .Select(state => state with { Operation = new(CapabilityOperationState.Running, "refresh") }).ToArray();
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!refresh && _cached is not null && DateTimeOffset.UtcNow - _detected < TimeSpan.FromMinutes(5)) return _cached;
+            Volatile.Write(ref _detecting, 1);
+            var states = new List<CapabilityState>();
+            foreach (var definition in CapabilityCatalog.Definitions)
+            {
+                var state = CapabilityCatalog.Unknown(definition);
+                try
+                {
+                    var version = await _run(definition.Executable, ["--version"], cancellationToken);
+                    var match = Regex.Match(version.Output, @"(?<![\w])v?(\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?)(?![\w])");
+                    state = state with { Installation = version.ExitCode == 0 ? InstallationState.Installed : InstallationState.Unknown,
+                        DetectedVersion = version.ExitCode == 0 && match.Success ? match.Groups[1].Value : null,
+                        Health = version.ExitCode == 0 ? CapabilityHealth.Healthy : CapabilityHealth.Error,
+                        DiagnosticCode = version.ExitCode == 0 ? null : "probe-failed" };
+                    if (version.ExitCode == 0 && definition.RequiresConfiguration)
+                    {
+                        var name = await _run(definition.Executable, ["config", "--get", "user.name"], cancellationToken);
+                        var email = await _run(definition.Executable, ["config", "--get", "user.email"], cancellationToken);
+                        state = state with { Configuration = name.ExitCode == 0 && email.ExitCode == 0 &&
+                            !string.IsNullOrWhiteSpace(name.Output) && !string.IsNullOrWhiteSpace(email.Output)
+                            ? RequirementState.Satisfied : RequirementState.Required };
+                    }
+                    if (version.ExitCode == 0 && definition.RequiresAuthentication)
+                    {
+                        var auth = await _run(definition.Executable, definition.Id == "github-cli" ? ["auth", "status"] : ["login", "status"], cancellationToken);
+                        state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
+                    }
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    state = state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
+                }
+                catch (FileNotFoundException)
+                {
+                    state = state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
+                }
+                catch (Exception ex) when (ex is TimeoutException or InvalidOperationException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+                {
+                    state = state with { Health = CapabilityHealth.Error, DiagnosticCode = "probe-failed" };
+                }
+                states.Add(state with { DetectedAtUtc = DateTimeOffset.UtcNow });
+            }
+            _detected = DateTimeOffset.UtcNow;
+            return _cached = states;
+        }
+        finally
+        {
+            Volatile.Write(ref _detecting, 0);
+            _gate.Release();
+        }
+    }
+
+    private static async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        using var process = new Process { StartInfo = new ProcessStartInfo(executable)
+            { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
+        foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
+        process.Start();
+        var stdout = DrainAsync(process.StandardOutput, timeout.Token);
+        var stderr = DrainAsync(process.StandardError, timeout.Token);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            await Task.WhenAll(stdout, stderr);
+            return (process.ExitCode, await stdout);
+        }
+        finally
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            try { await Task.WhenAll(stdout, stderr); } catch (OperationCanceledException) { }
+        }
+    }
+
+    private static async Task<string> DrainAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var text = new StringBuilder();
+        var buffer = new char[1024];
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+            if (text.Length < 1024) text.Append(buffer, 0, Math.Min(count, 1024 - text.Length));
+        return text.ToString();
+    }
+}

@@ -1,5 +1,6 @@
 namespace CodexServer;
 
+using CodexProvisioning;
 using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -38,7 +39,8 @@ public static class ServerApplication
             ContentRootPath = AppContext.BaseDirectory
         });
 
-    public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default)
+    public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default,
+        NodeCapabilityDiscovery? capabilityDiscovery = null)
     {
         var builder = CreateBuilder(args);
         var configuration = new ServerConfiguration();
@@ -46,6 +48,7 @@ public static class ServerApplication
         configuration.Validate();
         builder.WebHost.UseUrls(configuration.ListenUrl);
         builder.Services.AddSingleton(configuration);
+        builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
         builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
@@ -79,6 +82,28 @@ public static class ServerApplication
             {
                 return Results.Json(new { status = "not-ready", persistenceAvailable = false, controlPlaneInitialized = false }, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
+        });
+        app.MapGet("/api/v1/nodes", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            NodeCapabilityDiscovery discovery, IServerHealthService health) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var nodes = new List<ProvisionableNode>();
+            var local = await discovery.GetAsync(cancellationToken: context.RequestAborted);
+            var serverHealth = await health.GetHealthAsync(context.RequestAborted);
+            nodes.Add(new("server", "server", "Codex Server", "connected",
+                "not-applicable", local.Any(state => state.Operation.State == CapabilityOperationState.Running) ? "busy" : "ready", false,
+                CapabilityCatalog.Definitions.Select(definition => CapabilityCatalog.Describe(definition,
+                    local.Single(state => state.Id == definition.Id), true)).ToArray(), serverHealth.Status));
+            var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
+            foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
+                nodes.Add(NodeProvisioning.Describe(worker, plans));
+            return Results.Ok(nodes);
+        });
+        app.MapPost("/api/v1/nodes/server/capabilities/refresh", async (HttpContext context, ServerConfiguration settings,
+            NodeCapabilityDiscovery discovery) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Ok(await discovery.GetAsync(refresh: true, cancellationToken: context.RequestAborted));
         });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
@@ -464,7 +489,7 @@ public static class ServerApplication
         request.DisplayName.Length <= 200 && !string.IsNullOrWhiteSpace(request.WorkerVersion) && request.WorkerVersion.Length <= 100 &&
         !string.IsNullOrWhiteSpace(request.Platform) && request.Platform.Length <= 300 && request.Capacity is >= 1 and <= 8 &&
         request.Capabilities is not null && request.Capabilities.Count <= 32 &&
-        request.Capabilities.All(ValidCapability);
+        request.Capabilities.All(ValidCapability) && CapabilityCatalog.ValidInventory(request.CapabilityInventory);
 
     private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion is 1 or 2 &&
         Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
@@ -473,7 +498,7 @@ public static class ServerApplication
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&
         request.Capabilities.All(ValidCapability) &&
-        request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
+        CapabilityCatalog.ValidInventory(request.CapabilityInventory) && request.ActiveProjects is not null && request.ActiveProjects.Count <= 32 &&
         (request.ConfigurationSynchronization is null or "synchronized" or "cached" or "unavailable" or "error" or "not-synchronized") &&
         (request.ConfigurationVersion is null || (request.ConfigurationVersion.Length <= 128 && !request.ConfigurationVersion.Any(char.IsControl))) &&
         request.ActiveProjects.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 200);

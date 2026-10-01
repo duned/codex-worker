@@ -17,6 +17,38 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task NodeApiUsesCommonInventoryAndRequiresManagementAuthentication()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "test-management-token");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "registry.db")),
+                capabilityDiscovery: TestCapabilityDiscovery.Create());
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            await store.RegisterWorkerAsync(new(2, new string('a', 32), "Worker", "1.0", "linux", 1, []));
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/nodes")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/api/v1/nodes/server/capabilities/refresh", null)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
+            using var nodes = JsonDocument.Parse(await client.GetStringAsync("/api/v1/nodes"));
+            Assert.Equal(2, nodes.RootElement.GetArrayLength());
+            var server = nodes.RootElement[0];
+            Assert.Equal("server", server.GetProperty("id").GetString());
+            Assert.Equal("not-applicable", server.GetProperty("executionReadiness").GetString());
+            Assert.Equal(3, server.GetProperty("capabilities").GetArrayLength());
+            Assert.Equal("Missing", server.GetProperty("capabilities")[0].GetProperty("state").GetProperty("installation").GetString());
+            Assert.Equal("disconnected", nodes.RootElement[1].GetProperty("connectivity").GetString());
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/v1/nodes/server/capabilities/refresh", null)).StatusCode);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
+    }
+
+    [Fact]
     public async Task DirectTokenCommandRejectsImplicitHomeState()
     {
         var priorDirectory = Environment.GetEnvironmentVariable("Server__DataDirectory");
@@ -254,14 +286,14 @@ public sealed class CodexServerTests
             var settings = new WorkerServerSettings { Enabled = true, Url = url, IdentityFile = identityPath };
             using var client = new HttpClient();
 
-            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
             // Replaying after a lost success response recovers through the durable Worker credential.
-            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, bootstrap, CancellationToken.None);
 
             var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath);
             Assert.Single(await store.GetWorkersAsync());
             Assert.True(await store.IsWorkerTokenValidAsync(identity, WorkerAuthentication.GetToken(settings)));
-            await new WorkerRegistrationClient(client).HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
             Assert.False(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, identity, WorkerAuthentication.GetToken(settings)));
             using var management = new HttpClient { BaseAddress = new Uri(url) };
             management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "bootstrap-management-secret");
@@ -438,13 +470,13 @@ public sealed class CodexServerTests
             using var client = new HttpClient();
             var settings = new WorkerServerSettings { Enabled = true, Url = url, IdentityFile = Path.Combine(temporary.Path, "worker-id") };
             var failure = await Assert.ThrowsAsync<WorkerStartupException>(() =>
-                new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, "invalid-bootstrap-token", CancellationToken.None));
+                new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, "invalid-bootstrap-token", CancellationToken.None));
             Assert.Contains("invalid, expired, or already used", failure.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("invalid-bootstrap-token", failure.Message, StringComparison.Ordinal);
             Assert.Empty(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
             var freshBootstrap = await app.Services.GetRequiredService<IRegistryStore>()
                 .CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
-            await new WorkerRegistrationClient(client).BootstrapAsync(settings, 1, freshBootstrap, CancellationToken.None);
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, freshBootstrap, CancellationToken.None);
             Assert.Single(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
         }
         finally

@@ -1,5 +1,6 @@
 namespace CodexServer;
 
+using CodexProvisioning;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 using System.Security.Cryptography;
@@ -264,16 +265,17 @@ public sealed class ProjectRevisionConflictException(long currentRevision)
 
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
-    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities);
+    string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
     int ActiveExecutions, int MaximumCapacity, int AvailableCapacity, string LifecycleState,
     IReadOnlyList<string> ActiveProjects, DateTimeOffset? LastHeartbeatAtUtc = null,
-    string? ConfigurationSynchronization = null, string? ConfigurationVersion = null);
+    string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
@@ -1272,7 +1274,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             request.Platform, request.Capacity, heartbeat?.Capabilities ?? request.Capabilities, registered, seen,
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
             online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat is null ? null : seen,
-            heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion);
+            heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory);
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
