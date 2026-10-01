@@ -32,9 +32,9 @@ public static class CapabilityCatalog
 {
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
-        new("git", "Git", "git", false, true, ["refresh"]),
-        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh"]),
-        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh"])
+        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall"]),
+        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall"]),
+        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall"])
     ]);
 
     public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,
@@ -118,6 +118,8 @@ public sealed class NodeCapabilityDiscovery
                         state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
                             DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
                     }
+                    if (version.ExitCode == 0)
+                        state = state with { Update = await DetectUpdateAsync(definition.Id, state.DetectedVersion, cancellationToken) };
                 }
                 catch (System.ComponentModel.Win32Exception)
                 {
@@ -143,6 +145,46 @@ public sealed class NodeCapabilityDiscovery
         }
     }
 
+    private async Task<UpdateState> DetectUpdateAsync(string id, string? version, CancellationToken token)
+    {
+        try
+        {
+            var probe = ToolProvisioningProviders.CandidateProbe(id);
+            var candidateResult = await _run(probe.Executable, probe.Arguments, token);
+            if (ToolProvisioningProviders.AptPackage(id) is not null)
+            {
+                var policy = candidateResult;
+                var installed = Regex.Match(policy.Output, @"Installed:\s*(\S+)");
+                var candidate = Regex.Match(policy.Output, @"Candidate:\s*(\S+)");
+                if (policy.ExitCode != 0 || !installed.Success || !candidate.Success ||
+                    installed.Groups[1].Value == "(none)" || candidate.Groups[1].Value == "(none)") return UpdateState.Unknown;
+                if (installed.Groups[1].Value == candidate.Groups[1].Value) return UpdateState.Current;
+                var newer = await _run("/usr/bin/dpkg", ["--compare-versions", candidate.Groups[1].Value,
+                    "gt", installed.Groups[1].Value], token);
+                return newer.ExitCode == 0 ? UpdateState.Available : newer.ExitCode == 1 ? UpdateState.Current : UpdateState.Unknown;
+            }
+            var stable = candidateResult;
+            var candidateVersion = stable.Output.Trim();
+            if (stable.ExitCode != 0 || version is null || !Regex.IsMatch(candidateVersion, @"^\d+\.\d+\.\d+$")) return UpdateState.Unknown;
+            if (candidateVersion == version) return UpdateState.Current;
+            return Version.TryParse(version, out var installedVersion) && Version.TryParse(candidateVersion, out var availableVersion)
+                ? availableVersion > installedVersion ? UpdateState.Available : UpdateState.Current : UpdateState.Unknown;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or TimeoutException or InvalidOperationException ||
+            ex is OperationCanceledException && !token.IsCancellationRequested)
+        {
+            // An unavailable package index does not invalidate installation/authentication facts.
+            return UpdateState.Unknown;
+        }
+    }
+
+    internal async Task<bool> VerifyManagedInstallationAsync(CapabilityState state, CancellationToken token)
+    {
+        var result = await _run(ToolProvisioningProviders.ManagedExecutable(state.Id), ["--version"], token);
+        var match = Regex.Match(result.Output, @"(?<![\w])v?(\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?)(?![\w])");
+        return result.ExitCode == 0 && match.Success && match.Groups[1].Value == state.DetectedVersion;
+    }
+
     private static async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -150,6 +192,7 @@ public sealed class NodeCapabilityDiscovery
         using var process = new Process { StartInfo = new ProcessStartInfo(executable)
             { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
+        process.StartInfo.Environment["LC_ALL"] = "C";
         process.Start();
         var stdout = DrainAsync(process.StandardOutput, timeout.Token);
         var stderr = DrainAsync(process.StandardError, timeout.Token);

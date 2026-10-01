@@ -37,7 +37,12 @@ public sealed class CodexServerTests
                 """, System.Text.Encoding.UTF8, "application/json");
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/v1/provisioning/commands", arbitrary)).StatusCode);
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/provisioning/commands",
-                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.Install })).StatusCode);
+                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.CheckConfiguration })).StatusCode);
+            var installResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands",
+                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.Install });
+            Assert.Equal(HttpStatusCode.Created, installResponse.StatusCode);
+            var install = await installResponse.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
+            Assert.NotNull(install);
             var response = await client.PostAsJsonAsync("/api/v1/provisioning/commands", request);
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             var operation = await response.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
@@ -53,6 +58,10 @@ public sealed class CodexServerTests
             Assert.NotNull(operation.StartedAtUtc);
             Assert.NotNull(operation.CompletedAtUtc);
             Assert.Equal(CodexProvisioning.ProvisioningDiagnostic.Completed, operation.Diagnostic);
+            install = await client.GetFromJsonAsync<CodexProvisioning.ProvisioningCommand>($"/api/v1/provisioning/commands/{install.Id}");
+            Assert.NotNull(install);
+            Assert.Equal(CodexProvisioning.ProvisioningCommandStatus.Failed, install.Status);
+            Assert.Equal(CodexProvisioning.ProvisioningDiagnostic.Denied, install.Diagnostic);
             var registry = app.Services.GetRequiredService<IRegistryStore>();
             var workerId = Guid.NewGuid().ToString("N");
             var workerToken = new string('t', 40);

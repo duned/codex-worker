@@ -13,7 +13,7 @@ public sealed class ProvisioningCommandTests
     [InlineData("git", ProvisioningCommandAction.Install, true)]
     [InlineData("git", ProvisioningCommandAction.Update, true)]
     [InlineData("git", ProvisioningCommandAction.Uninstall, true)]
-    [InlineData("codex-cli", ProvisioningCommandAction.Install, false)]
+    [InlineData("codex-cli", ProvisioningCommandAction.Install, true)]
     [InlineData("git", ProvisioningCommandAction.Logout, false)]
     [InlineData("github-cli", ProvisioningCommandAction.Logout, true)]
     public void OnlyRegisteredCapabilityActionsAreSupported(string capability, ProvisioningCommandAction action, bool supported)
@@ -51,9 +51,10 @@ public sealed class ProvisioningCommandTests
         Assert.Equal(ProvisioningDiagnostic.Denied, (await executor.ExecuteAsync(command, false)).Diagnostic);
         Assert.Empty(calls);
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await executor.ExecuteAsync(command, true)).Status);
-        var call = Assert.Single(calls);
-        Assert.Equal("sudo", call.Executable);
-        Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "--only-upgrade", "git" }, call.Arguments);
+        Assert.Equal(2, calls.Count);
+        Assert.All(calls, call => Assert.Equal("/usr/bin/sudo", call.Executable));
+        Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "update" }, calls[0].Arguments);
+        Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "git" }, calls[1].Arguments);
     }
 
     [Fact]

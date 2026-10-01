@@ -30,7 +30,7 @@ public static class ProvisioningCommandProtocol
     public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
     {
         ProvisioningCommandAction.Detect => true,
-        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId == "git",
+        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId is "git" or "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckConfiguration => request.CapabilityId == "git",
         _ => false
@@ -58,16 +58,18 @@ public sealed class NodeProvisioningCommandExecutor
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<int>> _run;
     private readonly Func<bool> _supportsApt;
     private readonly Func<bool> _isRoot;
+    private readonly Func<bool> _npmAvailable;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
 
     public NodeProvisioningCommandExecutor(NodeCapabilityDiscovery discovery,
         Func<string, IReadOnlyList<string>, CancellationToken, Task<int>>? run = null,
-        Func<bool>? supportsApt = null, Func<bool>? isRoot = null)
+        Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null)
     {
         _discovery = discovery;
         _run = run ?? RunAsync;
         _supportsApt = supportsApt ?? (() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version"));
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
+        _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/npm"));
     }
 
     public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommand command, bool permitted,
@@ -81,8 +83,11 @@ public sealed class NodeProvisioningCommandExecutor
         var remaining = command.DeadlineUtc.Value - DateTimeOffset.UtcNow;
         if (remaining <= TimeSpan.Zero) return new(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut);
         timeout.CancelAfter(remaining);
-        var gate = _gates.GetOrAdd(command.Request.CapabilityId, _ => new SemaphoreSlim(1, 1));
+        // Package-manager mutations share a gate, including Codex's runtime dependencies.
+        var mutation = command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        var gate = _gates.GetOrAdd(mutation ? "tools" : command.Request.CapabilityId, _ => new SemaphoreSlim(1, 1));
         var acquired = false;
+        var refreshed = false;
         try
         {
             await gate.WaitAsync(timeout.Token);
@@ -91,6 +96,7 @@ public sealed class NodeProvisioningCommandExecutor
             if (request.Action == ProvisioningCommandAction.Detect)
             {
                 var states = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+                refreshed = true;
                 return states.Single(state => state.Id == request.CapabilityId).Health == CapabilityHealth.Error
                     ? new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed)
                     : new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
@@ -101,10 +107,30 @@ public sealed class NodeProvisioningCommandExecutor
             {
                 if (!_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
                 if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
-                executable = _isRoot() ? "/usr/bin/apt-get" : "sudo";
-                var operation = request.Action == ProvisioningCommandAction.Uninstall ? "remove" : "install";
-                arguments = [operation, "-y", "--no-install-recommends", .. request.Action == ProvisioningCommandAction.Update ? new[] { "--only-upgrade" } : Array.Empty<string>(), "git"];
-                if (executable == "sudo") arguments = ["-n", "/usr/bin/apt-get", .. arguments];
+                var before = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+                if (request.CapabilityId == "codex-cli" && request.Action == ProvisioningCommandAction.Uninstall &&
+                    !_npmAvailable() && before.Single(state => state.Id == request.CapabilityId).Installation == InstallationState.Missing)
+                {
+                    refreshed = true;
+                    return new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
+                }
+                var code = 0;
+                foreach (var step in ToolProvisioningProviders.Plan(request.CapabilityId, request.Action))
+                {
+                    code = await _run(_isRoot() ? step.Executable : "/usr/bin/sudo",
+                        _isRoot() ? step.Arguments : ["-n", step.Executable, .. step.Arguments], timeout.Token);
+                    if (code != 0) break;
+                }
+                var states = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+                refreshed = true;
+                var expected = request.Action == ProvisioningCommandAction.Uninstall ? InstallationState.Missing : InstallationState.Installed;
+                var observedState = states.Single(state => state.Id == request.CapabilityId);
+                if (code == 0 && expected == InstallationState.Installed &&
+                    (observedState.Update == UpdateState.Available || !await _discovery.VerifyManagedInstallationAsync(observedState, timeout.Token)))
+                    code = 1;
+                return code == 0 && observedState.Installation == expected && observedState.Health != CapabilityHealth.Error
+                    ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
+                    : new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed);
             }
             else
             {
@@ -121,12 +147,8 @@ public sealed class NodeProvisioningCommandExecutor
             var exitCode = await _run(executable, arguments, timeout.Token);
             if (exitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration)
                 exitCode = await _run("git", ["config", "--get", "user.email"], timeout.Token);
-            var observed = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
-            if (exitCode == 0 && command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall)
-            {
-                var expected = command.Request.Action == ProvisioningCommandAction.Uninstall ? InstallationState.Missing : InstallationState.Installed;
-                if (observed.Single(state => state.Id == command.Request.CapabilityId).Installation != expected) exitCode = 1;
-            }
+            await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+            refreshed = true;
             return exitCode == 0 ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
                 : new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed);
         }
@@ -138,7 +160,19 @@ public sealed class NodeProvisioningCommandExecutor
         }
         catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
         { return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed); }
-        finally { if (acquired) gate.Release(); }
+        finally
+        {
+            if (acquired)
+            {
+                // A killed/failed installer may have changed the node. Refresh under a separate
+                // bounded token before releasing the gate, even after the request deadline.
+                using var refresh = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                try { if (!refreshed) await _discovery.GetAsync(refresh: true, cancellationToken: refresh.Token); }
+                catch (Exception ex) when (ex is OperationCanceledException or IOException or
+                    System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException) { }
+                finally { gate.Release(); }
+            }
+        }
     }
 
     private static async Task<int> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
@@ -147,6 +181,7 @@ public sealed class NodeProvisioningCommandExecutor
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["DEBIAN_FRONTEND"] = "noninteractive";
+        process.StartInfo.Environment["LC_ALL"] = "C";
         process.Start();
         process.StandardInput.Close();
         using var drainCancellation = new CancellationTokenSource();

@@ -6,6 +6,7 @@ After=network.target
 Type=exec
 User=codex-server
 Group=codex-server
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=/opt/codex-server/current
 EnvironmentFile=/etc/codex-server/server.env
 ExecStart=/opt/codex-server/current/CodexServer

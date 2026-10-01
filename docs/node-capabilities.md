@@ -14,8 +14,12 @@ not established the fact. Git configuration detects a nonempty user.name and
 user.email in the service environment; their values are never returned. CLI
 authentication uses `gh auth status` and `codex login status` in the node's service
 environment. This is distinct from repository-scoped credentials and project
-execution eligibility. No release lookup is implemented, so update status is
-`Unknown`; absence of an update check must never be presented as `Current`.
+execution eligibility. Update detection compares the installed and candidate
+package versions from the local apt index for Git/GitHub CLI, and compares Codex's
+detected version with the official npm stable channel. An unavailable index,
+registry or version probe leaves update status `Unknown`, without invalidating
+installation or authentication observations. Apt observations reflect the last
+index refresh, not a live distribution release lookup.
 
 Worker registration and heartbeats carry an optional `capabilityInventory` in
 managed contract v2. Older clients remain accepted and appear with unknown
@@ -32,17 +36,16 @@ terminal managed provisioning report (including failure) trigger re-detection;
 the next heartbeat publishes the refreshed facts. Existing Worker
 `refresh-capabilities` plans trigger immediate re-detection and publication.
 `POST /api/v1/nodes/server/capabilities/refresh` re-detects Server-local facts.
-Future install/update/uninstall/login/logout executors must use the same
+Install/update/uninstall/logout executors use the same
 re-detection boundary after both successful and failed changes. Never infer
 success from an operation result alone.
 
 Worker operation state is projected from the latest applicable provisioning
 plan, including the current action and a fixed failure diagnostic code. Running
 operations and disconnected Workers expose no available actions. The initial
-catalog advertises only `refresh`, the common implemented action. Tool mutation
-or interactive login/logout actions require registered executors and policy
-checks before being advertised; the model supports these operations without
-claiming they are currently implemented for every node.
+catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
+tools. These indicate registered operations, not permission to mutate a node:
+local policy and platform support are checked at execution.
 
 The registry retains the latest Worker report in its existing registration and
 heartbeat JSON, along with existing durable plan history. This is a last-seen
@@ -52,3 +55,48 @@ output but exports only parsed numeric versions and fixed diagnostic codes.
 Inventory input validation rejects arbitrary diagnostic strings and unknown IDs;
 credentials, keys, tokens, user identities, and raw command output are not API
 metadata.
+
+## Managed tool lifecycle policy
+
+The shared node command executor serves both Server-local and managed Worker
+commands. The initial target is packaged Ubuntu 24.04 LTS or newer with apt,
+distribution Node.js/npm and network access to configured apt sources and
+`https://registry.npmjs.org`. Other Debian-family nodes must provide compatible
+distribution packages; unsupported platforms reject mutation. No shell profile,
+nvm or interactive operator environment is consulted. The packaged services
+include `/usr/local/bin` and `/usr/bin` in PATH; custom service deployments must
+keep those paths visible. Detection and final verification use the effective
+service environment, so a shadowing or inaccessible executable cannot be assumed
+to have been replaced successfully.
+
+Git and GitHub CLI use the configured distribution apt candidates (`git` and
+`gh`). The product does not add third-party repositories or select upstream
+latest versions. Install and update refresh apt indexes and ensure the package,
+including reinstallation after removal or interrupted installation. Codex uses
+the [official npm install/update mechanism](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex),
+with the stable `@openai/codex@latest` channel from the explicit official npm
+registry, distribution `nodejs`/`npm`, and system prefix `/usr/local`. Alpha
+channels, arbitrary package names and caller-supplied versions are not accepted.
+Its npm mutations ignore user/global npmrc files, use a product cache under
+`/var/cache/codex-provisioning/npm`, and make the installed package readable and
+executable by the service account despite service umask 077. No force-overwrite
+option is used: unrelated executable conflicts fail safely.
+
+Uninstall uses apt remove or npm uninstall for the selected package only. It does
+not purge, autoremove dependencies, delete HOME/configuration/cache/history or
+log out. Node.js/npm remain after Codex removal. Existing unmanaged installations
+outside these providers are observed but not deleted; if one remains visible
+after uninstall the command fails verification rather than deleting its files.
+Repeated operations converge through the package manager and final re-detection.
+
+Every mutation requires explicit node-local elevation authorization (including
+when already root). Non-root commands use absolute `/usr/bin/sudo -n` with fixed
+arguments. Package mutations share a local executor gate; apt also retains its
+native interprocess locks. A failed step stops the sequence. Deadlines/shutdown
+cancel the child process tree; a separate bounded refresh records whatever was
+actually changed. Terminal reports contain fixed diagnostic codes, never process
+output. Inspect refreshed installation/version facts after `ProcessFailed`,
+`Cancelled`, `TimedOut` or reconciled `Interrupted`, resolve package locks/network
+or local authorization failures, and explicitly retry install/update/uninstall.
+The command store's existing acknowledgement/reconciliation rules prevent
+automatic replay of an uncertain operation.
