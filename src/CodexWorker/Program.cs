@@ -89,15 +89,9 @@ public static class Program
     {
         try
         {
-            var args = commandLine.Arguments;
-            var allowElevation = args.Count == 3 && args[2] == "--allow-elevation";
-            if (args.Count is not (2 or 3) || args.Count == 3 && !allowElevation ||
-                !Enum.TryParse<CodexProvisioning.ProvisioningCommandAction>(args[1], true, out var action) ||
-                !Enum.IsDefined(action) || !args[1].All(char.IsAsciiLetter))
-                throw new ArgumentException("Invalid provisioning arguments. Use 'codex-worker provision --help' for usage.");
+            var command = ProvisioningCli.Parse(commandLine.Arguments);
             var configuration = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath);
             var identity = await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath);
-            var request = new CodexProvisioning.ProvisioningCommandRequest(identity, args[0], action, AllowElevation: allowElevation);
             using var stop = new CancellationTokenSource();
             using var signal = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM,
                 context => { context.Cancel = true; stop.Cancel(); });
@@ -109,14 +103,19 @@ public static class Program
             Console.CancelKeyPress += OnCancel;
             try
             {
-                var result = await WorkerProvisioning.ExecuteLocalAsync(request, configuration.Worker.Provisioning,
-                    new CodexProvisioning.NodeCapabilityDiscovery(), stop.Token, (progress, _) =>
+                if (!command.IsStatus)
+                    Console.Error.WriteLine($"Running {command.Verb} for {command.CapabilityId}...");
+                var result = await ProvisioningCli.ExecuteAsync(command, configuration.Worker.Provisioning,
+                    new CodexProvisioning.NodeCapabilityDiscovery(), identity, stop.Token, (progress, _) =>
                     {
-                        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(progress));
+                        if (command.Json)
+                            Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(progress));
+                        else if (progress.LoginInstructions is { } instructions)
+                            Console.WriteLine($"Open {instructions.VerificationUri} and enter code {instructions.UserCode}.");
                         return Task.CompletedTask;
                     });
-                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(result));
-                return result.Status == CodexProvisioning.ProvisioningCommandStatus.Succeeded
+                ProvisioningCli.Write(result, command.Json);
+                return result.Status == "succeeded"
                     ? ProcessExitCodes.Success : ProcessExitCodes.StartupFailure;
             }
             finally { Console.CancelKeyPress -= OnCancel; }
@@ -372,9 +371,20 @@ public static class Program
                 Console.WriteLine("Examples: codex-worker capabilities list; codex-worker capabilities refresh --json");
                 break;
             case "provision":
-                Console.WriteLine($"Usage: codex-worker provision {configOption} <capability-id> <action> [--allow-elevation]");
-                Console.WriteLine("Run a typed local capability operation under Worker provisioning policy.");
-                Console.WriteLine("Example: codex-worker provision --config /etc/codex-worker/worker.yml git detect");
+                Console.WriteLine($"Usage: codex-worker provision <status|operation> {configOption} [options]");
+                Console.WriteLine("Show local policy and capability state, or run a bounded typed capability operation.");
+                Console.WriteLine("Operations: install, upgrade, uninstall, detect, check-authentication, logout, check-configuration,");
+                Console.WriteLine("            prepare-authentication, login, generate-ssh-key, inspect-ssh-key, remove-ssh-key,");
+                Console.WriteLine("            verify-repository-access.");
+                Console.WriteLine("Options: --json; verify-repository-access uses --repository <owner/repository>.");
+                Console.WriteLine("        install/upgrade/uninstall require explicit --allow-elevation.");
+                Console.WriteLine($"Default configuration: {WorkerCommandLine.DefaultConfigurationPath}");
+                Console.WriteLine("Examples:");
+                Console.WriteLine("  codex-worker provision status");
+                Console.WriteLine("  codex-worker provision install git --allow-elevation");
+                Console.WriteLine("  codex-worker provision upgrade codex-cli --allow-elevation --json");
+                Console.WriteLine("  codex-worker provision uninstall github-cli --config /etc/codex-worker/worker.yml --allow-elevation");
+                Console.WriteLine("Privileged action policy keys use tool:<capability-id>:<install|update|uninstall>.");
                 break;
             default:
                 Console.WriteLine("Usage: codex-worker [command] [options]");

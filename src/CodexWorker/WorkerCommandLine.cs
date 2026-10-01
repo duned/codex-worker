@@ -35,14 +35,9 @@ public sealed record WorkerCommandLine(string Command, string? ConfigurationPath
             else remaining.Add(args[index]);
         }
 
-        // Preserve the former `codex-worker <worker.yml>` and provision config position.
+        // Preserve the former `codex-worker <worker.yml>` invocation.
         if (command == "run" && config is null && remaining.Count == 1 && !remaining[0].StartsWith("-", StringComparison.Ordinal))
             config = remaining[0];
-        if (command == "provision" && config is null && remaining.Count == 3 && !remaining[0].StartsWith("-", StringComparison.Ordinal))
-        {
-            config = remaining[0];
-            remaining.RemoveAt(0);
-        }
         return new(command, config, remaining);
     }
 }

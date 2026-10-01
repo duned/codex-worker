@@ -79,11 +79,13 @@ public sealed class NodeProvisioningCommandExecutor
         _discovery = discovery;
         _githubSetup = githubSetup ?? new NodeGitHubSetup();
         _run = run ?? RunAsync;
-        _supportsApt = supportsApt ?? (() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version"));
+        _supportsApt = supportsApt ?? SupportsPackageProvisioning;
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
         _login = login ?? CodexDeviceLogin.RunAsync;
         _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/npm"));
     }
+
+    public static bool SupportsPackageProvisioning() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version");
 
     public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommand command, bool permitted,
         CancellationToken cancellationToken = default,

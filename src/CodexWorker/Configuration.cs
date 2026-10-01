@@ -169,7 +169,7 @@ public sealed class GlobalWorkerSettings
     public ProvisioningPolicy Provisioning { get; set; } = new();
 }
 
-/// <summary>Worker-side authorization policy for Server-requested provisioning.</summary>
+/// <summary>Worker-side authorization policy for Server-requested and local CLI provisioning.</summary>
 public sealed class ProvisioningPolicy
 {
     public bool Enabled { get; set; }

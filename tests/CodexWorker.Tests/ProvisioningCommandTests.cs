@@ -81,6 +81,46 @@ public sealed class ProvisioningCommandTests
     }
 
     [Fact]
+    public async Task InstallUpgradeAndUninstallCanBeRepeatedAndRefreshTheObservedState()
+    {
+        var installed = false;
+        var discovery = new NodeCapabilityDiscovery((executable, arguments, _) =>
+        {
+            if (executable == "git")
+            {
+                if (!installed) throw new FileNotFoundException();
+                return Task.FromResult((0, "git version 2.43.0"));
+            }
+            if (executable == "/usr/bin/git" && arguments.SequenceEqual(["--version"]))
+                return installed ? Task.FromResult((0, "git version 2.43.0")) : Task.FromException<(int, string)>(new FileNotFoundException());
+            if (executable == "/usr/bin/apt-cache")
+                return Task.FromResult((0, $"Installed: {(installed ? "2.43.0" : "(none)")}\nCandidate: 2.43.0"));
+            if (executable == "/usr/bin/dpkg") return Task.FromResult((1, string.Empty));
+            if (executable == "gh" || executable == CodexServiceEnvironment.Executable)
+                throw new FileNotFoundException();
+            return Task.FromResult((0, ""));
+        });
+        var executor = new NodeProvisioningCommandExecutor(discovery, (_, arguments, _) =>
+        {
+            if (arguments.Count > 2 && arguments[1] == "/usr/bin/apt-get")
+            {
+                if (arguments[2] == "install") installed = true;
+                if (arguments[2] == "remove") installed = false;
+            }
+            return Task.FromResult(0);
+        }, supportsApt: () => true, isRoot: () => false);
+
+        foreach (var action in new[] { ProvisioningCommandAction.Install, ProvisioningCommandAction.Update,
+                     ProvisioningCommandAction.Uninstall, ProvisioningCommandAction.Install, ProvisioningCommandAction.Update,
+                     ProvisioningCommandAction.Uninstall })
+        {
+            var result = await executor.ExecuteAsync(Running(new("server", "git", action, AllowElevation: true)), permitted: true);
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, result.Status);
+        }
+        Assert.Equal(InstallationState.Missing, (await discovery.GetAsync()).Single(state => state.Id == "git").Installation);
+    }
+
+    [Fact]
     public async Task ExecutorDiscardsExceptionSecretsAndHonorsCancellationAndExpiredDeadline()
     {
         var executor = new NodeProvisioningCommandExecutor(Discovery(), (_, _, _) => Task.FromException<int>(new IOException("private-token")));

@@ -31,9 +31,9 @@ public sealed class CommandLineTests
     {
         Assert.Equal("legacy.yml", WorkerCommandLine.Parse(["legacy.yml"]).ConfigurationPath);
         Assert.Equal("override.yml", WorkerCommandLine.Parse(["run", "--config", "override.yml"]).ConfigurationPath);
-        var provisioning = WorkerCommandLine.Parse(["provision", "legacy.yml", "git", "detect"]);
-        Assert.Equal("legacy.yml", provisioning.ConfigurationPath);
-        Assert.Equal(new[] { "git", "detect" }, provisioning.Arguments);
+        var provisioning = WorkerCommandLine.Parse(["provision", "install", "git", "--config", "override.yml", "--allow-elevation"]);
+        Assert.Equal("override.yml", provisioning.ConfigurationPath);
+        Assert.Equal(new[] { "install", "git", "--allow-elevation" }, provisioning.Arguments);
         Assert.Equal(OperatingSystem.IsLinux() ? WorkerCommandLine.LinuxDefaultConfigurationPath :
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worker.yml"),
             WorkerCommandLine.DefaultConfigurationPath);
