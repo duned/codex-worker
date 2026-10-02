@@ -13,7 +13,7 @@ mkdir -p ~/.local/bin
 ln -sf "$(pwd)/cw" ~/.local/bin/cw
 ```
 
-Make sure `~/.local/bin` is in `PATH`. The helper resolves the repository from the real script path, so the symlink can be used from another working directory.
+Make sure `~/.local/bin` is in `PATH`. Repository operations use `CW_REPO_DIR`, which defaults to `~/projects/codex-worker`, regardless of the current directory or symlink location. Set `CW_REPO_DIR` to use another Codex Worker checkout; a leading `~/` expands against the current user's home directory.
 
 ```sh
 ./cw --help
@@ -28,6 +28,8 @@ Make sure `~/.local/bin` is in `PATH`. The helper resolves the repository from t
 `cw status` summarizes the checkout, Git worktrees, and the `codex-worker` systemd service. `cw projects` reads `projects.directory` from `/etc/codex-worker/worker.yml` and lists the project YAML paths without displaying configuration contents. Set `CW_WORKER_CONFIG` when the local Worker uses a different global configuration.
 
 `cw deploy` publishes this checkout in Release configuration, stages output before replacing `~/apps/codex-worker`, then starts and verifies the systemd service. It manages a system-level service through `sudo -n systemctl stop/start`, so the invoking user needs suitable non-interactive sudo permission for those required operations. A least-privilege policy can authorize only the applicable systemctl operations; unrestricted sudo is not required. Permission and service failures are reported directly, and a failed stop leaves the current deployment untouched. Set `CW_DEPLOY_DIR` to use another deployment directory. On successful replacement, the prior deployment is retained beside the target for inspection. This command deploys the local development Worker; it is **not** the GitHub/product release process and does not change the product version. For a host with systemd configured for this local deployment, smoke-test with `./cw deploy`, `systemctl is-active codex-worker`, `./cw status`, and `./cw log`.
+
+`cw version` and `cw release` use the same configured source checkout. GitHub release queries are pinned to that checkout's `origin` remote.
 
 The production release workflow remains [`packaging/release.sh`](packaging/release.sh).
 

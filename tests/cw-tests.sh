@@ -10,6 +10,7 @@ export PATH="$bin:$PATH"
 export CW_DEPLOY_DIR="$test_root/apps/worker"
 export CW_SERVICE_NAME=cw-test
 export CW_TEST_ROOT="$test_root"
+export CW_REPO_DIR="$repo_root"
 cat > "$test_root/projects/a.yml" <<'YAML'
 project:
   name: Alpha
@@ -21,6 +22,7 @@ project:
   repository: b/beta
 YAML
 printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
+printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z"}]\n' > "$test_root/releases.json"
 cat > "$bin/journalctl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CW_TEST_ROOT/journal.args"
@@ -73,6 +75,7 @@ MOCK
 cat > "$bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CW_TEST_ROOT/gh.args"
+printf '%s\n' "${GH_REPO:-}" >> "$CW_TEST_ROOT/gh-repo.args"
 [[ ! -f $CW_TEST_ROOT/fail-gh ]] || { echo 'provider unavailable' >&2; exit 17; }
 cat "$CW_TEST_ROOT/releases.json"
 MOCK
@@ -104,6 +107,7 @@ git -C "$fixture_repo" config user.name cw-tests
 git -C "$fixture_repo" add cw Directory.Build.props src projects
 git -C "$fixture_repo" commit -qm 'fixture repository'
 git -C "$fixture_repo" branch -M main
+git -C "$fixture_repo" remote add origin https://github.com/owner/fixture.git
 feature_branch='feature/16-1-model-node-capabilities-and-provisioning-state-110'
 feature_worktree="$test_root/worktree with spaces"
 detached_worktree="$test_root/detached worktree"
@@ -114,9 +118,11 @@ ln -s "$fixture_repo/cw" "$fixture_bin/cw"
 export CW_WORKER_CONFIG="$test_root/unreadable-or-missing-worker.yml"
 export CW_WORKER_API_URL=http://127.0.0.1:5080
 export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
+export CW_REPO_DIR="$fixture_repo"
 (
   cd "$caller_dir"
   "$fixture_bin/cw" --help | grep -Fq 'status, s'
+  "$fixture_bin/cw" --help | grep -Fq 'CW_REPO_DIR'
   "$fixture_bin/cw" --help | grep -Fq 'restart, rs'
   "$fixture_bin/cw" h > "$test_root/fixture-help-h.out"
   "$fixture_bin/cw" --help > "$test_root/fixture-help-long.out"
@@ -142,6 +148,9 @@ export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
   ! grep -Fq 'unreadable-or-missing-worker.yml' "$test_root/symlink-projects.out"
   ! grep -Fq 'secret-value' "$test_root/symlink-projects.out"
   "$fixture_bin/cw" p >/dev/null
+  "$fixture_bin/cw" r > "$test_root/symlink-release.out"
+  grep -Fq 'v9.8.7' "$test_root/symlink-release.out"
+  [[ $(tail -n 1 "$test_root/gh-repo.args") == github.com/owner/fixture ]]
   "$fixture_bin/cw" log -n 23
   grep -Fxq -- '-u cw-test -n 23 --no-pager' "$test_root/journal.args"
   "$fixture_bin/cw" l >/dev/null
@@ -155,14 +164,53 @@ export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
 mkdir -p "$test_root/invalid target"
 cp "$repo_root/cw" "$test_root/invalid target/cw"
 ln -s "$test_root/invalid target/cw" "$fixture_bin/cw-invalid"
-if "$fixture_bin/cw-invalid" status > "$test_root/invalid.out" 2>&1; then
+export CW_REPO_DIR="$test_root/missing configured repository"
+if (cd "$caller_dir" && "$fixture_bin/cw-invalid" status) > "$test_root/invalid.out" 2>&1; then
   echo 'invalid repository unexpectedly succeeded' >&2; exit 1
 fi
-grep -Fq "not a Codex Worker repository: $test_root/invalid target" "$test_root/invalid.out"
-grep -Fq 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj' "$test_root/invalid.out"
+grep -Fq "does not exist: $test_root/missing configured repository" "$test_root/invalid.out"
+grep -Fq 'CW_REPO_DIR' "$test_root/invalid.out"
+export CW_REPO_DIR="$test_root/invalid target"
+if "$fixture_bin/cw-invalid" v > "$test_root/invalid-existing.out" 2>&1; then
+  echo 'non-repository configured path unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq "not a valid Codex Worker Git repository: $test_root/invalid target" "$test_root/invalid-existing.out"
+grep -Fq 'CW_REPO_DIR' "$test_root/invalid-existing.out"
+
+# The configured source repository wins from both a non-Git directory and an unrelated checkout.
+export CW_REPO_DIR="$fixture_repo"
+(
+  cd "$caller_dir"
+  "$fixture_bin/cw" v > "$test_root/outside-version.out"
+  grep -Fq 'Product version 9.8.7' "$test_root/outside-version.out"
+)
+unrelated_repo="$test_root/unrelated-git"
+mkdir -p "$unrelated_repo"
+git -C "$unrelated_repo" init -q
+(
+  cd "$unrelated_repo"
+  "$fixture_bin/cw" v > "$test_root/unrelated-version.out"
+  grep -Fq "repository $fixture_repo" "$test_root/unrelated-version.out"
+  "$fixture_bin/cw" r > "$test_root/unrelated-release.out"
+  grep -Fq 'v9.8.7' "$test_root/unrelated-release.out"
+  [[ $(tail -n 1 "$test_root/gh-repo.args") == github.com/owner/fixture ]]
+)
+
+# With no override, resolve the documented path below HOME, including a path containing spaces.
+default_home="$test_root/default home"
+mkdir -p "$default_home/projects"
+cp -a "$fixture_repo" "$default_home/projects/codex-worker"
+(
+  cd "$caller_dir"
+  env -u CW_REPO_DIR HOME="$default_home" "$fixture_bin/cw" v > "$test_root/default-version.out"
+  grep -Fq "repository $default_home/projects/codex-worker" "$test_root/default-version.out"
+  env CW_REPO_DIR='~/projects/codex-worker' HOME="$default_home" "$fixture_bin/cw" v > "$test_root/tilde-version.out"
+  grep -Fq "repository $default_home/projects/codex-worker" "$test_root/tilde-version.out"
+)
 
 # Restore defaults for the original-checkout command coverage below.
 export CW_DEPLOY_DIR="$test_root/apps/worker"
+export CW_REPO_DIR="$repo_root"
 printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 
 "$repo_root/cw" --help | grep -Fq 'status, s'
@@ -299,12 +347,14 @@ RELEASE
   git -C "$repo" commit -qm 'initial version fixture'
   git -C "$repo" remote add origin "$remote"
   git -C "$repo" push -q -u origin main
+  export CW_REPO_DIR="$repo"
 }
 
 # Release publication validates prerequisites and delegates the exact version to
 # the existing script. These fixtures never create tags or contact GitHub.
 release_repo="$test_root/release-success"
 setup_version_repo release-success
+export CW_REPO_DIR="$release_repo"
 printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z"},{"tagName":"v9.8.6","name":"v9.8.6","isDraft":false,"isPrerelease":false,"publishedAt":"2026-08-01T00:00:00Z"}]\n' > "$test_root/releases.json"
 release_output=$("$release_repo/cw" r 9.8.7)
 grep -Fq 'Publishing Worker 9.8.7' <<<"$release_output"
@@ -365,9 +415,11 @@ grep -Fq 'release script failed with exit code 1' "$test_root/release-existing-t
 rm "$test_root/fail-existing-tag" "$test_root/release.args"
 
 # Inspection uses structured provider data and does not alter repository state.
+git -C "$release_repo" remote set-url origin https://github.com/owner/release-success.git
 release_head=$(git -C "$release_repo" rev-parse HEAD)
 release_status=$(git -C "$release_repo" status --porcelain)
 : > "$test_root/gh.args"
+: > "$test_root/gh-repo.args"
 latest_output=$("$release_repo/cw" r)
 grep -Fq 'v9.8.7  published  2026-09-01T00:00:00Z' <<<"$latest_output"
 ! grep -Fq 'https://' <<<"$latest_output"
@@ -383,6 +435,9 @@ long_list_output=$("$release_repo/cw" release list)
 while IFS= read -r query_args; do
   [[ $query_args == 'release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt' ]]
 done < "$test_root/gh.args"
+while IFS= read -r selected_repo; do
+  [[ $selected_repo == github.com/owner/release-success ]]
+done < "$test_root/gh-repo.args"
 [[ $(git -C "$release_repo" rev-parse HEAD) == "$release_head" ]]
 [[ $(git -C "$release_repo" status --porcelain) == "$release_status" ]]
 printf '[]\n' > "$test_root/releases.json"
@@ -408,7 +463,8 @@ for malformed_kind in malformed missing; do
     echo "$malformed_kind release version unexpectedly succeeded" >&2; exit 1
   fi
   if [[ $malformed_kind == missing ]]; then
-    grep -Fq 'Directory.Build.props must be a regular file' "$test_root/release-$malformed_kind.out"
+    grep -Fq "not a valid Codex Worker Git repository: $malformed_release_repo" "$test_root/release-$malformed_kind.out"
+    grep -Fq 'CW_REPO_DIR' "$test_root/release-$malformed_kind.out"
   else
     grep -Fq 'Directory.Build.props is missing, malformed, or has an ambiguous' "$test_root/release-$malformed_kind.out"
   fi
@@ -506,7 +562,8 @@ for malformed_kind in malformed missing multiple; do
     echo "$malformed_kind props unexpectedly succeeded" >&2; exit 1
   fi
   if [[ $malformed_kind == missing ]]; then
-    grep -Fq 'Directory.Build.props must be a regular file' "$test_root/version-$malformed_kind.out"
+    grep -Fq "not a valid Codex Worker Git repository: $malformed_repo" "$test_root/version-$malformed_kind.out"
+    grep -Fq 'CW_REPO_DIR' "$test_root/version-$malformed_kind.out"
   else
     grep -Fq 'Directory.Build.props is missing, malformed, or has an ambiguous' "$test_root/version-$malformed_kind.out"
   fi

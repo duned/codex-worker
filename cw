@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
-readonly SCRIPT_DIR="$(dirname -- "$SCRIPT_PATH")"
-readonly REPO_ROOT="$SCRIPT_DIR"
-readonly CALLER_DIR="$PWD"
+REPO_ROOT=''
 readonly service_name=${CW_SERVICE_NAME:-codex-worker}
 readonly worker_api_url=${CW_WORKER_API_URL:-http://127.0.0.1:5080}
 readonly deploy_dir=${CW_DEPLOY_DIR:-$HOME/apps/codex-worker}
+readonly configured_repo_dir=${CW_REPO_DIR:-$HOME/projects/codex-worker}
 
 usage() {
   cat <<'HELP'
@@ -29,6 +27,7 @@ Environment overrides:
   CW_WORKER_API_URL Worker read API (default: http://127.0.0.1:5080)
   CW_DEPLOY_DIR     Local deployment directory (default: ~/apps/codex-worker)
   CW_SERVICE_NAME   systemd service name (default: codex-worker)
+  CW_REPO_DIR       Codex Worker source repository (default: ~/projects/codex-worker)
 
 cw deploy manages a system-level Worker service and requires suitable sudo
 permission for non-interactive systemctl stop/start operations. It does not
@@ -74,20 +73,31 @@ git_value() {
   git -C "$REPO_ROOT" "$@"
 }
 
-validate_repository() {
-  if [[ ${1:-} == v || ${1:-} == version || ${1:-} == r || ${1:-} == release ]]; then
-    [[ -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
-      error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
-      error 'expected src/CodexWorker/CodexWorker.csproj beside the cw script'
-      return 1
-    }
-    return 0
+resolve_repository() {
+  local path=$configured_repo_dir
+  case $path in
+    '~') path=$HOME ;;
+    '~/'*) path="$HOME/${path:2}" ;;
+  esac
+  if [[ ! -d $path ]]; then
+    error "Codex Worker repository directory does not exist: $path (set CW_REPO_DIR to the repository location)"
+    return 1
   fi
-  [[ -r $REPO_ROOT/Directory.Build.props && -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
-    error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
-    error 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj beside the cw script'
+  REPO_ROOT=$(cd -- "$path" 2>/dev/null && pwd -P) || {
+    error "cannot resolve Codex Worker repository directory: $path (check CW_REPO_DIR)"
     return 1
   }
+  local git_root
+  git_root=$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null) || git_root=''
+  if [[ ! -r $REPO_ROOT/Directory.Build.props || ! -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ||
+        -z $git_root || $(cd -- "$git_root" 2>/dev/null && pwd -P) != "$REPO_ROOT" ]]; then
+    error "configured path is not a valid Codex Worker Git repository: $REPO_ROOT (set CW_REPO_DIR to the repository location)"
+    return 1
+  fi
+}
+
+validate_repository() {
+  resolve_repository
 }
 
 status_command() {
@@ -170,9 +180,9 @@ valid_product_version() { [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0
 
 validate_version_git_root() {
   local git_root
-  git_root=$(git_value rev-parse --show-toplevel 2>/dev/null) || { error 'resolved script directory is not a Git repository'; return 1; }
+  git_root=$(git_value rev-parse --show-toplevel 2>/dev/null) || { error "configured path is not a Git repository: $REPO_ROOT (check CW_REPO_DIR)"; return 1; }
   [[ $(cd -- "$git_root" && pwd -P) == $(cd -- "$REPO_ROOT" && pwd -P) ]] || {
-    error 'cw script directory does not match the Git repository root'
+    error 'CW_REPO_DIR must name the Git repository root'
     return 1
   }
 }
@@ -342,9 +352,11 @@ PY
 
 release_list() {
   need_command gh || return 1
-  local response
+  local response origin selector
+  origin=$(git_value remote get-url origin 2>/dev/null) || { error "Git remote origin is unavailable in $REPO_ROOT; cannot select repository releases"; return 1; }
+  selector=$(github_repository_selector "$origin") || { error "cannot determine GitHub repository from origin in $REPO_ROOT"; return 1; }
   printf 'Querying repository releases...\n'
-  if ! response=$(gh release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt 2>&1); then
+  if ! response=$(GH_REPO="$selector" gh release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt 2>&1); then
     response=${response//$'\n'/ }
     error "could not query repository releases${response:+: $response}"
     return 1
@@ -382,6 +394,20 @@ PY
     error 'could not read repository release metadata'
     return 1
   fi
+}
+
+github_repository_selector() {
+  local origin=$1 host path
+  case $origin in
+    git@*:* ) host=${origin#git@}; host=${host%%:*}; path=${origin#*:}; path="$host/$path" ;;
+    ssh://git@*/* ) host=${origin#ssh://git@}; host=${host%%/*}; path=${origin#ssh://git@*/}; path="$host/$path" ;;
+    https://*/* ) path=${origin#https://} ;;
+    http://*/* ) path=${origin#http://} ;;
+    * ) return 1 ;;
+  esac
+  path=${path%.git}
+  [[ $path =~ ^[^/]+/[^/]+/[^/]+$ ]] || return 1
+  printf '%s\n' "$path"
 }
 
 release_command() {
@@ -571,7 +597,7 @@ main() {
   local command=$1; shift
   case $command in
     --help|-h|help|h) ;;
-    *) validate_repository "$command" || return 1 ;;
+    status|s|deploy|d|version|v|release|r) validate_repository "$command" || return 1 ;;
   esac
   case $command in
     --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
