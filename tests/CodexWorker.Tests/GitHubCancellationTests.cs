@@ -24,9 +24,10 @@ public sealed class GitHubCancellationTests
             Task.FromException<ProcessResult>(new OperationCanceledException(ct)));
         cancellation.Cancel();
 
-        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
+        var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
             client.ReplaceLabelAsync(6, "ready", "working", cancellation.Token));
-        Assert.Contains("remote Issue state may be uncertain", failure.Message);
+        Assert.Equal(GitHubFailureKind.Cancellation, failure.FailureKind);
+        Assert.Equal(GitHubRemoteState.Uncertain, failure.RemoteState);
         Assert.IsType<OperationCanceledException>(failure.InnerException);
     }
 }

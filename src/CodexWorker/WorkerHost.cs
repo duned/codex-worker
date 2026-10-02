@@ -333,6 +333,10 @@ public sealed class WorkerHost
                         renewal.Stop.Dispose();
                     }
                     try { await completed; }
+                    catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
+                    {
+                        PauseProjectForGitHubFailure(runtimeReadModel, project.Configuration.Project.Name, githubFailure);
+                    }
                     catch (PreExecutionInfrastructureException ex)
                     {
                         var message = $"Project '{ex.Project}' is unavailable after a pre-execution infrastructure failure for Issue #{ex.IssueNumber} [{ExecutionFormatting.ShortId(ex.ExecutionId)}]: {ex.Message}";
@@ -499,6 +503,16 @@ public sealed class WorkerHost
                         // ClaimAssignedAsync; that work can itself outlive a short lease.
                         var leaseRenewal = RenewLeaseWhileActiveAsync(lease, leaseStop);
                         try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token); }
+                        catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
+                        {
+                            leaseStop.Cancel();
+                            try { await leaseRenewal; } catch (OperationCanceledException) { }
+                            leaseStop.Dispose();
+                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            PauseProjectForGitHubFailure(runtimeReadModel, assignedProject.Configuration.Project.Name, githubFailure,
+                                "The Server assignment remains leased until expiry reconciliation.");
+                            continue;
+                        }
                         catch
                         {
                             leaseStop.Cancel();
@@ -534,6 +548,12 @@ public sealed class WorkerHost
                         activeProject = project.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? execution;
                         try { execution = await project.Worker.ClaimNextAsync(executionToken); }
+                        catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
+                        {
+                            PauseProjectForGitHubFailure(runtimeReadModel, project.Configuration.Project.Name, githubFailure);
+                            runtimeReadModel.Registry.Release(project.Configuration.Project.Name);
+                            continue;
+                        }
                         catch (PreExecutionInfrastructureException ex)
                         {
                             runtimeReadModel.Registry.MarkUnavailable(project.Configuration.Project.Name, ex.Message);
@@ -664,6 +684,9 @@ public sealed class WorkerHost
     internal static bool IsShutdownInterruption(ExecutionHistoryEntry entry) =>
         entry.State == "Cancelled" && entry.FailureReason?.StartsWith("Execution interrupted by Worker shutdown", StringComparison.Ordinal) == true;
 
+    internal static bool RequiresManualGitHubReconciliation(GitHubIssueState issue, string readyLabel) =>
+        issue.IsOpen && issue.Labels.Contains(readyLabel, StringComparer.OrdinalIgnoreCase);
+
     internal static async Task AwaitShutdownExecutionsAsync(IEnumerable<Task<IssueProcessingResult?>> executions)
     {
         var tasks = executions.Select(ObserveAsync).ToArray();
@@ -677,6 +700,11 @@ public sealed class WorkerHost
         {
             try { await task; }
             catch (WorkerShutdownException) { /* Explicitly recorded controlled interruption. */ }
+            catch (WorkerInfrastructureException error) when (GitHubOperationException.Find(error) is not null)
+            {
+                // Shutdown already stopped scheduling. Preserve the recorded remote uncertainty
+                // without turning a secondary Issue report failure into a process crash.
+            }
         }
     }
 
@@ -764,6 +792,40 @@ public sealed class WorkerHost
         var entries = await history.ReadAllAsync(ct);
         foreach (var project in runtimes)
         {
+            foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
+                         item.Repository == project.Configuration.Project.Repository &&
+                         item.RecoveryState == GitHubOperationException.ReconciliationRequiredState))
+            {
+                GitHubIssueState remote;
+                try
+                {
+                    remote = await project.GitHub.ReadIssueStateAsync(entry.IssueNumber, ct);
+                }
+                catch (WorkerInfrastructureException ex)
+                {
+                    var safeDetail = FailureDiagnosticRedactor.Redact(ex.Message,
+                        project.Configuration.Environment.Variables.Values.ToArray());
+                    if (safeDetail.Length > 1200) safeDetail = safeDetail[..1180] + " … [truncated]";
+                    var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remote state could not be verified for execution {entry.ExecutionId}: {safeDetail}";
+                    runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                    runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
+                    _output.Warning(reason);
+                    _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · startup GitHub reconciliation could not verify remote state · project scheduling paused.");
+                    continue;
+                }
+                var readyRemains = RequiresManualGitHubReconciliation(remote, project.Configuration.GitHub.ReadyLabel);
+                if (readyRemains)
+                {
+                    var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
+                    runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                    runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
+                    _output.Warning(reason);
+                    _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · remote state verified as open and ready · scheduling paused pending manual reconciliation.");
+                    continue;
+                }
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "github-reconciled", ct);
+                _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · GitHub state verified; Issue is not eligible for automatic replay.");
+            }
             var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
             foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                          item.Repository == project.Configuration.Project.Repository &&
@@ -825,6 +887,36 @@ public sealed class WorkerHost
             repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken), codex, github, repositoryGate);
+    }
+
+    private void PauseProjectForGitHubFailure(WorkerRuntimeReadModel runtime, string projectName,
+        GitHubOperationException failure, string? additionalContext = null)
+    {
+        var issue = failure.IssueNumber is { } issueNumber ? $"Issue #{issueNumber}" : "queue eligibility";
+        var correlation = failure.ExecutionId is { } executionId ? $" · execution {executionId}" : "";
+        var remoteState = failure.RemoteState switch
+        {
+            GitHubRemoteState.Uncertain => "uncertain; manual reconciliation is required",
+            GitHubRemoteState.NotChanged => "known unchanged",
+            _ => "read-only state unavailable"
+        };
+        var reconciliationRequired = failure.IsMutation && failure.RemoteStateUncertain;
+        var heading = reconciliationRequired ? "GitHub reconciliation required" : "GitHub operation failed";
+        var reason = $"{heading}: {issue}{correlation} operation '{failure.Operation}' failed ({failure.FailureKind}); remote state is {remoteState}. {failure.Message}";
+        var projectConfiguration = runtime.Registry.Snapshot()
+            .FirstOrDefault(project => string.Equals(project.Configuration.Project.Name, projectName, StringComparison.OrdinalIgnoreCase))
+            .Configuration;
+        if (projectConfiguration is not null)
+            reason = FailureDiagnosticRedactor.Redact(reason, projectConfiguration.Environment.Variables.Values.ToArray());
+        if (reason.Length > 1600) reason = reason[..1580] + " … [truncated]";
+        if (!string.IsNullOrWhiteSpace(additionalContext)) reason += $" {additionalContext}";
+        if (reason.Length > 1800) reason = reason[..1780] + " … [truncated]";
+        runtime.Registry.MarkUnavailable(projectName, reason);
+        runtime.Events.Publish(reconciliationRequired ? "project.github-reconciliation-required" : "project.github-failure",
+            reason, projectName);
+        _output.Warning($"Project '{projectName}' paused after a GitHub failure; unrelated projects will continue. {reason}");
+        var pauseReason = reconciliationRequired ? "uncertain mutation requires manual reconciliation" : "the GitHub operation must succeed before this project can schedule again";
+        _operationalLog($"Scheduler · {projectName} · {issue}{correlation} · GitHub {failure.FailureKind} failure during {failure.Operation} · remote state {remoteState} · {pauseReason} · scheduling paused for this project.");
     }
 
     private async Task ReportProvisioningStateAsync(WorkerRegistrationClient registration, string planId,

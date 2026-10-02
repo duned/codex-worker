@@ -938,6 +938,51 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task SecondaryGitHubFailurePreservesPrimaryExecutionFailureAndRecordsUncertainty()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Codex.InitialException = new WorkerInfrastructureException("primary Codex execution failure");
+        h.GitHub.InterruptionReportingFailure = new GitHubOperationException("issue edit", 17, true,
+            GitHubFailureKind.TransientProvider, GitHubRemoteState.Uncertain,
+            "GraphQL: Something went wrong while executing your query");
+
+        var failure = await Assert.ThrowsAsync<GitHubOperationException>(() => h.ProcessOneAsync());
+
+        Assert.True(failure.IsSecondaryReportingFailure);
+        Assert.Contains("primary Codex execution failure", failure.PrimaryFailure);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.Contains("primary Codex execution failure", entry.FailureReason);
+        Assert.Contains("GraphQL: Something went wrong", entry.ReportingFailure);
+        Assert.Equal(GitHubOperationException.ReconciliationRequiredState, entry.RecoveryState);
+        Assert.Equal(1, h.GitHub.Labels.Count(label => label == "working->blocked"));
+        Assert.Empty(h.GitHub.Comments);
+    }
+
+    [Fact]
+    public async Task UncertainResultMutationIsNotFollowedByACompensatingGitHubMutation()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.ResultReportingFailure = new GitHubOperationException("issue edit", 17, true,
+            GitHubFailureKind.TransientProvider, GitHubRemoteState.Uncertain,
+            "GraphQL: Something went wrong while executing your query");
+
+        await Assert.ThrowsAsync<GitHubOperationException>(() => h.ProcessOneAsync());
+
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Completed", entry.State);
+        Assert.Null(entry.FailureReason);
+        Assert.Contains("GraphQL: Something went wrong", entry.ReportingFailure);
+        Assert.Equal(GitHubOperationException.ReconciliationRequiredState, entry.RecoveryState);
+        Assert.DoesNotContain("working->blocked", h.GitHub.Labels);
+        Assert.Empty(h.GitHub.Comments);
+    }
+
+    [Fact]
     public async Task StructuredTaskFailureStillCleansAndReportsFailedIssue()
     {
         var database = Path.Combine(Path.GetTempPath(), $"codex-worker-history-{Guid.NewGuid():N}.db");
@@ -1180,6 +1225,40 @@ public sealed class WorkerV011Tests
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => WorkerHost.AwaitShutdownExecutionsAsync([cancelled, failure]));
     }
 
+    [Fact]
+    public async Task SecondaryGitHubFailureDuringRequestedShutdownDoesNotBecomeFatalExit()
+    {
+        var shutdown = Task.FromException<IssueProcessingResult?>(new WorkerShutdownException(CancellationToken.None,
+            new OperationCanceledException("controlled shutdown")));
+        var reporting = Task.FromException<IssueProcessingResult?>(new GitHubOperationException("issue edit", 151, true,
+            GitHubFailureKind.TransientProvider, GitHubRemoteState.Uncertain, "transient provider failure"));
+
+        await WorkerHost.AwaitShutdownExecutionsAsync([shutdown, reporting]);
+    }
+
+    [Fact]
+    public async Task GitHubReportingFailureDoesNotCancelAnUnrelatedActiveExecution()
+    {
+        var releaseExecution = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unrelatedStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unrelated = RunUnrelatedAsync();
+        var reporting = Task.FromException<IssueProcessingResult?>(new GitHubOperationException("issue edit", 151, true,
+            GitHubFailureKind.TransientProvider, GitHubRemoteState.Uncertain, "transient provider failure"));
+        var join = WorkerHost.AwaitShutdownExecutionsAsync([reporting, unrelated]);
+
+        Assert.True(unrelatedStarted.Task.IsCompleted);
+        Assert.False(unrelated.IsCanceled);
+        releaseExecution.SetResult();
+        await join;
+
+        async Task<IssueProcessingResult?> RunUnrelatedAsync()
+        {
+            unrelatedStarted.SetResult();
+            await releaseExecution.Task;
+            return null;
+        }
+    }
+
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
@@ -1347,6 +1426,8 @@ public sealed class WorkerV011Tests
         public List<string> Labels { get; } = [];
         public List<string> Comments { get; } = [];
         public Func<Task>? CommentAction { get; set; }
+        public GitHubOperationException? InterruptionReportingFailure { get; set; }
+        public GitHubOperationException? ResultReportingFailure { get; set; }
 
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
             => FindOldestReadyAsync(label, new HashSet<int>(), cancellationToken);
@@ -1388,6 +1469,10 @@ public sealed class WorkerV011Tests
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
         {
             Labels.Add($"{remove}->{add}");
+            if (InterruptionReportingFailure is not null && remove == "working" && add == "blocked")
+                return Task.FromException(InterruptionReportingFailure);
+            if (ResultReportingFailure is not null && remove == "working" && add == "done")
+                return Task.FromException(ResultReportingFailure);
             if (CancelDuringClaim && remove == "ready")
             {
                 cancellation.Cancel();

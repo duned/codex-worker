@@ -128,12 +128,17 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
             _activeIssues.TryRemove(issueKey, out _);
-            if (claimedExecution is not null) await RecordShutdownAsync(claimedExecution);
+            if (claimedExecution is not null) await RecordShutdownAsync(claimedExecution, ShutdownRecoveryState(shutdownError));
             throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
-        catch
+        catch (Exception ex)
         {
             _activeIssues.TryRemove(issueKey, out _);
+            if (claimedExecution is not null && !claimedExecution.IsTerminal)
+                await RecordInfrastructureFailureAsync(claimedExecution, ex.Message,
+                    GitHubOperationException.Find(ex) is { IsMutation: true } ? GitHubOperationException.ReconciliationRequiredState : "uncertain");
+            if (claimedExecution is not null && ex is GitHubOperationException githubFailure)
+                throw githubFailure.ForExecution(claimedExecution.ExecutionId);
             throw;
         }
     }
@@ -217,7 +222,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
-            await RecordShutdownAsync(execution);
+            await RecordShutdownAsync(execution, ShutdownRecoveryState(shutdownError));
             throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
@@ -227,8 +232,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (Exception ex)
         {
-            if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message);
+            if (!execution.IsTerminal)
+                await RecordInfrastructureFailureAsync(execution, ex.Message,
+                    ex is GitHubOperationException { IsMutation: true } ? GitHubOperationException.ReconciliationRequiredState : "uncertain");
             _activeIssues.TryRemove(issueKey, out _);
+            if (ex is GitHubOperationException githubFailure)
+                throw githubFailure.ForExecution(execution.ExecutionId);
             throw;
         }
         }
@@ -261,8 +270,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
                 AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.Model,
                 EffectiveEffort = execution.CodexProfile?.Effort };
-            await ReportResultAsync(issue, result with { Report = report }, ct);
-            await CompleteHistoryAsync(execution, report, result.Kind switch
+            var terminalState = result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
                 IssueOutcomeKind.Blocked => ExecutionState.Blocked,
@@ -270,21 +278,34 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 IssueOutcomeKind.IntegrationConflict => ExecutionState.IntegrationConflict,
                 IssueOutcomeKind.Superseded => ExecutionState.Superseded,
                 _ => throw new ArgumentOutOfRangeException()
-            }, CancellationToken.None);
+            };
+            var reportedResult = result with { Report = report };
+            try
+            {
+                await ReportResultAsync(issue, reportedResult, ct);
+            }
+            catch (GitHubOperationException)
+            {
+                // Keep the execution's own result authoritative when reporting it to GitHub
+                // fails. The outer handler records the secondary failure and any uncertainty.
+                await CompleteHistoryAsync(execution, report, terminalState, CancellationToken.None);
+                throw;
+            }
+            await CompleteHistoryAsync(execution, report, terminalState, CancellationToken.None);
             var finalEntry = history is null ? CreateEntry(execution, report, null, null) :
                 (await history.ReadAllAsync(CancellationToken.None)).FirstOrDefault(entry => entry.ExecutionId == execution.ExecutionId)
                 ?? CreateEntry(execution, report, null, null);
             await ReportServerAsync(finalEntry, execution.State, CancellationToken.None);
-            return result with { Report = report };
+            return reportedResult;
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
-            await RecordShutdownAsync(execution);
+            await RecordShutdownAsync(execution, ShutdownRecoveryState(shutdownError));
             throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
-            await ReportInterruptedExecutionAsync(execution, issue, "Cancellation interrupted execution.");
+            await ReportInterruptedExecutionAsync(execution, issue, "Cancellation interrupted execution.", ex);
             throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
         }
         catch (PreExecutionInfrastructureException ex)
@@ -294,7 +315,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (Exception ex)
         {
-            await ReportInterruptedExecutionAsync(execution, issue, ex.Message);
+            await ReportInterruptedExecutionAsync(execution, issue, ex.Message, ex);
+            if (ex is GitHubOperationException githubFailure)
+                throw githubFailure.ForExecution(execution.ExecutionId);
             throw;
         }
         finally
@@ -303,23 +326,72 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    private async Task ReportInterruptedExecutionAsync(WorkerExecution execution, GitHubIssue issue, string reason)
+    private async Task ReportInterruptedExecutionAsync(WorkerExecution execution, GitHubIssue issue, string reason,
+        Exception? primaryFailure = null)
     {
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
-        if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, safeReason);
-        var diagnostic = $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · infrastructure failure · {safeReason}";
+        var primaryGitHubFailure = primaryFailure is null ? null : GitHubOperationException.Find(primaryFailure);
+        var recoveryState = primaryGitHubFailure is { IsMutation: true }
+            ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
+        if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, safeReason, recoveryState);
+        var diagnostic = primaryGitHubFailure is not null && execution.IsTerminal &&
+            execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled)
+            ? $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · outcome {execution.State} · GitHub reporting failure · {safeReason}"
+            : $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · infrastructure failure · {safeReason}";
         _operationalLog(diagnostic);
         _output.Warning(diagnostic);
-        // Do not release the scheduler as a safe task failure. Remote reporting failure also
-        // propagates so the host stops with its capacity reservation intact.
-        await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
-        await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
-            $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
-            "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n", CancellationToken.None);
-        if (history is not null)
+        if (primaryGitHubFailure is not null)
         {
-            var entry = (await history.ReadAllAsync(CancellationToken.None)).Single(row => row.ExecutionId == execution.ExecutionId);
-            await ReportServerAsync(entry, execution.State, CancellationToken.None);
+            if (history is not null)
+            {
+                if (execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled))
+                {
+                    var reportingFailure = Limit(FailureDiagnosticRedactor.Redact(primaryGitHubFailure.Message,
+                        config.Environment.Variables.Values.ToArray()), 1600);
+                    await history.UpdateReportingFailureAsync(execution.ExecutionId, reportingFailure, CancellationToken.None);
+                }
+                if (primaryGitHubFailure.IsMutation)
+                    await history.UpdateRecoveryAsync(execution.ExecutionId, GitHubOperationException.ReconciliationRequiredState, CancellationToken.None);
+            }
+            _operationalLog($"Execution {execution.ExecutionId} · primary GitHub failure during {primaryGitHubFailure.Operation}; no further GitHub mutation will be attempted · remote Issue state {(primaryGitHubFailure.RemoteStateUncertain ? "uncertain" : primaryGitHubFailure.RemoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "read only")}.");
+            return;
+        }
+        if (execution.IsTerminal && execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled))
+        {
+            _operationalLog($"Execution {execution.ExecutionId} · outcome {execution.State} remains authoritative; secondary reporting failed with {safeReason} · no further GitHub mutation will be attempted.");
+            return;
+        }
+        try
+        {
+            // These reporting mutations are attempted once. A failed mutation is retained for
+            // reconciliation and must never be replayed as an automatic retry.
+            await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
+            await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
+                $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
+                "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n", CancellationToken.None);
+            if (history is not null)
+            {
+                var entry = (await history.ReadAllAsync(CancellationToken.None)).Single(row => row.ExecutionId == execution.ExecutionId);
+                await ReportServerAsync(entry, execution.State, CancellationToken.None);
+            }
+        }
+        catch (GitHubOperationException reportingFailure)
+        {
+            var secondaryMessage = Limit(FailureDiagnosticRedactor.Redact(reportingFailure.Message,
+                config.Environment.Variables.Values.ToArray()), 1600);
+            var correlated = reportingFailure.DuringReporting(execution.ExecutionId, safeReason);
+            var followUp = reportingFailure.IsMutation && reportingFailure.RemoteStateUncertain
+                ? "manual reconciliation is required"
+                : "project scheduling will pause until GitHub reporting recovers";
+            _operationalLog($"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · primary failure · {safeReason} · secondary GitHub reporting failure · {secondaryMessage} · remote Issue state {(reportingFailure.RemoteStateUncertain ? "uncertain" : reportingFailure.RemoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "read only")} · {followUp}.");
+            _output.Warning($"Execution {execution.ExecutionId} · secondary GitHub reporting failure; primary failure remains authoritative. {secondaryMessage}");
+            if (history is not null)
+            {
+                await history.UpdateReportingFailureAsync(execution.ExecutionId, secondaryMessage, CancellationToken.None);
+                if (reportingFailure.IsMutation)
+                    await history.UpdateRecoveryAsync(execution.ExecutionId, GitHubOperationException.ReconciliationRequiredState, CancellationToken.None);
+            }
+            throw correlated;
         }
     }
 
@@ -333,12 +405,28 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         _output.Warning(diagnostic);
         // Remove eligibility before reporting so this Issue cannot repeatedly consume capacity.
         // A failed GitHub update remains infrastructure failure: its remote state is uncertain.
-        await github.ReplaceLabelAsync(issue.Number, claimedLabel, config.GitHub.BlockedLabel, ct);
-        await telegram.PreparationRejectedAsync(config.Project.Name, config.Project.Repository, issue,
-            execution.ExecutionId, safeReason, CancellationToken.None);
-        await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
-            $"### Preparation rejected\n\nExecution `{execution.ExecutionId}` could not start.\n\n{safeReason}\n\n### Recovery\n\n" +
-            $"- Inspect the previous execution and preserved workspace.\n- Correct the preparation problem or select `worker.retryMode: restart`.\n- Apply `{config.GitHub.ReadyLabel}` for a new attempt, or `{config.GitHub.IntegrationRecoveryLabel}` to recover a preserved integration conflict.\n", ct);
+        try
+        {
+            await github.ReplaceLabelAsync(issue.Number, claimedLabel, config.GitHub.BlockedLabel, ct);
+            await telegram.PreparationRejectedAsync(config.Project.Name, config.Project.Repository, issue,
+                execution.ExecutionId, safeReason, CancellationToken.None);
+            await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
+                $"### Preparation rejected\n\nExecution `{execution.ExecutionId}` could not start.\n\n{safeReason}\n\n### Recovery\n\n" +
+                $"- Inspect the previous execution and preserved workspace.\n- Correct the preparation problem or select `worker.retryMode: restart`.\n- Apply `{config.GitHub.ReadyLabel}` for a new attempt, or `{config.GitHub.IntegrationRecoveryLabel}` to recover a preserved integration conflict.\n", ct);
+        }
+        catch (GitHubOperationException reportingFailure)
+        {
+            var secondary = Limit(FailureDiagnosticRedactor.Redact(reportingFailure.Message,
+                config.Environment.Variables.Values.ToArray()), 1600);
+            _operationalLog($"Execution {execution.ExecutionId} · primary preparation failure · {safeReason} · secondary GitHub reporting failure · {secondary} · remote Issue state {(reportingFailure.RemoteStateUncertain ? "uncertain" : "known unchanged")}.");
+            if (history is not null)
+            {
+                await history.UpdateReportingFailureAsync(execution.ExecutionId, secondary, CancellationToken.None);
+                if (reportingFailure.IsMutation)
+                    await history.UpdateRecoveryAsync(execution.ExecutionId, GitHubOperationException.ReconciliationRequiredState, CancellationToken.None);
+            }
+            throw reportingFailure.DuringReporting(execution.ExecutionId, safeReason);
+        }
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -465,23 +553,27 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         catch (WorkerInfrastructureException ex) { _output.Warning($"Execution completed, but its final history details could not be saved: {ex.Message}"); }
     }
 
-    private async Task RecordShutdownAsync(WorkerExecution execution)
+    private async Task RecordShutdownAsync(WorkerExecution execution, string recoveryState = "uncertain")
     {
         if (execution.IsTerminal) return; // ExecutionRunner already recorded the workspace interruption.
         execution.TransitionTo(ExecutionState.Cancelled);
         const string reason = "Execution interrupted by Worker shutdown";
         _output.Warning($"Execution {execution.ExecutionId} · {reason}");
-        await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = "uncertain" }, CancellationToken.None);
+        await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState }, CancellationToken.None);
         // Keep remote ownership and labels unchanged. Restart/lease reconciliation must inspect
         // uncertain Git/GitHub state before any new attempt; shutdown must not perform remote mutations.
     }
 
-    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason)
+    private static string ShutdownRecoveryState(Exception error) =>
+        GitHubOperationException.Find(error) is { IsMutation: true }
+            ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
+
+    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string recoveryState = "uncertain")
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
         try
         {
-            var entry = CreateEntry(execution, null, null, reason);
+            var entry = CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState };
             await SaveHistoryAsync(entry, CancellationToken.None);
             await ReportServerAsync(entry, execution.State, CancellationToken.None);
         }

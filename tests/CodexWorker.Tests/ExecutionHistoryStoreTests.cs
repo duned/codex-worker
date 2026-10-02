@@ -22,7 +22,8 @@ public sealed class ExecutionHistoryStoreTests
             RepairCount = 1, Repairs = [repair], CommitSha = "0123456789abcdef0123456789abcdef01234567",
             IntegrationBranch = "main", CompletedBranch = "done/feature/8-example",
             RecoveryState = "recoverable", RecoveryBaseCommit = "base-sha",
-            RecoveryStatus = "2 changed path(s); 1 staged path(s). Workspace retained for recovery."
+            RecoveryStatus = "2 changed path(s); 1 staged path(s). Workspace retained for recovery.",
+            ReportingFailure = "GitHub comment failed; remote Issue state is uncertain."
         };
         using (var store = new ExecutionHistoryStore(database.Path))
             await store.UpdateAsync(completed);
@@ -43,7 +44,34 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("recoverable", actual.RecoveryState);
         Assert.Equal("base-sha", actual.RecoveryBaseCommit);
         Assert.Contains("Workspace retained", actual.RecoveryStatus);
+        Assert.Contains("remote Issue state is uncertain", actual.ReportingFailure);
+        await reopened.UpdateReportingFailureAsync(executionId, "Secondary interruption report failed.");
+        Assert.Equal("Secondary interruption report failed.", Assert.Single(await reopened.ReadAllAsync()).ReportingFailure);
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => reopened.UpdateAsync(actual with { State = "Failed" }));
+    }
+
+    [Fact]
+    public async Task VersionSevenDatabaseMigratesReportingFailureWithoutChangingExistingOutcomes()
+    {
+        using var database = new TemporaryDatabase();
+        var original = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "InfrastructureFailure", CompletedAtUtc = DateTimeOffset.UtcNow,
+            FailureReason = "Primary execution failure"
+        };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(original);
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database.Path }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE executions DROP COLUMN reporting_failure; PRAGMA user_version = 7;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        using var migrated = new ExecutionHistoryStore(database.Path);
+        var entry = Assert.Single(await migrated.ReadAllAsync());
+        Assert.Equal("Primary execution failure", entry.FailureReason);
+        Assert.Null(entry.ReportingFailure);
     }
 
     [Fact]
@@ -57,7 +85,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; PRAGMA user_version = 6;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN reporting_failure; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -208,7 +236,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(7L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(8L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

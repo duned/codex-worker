@@ -15,14 +15,15 @@ public sealed record WorkerStatus(string Version, string State, long UptimeSecon
     int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount,
     string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult);
 public sealed record ProjectRuntimeInfo(string Name, string ConfigurationPath, string ProjectDirectory, string Repository, bool Enabled, string State,
-    int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount);
+    int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount, string? UnavailableReason = null);
 public sealed record ProjectLifecycleRequest(string Action);
 public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool PassedAfterRepair);
 public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, string Repository, int IssueNumber,
     string IssueTitle, string State, DateTimeOffset StartedAtUtc, DateTimeOffset? CompletedAtUtc,
     long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
-    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null);
+    Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null,
+    string? FailureReason = null, string? ReportingFailure = null);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -153,7 +154,7 @@ public sealed class WorkerRuntimeReadModel
                 var active = entries.Count(e => string.Equals(e.Project, config.Project.Name, StringComparison.OrdinalIgnoreCase));
                 return new ProjectRuntimeInfo(config.Project.Name, item.Path, config.Project.Directory, config.Project.Repository, state.State == ProjectLifecycleState.Enabled,
                     state.State.ToString(), config.Worker.MaxParallelTasks, active,
-                    Math.Max(0, config.Worker.MaxParallelTasks - active), null);
+                    Math.Max(0, config.Worker.MaxParallelTasks - active), null, state.UnavailableReason);
             }).ToArray();
     }
 
@@ -172,7 +173,9 @@ public sealed class WorkerRuntimeReadModel
                 Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus,
                 e.RetryOfExecutionId, e.AttemptNumber, e.Resumed,
                 e.RecoveryState is "recoverable" or "cleanup-pending"
-                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc, e.EffectiveModel, e.EffectiveEffort);
+                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc,
+                e.EffectiveModel, e.EffectiveEffort,
+                e.State is "InfrastructureFailure" or "Cancelled" ? e.FailureReason : null, e.ReportingFailure);
         }).ToArray();
     }
 

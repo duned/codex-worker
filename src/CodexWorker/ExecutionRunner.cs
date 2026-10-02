@@ -196,7 +196,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
-            await RecordInfrastructureFailureAsync(execution, "Execution interrupted by Worker shutdown", "uncertain", shutdown: true);
+            var recoveryState = GitHubOperationException.Find(shutdownError) is { IsMutation: true }
+                ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
+            await RecordInfrastructureFailureAsync(execution, "Execution interrupted by Worker shutdown", recoveryState, shutdown: true);
             throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
         catch (Exception ex)

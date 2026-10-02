@@ -4,6 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt,
     IReadOnlyList<string>? Labels = null);
+public sealed record GitHubIssueState(bool IsOpen, IReadOnlyList<string> Labels);
 public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
 public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
@@ -57,7 +58,8 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
-            throw new WorkerInfrastructureException($"Could not reliably read ready Issue dependencies for repository '{repository}': {ex.Message}", ex);
+            throw ReadFailure("issue list", null,
+                $"Could not reliably read ready Issues for repository '{repository}': {ex.Message}", ex);
         }
     }
 
@@ -71,14 +73,16 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
             using var document = JsonDocument.Parse(result.StandardOutput);
             var issue = document.RootElement;
             if (!string.Equals(issue.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
-                throw new WorkerInfrastructureException($"Assigned Issue #{issueNumber} in '{repository}' is not open.");
+                throw new GitHubOperationException("issue view", issueNumber, false, GitHubFailureKind.DeterministicRequest,
+                    GitHubRemoteState.NotApplicable, $"Assigned Issue #{issueNumber} in '{repository}' is not open.");
             return new GitHubIssue(issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString() ?? "",
                 issue.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "", issue.GetProperty("createdAt").GetDateTimeOffset());
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
-            throw new WorkerInfrastructureException($"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+            throw ReadFailure("issue view", issueNumber,
+                $"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
         }
     }
 
@@ -98,7 +102,34 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or InvalidDataException)
         {
-            throw new WorkerInfrastructureException($"Could not read state for GitHub Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+            throw ReadFailure("issue view", issueNumber,
+                $"Could not read state for GitHub Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Reads authoritative scheduling state without making any Issue mutation.</summary>
+    public async Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken cancellationToken)
+    {
+        if (issueNumber <= 0) throw new WorkerInfrastructureException("GitHub Issue number must be positive.");
+        var result = await RunGhAsync(["issue", "view", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--repo", repository, "--json", "state,labels"], cancellationToken, allowGracefulCancellation: true);
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var issue = document.RootElement;
+            var state = issue.GetProperty("state").GetString();
+            if (!string.Equals(state, "OPEN", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(state, "CLOSED", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Unexpected GitHub Issue state '{state}'.");
+            var labels = issue.GetProperty("labels").EnumerateArray()
+                .Select(label => label.GetProperty("name").GetString() ?? "").ToArray();
+            return new GitHubIssueState(string.Equals(state, "OPEN", StringComparison.OrdinalIgnoreCase), labels);
+        }
+        catch (WorkerInfrastructureException) { throw; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or InvalidDataException)
+        {
+            throw ReadFailure("issue view", issueNumber,
+                $"Could not verify scheduling state for GitHub Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
         }
     }
 
@@ -115,7 +146,11 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
             throw new WorkerInfrastructureException($"GitHub Issue Dependencies API unavailable for '{repository}' Issue #{issueNumber}: {ex.Message}", ex);
         }
         try { return JsonDocument.Parse(ParseDependencyPages(result.StandardOutput)); }
-        catch (JsonException ex) { throw new WorkerInfrastructureException($"Could not parse GitHub Issue dependencies for #{issueNumber} in '{repository}': {ex.Message}", ex); }
+        catch (JsonException ex)
+        {
+            throw ReadFailure("Issue dependency API", issueNumber,
+                $"Could not parse GitHub Issue dependencies for #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
     }
 
     internal static string[] DependencyApiArguments(string repository, int issueNumber) =>
@@ -264,18 +299,111 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     private async Task<ProcessResult> RunGhAsync(IEnumerable<string> args, CancellationToken ct, bool allowGracefulCancellation = false)
     {
-        try
+        var arguments = args.ToArray();
+        var operation = DescribeOperation(arguments);
+        var issueNumber = IssueNumber(arguments);
+        var mutation = IsMutation(arguments);
+        for (var attempt = 0; ; attempt++)
         {
-            var result = await runCommand(args, ct);
-            if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"GitHub CLI command failed (exit {result.ExitCode}); Issue state may require manual reconciliation. {Tail(result.StandardError)}");
-            return result;
+            ProcessResult result;
+            try
+            {
+                result = await runCommand(arguments, ct);
+            }
+            catch (OperationCanceledException) when (allowGracefulCancellation && ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException ex)
+            {
+                var remoteState = mutation ? GitHubRemoteState.Uncertain : GitHubRemoteState.NotApplicable;
+                throw new GitHubOperationException(operation, issueNumber, mutation, GitHubFailureKind.Cancellation,
+                    remoteState, $"GitHub CLI {operation} was cancelled; remote Issue state is " +
+                    $"{(mutation ? "uncertain" : "not changed by this read") }.", ex);
+            }
+            catch (GitHubOperationException ex)
+            {
+                if (!mutation && attempt == 0 && ex.FailureKind == GitHubFailureKind.TransientProvider) continue;
+                throw;
+            }
+            catch (WorkerInfrastructureException ex)
+            {
+                var kind = ClassifyFailure(ex.Message);
+                if (!mutation && attempt == 0 && kind == GitHubFailureKind.TransientProvider) continue;
+                var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
+                throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
+                    $"GitHub CLI {operation} could not complete; remote Issue state is " +
+                    $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
+                    Sanitize(ex.Message, 1000), ex);
+            }
+            catch (Exception ex)
+            {
+                var kind = ClassifyFailure(ex.Message);
+                if (!mutation && attempt == 0 && kind == GitHubFailureKind.TransientProvider) continue;
+                var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
+                throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
+                    $"GitHub CLI {operation} failed or timed out; remote Issue state is " +
+                    $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
+                    Sanitize(ex.Message, 1000), ex);
+            }
+
+            if (result.ExitCode == 0) return result;
+            var detail = Sanitize(Tail(result.StandardError), 1000);
+            var failureKind = ClassifyFailure(detail);
+            if (!mutation && attempt == 0 && failureKind == GitHubFailureKind.TransientProvider) continue;
+            var failedRemoteState = mutation ? RemoteState(failureKind) : GitHubRemoteState.NotApplicable;
+            throw new GitHubOperationException(operation, issueNumber, mutation, failureKind, failedRemoteState,
+                $"GitHub CLI {operation} failed (exit {result.ExitCode}); remote Issue state is " +
+                $"{(failedRemoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : failedRemoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. {detail}");
         }
-        catch (OperationCanceledException) when (allowGracefulCancellation && ct.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException ex) { throw new WorkerInfrastructureException("GitHub operation was cancelled; remote Issue state may be uncertain.", ex); }
-        catch (WorkerInfrastructureException) { throw; }
-        catch (Exception ex) { throw new WorkerInfrastructureException($"GitHub CLI operation failed or timed out; GitHub state may require manual reconciliation: {ex.Message}", ex); }
     }
+
+    private static bool IsMutation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] == "issue" &&
+        args[1] is "edit" or "comment" or "close";
+
+    private static int? IssueNumber(IReadOnlyList<string> args)
+    {
+        if (args.Count >= 3 && args[0] == "issue" && args[1] is "view" or "edit" or "comment" or "close" &&
+            int.TryParse(args[2], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var issueNumber))
+            return issueNumber;
+        if (args.Count < 2 || args[0] != "api") return null;
+
+        foreach (var argument in args)
+        {
+            const string issuePath = "/issues/";
+            var issuePathIndex = argument.IndexOf(issuePath, StringComparison.Ordinal);
+            if (issuePathIndex < 0) continue;
+            var numberStart = issuePathIndex + issuePath.Length;
+            var numberEnd = argument.IndexOf('/', numberStart);
+            var value = numberEnd < 0 ? argument[numberStart..] : argument[numberStart..numberEnd];
+            if (int.TryParse(value, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out issueNumber))
+                return issueNumber;
+        }
+        return null;
+    }
+
+    private static string DescribeOperation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] == "issue"
+        ? $"issue {args[1]}"
+        : args.Count > 0 && args[0] == "api" ? "Issue API read" : "Issue query";
+
+    private static GitHubFailureKind ClassifyFailure(string detail)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(detail,
+                @"(?i)rate limit|secondary rate limit|abuse detection|\b429\b|\b(500|502|503|504)\b|something went wrong|temporarily unavailable|timed? out|connection reset|try again later"))
+            return GitHubFailureKind.TransientProvider;
+        if (System.Text.RegularExpressions.Regex.IsMatch(detail,
+                @"(?i)\b(401|403)\b|authentication required|not authorized|permission denied|resource not accessible"))
+            return GitHubFailureKind.AuthenticationOrAuthorization;
+        if (System.Text.RegularExpressions.Regex.IsMatch(detail,
+                @"(?i)\b(404|422)\b|not found|could not resolve to a node|invalid (argument|request)|validation failed"))
+            return GitHubFailureKind.DeterministicRequest;
+        return GitHubFailureKind.Unknown;
+    }
+
+    private static GitHubRemoteState RemoteState(GitHubFailureKind kind) => kind is
+        GitHubFailureKind.AuthenticationOrAuthorization or GitHubFailureKind.DeterministicRequest
+        ? GitHubRemoteState.NotChanged : GitHubRemoteState.Uncertain;
+
+    private static GitHubOperationException ReadFailure(string operation, int? issueNumber, string message, Exception inner) =>
+        new(operation, issueNumber, false, GitHubFailureKind.Unknown, GitHubRemoteState.NotApplicable, message, inner);
 
     private async Task<ProcessResult> RunLabelGhAsync(IEnumerable<string> args, string action, string? label, CancellationToken ct, bool readOnly)
     {
