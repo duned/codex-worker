@@ -283,7 +283,7 @@ public sealed class SqliteCredentialStore(string databasePath, string? encryptio
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = revoke
-            ? "UPDATE credentials SET status='Revoked',revoked_at_utc=$now,updated_at_utc=$now,assigned_worker_id=NULL,nonce=X'',ciphertext=X'',tag=X'',version=version+1 WHERE id=$id AND status='Ready';"
+            ? "UPDATE credentials SET status='Revoked',revoked_at_utc=$now,updated_at_utc=$now,assigned_worker_id=NULL,nonce=X'',ciphertext=X'',tag=X'',version=version+1 WHERE id=$id AND status IN ('Ready','NeedsReprovision');"
             : "UPDATE credentials SET assigned_worker_id=$worker,updated_at_utc=$now,version=version+1 WHERE id=$id AND status='Ready';";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$now", now.ToString("O"));

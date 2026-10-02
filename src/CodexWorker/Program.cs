@@ -258,6 +258,9 @@ public static class Program
                 Console.WriteLine($"Default configuration: {WorkerCommandLine.DefaultConfigurationPath}");
                 Console.WriteLine("Examples:");
                 Console.WriteLine("  codex-worker provision status");
+                Console.WriteLine("  codex-worker provision login codex-cli");
+                Console.WriteLine("  codex-worker provision prepare-authentication github-cli");
+                Console.WriteLine("  codex-worker provision check-authentication github-cli");
                 Console.WriteLine("  codex-worker provision install git --allow-elevation");
                 Console.WriteLine("  codex-worker provision upgrade codex-cli --allow-elevation --json");
                 Console.WriteLine("  codex-worker provision uninstall github-cli --config /etc/codex-worker/worker.yml --allow-elevation");

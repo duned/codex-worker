@@ -113,6 +113,55 @@ public sealed class ProvisioningCliTests
     }
 
     [Fact]
+    public async Task TextStatusLabelsNodeAuthenticationSeparatelyFromServerAndProviderAuthorization()
+    {
+        var discovery = new NodeCapabilityDiscovery((_, arguments, _) =>
+        {
+            if (arguments.SequenceEqual(["--version"])) return Task.FromResult((0, "1.2.3"));
+            if (arguments.SequenceEqual(["auth", "status", "--hostname", "github.com"]) ||
+                arguments.SequenceEqual(["login", "status"])) return Task.FromResult((1, "provider-token-must-not-appear"));
+            return Task.FromResult((0, "configured"));
+        });
+        var result = await ExecuteCliAsync(ProvisioningCli.Parse(["status"]), new ProvisioningPolicy(), discovery);
+        var originalOutput = Console.Out;
+        using var output = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            ProvisioningCli.Write(result, json: false);
+        }
+        finally { Console.SetOut(originalOutput); }
+
+        Assert.Contains("Node authentication is the Codex/GitHub CLI state observed in the service-account environment", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("github-cli (GitHub CLI):", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("node-authentication=required", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("codex-cli (Codex CLI):", output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("provider-token-must-not-appear", output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("credential-delivery", output.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SuccessfulGitHubPreparationPrintsTheNodeLocalTerminalHandoff()
+    {
+        var result = new WorkerProvisioningResult("prepare-authentication", "succeeded", ProvisioningDiagnostic.Completed,
+            "github-cli", ProvisioningCommandAction.PrepareAuthentication);
+        var originalOutput = Console.Out;
+        using var output = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            ProvisioningCli.Write(result, json: false);
+        }
+        finally { Console.SetOut(originalOutput); }
+
+        Assert.Contains("terminal on this node as the Worker service account", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("GH_CONFIG_DIR=\"$HOME/.local/share/codex-provisioning/github\"", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("gh auth login --hostname github.com", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("check-authentication github-cli", output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("token", output.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task StatusShowsPolicyAllowedMutationsAndTheirExplicitElevationRequirement()
     {
         var policy = new ProvisioningPolicy

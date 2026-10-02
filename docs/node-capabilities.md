@@ -143,6 +143,12 @@ without typed command history remain restorable.
 GitHub login preparation directs operators to complete browser/device authorization
 in a terminal on the node as the service account, then check authentication.
 The dashboard does not collect credentials or display raw process logs, tokens or private keys.
+The same node-local operations are available through the Worker CLI as
+`codex-worker provision prepare-authentication github-cli`,
+`codex-worker provision check-authentication github-cli`, and
+`codex-worker provision logout github-cli`. Preparation and status do not prove
+provider-side scopes or repository read/write authorization. Logout removes the
+product's local login state; it does not revoke the provider grant.
 
 Codex CLI also advertises **Sign in with device code** (`Login`). With local
 provisioning enabled and Worker credential/nonprivileged actions authorized,
@@ -171,6 +177,13 @@ configured. Packaged service PATH includes the system npm prefix. Custom
 installations must keep the executable and home accessible to their service user.
 Logout uses Codex's own logout operation in that identity; uninstall retains the
 local auth/configuration as described above.
+The Worker CLI exposes the same Codex lifecycle through
+`codex-worker provision login codex-cli`,
+`codex-worker provision check-authentication codex-cli`, and
+`codex-worker provision logout codex-cli`. Human-readable provisioning status
+labels this as node authentication and states that it is separate from Worker
+registration, Server credential delivery, provider-side permissions and project
+scheduling. A successful CLI login alone is not project readiness.
 
 A managed Worker with missing tools, unknown/probe errors or failed Codex
 CLI/authentication execution preflight remains registered and heartbeating in

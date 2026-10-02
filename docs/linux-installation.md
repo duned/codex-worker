@@ -24,6 +24,8 @@ Run `codex-server --help` (or `/opt/codex-server/current/CodexServer --help`) fo
 
 Use `sudo codex-server status` and `sudo codex-server diagnostics` to inspect local control-plane persistence, `sudo codex-server provision list` to inspect typed command history, or `sudo codex-server config show` / `sudo codex-server config validate` to inspect the effective configuration. These commands run as the Server service account with `/etc/codex-server/server.env`, use the configured data directory and database, and do not contact loopback or start another Server process. Status reports persistence readiness; it cannot observe the separate service process. Paths and credentials are redacted. See the [local administration guide](server-local-administration.md) for command lifecycle, JSON output and exit codes.
 
+Manage Server-held provider credentials with `sudo codex-server credential <operation>`. List and show return metadata only. Create and replace read the secret from standard input with `--secret-stdin`; provide it from a protected secret source, never as a command argument. Credential revoke blocks future Server delivery but does not revoke the external provider token or erase an already delivered copy. See the [local administration guide](server-local-administration.md) for the required encryption key, reassignment, restore/re-provisioning and authorization distinctions.
+
 Create a single-use Worker registration token using the installed operator helper; it expires after 15 minutes and can be revoked before use:
 
 ```sh

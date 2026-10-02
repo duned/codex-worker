@@ -63,3 +63,20 @@ test('Codex device login displays escaped instructions only during the active de
  s.context.commands[0].status='Succeeded';s.run('renderNode()');
  assert.ok(!s.$('node-detail').children[0].children.some(e=>e.innerHTML.includes('ABCD-EFGH')));
 });
+
+test('Codex node authentication projection exposes login, status and logout without claiming project authorization',()=>{
+ const s=setup();const cap=s.node.capabilities[0];cap.definition.id='codex-cli';cap.definition.displayName='Codex CLI';cap.availableActions=['login','checkauthentication','logout'];
+ s.run('renderNode()');
+ const markup=s.$('node-detail').children.map(element=>element.innerHTML).join('');
+ assert.match(markup,/Authentication/);assert.match(markup,/Required/);
+ assert.deepEqual(s.buttons().map(button=>button.textContent),['Sign in with device code','Check authentication','Logout / Remove authentication']);
+ assert.match(html,/service-account CLI authentication/);
+ assert.match(html,/does not grant project scheduling or provider write permission/);
+});
+
+test('GitHub browser/device handoff remains node-local and exposes check and logout controls',()=>{
+ const s=setup();const cap=s.node.capabilities[0];cap.availableActions=['prepareauthentication','checkauthentication','logout'];s.run('renderNode()');
+ assert.deepEqual(s.buttons().map(button=>button.textContent),['Prepare GitHub login','Check authentication','Logout / Remove authentication']);
+ assert.match(html,/gh auth login --hostname github.com/);
+ assert.match(html,/node-local gh login only; provider-side scopes/);
+});

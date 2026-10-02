@@ -12,6 +12,7 @@ public static class Program
                CodexServer diagnostics [--json] [Server configuration options]
                CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
+               CodexServer credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin]
                CodexServer provision <list|show|create|cancel|reconcile> [arguments]
                CodexServer worker-token create [database-path]
                CodexServer worker-token revoke <registration-token> [database-path]
@@ -43,7 +44,7 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        if (args is ["--help"] or ["-h"] || args is ["worker-token", "--help"] or ["worker", "--help"] or ["backup", "--help"])
+        if (args is ["--help"] or ["-h"] || args is ["worker-token", "--help"] or ["worker", "--help"] or ["backup", "--help"] or ["credential", "--help"])
         {
             Console.WriteLine(Help);
             return 0;
@@ -53,7 +54,7 @@ public static class Program
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
             return 0;
         }
-        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "provision")
+        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "credential" or "provision")
             return await RunLocalAdministrationAsync(args);
         if (args.Length > 0 && args[0] is "backup" or "worker-token" or "worker")
         {
@@ -103,6 +104,9 @@ public static class Program
             var exitCode = args[0] == "provision"
                 ? await new ServerProvisioningCommandCli(configuration, new LocalProvisioningCommandAdministrationServiceFactory())
                     .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
+                : args[0] == "credential"
+                    ? await new ServerCredentialAdministrationCli(configuration, new LocalServerCredentialAdministrationServiceFactory())
+                        .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
                 : await new ServerAdministrationCli(configuration, new LocalServerAdministrationServiceFactory())
                     .RunAsync(args.Skip(1).ToArray(), cancellation.Token);
             if (userCancellation.IsCancellationRequested)

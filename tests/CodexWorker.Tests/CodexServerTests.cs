@@ -138,6 +138,93 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task CredentialAdministrationApiProjectsSecretFreeMetadataAndKeepsDeliveryAssignedOnly()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        var priorEncryptionKey = Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY");
+        const string managementToken = "credential-admin-management-token";
+        const string originalSecret = "provider-credential-secret-original";
+        const string replacementSecret = "provider-credential-secret-replacement";
+        const string deliveryToken = "credential-delivery-token-with-sufficient-entropy";
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", managementToken);
+        Environment.SetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY",
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "credentials-api.db")));
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var workerId = Guid.NewGuid().ToString("N");
+            var otherWorkerId = Guid.NewGuid().ToString("N");
+            await registry.RegisterWorkerAsync(new(2, workerId, "credential worker", "1.0", "test", 1, []));
+            await registry.RegisterWorkerAsync(new(2, otherWorkerId, "other credential worker", "1.0", "test", 1, []));
+            var credentials = app.Services.GetRequiredService<ICredentialStore>();
+            await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
+            await app.StartAsync();
+
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            Assert.Equal(HttpStatusCode.Unauthorized, (await management.GetAsync("/api/v1/credentials")).StatusCode);
+            management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", managementToken);
+            using var createdResponse = await management.PostAsJsonAsync("/api/v1/credentials", new
+            {
+                provider = "test-provider", type = "api-token", secret = new { value = originalSecret }
+            });
+            Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+            var created = await createdResponse.Content.ReadFromJsonAsync<CredentialMetadata>();
+            Assert.NotNull(created);
+            var createBody = await createdResponse.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(originalSecret, createBody, StringComparison.Ordinal);
+            Assert.Equal("Ready", created.Status);
+
+            using var listResponse = await management.GetAsync("/api/v1/credentials");
+            var listed = await listResponse.Content.ReadFromJsonAsync<IReadOnlyList<CredentialMetadata>>();
+            Assert.NotNull(listed);
+            Assert.Equal(created, Assert.Single(listed));
+            using var showResponse = await management.GetAsync($"/api/v1/credentials/{created.Id}");
+            Assert.Equal(created, await showResponse.Content.ReadFromJsonAsync<CredentialMetadata>());
+
+            using var assignment = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
+                new CredentialAssignmentRequest(workerId));
+            var assigned = await assignment.Content.ReadFromJsonAsync<CredentialMetadata>();
+            Assert.Equal(workerId, assigned?.AssignedWorkerId);
+            using var delivery = new HttpClient { BaseAddress = new Uri(url) };
+            delivery.DefaultRequestHeaders.Add("X-Worker-Credential-Token", deliveryToken);
+            using var reassignment = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
+                new CredentialAssignmentRequest(otherWorkerId));
+            Assert.Equal(HttpStatusCode.OK, reassignment.StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound,
+                (await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}")).StatusCode);
+            using var assignBack = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
+                new CredentialAssignmentRequest(workerId));
+            using var delivered = await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}");
+            Assert.Equal(HttpStatusCode.OK, delivered.StatusCode);
+            Assert.Equal(originalSecret, (await delivered.Content.ReadFromJsonAsync<CredentialDeliveryResponse>())?.Secret);
+
+            using var replace = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/secret",
+                new CredentialSecretInput(replacementSecret));
+            var replaced = await replace.Content.ReadFromJsonAsync<CredentialMetadata>();
+            Assert.Equal(5, replaced?.Version);
+            Assert.DoesNotContain(replacementSecret, await management.GetStringAsync("/api/v1/credentials"), StringComparison.Ordinal);
+            Assert.Equal(replacementSecret, (await delivery.GetFromJsonAsync<CredentialDeliveryResponse>(
+                $"/api/v1/workers/{workerId}/credentials/{created.Id}"))?.Secret);
+
+            using var revoke = await management.PostAsync($"/api/v1/credentials/{created.Id}/revoke", null);
+            var revoked = await revoke.Content.ReadFromJsonAsync<CredentialMetadata>();
+            Assert.Equal("Revoked", revoked?.Status);
+            Assert.Null(revoked?.AssignedWorkerId);
+            Assert.Equal(HttpStatusCode.NotFound,
+                (await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}")).StatusCode);
+            await app.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY", priorEncryptionKey);
+        }
+    }
+
+    [Fact]
     public async Task WorkerAdministrationApiProjectsPolicyAndSeparatesApiAndDeliveryRevocation()
     {
         using var temporary = new TemporaryDirectory();
@@ -362,6 +449,8 @@ public sealed class CodexServerTests
         await registry.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining);
         var credential = await credentials.CreateAsync(new CreateCredentialRequest("github", "api", new CredentialSecretInput(secret)));
         await credentials.AssignAsync(credential.Id, workerId);
+        var credentialForRevocation = await credentials.CreateAsync(new CreateCredentialRequest("github", "api",
+            new CredentialSecretInput("second-backup-credential-secret")));
         await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
 
         await new ServerBackup(database).ExportAsync(archivePath);
@@ -383,6 +472,7 @@ public sealed class CodexServerTests
             await stream.CopyToAsync(contents);
             var databaseContents = System.Text.Encoding.Latin1.GetString(contents.ToArray());
             Assert.DoesNotContain(secret, databaseContents, StringComparison.Ordinal);
+            Assert.DoesNotContain("second-backup-credential-secret", databaseContents, StringComparison.Ordinal);
             Assert.DoesNotContain(deliveryToken, databaseContents, StringComparison.Ordinal);
         }
 
@@ -405,10 +495,16 @@ public sealed class CodexServerTests
         Assert.Equal("revoked", restoredWorker?.AuthenticationCredentialStatus);
         var restoredCredentials = new SqliteCredentialStore(restoredDatabase, encryptionKey);
         await restoredCredentials.InitializeAsync();
-        var metadata = Assert.Single(await restoredCredentials.ListAsync());
+        var restoredCredentialMetadata = await restoredCredentials.ListAsync();
+        var metadata = Assert.Single(restoredCredentialMetadata, item => item.Id == credential.Id);
+        var metadataForRevocation = Assert.Single(restoredCredentialMetadata, item => item.Id == credentialForRevocation.Id);
         Assert.Equal("NeedsReprovision", metadata.Status);
+        Assert.Equal("NeedsReprovision", metadataForRevocation.Status);
         Assert.False(await restoredCredentials.IsWorkerDeliveryTokenValidAsync(workerId, deliveryToken));
         Assert.Null(await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
+        var revokedAfterRestore = await restoredCredentials.RevokeAsync(credentialForRevocation.Id);
+        Assert.Equal("Revoked", revokedAfterRestore?.Status);
+        Assert.Null(revokedAfterRestore?.AssignedWorkerId);
         Assert.Equal("Ready", (await restoredCredentials.ReplaceSecretAsync(credential.Id, new CredentialSecretInput("re-entered-test-secret")))?.Status);
         await restoredCredentials.AssignAsync(credential.Id, workerId);
         Assert.Equal("re-entered-test-secret", await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
