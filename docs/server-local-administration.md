@@ -34,6 +34,7 @@ codex-server github access <project-id> [--json]
 codex-server github issues <project-id> [--state open|closed|all] [--limit 1..100] [--label <name>] [--json]
 codex-server github issue <project-id> <issue-number> [--json]
 codex-server github relationships <project-id> <issue-number> [--json]
+codex-server github graph <project-id> <root-issue-number> [--max-depth 0..20] [--max-issues 1..200] [--max-edges 1..2000] [--json]
 codex-server github create <project-id> --title <title> --body <body> [--preview] [--json]
 codex-server github update <project-id> <issue-number> [--title <title>] [--body <body>] [--preview] [--json]
 codex-server github label <project-id> <issue-number> <add|remove> <configured-label> [--preview] [--json]
@@ -74,13 +75,28 @@ Legacy provisioning plans remain a separate compatibility surface at `/api/v1/pr
 
 `github` reads and administers Issues in the repository selected by the central project, using the Server service account's existing `gh` login and configured environment. `access` checks CLI authentication and the selected repository's read API; it does not ask for or infer Issue write or Git push permissions. `issues` returns at most 100 Issues for an explicit query and includes labels, `blocked_by` Issues, and managed eligibility. Reading or listing Issues never enqueues work. `relationships` returns the Issue's parent, sub-issues, Issues it is `blocked by`, and Issues it is `blocking`. Parent/sub-issue is GitHub's hierarchical work grouping; dependency relationships express ordering and do not create a parent hierarchy. Relationship JSON includes `contractVersion: 1`.
 
+`graph` builds a read-only view from those same relationship reads. The selected Issue is the display root; its parent is shown as context and its sub-issues are traversed as a hierarchy. Dependency edges are printed as `Blocked by` or `Blocking` annotations and never become tree branches. Nodes show open/closed state and up to 20 available labels (`labelsTruncated` marks longer lists). The default bounds are depth 5, 100 Issues, and 500 edges; each can be lowered or raised within the command's documented range. When a bound omits relationships, text and JSON output set `isTruncated` and list `truncationReasons`. Repeated hierarchy nodes appear once in JSON and as references in the text tree; cycles are marked and not traversed again. A child that disappears or cannot be read during traversal remains in the graph with `missing` or `unavailable` availability. JSON uses `contractVersion: 1` and includes nodes, typed edges, bounds, cycle/repetition details, and truncation state. This presentation does not determine managed eligibility or scheduling.
+
 For example, inspect Issue `102`, preview making `100` its parent, or preview dependencies without changing the parent hierarchy:
 
 ```sh
 codex-server github relationships <project-id> 102 --json
+codex-server github graph <project-id> 100 --max-depth 4 --max-issues 100
+codex-server github graph <project-id> 100 --json
 codex-server github parent <project-id> 102 100 --preview
 codex-server github dependency <project-id> 102 add 99 --preview
 codex-server github sub-issues <project-id> 100 add 101,102 --preview
+```
+
+The text view keeps the relationship kinds visually distinct:
+
+```text
+#100 [open] Release plan (labels: ready)
+    Parent: #18 [open] Program
+├── #101 [open] Implement parser
+│   Blocked by: #99 [closed] Define format
+└── #102 [open] Add tests
+    Blocking: #101 [open] Implement parser
 ```
 
 `create` accepts a title up to 256 printable characters and a body up to 65,536 characters. `update` accepts a title, body, or both with the same bounds; an empty body clears it. Both support `--preview`, which validates the request without writing. `label` can only add or remove the project's configured `issueReadyLabel` or `issueBlockedLabel`, and is idempotent when the label already has the requested state. It cannot change Worker execution lifecycle labels. `dependency` adds or removes one GitHub `blocked_by` relationship; `dependency-batch` performs the same operation for up to 50 blocker Issues. `parent` sets, changes, or clears one child's parent using a positive parent Issue number or `none`. `sub-issues` assigns or removes one parent relationship for up to 50 children. Relationship mutations preflight Issue visibility and scope in the central project's repository, reject self-links and duplicate batch entries, and support `--preview`. Batch operations report each item's `changed`, `unchanged`, `preview`, `failed`, or `partial` status; provider failures can leave an accurately reported partial batch, so inspect the result and refresh relationships before retrying failed items. Changing a child's parent removes its current parent relationship before adding the new one; if the second operation fails, the diagnostic calls out that partial change.

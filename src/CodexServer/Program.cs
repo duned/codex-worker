@@ -13,7 +13,7 @@ public static class Program
                CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
                CodexServer executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]
-               CodexServer github <access|issues|issue|enqueue|refresh|create|update|label|dependency> <project-id> [arguments] [--preview] [--json] [Server configuration options]
+               CodexServer github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]
                CodexServer credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin]
                CodexServer provision <list|show|create|cancel|reconcile> [arguments]
                CodexServer worker-token create [database-path]

@@ -6,7 +6,10 @@ using System.Text.Json;
 
 public sealed record GitHubIssueQuery(string State = "open", int Limit = 50, string? Label = null);
 public sealed record GitHubBlockingIssue(int Number, string Title, string State, string Url);
-public sealed record GitHubRelationshipIssue(int Number, string Title, string State, string Url);
+public sealed record GitHubRelationshipIssue(int Number, string Title, string State, string Url)
+{
+    public IReadOnlyList<string> Labels { get; init; } = [];
+}
 public sealed record GitHubIssueRelationships(int ContractVersion, string Repository, int IssueNumber,
     GitHubRelationshipIssue Issue, GitHubRelationshipIssue? Parent, IReadOnlyList<GitHubRelationshipIssue> SubIssues,
     IReadOnlyList<GitHubRelationshipIssue> BlockedBy, IReadOnlyList<GitHubRelationshipIssue> Blocking);
@@ -232,7 +235,8 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
             var blocking = await ReadRelationshipIssuesAsync(project.Repository,
                 $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocking", linked.Token);
             return new(1, project.Repository, issueNumber,
-                new(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url), parent, subIssues,
+                new GitHubRelationshipIssue(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url)
+                { Labels = issue.Labels }, parent, subIssues,
                 issue.BlockedBy.Select(item => new GitHubRelationshipIssue(item.Number, item.Title, item.State, item.Url)).ToArray(),
                 blocking);
         }
@@ -307,7 +311,10 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         var url = RequiredString(item, "html_url");
         if (number <= 0 || state is not ("open" or "closed") || !ValidIssueUrl(url, repository, number))
             throw new JsonException("GitHub relationship fields did not match the selected repository.");
-        return new(number, title, state, url);
+        var labels = item.TryGetProperty("labels", out var labelArray) && labelArray.ValueKind == JsonValueKind.Array
+            ? labelArray.EnumerateArray().Select(label => RequiredString(label, "name")).ToArray()
+            : Array.Empty<string>();
+        return new GitHubRelationshipIssue(number, title, state, url) { Labels = labels };
     }
 
     private async Task<IReadOnlyList<GitHubBlockingIssue>> ReadBlockingIssuesAsync(string repository, int issueNumber,

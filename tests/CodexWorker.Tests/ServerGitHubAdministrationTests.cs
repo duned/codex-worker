@@ -35,7 +35,7 @@ public sealed class ServerGitHubAdministrationTests
                     "{\"number\":2,\"title\":\"Parent\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/2\"}", ""));
             if (arguments.Contains("repos/team/project/issues/7/sub_issues"))
                 return Task.FromResult(new GitHubReadCommandResult(0,
-                    "[{\"number\":8,\"title\":\"Child\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/8\"}]", ""));
+                    "[{\"number\":8,\"title\":\"Child\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/8\",\"labels\":[{\"name\":\"ready\"}]}]", ""));
             if (arguments.Contains("repos/team/project/issues/7/dependencies/blocking"))
                 return Task.FromResult(new GitHubReadCommandResult(0,
                     "[{\"number\":9,\"title\":\"Blocked task\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/9\"}]", ""));
@@ -65,6 +65,7 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(1, relationshipResult.ContractVersion);
         Assert.Equal(2, relationshipResult.Parent!.Number);
         Assert.Equal(8, Assert.Single(relationshipResult.SubIssues).Number);
+        Assert.Equal("ready", Assert.Single(relationshipResult.SubIssues[0].Labels));
         Assert.Equal(3, Assert.Single(relationshipResult.BlockedBy).Number);
         Assert.Equal(9, Assert.Single(relationshipResult.Blocking).Number);
         var query = Assert.Single(commands, command => command[0] == "issue" && command[1] == "list");
@@ -578,6 +579,47 @@ public sealed class ServerGitHubAdministrationTests
             item => Assert.Equal("changed", item.GetProperty("status").GetString()));
         Assert.Equal(2, writer.Operations.Count(operation => operation == "blocked-by:add"));
         Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public async Task LocalCliRendersBoundedIssueGraphWithoutCallingMutationService()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "github-graph-cli.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("CLI graph"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(50, labels: ["ready"]));
+        read.Add(project.Repository, Issue(51, labels: ["done"]));
+        GitHubRelationshipIssue Ref(int number, IReadOnlyList<string>? labels = null) =>
+            new(number, $"Issue {number}", "open", $"https://github.com/{project.Repository}/issues/{number}")
+            { Labels = labels ?? [] };
+        read.AddRelationships(new(1, project.Repository, 50, Ref(50, ["ready"]), null,
+            [Ref(51, ["done"])], [], []));
+        read.AddRelationships(new(1, project.Repository, 51, Ref(51, ["done"]), Ref(50, ["ready"]), [], [], []));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(),
+            new StubGitHubAdministrationFactory(service), output, error);
+        var configuration = new[] { $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}" };
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "graph", project.Id, "50", "--json", "--max-depth", "1", .. configuration]));
+        using var json = JsonDocument.Parse(output.ToString());
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+        Assert.Equal(50, json.RootElement.GetProperty("rootIssueNumber").GetInt32());
+        Assert.Equal(2, json.RootElement.GetProperty("nodes").GetArrayLength());
+        Assert.Empty(writer.Operations);
+        Assert.Empty(error.ToString());
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "graph", project.Id, "50", .. configuration]));
+        Assert.Contains("└── #51 [open] Issue 51 (labels: done)", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(writer.Operations);
     }
 
     private static CentralProject Project(string name = "GitHub project", string repository = "team/project",

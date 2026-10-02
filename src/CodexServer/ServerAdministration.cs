@@ -728,11 +728,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
     private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        const string usage = "Usage: codex-server github <access|issues|issue|relationships|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
+        const string usage = "Usage: codex-server github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
         if (arguments.Count == 2 && arguments[1] == "--help")
         {
             _output.WriteLine(usage);
-            _output.WriteLine("relationships reads parent, sub-issues, blocked-by, and blocking relationships. parent sets a parent Issue number or uses 'none' to clear it; sub-issues assigns or removes one parent relationship for up to 50 children. dependency and dependency-batch administer GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. JSON responses use contractVersion 1. Enqueue and refresh remain explicit queue actions.");
+            _output.WriteLine("relationships reads parent, sub-issues, blocked-by, and blocking relationships. graph renders a bounded read-only hierarchy and its dependency edges; use --max-depth, --max-issues, and --max-edges to adjust its limits. parent sets a parent Issue number or uses 'none' to clear it; sub-issues assigns or removes one parent relationship for up to 50 children. dependency and dependency-batch administer GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. JSON responses use contractVersion 1. Enqueue and refresh remain explicit queue actions.");
             return ServerAdministrationExitCodes.Success;
         }
         if (arguments.Count < 3) return InvalidArguments(usage);
@@ -743,6 +743,9 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var json = false;
         var state = "open";
         var limit = 50;
+        var maxDepth = 5;
+        var maxIssues = 100;
+        var maxEdges = 500;
         string? label = null;
         string? title = null;
         string? body = null;
@@ -765,7 +768,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             {
                 var separator = argument.IndexOf('=');
                 var name = separator < 0 ? argument[2..] : argument[2..separator];
-                if (name is not ("state" or "limit" or "label" or "title" or "body") || !seenOptions.Add(name)) return InvalidArguments(usage);
+                if (name is not ("state" or "limit" or "label" or "title" or "body" or "max-depth" or "max-issues" or "max-edges") || !seenOptions.Add(name)) return InvalidArguments(usage);
                 var value = separator >= 0 ? argument[(separator + 1)..] :
                     index + 1 < arguments.Count && !arguments[index + 1].StartsWith("--", StringComparison.Ordinal) ? arguments[++index] : "";
                 if (value.Length == 0 && name is ("state" or "limit" or "label")) return InvalidArguments(usage);
@@ -773,6 +776,21 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                 else if (name == "label") label = value;
                 else if (name == "title") title = value;
                 else if (name == "body") body = value;
+                else if (name == "max-depth")
+                {
+                    if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out maxDepth))
+                        return InvalidArguments("GitHub graph max depth must be a decimal integer from 0 to 20.");
+                }
+                else if (name == "max-issues")
+                {
+                    if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out maxIssues))
+                        return InvalidArguments("GitHub graph max issues must be a decimal integer from 1 to 200.");
+                }
+                else if (name == "max-edges")
+                {
+                    if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out maxEdges))
+                        return InvalidArguments("GitHub graph max edges must be a decimal integer from 1 to 2000.");
+                }
                 else if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit))
                     return InvalidArguments("GitHub Issue limit must be a decimal integer from 1 to 100.");
                 continue;
@@ -783,7 +801,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var expected = operation switch
         {
             "access" or "issues" or "create" => 1,
-            "issue" or "relationships" or "enqueue" or "refresh" or "update" => 2,
+            "issue" or "relationships" or "graph" or "enqueue" or "refresh" or "update" => 2,
             "parent" => 3,
             "label" or "dependency" or "sub-issues" or "dependency-batch" => 4,
             _ => -1
@@ -791,6 +809,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var invalidOptions = operation switch
         {
             "issues" => seenOptions.Any(option => option is not ("state" or "limit" or "label")),
+            "graph" => seenOptions.Any(option => option is not ("max-depth" or "max-issues" or "max-edges")),
             "create" or "update" => seenOptions.Any(option => option is not ("title" or "body")),
             _ => seenOptions.Count > 0
         };
@@ -798,7 +817,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             ("create" or "update" or "label" or "dependency" or "parent" or "sub-issues" or "dependency-batch"))
             return InvalidArguments(usage);
         int issueNumber = 0;
-        if (operation is ("issue" or "relationships" or "enqueue" or "refresh" or "update" or "label" or "dependency" or "parent" or "sub-issues" or "dependency-batch") &&
+        if (operation is ("issue" or "relationships" or "graph" or "enqueue" or "refresh" or "update" or "label" or "dependency" or "parent" or "sub-issues" or "dependency-batch") &&
             (!int.TryParse(positionals[1], System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out issueNumber) || issueNumber <= 0))
             return InvalidArguments("Issue number must be a positive decimal integer.");
@@ -830,6 +849,9 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             return InvalidArguments(updateError);
         if (operation == "issues" && (state is not ("open" or "closed" or "all") || limit is < 1 or > 100))
             return InvalidArguments("GitHub Issue query must use state open, closed, or all and limit 1 to 100.");
+        var graphOptions = new GitHubIssueGraphOptions(maxDepth, maxIssues, maxEdges);
+        if (operation == "graph" && GitHubIssueGraphOptions.Error(graphOptions) is { } graphError)
+            return InvalidArguments(graphError);
 
         var inspected = configurationService.Inspect(configurationArguments);
         if (!inspected.Document.IsValid || inspected.Configuration is null)
@@ -884,6 +906,18 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                     }
                     if (json) _output.WriteLine(JsonSerializer.Serialize(relationships, JsonOptions));
                     else WriteGitHubRelationships(relationships);
+                    break;
+                case "graph":
+                    var graph = await GitHubIssueGraphBuilder.BuildAsync(issueNumber,
+                        (number, token) => github.GetIssueRelationshipsAsync(positionals[0], number, token),
+                        graphOptions, cancellationToken);
+                    if (graph is null)
+                    {
+                        _error.WriteLine($"Project '{positionals[0]}' or GitHub Issue #{issueNumber} was not found.");
+                        return ServerAdministrationExitCodes.NotFound;
+                    }
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(graph, JsonOptions));
+                    else _output.Write(GitHubIssueGraphBuilder.RenderText(graph));
                     break;
                 case "enqueue":
                     var enqueued = await github.EnqueueIssueAsync(positionals[0], new WorkReference("github-issue",
