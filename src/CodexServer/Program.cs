@@ -13,6 +13,7 @@ public static class Program
                CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
                CodexServer executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]
+               CodexServer github <access|issues|issue|enqueue|refresh> <project-id> [arguments] [filters] [--json] [Server configuration options]
                CodexServer credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin]
                CodexServer provision <list|show|create|cancel|reconcile> [arguments]
                CodexServer worker-token create [database-path]
@@ -29,6 +30,7 @@ public static class Program
         Project administration reads and writes the configured local Server database;
         create/update take a CentralProjectDefinition JSON file and mutations require a revision.
         Execution administration inspects a bounded local queue, cancels queued requests, and reconciles only expired uncertain attempts with explicit integration evidence.
+        GitHub administration reads Issues through the Server service account's gh login. Enqueue and refresh are explicit operator actions; read access does not establish Issue write or Git push authorization.
         Backup restore requires the service to be stopped.
 
         Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|executions ...|provision <operation>|worker <operation>
@@ -56,7 +58,7 @@ public static class Program
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
             return 0;
         }
-        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "executions" or "credential" or "provision")
+        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "executions" or "github" or "credential" or "provision")
             return await RunLocalAdministrationAsync(args);
         if (args.Length > 0 && args[0] is "backup" or "worker-token" or "worker")
         {

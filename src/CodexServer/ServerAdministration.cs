@@ -150,14 +150,16 @@ public sealed class LocalServerAdministrationServiceFactory : IServerAdministrat
         var registry = new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds);
-        return new LocalServerAdministrationService(configuration, registry, new ServerHealthService(registry));
+        return new LocalServerAdministrationService(configuration, registry, new ServerHealthService(registry),
+            githubAdministration: new ServerGitHubAdministrationService(registry, new ServerGitHubReadService()));
     }
 }
 
 /// <summary>Reads local Server state through the existing registry and health service contracts.</summary>
 public sealed class LocalServerAdministrationService(ServerConfiguration configuration, IRegistryStore registry,
-    IServerHealthService healthService, TimeProvider? timeProvider = null) : IServerAdministrationService,
-    IServerProjectAdministrationService, IServerExecutionAdministrationService
+    IServerHealthService healthService, TimeProvider? timeProvider = null,
+    IServerGitHubAdministrationService? githubAdministration = null) : IServerAdministrationService,
+    IServerProjectAdministrationService, IServerExecutionAdministrationService, IServerGitHubAdministrationService
 {
     private const string LocalStatusDiagnostic = "The configured Server database is unavailable or not initialized.";
 
@@ -261,6 +263,47 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         return await registry.ReconcileUncertainExecutionAsync(executionRequestId, request, cancellationToken);
     }
 
+    public async Task<GitHubRepositoryAccess?> CheckAccessAsync(string projectId, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().CheckAccessAsync(projectId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ManagedGitHubIssue>?> ListIssuesAsync(string projectId, GitHubIssueQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().ListIssuesAsync(projectId, query, cancellationToken);
+    }
+
+    public async Task<ManagedGitHubIssue?> GetIssueAsync(string projectId, int issueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().GetIssueAsync(projectId, issueNumber, cancellationToken);
+    }
+
+    public async Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().EnqueueIssueAsync(projectId, workReference, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ExecutionRequest>?> RefreshQueuedEligibilityAsync(string projectId, int issueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().RefreshQueuedEligibilityAsync(projectId, issueNumber, cancellationToken);
+    }
+
+    public async Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request,
+        CancellationToken cancellationToken = default) =>
+        await RequireGitHubAdministration().RequestAssignmentAsync(request, cancellationToken);
+
+    private IServerGitHubAdministrationService RequireGitHubAdministration() => githubAdministration
+        ?? throw new InvalidOperationException("Server GitHub administration is unavailable through this service.");
+
     private async Task EnsurePersistenceAvailableAsync(CancellationToken cancellationToken)
     {
         var status = await GetStatusAsync(cancellationToken);
@@ -303,6 +346,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var command = arguments[0];
         if (command == "projects") return await RunProjectsAsync(arguments, cancellationToken);
         if (command == "executions") return await RunExecutionsAsync(arguments, cancellationToken);
+        if (command == "github") return await RunGitHubAsync(arguments, cancellationToken);
         var configurationCommand = command == "config";
         var operation = configurationCommand && arguments.Count > 1 ? arguments[1] : command;
         var optionStart = configurationCommand ? 2 : 1;
@@ -623,6 +667,173 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             _error.WriteLine("Local execution administration failed. Check the configured Server database and file permissions.");
             return ServerAdministrationExitCodes.OperationalFailure;
         }
+    }
+
+    private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        const string usage = "Usage: codex-server github <access|issues|issue|enqueue|refresh> <project-id> [issue-number] [--state open|closed|all] [--limit 1..100] [--label <name>] [--json] [Server configuration options]";
+        if (arguments.Count == 2 && arguments[1] == "--help")
+        {
+            _output.WriteLine(usage);
+            _output.WriteLine("Issue discovery is read-only. Enqueue and refresh are explicit actions. Project issueReadyLabel and issueBlockedLabel control label eligibility; every open blocked-by dependency also makes an Issue ineligible.");
+            return ServerAdministrationExitCodes.Success;
+        }
+        if (arguments.Count < 3) return InvalidArguments(usage);
+
+        var operation = arguments[1];
+        var positionals = new List<string>();
+        var configurationArguments = new List<string>();
+        var json = false;
+        var state = "open";
+        var limit = 50;
+        string? label = null;
+        var seenOptions = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 2; index < arguments.Count; index++)
+        {
+            var argument = arguments[index];
+            if (argument == "--json" && !json) { json = true; continue; }
+            if (IsConfigurationOption(argument))
+            {
+                configurationArguments.Add(argument);
+                if (!argument.Contains('=') && index + 1 < arguments.Count && !arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+                    configurationArguments.Add(arguments[++index]);
+                else if (!argument.Contains('=')) return InvalidArguments(usage);
+                continue;
+            }
+            if (argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                var separator = argument.IndexOf('=');
+                var name = separator < 0 ? argument[2..] : argument[2..separator];
+                if (name is not ("state" or "limit" or "label") || !seenOptions.Add(name)) return InvalidArguments(usage);
+                var value = separator >= 0 ? argument[(separator + 1)..] :
+                    index + 1 < arguments.Count && !arguments[index + 1].StartsWith("--", StringComparison.Ordinal) ? arguments[++index] : "";
+                if (string.IsNullOrWhiteSpace(value)) return InvalidArguments(usage);
+                if (name == "state") state = value;
+                else if (name == "label") label = value;
+                else if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit))
+                    return InvalidArguments("GitHub Issue limit must be a decimal integer from 1 to 100.");
+                continue;
+            }
+            positionals.Add(argument);
+        }
+
+        var expected = operation switch
+        {
+            "access" or "issues" => 1,
+            "issue" or "enqueue" or "refresh" => 2,
+            _ => -1
+        };
+        if (expected < 0 || positionals.Count != expected || operation is not "issues" && (seenOptions.Contains("state") || seenOptions.Contains("limit") || seenOptions.Contains("label")))
+            return InvalidArguments(usage);
+        int issueNumber = 0;
+        if (expected == 2 && (!int.TryParse(positionals[1], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out issueNumber) || issueNumber <= 0))
+            return InvalidArguments("Issue number must be a positive decimal integer.");
+        if (operation == "issues" && (state is not ("open" or "closed" or "all") || limit is < 1 or > 100))
+            return InvalidArguments("GitHub Issue query must use state open, closed, or all and limit 1 to 100.");
+
+        var inspected = configurationService.Inspect(configurationArguments);
+        if (!inspected.Document.IsValid || inspected.Configuration is null)
+        {
+            WriteConfigurationFailure(inspected.Document, json);
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+        try
+        {
+            if (serviceFactory.Create(inspected.Configuration) is not IServerGitHubAdministrationService github)
+            {
+                _error.WriteLine("Local GitHub administration is unavailable through the configured Server service.");
+                return ServerAdministrationExitCodes.OperationalFailure;
+            }
+            switch (operation)
+            {
+                case "access":
+                    var access = await github.CheckAccessAsync(positionals[0], cancellationToken);
+                    if (access is null) return ProjectNotFound(positionals[0]);
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(access, JsonOptions));
+                    else
+                    {
+                        _output.WriteLine($"Repository: {access.Repository}");
+                        _output.WriteLine($"Server gh authentication: {(access.CliAuthenticated ? "available" : "unavailable")}");
+                        _output.WriteLine($"Repository read access: {(access.RepositoryReadable ? "available" : "unavailable")}");
+                        _output.WriteLine(access.Diagnostic);
+                    }
+                    break;
+                case "issues":
+                    var issues = await github.ListIssuesAsync(positionals[0], new GitHubIssueQuery(state, limit, label), cancellationToken);
+                    if (issues is null) return ProjectNotFound(positionals[0]);
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(issues, JsonOptions));
+                    else if (issues.Count == 0) _output.WriteLine("No GitHub Issues matched the query.");
+                    else foreach (var item in issues) WriteGitHubIssue(item);
+                    break;
+                case "issue":
+                    var issue = await github.GetIssueAsync(positionals[0], issueNumber, cancellationToken);
+                    if (issue is null)
+                    {
+                        _error.WriteLine($"Project '{positionals[0]}' or GitHub Issue #{issueNumber} was not found.");
+                        return ServerAdministrationExitCodes.NotFound;
+                    }
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(issue, JsonOptions));
+                    else WriteGitHubIssue(issue);
+                    break;
+                case "enqueue":
+                    var enqueued = await github.EnqueueIssueAsync(positionals[0], new WorkReference("github-issue",
+                        issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), cancellationToken);
+                    WriteExecution(enqueued, json);
+                    break;
+                case "refresh":
+                    var refreshed = await github.RefreshQueuedEligibilityAsync(positionals[0], issueNumber, cancellationToken);
+                    if (refreshed is null) return ProjectNotFound(positionals[0]);
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(refreshed, JsonOptions));
+                    else if (refreshed.Count == 0) _output.WriteLine("No queued request exists for that Issue.");
+                    else foreach (var execution in refreshed)
+                        _output.WriteLine($"{execution.Id}\t{execution.State}\t{execution.ManagedEligibilityState}\t{string.Join("; ", execution.ManagedEligibilityReasons ?? [])}");
+                    break;
+            }
+            return ServerAdministrationExitCodes.Success;
+        }
+        catch (OperationCanceledException) { return ServerAdministrationExitCodes.Canceled; }
+        catch (GitHubIssueNotFoundException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.NotFound;
+        }
+        catch (ManagedIssueIneligibleException exception)
+        {
+            _error.WriteLine(exception.Message);
+            foreach (var reason in exception.Issue.EligibilityReasons) _error.WriteLine($"- {reason}");
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (ExecutionRequestConflictException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (GitHubReadUnavailableException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+        catch (InvalidDataException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            _error.WriteLine("Local GitHub administration failed. Check the configured Server database and Server service-account gh authentication.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+    }
+
+    private void WriteGitHubIssue(ManagedGitHubIssue issue)
+    {
+        _output.WriteLine($"#{issue.Number}\t{issue.State}\t{(issue.IsEligible ? "eligible" : "ineligible")}\t{issue.Title}");
+        _output.WriteLine($"  Labels: {(issue.Labels.Count == 0 ? "none" : string.Join(", ", issue.Labels))}");
+        if (issue.BlockedBy.Count > 0)
+            _output.WriteLine("  Blocked by: " + string.Join(", ", issue.BlockedBy.Select(blocker => $"#{blocker.Number} ({blocker.State})")));
+        foreach (var reason in issue.EligibilityReasons) _output.WriteLine($"  Eligibility: {reason}");
+        _output.WriteLine($"  {issue.Url}");
     }
 
     private void WriteExecution(ExecutionRequest execution, bool json)

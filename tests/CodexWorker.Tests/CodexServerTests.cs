@@ -1718,11 +1718,13 @@ public sealed class CodexServerTests
         var registry = new SqliteRegistryStore(database);
         await registry.InitializeAsync();
         await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "existing worker", "1.0", "test", 1, []));
+        var project = await registry.CreateProjectAsync(new CentralProjectDefinition("Existing project", "team/existing", "main", "", []));
+        var execution = await registry.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "19")));
         await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE workers DROP COLUMN scheduling_policy; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            command.CommandText = "ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -1730,6 +1732,7 @@ public sealed class CodexServerTests
         await upgraded.InitializeAsync();
         var worker = await upgraded.GetWorkerAsync(workerId);
         Assert.Equal(WorkerSchedulingPolicy.Enabled, worker!.SchedulingPolicy);
+        Assert.Equal("eligible", (await upgraded.GetExecutionAsync(execution.Id))!.ManagedEligibilityState);
     }
 
     [Fact]
@@ -2117,7 +2120,7 @@ public sealed class CodexServerTests
         var alphaId = "";
         try
         {
-            await using var app = await ServerApplication.BuildAsync(Args(url, database));
+            await using var app = await ServerApplication.BuildAsync(Args(url, database), githubReadService: new AlwaysEligibleServerGitHubReadService());
             await app.StartAsync();
             var store = app.Services.GetRequiredService<IRegistryStore>();
             var alpha = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
@@ -2228,7 +2231,8 @@ public sealed class CodexServerTests
         var url = $"http://127.0.0.1:{ReservePort()}";
         try
         {
-            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")),
+                githubReadService: new AlwaysEligibleServerGitHubReadService());
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             var projectDefinition = new CentralProjectDefinition("Queue project", "team/queue", "main", "", [new("tool", "docker")]);

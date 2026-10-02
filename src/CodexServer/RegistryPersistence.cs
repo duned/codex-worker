@@ -32,6 +32,12 @@ public interface IRegistryStore
     Task<CentralProject?> UpdateProjectLifecycleAsync(string projectId, bool enabled, long expectedRevision, CancellationToken cancellationToken = default);
     Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
     Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> UpdateManagedEligibilityAsync(string executionRequestId, ManagedEligibilityUpdate update,
+        CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> RejectManagedAssignmentAsync(string executionRequestId, string assignmentId, string workerId,
+        ManagedEligibilityUpdate update, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ExecutionRequest>> ListQueuedByIssueAsync(string projectId, string issueNumber,
+        CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
@@ -53,6 +59,7 @@ public interface IRegistryStore
 
 public sealed record WorkReference(string Type, string Id, string? Url = null);
 public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference);
+public sealed record ManagedEligibilityUpdate(string State, IReadOnlyList<string> Reasons, DateTimeOffset CheckedAtUtc);
 public sealed record ExecutionQuery(string? ProjectId = null, string? State = null, string? WorkType = null,
     string? WorkId = null, int Limit = 50, int Offset = 0);
 public sealed record ExecutionReconciliationRequest(string Disposition, string Evidence, string? IntegrationCommit = null);
@@ -64,7 +71,9 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? ValidationResult = null, string? IntegrationResult = null, string? FailureClassification = null,
     bool Recoverable = false, string? CompletionSummary = null, ExecutionLease? Lease = null,
     string? RecoveryState = null, string? RecoveryReason = null, string? RetryOfExecutionId = null, int AttemptNumber = 1,
-    string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null);
+    string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null,
+    string ManagedEligibilityState = "eligible", IReadOnlyList<string>? ManagedEligibilityReasons = null,
+    DateTimeOffset? ManagedEligibilityCheckedAtUtc = null);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record ExecutionLeaseRenewal(string WorkerId, long Generation);
@@ -232,10 +241,12 @@ public static class ExecutionAdministrationValidation
 
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
-    string Description, IReadOnlyList<ProjectRequirement>? Requirements = null);
+    string Description, IReadOnlyList<ProjectRequirement>? Requirements = null, string? IssueReadyLabel = null,
+    string? IssueBlockedLabel = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
-    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true);
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, string? IssueReadyLabel = null,
+    string? IssueBlockedLabel = null);
 public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
@@ -309,9 +320,14 @@ public static class CentralProjectValidation
         if (value is null) return "Project definition is required.";
         if (string.IsNullOrWhiteSpace(value.Name) || value.Name.Length > 120) return "name must contain 1 to 120 characters.";
         if (!Regex.IsMatch(value.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$")) return "name contains unsupported characters.";
-        if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[^/\\s]+/[^/\\s]+$")) return "repository must be in owner/repository form.";
+        if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\\.{1,2}$)[A-Za-z0-9_.-]+$")) return "repository must be a GitHub owner/repository identifier.";
         if (string.IsNullOrWhiteSpace(value.DefaultBranch) || value.DefaultBranch.Length > 200 || value.DefaultBranch.Any(char.IsControl)) return "defaultBranch must contain 1 to 200 printable characters.";
         if (value.Description is null || value.Description.Length > 4000) return "description must contain at most 4000 characters.";
+        if (!ValidLabel(value.IssueReadyLabel) || !ValidLabel(value.IssueBlockedLabel))
+            return "issueReadyLabel and issueBlockedLabel must be empty or contain at most 100 printable characters.";
+        if (value.IssueReadyLabel is { } ready && value.IssueBlockedLabel is { } blocked &&
+            string.Equals(ready.Trim(), blocked.Trim(), StringComparison.OrdinalIgnoreCase))
+            return "issueReadyLabel and issueBlockedLabel must be different.";
         if (value.Requirements is null) return null;
         if (value.Requirements.Count > 64) return "requirements must contain at most 64 entries.";
         var normalized = new HashSet<string>(StringComparer.Ordinal);
@@ -332,6 +348,8 @@ public static class CentralProjectValidation
         }
         return null;
     }
+
+    private static bool ValidLabel(string? value) => value is null || value.Length <= 100 && !value.Any(char.IsControl);
 
     private static bool ValidVersionConstraint(string value)
     {
@@ -464,8 +482,8 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
 public sealed class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null,
     int leaseDurationSeconds = 900, int leaseRenewalIntervalSeconds = 60) : IRegistryStore
 {
-    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery FROM execution_requests";
-    public const int CurrentSchemaVersion = 13;
+    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc FROM execution_requests";
+    public const int CurrentSchemaVersion = 14;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -490,7 +508,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 13);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 14);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -601,6 +619,13 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     UPDATE schema_metadata SET schema_version = 13 WHERE singleton = 1;
                     """;
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 13;
+            }
+            if (schemaVersion == 13)
+            {
+                command.CommandText = "ALTER TABLE execution_requests ADD COLUMN managed_eligibility_state TEXT NOT NULL DEFAULT 'eligible'; ALTER TABLE execution_requests ADD COLUMN managed_eligibility_reasons_json TEXT NULL; ALTER TABLE execution_requests ADD COLUMN managed_eligibility_checked_at_utc TEXT NULL; UPDATE schema_metadata SET schema_version = 14 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 14;
             }
             command.CommandText = """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -656,9 +681,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     completion_summary TEXT NULL,
                     recovery_state TEXT NULL,
                     recovery_reason TEXT NULL,
-                    retry_of_execution_id TEXT NULL,
-                    attempt_number INTEGER NOT NULL DEFAULT 1,
-                    workspace_recovery TEXT NULL
+                        retry_of_execution_id TEXT NULL,
+                        attempt_number INTEGER NOT NULL DEFAULT 1,
+                        workspace_recovery TEXT NULL,
+                        managed_eligibility_state TEXT NOT NULL DEFAULT 'eligible',
+                        managed_eligibility_reasons_json TEXT NULL,
+                        managed_eligibility_checked_at_utc TEXT NULL
                 );
                 CREATE TABLE IF NOT EXISTS execution_leases (
                     execution_id TEXT NOT NULL,
@@ -754,6 +782,81 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return new(id, request.ProjectId, canonicalWork, now, "Queued", null, null, null);
     }
 
+    public async Task<ExecutionRequest?> UpdateManagedEligibilityAsync(string executionRequestId, ManagedEligibilityUpdate update,
+        CancellationToken cancellationToken = default)
+    {
+        if (update is null || update.State is not ("eligible" or "blocked" or "unavailable") || update.Reasons is null ||
+            update.Reasons.Count > 10 || update.Reasons.Any(reason => !Printable(reason, 300)))
+            throw new InvalidDataException("Managed eligibility update is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE execution_requests SET managed_eligibility_state=$state, managed_eligibility_reasons_json=$reasons, managed_eligibility_checked_at_utc=$checked WHERE id=$id AND state IN ('Queued','Assigned');";
+        command.Parameters.AddWithValue("$state", update.State);
+        command.Parameters.AddWithValue("$reasons", JsonSerializer.Serialize(update.Reasons, ProjectJson));
+        command.Parameters.AddWithValue("$checked", update.CheckedAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            await using var exists = connection.CreateCommand();
+            exists.CommandText = "SELECT 1 FROM execution_requests WHERE id=$id;";
+            exists.Parameters.AddWithValue("$id", executionRequestId);
+            if (await exists.ExecuteScalarAsync(cancellationToken) is null) return null;
+        }
+        return await GetExecutionAsync(executionRequestId, cancellationToken);
+    }
+
+    public async Task<ExecutionRequest?> RejectManagedAssignmentAsync(string executionRequestId, string assignmentId, string workerId,
+        ManagedEligibilityUpdate update, CancellationToken cancellationToken = default)
+    {
+        if (update is null || update.State is not ("blocked" or "unavailable") || update.Reasons is null ||
+            update.Reasons.Count > 10 || update.Reasons.Any(reason => !Printable(reason, 300)) ||
+            !Printable(executionRequestId, 80) || !Printable(assignmentId, 80) || !Printable(workerId, 128))
+            throw new InvalidDataException("Managed assignment rejection is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "UPDATE execution_requests SET state='Queued', assigned_worker_id=NULL, assigned_at_utc=NULL, assignment_id=NULL, managed_eligibility_state=$eligibility, managed_eligibility_reasons_json=$reasons, managed_eligibility_checked_at_utc=$checked WHERE id=$id AND state='Assigned' AND assigned_worker_id=$worker AND assignment_id=$assignment AND execution_id IS NULL;";
+        command.Parameters.AddWithValue("$eligibility", update.State);
+        command.Parameters.AddWithValue("$reasons", JsonSerializer.Serialize(update.Reasons, ProjectJson));
+        command.Parameters.AddWithValue("$checked", update.CheckedAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        command.Parameters.AddWithValue("$worker", workerId);
+        command.Parameters.AddWithValue("$assignment", assignmentId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE execution_leases SET state='Released' WHERE execution_id=$id AND generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id) AND worker_id=$worker AND state='Active';";
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        command.Parameters.AddWithValue("$worker", workerId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return await GetExecutionAsync(executionRequestId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ExecutionRequest>> ListQueuedByIssueAsync(string projectId, string issueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Printable(projectId, 80) || !int.TryParse(issueNumber, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var number) || number <= 0)
+            throw new InvalidDataException("Queued Issue query is invalid.");
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = ExecutionSelect + " WHERE project_id=$project AND state='Queued' AND work_type='github-issue' AND work_id=$issue ORDER BY queue_order;";
+        command.Parameters.AddWithValue("$project", projectId);
+        command.Parameters.AddWithValue("$issue", number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var result = new List<ExecutionRequest>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken)) result.Add(ReadExecution(reader));
+        return result;
+    }
+
     public async Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default)
     {
         if (request is null || !Printable(request.WorkerId, 128) || request.AvailableCapacity is < 0 or > 8 ||
@@ -834,7 +937,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
 
         command.Parameters.Clear();
-        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc FROM execution_requests WHERE state = 'Queued' ORDER BY queue_order;";
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc FROM execution_requests WHERE state = 'Queued' AND managed_eligibility_state!='blocked' ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var queued = new List<(string Id, string ProjectId, WorkReference Work, string Created)>();
         while (await reader.ReadAsync(cancellationToken))
@@ -1512,7 +1615,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         reader.IsDBNull(19) ? null : new ExecutionLease(reader.GetString(0), reader.GetString(19), reader.GetInt64(20),
             DateTimeOffset.Parse(reader.GetString(21)), DateTimeOffset.Parse(reader.GetString(22)), reader.GetString(23)),
         reader.IsDBNull(24) ? null : reader.GetString(24), reader.IsDBNull(25) ? null : reader.GetString(25),
-        reader.IsDBNull(26) ? null : reader.GetString(26), reader.GetInt32(27), reader.IsDBNull(28) ? null : reader.GetString(28));
+        reader.IsDBNull(26) ? null : reader.GetString(26), reader.GetInt32(27), reader.IsDBNull(28) ? null : reader.GetString(28),
+        null, null, reader.GetString(29), reader.IsDBNull(30) ? null : JsonSerializer.Deserialize<string[]>(reader.GetString(30), ProjectJson),
+        reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {
@@ -1545,7 +1650,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var id = CentralProjectValidation.IdFor(definition.Name);
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
-            definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now);
+            definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now,
+            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel));
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -1567,12 +1673,14 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
         write.Parameters.AddWithValue("$description", definition.Description.Trim());
         write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize((definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), ProjectJson));
+        write.Parameters.AddWithValue("$readyLabel", (object?)NormalizeLabel(definition.IssueReadyLabel) ?? DBNull.Value);
+        write.Parameters.AddWithValue("$blockedLabel", (object?)NormalizeLabel(definition.IssueBlockedLabel) ?? DBNull.Value);
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         write.Parameters.AddWithValue("$updated", now.ToString("O"));
         write.Parameters.AddWithValue("$id", projectId);
@@ -1660,6 +1768,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     private static CentralProject ToProject(string id, string json, string created) =>
         JsonSerializer.Deserialize<CentralProject>(json, ProjectJson) is { } value ? value with { Id = id, Requirements = value.Requirements ?? [], CreatedAtUtc = DateTimeOffset.Parse(created) } :
         throw new InvalidDataException($"Stored project '{id}' is invalid.");
+
+    private static string? NormalizeLabel(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public async Task HeartbeatWorkerAsync(WorkerHeartbeatRequest heartbeat, CancellationToken cancellationToken = default)
     {
