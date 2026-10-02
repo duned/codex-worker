@@ -8,6 +8,62 @@ using Microsoft.Extensions.Logging;
 public sealed class ServerProvisioningAdministrationTests
 {
     [Fact]
+    public async Task LocalGitHubLoginRemainsDiscoverableFromSeparateCliUntilAuthenticationCompletes()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "codex-server.db");
+        var commands = new ProvisioningCommandStore(database);
+        await commands.InitializeAsync();
+        var challengeReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeLogin = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authenticated = false;
+        var setup = new NodeGitHubSetup(Path.Combine(temporary.Path, "authentication"),
+            (_, arguments, _) => Task.FromResult((authenticated && arguments.SequenceEqual(["auth", "status", "--hostname", "github.com"]) ? 0 : 1, "private-token")),
+            unrelatedAuthentication: () => false, login: async (_, publish, token) =>
+            {
+                await publish(new("https://github.com/login/device", "ABCD-1234"), token);
+                challengeReady.SetResult();
+                var code = await completeLogin.Task.WaitAsync(token);
+                authenticated = true;
+                return code;
+            });
+        await setup.ExecuteAsync(new("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None);
+        var operation = await commands.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Login));
+        var executor = new NodeProvisioningCommandExecutor(
+            new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0"))),
+            run: (_, _, _) => Task.FromResult(authenticated ? 0 : 1), githubSetup: setup);
+        using var loggerProvider = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(loggerProvider));
+        using var service = new LocalProvisioningCommandService(commands, executor,
+            new ServerConfiguration { EnableLocalProvisioning = true }, loggerFactory.CreateLogger<LocalProvisioningCommandService>());
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await challengeReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var output = new StringWriter();
+            var cli = new ServerProvisioningCommandCli(new ServerConfigurationAdministrationService(),
+                new LocalProvisioningCommandAdministrationServiceFactory(), output, new StringWriter());
+            Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(
+                ["show", operation.Id, $"--Server:DataDirectory={temporary.Path}"]));
+            Assert.Contains("One-time code: ABCD-1234", output.ToString(), StringComparison.Ordinal);
+            Assert.Contains("https://github.com/login/device", output.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("private-token", output.ToString(), StringComparison.Ordinal);
+            completeLogin.SetResult(0);
+            await loggerProvider.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var completed = Assert.IsType<ProvisioningCommand>(await new ProvisioningCommandStore(database).GetAsync(operation.Id));
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, completed.Status);
+            Assert.Equal(ProvisioningDiagnostic.Completed, completed.Diagnostic);
+            Assert.Null(completed.LoginInstructions);
+        }
+        finally { await service.StopAsync(CancellationToken.None); }
+        var check = await commands.CreateAsync(operation.Request with { Action = ProvisioningCommandAction.CheckAuthentication });
+        var runningCheck = Assert.IsType<ProvisioningCommand>(await commands.ClaimAsync("server"));
+        Assert.Equal(check.Id, runningCheck.Id);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, (await executor.ExecuteAsync(runningCheck, true)).Status);
+    }
+
+    [Fact]
     public async Task EnabledLocalPolicyDispatchesExplicitGithubInstallThroughProvisioningExecutor()
     {
         using var temporary = new TemporaryDirectory();

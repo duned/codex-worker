@@ -3,7 +3,6 @@ namespace CodexProvisioning;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 
 /// <summary>The only SSH material allowed across the provisioning boundary.</summary>
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
@@ -125,9 +124,11 @@ public sealed class NodeGitHubSetup
                 await reportLoginInstructions(instructions);
                 progressToken.ThrowIfCancellationRequested();
             }, token);
-            if (code != 0) return Failure(ProvisioningDiagnostic.ProcessFailed);
+            if (code != 0) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed,
+                FailureDetail: new ProvisioningFailureDetail(ProvisioningFailureCode.ProcessExited, code));
             var authenticationStatus = await _run("/usr/bin/gh", ["auth", "status", "--hostname", "github.com"], token);
-            return authenticationStatus.ExitCode == 0 ? Success() : Failure(ProvisioningDiagnostic.ProcessFailed);
+            return authenticationStatus.ExitCode == 0 ? Success() : new(ProvisioningCommandStatus.Failed,
+                ProvisioningDiagnostic.ProcessFailed, FailureDetail: new ProvisioningFailureDetail(ProvisioningFailureCode.VerificationFailed));
         }
 
         var key = Path.Combine(directory, "github_ed25519");
@@ -182,77 +183,6 @@ public sealed class NodeGitHubSetup
         if (derived.ExitCode != 0 || ParseIdentity(derived.Output.Trim()).PublicKey != identity.PublicKey)
             throw new IOException("Managed keypair does not match.");
         return identity;
-    }
-
-    private static class GitHubDeviceLogin
-    {
-        private const string VerificationUri = "https://github.com/login/device";
-
-        public static async Task<int> RunAsync(string configurationDirectory,
-            Func<CodexLoginInstructions, CancellationToken, Task> publish, CancellationToken token)
-        {
-            using var process = new Process { StartInfo = new("/usr/bin/gh")
-            {
-                UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
-                RedirectStandardError = true, CreateNoWindow = true
-            } };
-            foreach (var argument in new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https" })
-                process.StartInfo.ArgumentList.Add(argument);
-            process.StartInfo.Environment["GH_CONFIG_DIR"] = configurationDirectory;
-            process.StartInfo.Environment["GH_PROMPT_DISABLED"] = "1";
-            process.StartInfo.Environment["GH_BROWSER"] = "/usr/bin/true";
-            process.StartInfo.Environment.Remove("GH_TOKEN");
-            process.StartInfo.Environment.Remove("GITHUB_TOKEN");
-            process.StartInfo.Environment.Remove("GH_ENTERPRISE_TOKEN");
-            process.Start();
-            process.StandardInput.Close();
-            using var drains = CancellationTokenSource.CreateLinkedTokenSource(token);
-            var output = DrainLoginOutputAsync(process.StandardOutput, publish, drains.Token);
-            var error = DrainLoginOutputAsync(process.StandardError, publish, drains.Token);
-            try
-            {
-                var exited = process.WaitForExitAsync(token);
-                var pending = new List<Task> { exited, output, error };
-                while (pending.Count > 0)
-                {
-                    var completed = await Task.WhenAny(pending);
-                    await completed;
-                    pending.Remove(completed);
-                    if (completed == exited) drains.CancelAfter(TimeSpan.FromSeconds(3));
-                }
-                return process.ExitCode;
-            }
-            finally
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync(CancellationToken.None);
-                drains.Cancel();
-                try { await Task.WhenAll(output, error); }
-                catch (OperationCanceledException) when (drains.IsCancellationRequested) { }
-            }
-        }
-
-        private static async Task DrainLoginOutputAsync(StreamReader reader,
-            Func<CodexLoginInstructions, CancellationToken, Task> publish, CancellationToken token)
-        {
-            var buffer = new char[256];
-            var recent = string.Empty;
-            var published = false;
-            int count;
-            while ((count = await reader.ReadAsync(buffer.AsMemory(), token)) != 0)
-            {
-                if (published) continue;
-                recent += new string(buffer, 0, count);
-                if (recent.Length > 4096) recent = recent[^4096..];
-                var plain = Regex.Replace(recent, @"\x1B\[[0-9;]*m", "");
-                if (!Regex.IsMatch(plain, @"(?<!\S)https://github\.com/login/device(?=\s|$)")) continue;
-                var code = Regex.Match(plain, @"(?<![A-Z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Z0-9-])");
-                if (!code.Success) continue;
-                await publish(new(VerificationUri, code.Value), token);
-                published = true;
-                recent = string.Empty;
-            }
-        }
     }
 
     private static SshPublicIdentity ParseIdentity(string text)

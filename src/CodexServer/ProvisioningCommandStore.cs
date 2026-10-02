@@ -63,10 +63,7 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         while (await reader.ReadAsync(token))
         {
             var operation = JsonSerializer.Deserialize<ProvisioningCommand>(reader.GetString(0))!;
-            if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow &&
-                _loginInstructions.TryGetValue(operation.Id, out var instructions))
-                operation = operation with { LoginInstructions = instructions };
-            else _loginInstructions.TryRemove(operation.Id, out _);
+            operation = WithActiveLoginInstructions(operation);
             operations.Add(operation);
         }
         return operations;
@@ -81,11 +78,21 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         var body = await command.ExecuteScalarAsync(token) as string;
         if (body is null) return null;
         var operation = JsonSerializer.Deserialize<ProvisioningCommand>(body)!;
-        if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow &&
-            _loginInstructions.TryGetValue(operation.Id, out var instructions))
-            return operation with { LoginInstructions = instructions };
+        return WithActiveLoginInstructions(operation);
+    }
+
+    private ProvisioningCommand WithActiveLoginInstructions(ProvisioningCommand operation)
+    {
+        if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow)
+        {
+            if (_loginInstructions.TryGetValue(operation.Id, out var instructions))
+                return operation with { LoginInstructions = instructions };
+            if (operation.Request is { CapabilityId: "github-cli", Action: ProvisioningCommandAction.Login } &&
+                operation.LoginInstructions is { VerificationUri: "https://github.com/login/device" } persisted &&
+                CodexDeviceLogin.Valid(persisted)) return operation;
+        }
         _loginInstructions.TryRemove(operation.Id, out _);
-        return operation;
+        return operation with { LoginInstructions = null };
     }
 
     // SQLite's immediate transaction serializes claims and all state transitions across service instances.
@@ -113,7 +120,7 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
                     {
                         Status = ProvisioningCommandStatus.Failed,
                         Diagnostic = ProvisioningDiagnostic.Interrupted,
-                        CompletedAtUtc = UtcNow
+                        CompletedAtUtc = UtcNow, LoginInstructions = null
                     };
                     await reader.DisposeAsync();
                     await SaveAsync(command, interrupted, token);
@@ -164,6 +171,10 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         if (ProvisioningCommandProtocol.Terminal(report.Status)) _loginInstructions.TryRemove(id, out _);
         return operation with { Status = report.Status, Diagnostic = report.Diagnostic,
             PublicIdentity = report.PublicIdentity, FailureDetail = report.FailureDetail,
+            // The local administration CLI runs in another process. Persist only the validated
+            // GitHub user challenge, never CLI output or credentials; terminal reports erase it.
+            LoginInstructions = report.Status == ProvisioningCommandStatus.Running && operation.Request.CapabilityId == "github-cli"
+                ? report.LoginInstructions ?? operation.LoginInstructions : null,
             CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
     }, token);
 
@@ -177,7 +188,7 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
     {
         if (operation.Status != ProvisioningCommandStatus.Running || operation.DeadlineUtc >= UtcNow)
             throw new InvalidOperationException("Only dispatched operations past their deadline can be reconciled after verifying the node is quiescent.");
-        return operation with { Status = ProvisioningCommandStatus.Failed, Diagnostic = ProvisioningDiagnostic.Interrupted, CompletedAtUtc = UtcNow };
+        return operation with { Status = ProvisioningCommandStatus.Failed, Diagnostic = ProvisioningDiagnostic.Interrupted, CompletedAtUtc = UtcNow, LoginInstructions = null };
     }, token);
 
     private async Task<ProvisioningCommand?> ChangeAsync(string id, Func<ProvisioningCommand, ProvisioningCommand> change, CancellationToken token)

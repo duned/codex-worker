@@ -127,6 +127,7 @@ public sealed class ServerBackup(string? databasePath = null)
             ("worker_credential_auth", new[] { "worker_id", "token_hash", "revoked_at_utc" }, "DELETE FROM worker_credential_auth;"),
             ("worker_auth_tokens", new[] { "worker_id", "token_hash", "created_at_utc", "revoked_at_utc" },
                 "UPDATE worker_auth_tokens SET token_hash=zeroblob(length(token_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));"),
+            ("provisioning_commands", new[] { "body" }, "UPDATE provisioning_commands SET body=json_remove(body, '$.LoginInstructions');"),
             ("worker_bootstrap_tokens", new[] { "token_hash", "expires_at_utc", "consumed_at_utc" }, "DELETE FROM worker_bootstrap_tokens;")
         })
         {

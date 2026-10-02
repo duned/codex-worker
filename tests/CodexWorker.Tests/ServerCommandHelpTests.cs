@@ -78,6 +78,16 @@ public sealed class ServerCommandHelpTests
     }
 
     [Fact]
+    public async Task ProvisioningHelpExplainsManagedGitHubLoginAndRunningChallengeDiscovery()
+    {
+        var help = await RunAsync(["provision", "create", "--help"]);
+        Assert.Equal(0, help.Code);
+        Assert.Contains("github-cli Login", help.Output, StringComparison.Ordinal);
+        Assert.Contains("github-cli PrepareAuthentication", help.Output, StringComparison.Ordinal);
+        Assert.Contains("provision show <command-id>", help.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RootHelpIsAnIndexAndAliasesMatch()
     {
         var help = await RunAsync(["--help"]);

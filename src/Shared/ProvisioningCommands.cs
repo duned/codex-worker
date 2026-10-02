@@ -97,6 +97,7 @@ public sealed class NodeProvisioningCommandExecutor
     private readonly Func<bool> _isRoot;
     private readonly Func<bool> _npmAvailable;
     private readonly NodeGitHubSetup _githubSetup;
+    private readonly TimeProvider _timeProvider;
     private readonly Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>> _login;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
 
@@ -104,9 +105,11 @@ public sealed class NodeProvisioningCommandExecutor
         Func<string, IReadOnlyList<string>, CancellationToken, Task<int>>? run = null,
         Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null,
         Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>>? login = null,
-        Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>>? processRunner = null)
+        Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>>? processRunner = null,
+        TimeProvider? timeProvider = null)
     {
         _discovery = discovery;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _githubSetup = githubSetup ?? new NodeGitHubSetup();
         if (run is not null && processRunner is not null)
             throw new ArgumentException("Specify either a process runner or an exit-code runner, not both.", nameof(processRunner));
@@ -129,11 +132,11 @@ public sealed class NodeProvisioningCommandExecutor
             return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
         if (!permitted) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
         if (command.DeadlineUtc is null) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var remaining = command.DeadlineUtc.Value - DateTimeOffset.UtcNow;
+        var remaining = command.DeadlineUtc.Value - _timeProvider.GetUtcNow();
         if (remaining <= TimeSpan.Zero) return new(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut,
             FailureDetail: new ProvisioningFailureDetail(ProvisioningFailureCode.TimedOut));
-        timeout.CancelAfter(remaining);
+        using var deadline = new CancellationTokenSource(remaining, _timeProvider);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         // Package-manager mutations share a gate, including Codex's runtime dependencies.
         var mutation = command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
         var gate = _gates.GetOrAdd(mutation ? "tools" : command.Request.CapabilityId, _ => new SemaphoreSlim(1, 1));
