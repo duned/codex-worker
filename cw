@@ -21,6 +21,7 @@ Developer and local Worker operations:
     -n COUNT      Show COUNT lines
   projects, p     List configured projects and their YAML paths
   version, v      Show or safely bump the product version
+  release, r      Publish the current product version or inspect releases
   help, -h, --help
 
 Environment overrides:
@@ -35,6 +36,10 @@ create a product release or change the repository product version.
 cw v <version> (or cw version <version>) updates Directory.Build.props,
 commits the version change, and pushes it to origin/main. It does not publish
 a release or create a tag.
+
+cw release <version> (or cw r <version>) publishes the already-selected
+product version. Use cw v <version> first to bump and push the product version.
+cw release and cw release list inspect releases without changing repository state.
 HELP
 }
 
@@ -66,7 +71,7 @@ git_value() {
 }
 
 validate_repository() {
-  if [[ ${1:-} == v || ${1:-} == version ]]; then
+  if [[ ${1:-} == v || ${1:-} == version || ${1:-} == r || ${1:-} == release ]]; then
     [[ -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
       error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
       error 'expected src/CodexWorker/CodexWorker.csproj beside the cw script'
@@ -331,6 +336,101 @@ PY
   printf 'Pushed %s to origin/main.\n' "$commit"
 }
 
+release_list() {
+  need_command gh || return 1
+  local response
+  printf 'Querying repository releases...\n'
+  if ! response=$(gh release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt,url 2>&1); then
+    response=${response//$'\n'/ }
+    error "could not query repository releases${response:+: $response}"
+    return 1
+  fi
+  if ! python3 - "$1" "$response" <<'PY'
+import json
+import sys
+try:
+    releases = json.loads(sys.argv[2])
+    if not isinstance(releases, list):
+        raise ValueError()
+    if not releases:
+        print("No releases found.")
+        sys.exit(0)
+    mode = sys.argv[1]
+    bounded = releases[:20]
+    if mode == "latest":
+        bounded = bounded[:1]
+    for release in bounded:
+        if not isinstance(release, dict) or not isinstance(release.get("tagName"), str):
+            raise ValueError()
+        tag = release["tagName"]
+        state = "draft" if release.get("isDraft") else ("pre-release" if release.get("isPrerelease") else "published")
+        date = release.get("publishedAt") or "date unavailable"
+        url = release.get("url")
+        line = f"{tag}  {state}  {date}"
+        if isinstance(url, str) and url:
+            line += f"  {url}"
+        print(line)
+except (ValueError, TypeError, json.JSONDecodeError):
+    print("cw: GitHub CLI returned invalid release metadata", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    error 'could not read repository release metadata'
+    return 1
+  fi
+}
+
+release_command() {
+  if (($# == 0)); then
+    release_list latest
+    return $?
+  fi
+  if [[ $1 == list ]]; then
+    (($# == 1)) || { error 'release list does not accept options'; help_hint; return 2; }
+    release_list list
+    return $?
+  fi
+  (($# == 1)) || { error 'release accepts one version, or the list subcommand'; help_hint; return 2; }
+
+  need_command git || return 1
+  need_command python3 || return 1
+  need_command bash || return 1
+  local requested=$1 current branch status remote_head local_head
+  valid_product_version "$requested" || { error "invalid version '$requested'; expected stable MAJOR.MINOR.PATCH (for example 1.2.3)"; return 2; }
+  [[ -f $REPO_ROOT/Directory.Build.props && ! -L $REPO_ROOT/Directory.Build.props ]] || { error 'Directory.Build.props must be a regular file'; return 1; }
+  current=$(read_version) || { error 'Directory.Build.props is missing, malformed, or has an ambiguous <Version> property'; return 1; }
+  valid_product_version "$current" || { error "unsupported product version in Directory.Build.props: $current"; return 1; }
+  [[ $requested == "$current" ]] || { error "requested release version $requested does not match product version $current; run 'cw v $requested' and retry"; return 1; }
+  branch=$(git_value branch --show-current 2>/dev/null || true)
+  [[ $branch == main ]] || { error "release requires branch main (current: ${branch:-detached})"; return 1; }
+  status=$(git_value status --porcelain 2>/dev/null) || { error 'cannot inspect Git working tree'; return 1; }
+  [[ -z $status ]] || { error 'release requires a clean working tree'; return 1; }
+  validate_version_git_root || return 1
+  git_value remote get-url origin >/dev/null 2>&1 || { error 'required Git remote origin is unavailable'; return 1; }
+
+  printf 'Checking origin/main before publishing...\n'
+  git_value fetch --quiet --no-tags origin main || { error 'fetch from origin failed; release was not started'; return 1; }
+  remote_head=$(git_value rev-parse --verify FETCH_HEAD 2>/dev/null) || { error 'origin/main was not returned by fetch; release was not started'; return 1; }
+  local_head=$(git_value rev-parse HEAD) || { error 'cannot determine current commit'; return 1; }
+  if ! git_value merge-base --is-ancestor "$remote_head" "$local_head" || ! git_value merge-base --is-ancestor "$local_head" "$remote_head"; then
+    error 'local main and origin/main are not synchronized; synchronize main safely and retry; release was not started'
+    return 1
+  fi
+  current=$(read_version) || { error 'synchronized Directory.Build.props is missing, malformed, or ambiguous'; return 1; }
+  valid_product_version "$current" || { error "unsupported product version in synchronized Directory.Build.props: $current"; return 1; }
+  [[ $requested == "$current" ]] || { error "requested release version $requested does not match synchronized product version $current; run 'cw v $requested' and retry"; return 1; }
+  [[ -f $REPO_ROOT/packaging/release.sh && -x $REPO_ROOT/packaging/release.sh ]] || { error 'packaging/release.sh is unavailable or not executable'; return 1; }
+
+  printf 'Publishing Worker %s with packaging/release.sh...\n' "$requested"
+  if bash "$REPO_ROOT/packaging/release.sh" "$requested"; then
+    printf 'Release %s published successfully.\n' "$requested"
+  else
+    local result=$?
+    error "release script failed with exit code $result; inspect GitHub release state before retrying"
+    return "$result"
+  fi
+}
+
 deploy_command() {
   need_command dotnet || return 1
   need_command git || return 1
@@ -465,6 +565,7 @@ main() {
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
     version|v) version_command "$@" ;;
+    release|r) release_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;
   esac
 }

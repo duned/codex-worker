@@ -65,6 +65,12 @@ mkdir -p "$out"
 printf '#!/bin/sh\nexit 0\n' > "$out/CodexWorker"
 chmod +x "$out/CodexWorker"
 MOCK
+cat > "$bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CW_TEST_ROOT/gh.args"
+[[ ! -f $CW_TEST_ROOT/fail-gh ]] || { echo 'provider unavailable' >&2; exit 17; }
+cat "$CW_TEST_ROOT/releases.json"
+MOCK
 chmod +x "$bin"/*
 
 # Exercise repository resolution independently of the checkout running this test.
@@ -231,15 +237,120 @@ setup_version_repo() {
 </Project>
 XML
   printf '<Project />\n' > "$repo/src/CodexWorker/CodexWorker.csproj"
+  mkdir -p "$repo/packaging"
+  cat > "$repo/packaging/release.sh" <<'RELEASE'
+#!/usr/bin/env bash
+printf '%s\n' "$#" "$1" > "$CW_TEST_ROOT/release.args"
+[[ ! -f $CW_TEST_ROOT/fail-release ]] || exit "$(<"$CW_TEST_ROOT/fail-release")"
+RELEASE
+  chmod +x "$repo/packaging/release.sh"
   git init -q --bare "$remote"
   git -C "$repo" init -q -b main
   git -C "$repo" config user.email cw-tests@example.invalid
   git -C "$repo" config user.name cw-tests
-  git -C "$repo" add cw Directory.Build.props src
+  git -C "$repo" add cw Directory.Build.props src packaging
   git -C "$repo" commit -qm 'initial version fixture'
   git -C "$repo" remote add origin "$remote"
   git -C "$repo" push -q -u origin main
 }
+
+# Release publication validates prerequisites and delegates the exact version to
+# the existing script. These fixtures never create tags or contact GitHub.
+release_repo="$test_root/release-success"
+setup_version_repo release-success
+printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z","url":"https://example.invalid/releases/v9.8.7"},{"tagName":"v9.8.6","isDraft":false,"isPrerelease":false,"publishedAt":"2026-08-01T00:00:00Z","url":"https://example.invalid/releases/v9.8.6"}]\n' > "$test_root/releases.json"
+release_output=$("$release_repo/cw" r 9.8.7)
+grep -Fq 'Publishing Worker 9.8.7' <<<"$release_output"
+grep -Fq 'Release 9.8.7 published successfully' <<<"$release_output"
+[[ $(sed -n '1p' "$test_root/release.args") == 1 && $(sed -n '2p' "$test_root/release.args") == 9.8.7 ]]
+grep -Fq '<Version>9.8.7</Version>' "$release_repo/Directory.Build.props"
+rm "$test_root/release.args"
+"$release_repo/cw" release 9.8.7 >/dev/null
+[[ $(sed -n '1p' "$test_root/release.args") == 1 && $(sed -n '2p' "$test_root/release.args") == 9.8.7 ]]
+rm "$test_root/release.args"
+if "$release_repo/cw" r 9.8.8 >"$test_root/release-mismatch.out" 2>&1; then
+  echo 'release version mismatch unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq "run 'cw v 9.8.8'" "$test_root/release-mismatch.out"
+[[ ! -f $test_root/release.args ]]
+printf 'dirty\n' > "$release_repo/untracked"
+if "$release_repo/cw" r 9.8.7 >"$test_root/release-dirty.out" 2>&1; then
+  echo 'dirty release checkout unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'clean working tree' "$test_root/release-dirty.out"
+rm "$release_repo/untracked"
+git -C "$release_repo" checkout -qb feature/release-test
+if "$release_repo/cw" release 9.8.7 >"$test_root/release-branch.out" 2>&1; then
+  echo 'release from non-main branch unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'requires branch main' "$test_root/release-branch.out"
+git -C "$release_repo" checkout -q main
+git clone -q --branch main "$test_root/release-success-origin.git" "$test_root/release-other"
+git -C "$test_root/release-other" config user.email cw-tests@example.invalid
+git -C "$test_root/release-other" config user.name cw-tests
+printf 'remote advancement\n' > "$test_root/release-other/remote-only"
+git -C "$test_root/release-other" add remote-only
+git -C "$test_root/release-other" commit -qm 'remote advancement'
+git -C "$test_root/release-other" push -q origin main
+if "$release_repo/cw" r 9.8.7 >"$test_root/release-unsynced.out" 2>&1; then
+  echo 'unsynchronized release checkout unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'not synchronized' "$test_root/release-unsynced.out"
+[[ ! -f $test_root/release.args ]]
+git -C "$release_repo" fetch -q origin main
+git -C "$release_repo" merge --ff-only -q FETCH_HEAD
+printf '1\n' > "$test_root/fail-release"
+release_script_code=0
+if "$release_repo/cw" release 9.8.7 >"$test_root/release-script-failure.out" 2>&1; then
+  echo 'release script failure unexpectedly succeeded' >&2; exit 1
+else
+  release_script_code=$?
+fi
+[[ $release_script_code == 1 ]]
+grep -Fq 'release script failed with exit code 1' "$test_root/release-script-failure.out"
+rm "$test_root/fail-release" "$test_root/release.args"
+
+# Inspection uses structured provider data and does not alter repository state.
+release_head=$(git -C "$release_repo" rev-parse HEAD)
+release_status=$(git -C "$release_repo" status --porcelain)
+latest_output=$("$release_repo/cw" r)
+grep -Fq 'v9.8.7  published  2026-09-01T00:00:00Z' <<<"$latest_output"
+grep -Fq 'https://example.invalid/releases/v9.8.7' <<<"$latest_output"
+long_latest_output=$("$release_repo/cw" release)
+grep -Fq 'v9.8.7  published  2026-09-01T00:00:00Z' <<<"$long_latest_output"
+list_output=$("$release_repo/cw" r list)
+[[ $(grep -c '^v9\.8\.' <<<"$list_output") == 2 ]]
+[[ $(sed -n '2p' <<<"$list_output" | cut -d' ' -f1) == v9.8.7 ]]
+[[ $(sed -n '3p' <<<"$list_output" | cut -d' ' -f1) == v9.8.6 ]]
+[[ $(git -C "$release_repo" rev-parse HEAD) == "$release_head" ]]
+[[ $(git -C "$release_repo" status --porcelain) == "$release_status" ]]
+printf '[]\n' > "$test_root/releases.json"
+grep -Fq 'No releases found' <("$release_repo/cw" r)
+printf '[{"tagName":"v9.8.7","isDraft":false,"isPrerelease":false}]\n' > "$test_root/releases.json"
+touch "$test_root/fail-gh"
+if "$release_repo/cw" r list >"$test_root/release-query-failure.out" 2>&1; then
+  echo 'provider query failure unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'provider unavailable' "$test_root/release-query-failure.out"
+rm "$test_root/fail-gh"
+
+for malformed_kind in malformed missing; do
+  malformed_release_repo="$test_root/release-$malformed_kind"
+  setup_version_repo "release-$malformed_kind"
+  if [[ $malformed_kind == missing ]]; then
+    rm "$malformed_release_repo/Directory.Build.props"
+  else
+    printf '<Project><PropertyGroup><Version>bad' > "$malformed_release_repo/Directory.Build.props"
+  fi
+  if "$malformed_release_repo/cw" release 9.8.7 >"$test_root/release-$malformed_kind.out" 2>&1; then
+    echo "$malformed_kind release version unexpectedly succeeded" >&2; exit 1
+  fi
+  if [[ $malformed_kind == missing ]]; then
+    grep -Fq 'Directory.Build.props must be a regular file' "$test_root/release-$malformed_kind.out"
+  else
+    grep -Fq 'Directory.Build.props is missing, malformed, or has an ambiguous' "$test_root/release-$malformed_kind.out"
+  fi
+done
 
 version_repo="$test_root/version-success"
 setup_version_repo version-success
