@@ -20,6 +20,7 @@ Developer and local Worker operations:
     -f            Follow the journal
     -n COUNT      Show COUNT lines
   projects, p     List configured projects and their YAML paths
+  version, v      Show or safely bump the product version
   help, -h, --help
 
 Environment overrides:
@@ -30,6 +31,10 @@ Environment overrides:
 cw deploy manages a system-level Worker service and requires suitable sudo
 permission for non-interactive systemctl stop/start operations. It does not
 create a product release or change the repository product version.
+
+cw v <version> (or cw version <version>) updates Directory.Build.props,
+commits the version change, and pushes it to origin/main. It does not publish
+a release or create a tag.
 HELP
 }
 
@@ -61,6 +66,14 @@ git_value() {
 }
 
 validate_repository() {
+  if [[ ${1:-} == v || ${1:-} == version ]]; then
+    [[ -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
+      error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
+      error 'expected src/CodexWorker/CodexWorker.csproj beside the cw script'
+      return 1
+    }
+    return 0
+  fi
   [[ -r $REPO_ROOT/Directory.Build.props && -f $REPO_ROOT/src/CodexWorker/CodexWorker.csproj ]] || {
     error "resolved script directory is not a Codex Worker repository: $REPO_ROOT"
     error 'expected Directory.Build.props and src/CodexWorker/CodexWorker.csproj beside the cw script'
@@ -127,7 +140,195 @@ status_command() {
 }
 
 read_version() {
-  awk -F'[<>]' '/<Version>[[:space:]]*[^<]+[[:space:]]*<\/Version>/ { gsub(/[[:space:]]/, "", $3); print $3; exit }' "$REPO_ROOT/Directory.Build.props"
+  python3 - "$REPO_ROOT/Directory.Build.props" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ET
+try:
+    content = open(sys.argv[1], encoding="utf-8").read()
+    root = ET.fromstring(content)
+    nodes = [element for element in root.iter() if element.tag.split("}")[-1] == "Version"]
+    matches = list(re.finditer(r"<Version>([^<>]*)</Version>", content))
+    if len(nodes) != 1 or len(matches) != 1 or (nodes[0].text or "").strip() != matches[0].group(1).strip():
+        raise ValueError()
+    print((nodes[0].text or "").strip())
+except (OSError, UnicodeError, ET.ParseError, ValueError):
+    sys.exit(1)
+PY
+}
+
+valid_product_version() { [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
+
+validate_version_git_root() {
+  local git_root
+  git_root=$(git_value rev-parse --show-toplevel 2>/dev/null) || { error 'resolved script directory is not a Git repository'; return 1; }
+  [[ $(cd -- "$git_root" && pwd -P) == $(cd -- "$REPO_ROOT" && pwd -P) ]] || {
+    error 'cw script directory does not match the Git repository root'
+    return 1
+  }
+}
+
+version_status() {
+  need_command git || return 1
+  need_command python3 || return 1
+  validate_version_git_root || return 1
+  [[ -f $REPO_ROOT/Directory.Build.props && ! -L $REPO_ROOT/Directory.Build.props ]] || { error 'Directory.Build.props must be a regular file'; return 1; }
+  local version branch dirty
+  version=$(read_version) || { error 'Directory.Build.props is missing, malformed, or has an ambiguous <Version> property'; return 1; }
+  valid_product_version "$version" || { error "unsupported product version in Directory.Build.props: $version"; return 1; }
+  branch=$(git_value branch --show-current 2>/dev/null || true)
+  [[ -n $branch ]] || branch='(detached or unavailable)'
+  if [[ -n $(git_value status --porcelain 2>/dev/null) ]]; then dirty=dirty; else dirty=clean; fi
+  printf 'Product version %s\n' "$version"
+  printf '  repository %s\n' "$REPO_ROOT"
+  printf '  branch     %s\n' "$branch"
+  printf '  worktree   %s\n' "$dirty"
+}
+
+version_command() {
+  (($# <= 1)) || { error 'version accepts at most one version'; help_hint; return 2; }
+  (($# == 1)) || { version_status; return $?; }
+  need_command git || return 1
+  need_command python3 || return 1
+  local requested=$1 current branch status remote_head local_head original_file next_file message
+  [[ -f $REPO_ROOT/Directory.Build.props && ! -L $REPO_ROOT/Directory.Build.props ]] || { error 'Directory.Build.props must be a regular file'; return 1; }
+  valid_product_version "$requested" || { error "invalid version '$requested'; expected stable MAJOR.MINOR.PATCH (for example 1.2.3)"; return 2; }
+  current=$(read_version) || { error 'Directory.Build.props is missing, malformed, or has an ambiguous <Version> property'; return 1; }
+  valid_product_version "$current" || { error "unsupported product version in Directory.Build.props: $current"; return 1; }
+  [[ $requested != "$current" ]] || { error "version is already $current"; return 1; }
+  python3 - "$current" "$requested" <<'PY'
+import sys
+if tuple(map(int, sys.argv[2].split("."))) <= tuple(map(int, sys.argv[1].split("."))):
+    print("cw: requested version must be greater than the current version; downgrades are not supported", file=sys.stderr)
+    sys.exit(1)
+PY
+  branch=$(git_value branch --show-current 2>/dev/null || true)
+  [[ $branch == main ]] || { error "version bumps require branch main (current: ${branch:-detached})"; return 1; }
+  status=$(git_value status --porcelain 2>/dev/null) || { error 'cannot inspect Git working tree'; return 1; }
+  [[ -z $status ]] || { error 'version bumps require a clean working tree'; return 1; }
+  validate_version_git_root || return 1
+  git_value remote get-url origin >/dev/null 2>&1 || { error 'required Git remote origin is unavailable'; return 1; }
+
+  printf 'Checking origin/main before changing the version file...\n'
+  git_value fetch --quiet --no-tags origin main || { error 'fetch from origin failed; no version change was made'; return 1; }
+  remote_head=$(git_value rev-parse --verify FETCH_HEAD 2>/dev/null) || { error 'origin/main was not returned by fetch; no version change was made'; return 1; }
+  local_head=$(git_value rev-parse HEAD) || { error 'cannot determine current commit'; return 1; }
+  if ! git_value merge-base --is-ancestor "$remote_head" "$local_head" && ! git_value merge-base --is-ancestor "$local_head" "$remote_head"; then
+    error 'local main and origin/main have diverged; resolve synchronization manually; no version change was made'
+    return 1
+  fi
+  git_value merge --ff-only "$remote_head" || { error 'main cannot be synchronized by fast-forward; no version change was made'; return 1; }
+  current=$(read_version) || { error 'synchronized Directory.Build.props is missing, malformed, or ambiguous'; return 1; }
+  valid_product_version "$current" || { error "unsupported product version in synchronized Directory.Build.props: $current"; return 1; }
+  [[ $requested != "$current" ]] || { error "version is already $current after synchronizing origin/main"; return 1; }
+  python3 - "$current" "$requested" <<'PY'
+import sys
+if tuple(map(int, sys.argv[2].split("."))) <= tuple(map(int, sys.argv[1].split("."))):
+    print("cw: requested version must be greater than the current synchronized version; downgrades are not supported", file=sys.stderr)
+    sys.exit(1)
+PY
+
+  original_file=$(mktemp) || { error 'cannot create a temporary validation file'; return 1; }
+  next_file=$(mktemp "$REPO_ROOT/.Directory.Build.props.cw.XXXXXX") || { rm -f -- "$original_file"; error 'cannot create a temporary version file'; return 1; }
+  cp -p -- "$REPO_ROOT/Directory.Build.props" "$original_file" || { rm -f -- "$original_file" "$next_file"; error 'cannot read Directory.Build.props'; return 1; }
+  if ! python3 - "$original_file" "$next_file" "$requested" <<'PY'
+import re
+import os
+import stat
+import sys
+import xml.etree.ElementTree as ET
+source, destination, version = sys.argv[1:]
+try:
+    content = open(source, encoding="utf-8", newline="").read()
+    root = ET.fromstring(content)
+    nodes = [element for element in root.iter() if element.tag.split("}")[-1] == "Version"]
+    matches = list(re.finditer(r"<Version>([^<>]*)</Version>", content))
+    if len(nodes) != 1 or len(matches) != 1 or (nodes[0].text or "").strip() != matches[0].group(1).strip():
+        raise ValueError("expected exactly one plain <Version> element")
+    match = matches[0]
+    old = match.group(1)
+    leading, trailing = old[:len(old)-len(old.lstrip())], old[len(old.rstrip()):]
+    updated = content[:match.start(1)] + leading + version + trailing + content[match.end(1):]
+    ET.fromstring(updated)
+    with open(destination, "w", encoding="utf-8", newline="") as output:
+        output.write(updated)
+    os.chmod(destination, stat.S_IMODE(os.stat(source).st_mode))
+except (OSError, UnicodeError, ET.ParseError, ValueError) as error:
+    print(f"cw: cannot safely update Directory.Build.props: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    rm -f -- "$original_file" "$next_file"
+    error 'version file was not changed'
+    return 1
+  fi
+  if ! cmp -s "$REPO_ROOT/Directory.Build.props" "$next_file"; then
+    mv -- "$next_file" "$REPO_ROOT/Directory.Build.props" || { rm -f -- "$original_file" "$next_file"; error 'could not install validated version file'; return 1; }
+  else
+    rm -f -- "$original_file" "$next_file"
+    error 'version file update produced no change'
+    return 1
+  fi
+  local changed
+  changed=$(git_value diff --name-only)
+  if [[ $changed != Directory.Build.props ]] || ! python3 - "$original_file" "$REPO_ROOT/Directory.Build.props" "$current" "$requested" <<'PY'
+import re
+import sys
+import xml.etree.ElementTree as ET
+original, updated, previous, requested = sys.argv[1:]
+try:
+    before = open(original, encoding="utf-8", newline="").read()
+    after = open(updated, encoding="utf-8", newline="").read()
+    before_matches = list(re.finditer(r"<Version>([^<>]*)</Version>", before))
+    root = ET.fromstring(after)
+    nodes = [element for element in root.iter() if element.tag.split("}")[-1] == "Version"]
+    matches = list(re.finditer(r"<Version>([^<>]*)</Version>", after))
+    if len(before_matches) != 1 or len(nodes) != 1 or len(matches) != 1 or (nodes[0].text or "").strip() != requested or matches[0].group(1).strip() != requested:
+        raise ValueError()
+    match, before_match = matches[0], before_matches[0]
+    original_value = before_match.group(1)
+    leading = original_value[:len(original_value)-len(original_value.lstrip())]
+    trailing = original_value[len(original_value.rstrip()):]
+    restored = after[:match.start(1)] + leading + previous + trailing + after[match.end(1):]
+    if restored != before:
+        raise ValueError()
+except (OSError, UnicodeError, ET.ParseError, ValueError):
+    sys.exit(1)
+PY
+  then
+    cp -p -- "$original_file" "$REPO_ROOT/Directory.Build.props" || error 'could not restore Directory.Build.props after validation failed'
+    rm -f -- "$original_file"
+    error 'unexpected version file change; the file is preserved and no commit was created'
+    return 1
+  fi
+  rm -f -- "$original_file"
+  message="[V] $requested"
+  printf 'Version %s -> %s; committing only Directory.Build.props...\n' "$current" "$requested"
+  local pre_commit_head post_commit_head
+  pre_commit_head=$(git_value rev-parse HEAD) || { error 'cannot verify current commit before version commit'; return 1; }
+  if ! git_value commit --only -m "$message" -- Directory.Build.props; then
+    post_commit_head=$(git_value rev-parse HEAD 2>/dev/null || true)
+    if [[ -n $post_commit_head && $post_commit_head != "$pre_commit_head" ]]; then
+      error "git reported a commit failure after HEAD changed to ${post_commit_head:0:12}; inspect the commit and push state manually; no push was attempted"
+    else
+      error 'commit failed before creating a commit; the version file change is preserved locally; inspect it and retry manually'
+    fi
+    return 1
+  fi
+  local commit actual_message committed_files
+  commit=$(git_value rev-parse --short HEAD) || { error 'commit was created but its identifier could not be read'; return 1; }
+  actual_message=$(git_value log -1 --format=%s)
+  committed_files=$(git_value diff-tree --no-commit-id --name-only -r HEAD)
+  if [[ $actual_message != "$message" || $committed_files != Directory.Build.props ]]; then
+    error "commit $commit was created with unexpected contents; inspect it before pushing"
+    return 1
+  fi
+  printf 'Committed %s (%s).\n' "$message" "$commit"
+  if ! git_value push origin HEAD:main; then
+    error "push failed; commit $commit is preserved locally on main; verify origin/main, then push it with 'git push origin main'"
+    return 1
+  fi
+  printf 'Pushed %s to origin/main.\n' "$commit"
 }
 
 deploy_command() {
@@ -255,7 +456,7 @@ main() {
   local command=$1; shift
   case $command in
     --help|-h|help) ;;
-    *) validate_repository || return 1 ;;
+    *) validate_repository "$command" || return 1 ;;
   esac
   case $command in
     --help|-h|help) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
@@ -263,6 +464,7 @@ main() {
     deploy|d) (($# == 0)) || { error 'deploy does not accept options'; help_hint; return 2; }; deploy_command ;;
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
+    version|v) version_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;
   esac
 }

@@ -217,4 +217,166 @@ grep -Fq 'systemd start failed' "$test_root/deploy-start-fail.out"
 grep -Fq 'previous deployment restored' "$test_root/deploy-start-fail.out"
 rm "$test_root/fail-start"
 
+# Version changes use isolated local repositories and a bare local origin only.
+setup_version_repo() {
+  local name=$1 version=${2:-9.8.7}
+  local repo="$test_root/$name" remote="$test_root/$name-origin.git"
+  mkdir -p "$repo/src/CodexWorker"
+  cp "$repo_root/cw" "$repo/cw"
+  cat > "$repo/Directory.Build.props" <<XML
+<Project>
+  <PropertyGroup>
+    <Version>$version</Version>
+  </PropertyGroup>
+</Project>
+XML
+  printf '<Project />\n' > "$repo/src/CodexWorker/CodexWorker.csproj"
+  git init -q --bare "$remote"
+  git -C "$repo" init -q -b main
+  git -C "$repo" config user.email cw-tests@example.invalid
+  git -C "$repo" config user.name cw-tests
+  git -C "$repo" add cw Directory.Build.props src
+  git -C "$repo" commit -qm 'initial version fixture'
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push -q -u origin main
+}
+
+version_repo="$test_root/version-success"
+setup_version_repo version-success
+version_status_output=$("$version_repo/cw" v)
+grep -Fq 'Product version 9.8.7' <<<"$version_status_output"
+grep -Fq 'branch     main' <<<"$version_status_output"
+grep -Fq 'worktree   clean' <<<"$version_status_output"
+"$version_repo/cw" version > "$test_root/version-long-status.out"
+grep -Fq 'Product version 9.8.7' "$test_root/version-long-status.out"
+if "$version_repo/cw" v 9.8.7 >"$test_root/version-same.out" 2>&1; then
+  echo 'same version unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'version is already 9.8.7' "$test_root/version-same.out"
+if "$version_repo/cw" version 9.8.6 >"$test_root/version-downgrade.out" 2>&1; then
+  echo 'version downgrade unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'downgrades are not supported' "$test_root/version-downgrade.out"
+if "$version_repo/cw" v 9.8 >"$test_root/version-invalid.out" 2>&1; then
+  echo 'invalid version unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'expected stable MAJOR.MINOR.PATCH' "$test_root/version-invalid.out"
+touch "$version_repo/unrelated-untracked"
+if "$version_repo/cw" v 9.8.8 >"$test_root/version-dirty.out" 2>&1; then
+  echo 'dirty version bump unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'clean working tree' "$test_root/version-dirty.out"
+rm "$version_repo/unrelated-untracked"
+git -C "$version_repo" checkout -qb feature/test-version
+if "$version_repo/cw" v 9.8.8 >"$test_root/version-branch.out" 2>&1; then
+  echo 'wrong branch version bump unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'require branch main' "$test_root/version-branch.out"
+git -C "$version_repo" checkout -q main
+before_tags=$(git -C "$version_repo" tag --list)
+version_success_output=$("$version_repo/cw" version 9.8.8)
+grep -Fq 'Version 9.8.7 -> 9.8.8' <<<"$version_success_output"
+grep -Fq 'Committed [V] 9.8.8' <<<"$version_success_output"
+grep -Fq 'Pushed ' <<<"$version_success_output"
+[[ $(git -C "$version_repo" log -1 --format=%s) == '[V] 9.8.8' ]]
+[[ $(git -C "$version_repo" diff-tree --no-commit-id --name-only -r HEAD) == Directory.Build.props ]]
+[[ $(git --git-dir="$test_root/version-success-origin.git" show main:Directory.Build.props | sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p') == 9.8.8 ]]
+[[ $(git -C "$version_repo" tag --list) == "$before_tags" ]]
+[[ -z $(git -C "$version_repo" status --porcelain) ]]
+
+version_ff="$test_root/version-fast-forward"
+setup_version_repo version-fast-forward
+python3 - "$version_ff/Directory.Build.props" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path, "rb") as source:
+    content = source.read().replace(b"<Version>9.8.7</Version>", b"<Version> 9.8.7 </Version>")
+with open(path, "wb") as destination:
+    destination.write(content.replace(b"\n", b"\r\n"))
+PY
+git -C "$version_ff" add Directory.Build.props
+git -C "$version_ff" commit -qm 'format product version'
+git -C "$version_ff" push -q origin main
+git clone -q --branch main "$test_root/version-fast-forward-origin.git" "$test_root/version-fast-forward-other"
+git -C "$test_root/version-fast-forward-other" config user.email cw-tests@example.invalid
+git -C "$test_root/version-fast-forward-other" config user.name cw-tests
+printf 'remote advancement\n' > "$test_root/version-fast-forward-other/remote-only"
+git -C "$test_root/version-fast-forward-other" add remote-only
+git -C "$test_root/version-fast-forward-other" commit -qm 'remote advancement'
+git -C "$test_root/version-fast-forward-other" push -q origin main
+"$version_ff/cw" v 9.8.8 > "$test_root/version-fast-forward.out"
+grep -Fq 'Version 9.8.7 -> 9.8.8' "$test_root/version-fast-forward.out"
+[[ -f $version_ff/remote-only ]]
+[[ $(git -C "$version_ff" log -2 --format=%s | tail -1) == 'remote advancement' ]]
+
+version_dirty_repo="$test_root/version-dirty"
+setup_version_repo version-dirty
+printf 'unrelated\n' > "$version_dirty_repo/local-change"
+if "$version_dirty_repo/cw" v 9.8.8 >"$test_root/version-dirty2.out" 2>&1; then
+  echo 'dirty working tree unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'clean working tree' "$test_root/version-dirty2.out"
+[[ $(git -C "$version_dirty_repo" show HEAD:Directory.Build.props | sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p') == 9.8.7 ]]
+
+for malformed_kind in malformed missing multiple; do
+  malformed_repo="$test_root/version-$malformed_kind"
+  setup_version_repo "version-$malformed_kind"
+  case $malformed_kind in
+    malformed) printf '<Project><PropertyGroup><Version>bad' > "$malformed_repo/Directory.Build.props" ;;
+    missing) rm "$malformed_repo/Directory.Build.props" ;;
+    multiple) sed -i 's#</Project>#<PropertyGroup><Version>9.8.7</Version></PropertyGroup></Project>#' "$malformed_repo/Directory.Build.props" ;;
+  esac
+  git -C "$malformed_repo" add -A
+  git -C "$malformed_repo" commit -qm "fixture $malformed_kind props"
+  git -C "$malformed_repo" push -q origin main
+  if "$malformed_repo/cw" v 9.8.8 >"$test_root/version-$malformed_kind.out" 2>&1; then
+    echo "$malformed_kind props unexpectedly succeeded" >&2; exit 1
+  fi
+  if [[ $malformed_kind == missing ]]; then
+    grep -Fq 'Directory.Build.props must be a regular file' "$test_root/version-$malformed_kind.out"
+  else
+    grep -Fq 'Directory.Build.props is missing, malformed, or has an ambiguous' "$test_root/version-$malformed_kind.out"
+  fi
+done
+
+version_commit_fail="$test_root/version-commit-fail"
+setup_version_repo version-commit-fail
+printf '#!/bin/sh\nexit 1\n' > "$version_commit_fail/.git/hooks/pre-commit"
+chmod +x "$version_commit_fail/.git/hooks/pre-commit"
+if "$version_commit_fail/cw" v 9.8.8 >"$test_root/version-commit-fail.out" 2>&1; then
+  echo 'commit failure fixture unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'commit failed before creating a commit; the version file change is preserved locally' "$test_root/version-commit-fail.out"
+grep -Fq '<Version>9.8.8</Version>' "$version_commit_fail/Directory.Build.props"
+[[ $(git -C "$version_commit_fail" log -1 --format=%s) == 'initial version fixture' ]]
+
+version_push_fail="$test_root/version-push-fail"
+setup_version_repo version-push-fail
+printf '#!/bin/sh\nexit 1\n' > "$test_root/version-push-fail-origin.git/hooks/pre-receive"
+chmod +x "$test_root/version-push-fail-origin.git/hooks/pre-receive"
+if "$version_push_fail/cw" v 9.8.8 >"$test_root/version-push-fail.out" 2>&1; then
+  echo 'push failure fixture unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'push failed; commit ' "$test_root/version-push-fail.out"
+[[ $(git -C "$version_push_fail" log -1 --format=%s) == '[V] 9.8.8' ]]
+[[ $(git --git-dir="$test_root/version-push-fail-origin.git" log -1 --format=%s main) == 'initial version fixture' ]]
+
+version_diverged="$test_root/version-diverged"
+setup_version_repo version-diverged
+git clone -q --branch main "$test_root/version-diverged-origin.git" "$test_root/version-diverged-other"
+git -C "$test_root/version-diverged-other" config user.email cw-tests@example.invalid
+git -C "$test_root/version-diverged-other" config user.name cw-tests
+printf 'remote\n' > "$test_root/version-diverged-other/remote-only"
+git -C "$test_root/version-diverged-other" add remote-only
+git -C "$test_root/version-diverged-other" commit -qm 'remote advancement'
+git -C "$test_root/version-diverged-other" push -q origin main
+printf 'local\n' > "$version_diverged/local-only"
+git -C "$version_diverged" add local-only
+git -C "$version_diverged" commit -qm 'local divergence'
+if "$version_diverged/cw" v 9.8.8 >"$test_root/version-diverged.out" 2>&1; then
+  echo 'diverged main unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'have diverged' "$test_root/version-diverged.out"
+[[ $(git -C "$version_diverged" show HEAD:Directory.Build.props | sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p') == 9.8.7 ]]
+
 echo 'cw tests passed'
