@@ -397,6 +397,19 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
     public async Task<int> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
+        var helpArguments = arguments.Count == 1 && arguments[0] == "config"
+            ? (IReadOnlyList<string>)["config", "--help"]
+            : arguments;
+        if (ServerCommandHelp.TryWrite(helpArguments, _output)) return ServerAdministrationExitCodes.Success;
+        var result = await RunCoreAsync(arguments, cancellationToken);
+        if (result == ServerAdministrationExitCodes.InvalidArguments)
+            _error.WriteLine(ServerCommandHelp.UsageHint(helpArguments));
+        return result;
+    }
+
+    private async Task<int> RunCoreAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
         if (arguments.Count == 0)
             return InvalidArguments("Missing Server administration command. Run 'codex-server --help' for usage.");
 
@@ -407,26 +420,10 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var configurationCommand = command == "config";
         var operation = configurationCommand && arguments.Count > 1 ? arguments[1] : command;
         var optionStart = configurationCommand ? 2 : 1;
-        if (configurationCommand && (arguments.Count == 1 || arguments[1] == "--help"))
-        {
-            _output.WriteLine("Usage: codex-server config <show|validate|set> [arguments] [options]");
-            _output.WriteLine("Set atomically updates one explicitly supported installed Server setting.");
-            return ServerAdministrationExitCodes.Success;
-        }
-        if (configurationCommand && arguments.Count == 3 && arguments[2] == "--help")
-        {
-            _output.WriteLine("Usage: codex-server config <show|validate|set> [arguments] [options]");
-            return ServerAdministrationExitCodes.Success;
-        }
-        if (!configurationCommand && arguments.Count == 2 && arguments[1] == "--help")
-        {
-            _output.WriteLine("Usage: codex-server <status|diagnostics> [--json] [Server configuration options]");
-            return ServerAdministrationExitCodes.Success;
-        }
         if (configurationCommand && operation == "set")
             return RunConfigurationMutation(arguments);
         if (configurationCommand ? operation is not ("show" or "validate") : operation is not ("status" or "diagnostics"))
-            return InvalidArguments("Invalid Server administration command. Run 'codex-server --help' for usage.");
+            return InvalidArguments("Invalid Server administration command.");
 
         if (!TryParseOptions(arguments, optionStart, out var json, out var configurationArguments))
             return InvalidArguments("Invalid Server administration options. Use --json and valid --Server:<setting>=<value> options.");
@@ -466,12 +463,6 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
     private async Task<int> RunProjectsAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         const string usage = "Usage: codex-server projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]";
-        if (arguments.Count == 2 && arguments[1] == "--help")
-        {
-            _output.WriteLine(usage);
-            _output.WriteLine("Create and update read a CentralProjectDefinition JSON file. Mutations require the current project revision.");
-            return ServerAdministrationExitCodes.Success;
-        }
         if (arguments.Count < 2)
             return InvalidArguments(usage);
 
@@ -594,12 +585,6 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
     private async Task<int> RunExecutionsAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         const string usage = "Usage: codex-server executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]";
-        if (arguments.Count == 2 && arguments[1] == "--help")
-        {
-            _output.WriteLine(usage);
-            _output.WriteLine("List accepts --project, --state, --work-type, --work-id, --limit (1..100) and --offset (0..10000). Reconcile requires an expired uncertain execution, an explicit disposition, and evidence; Integrated also requires the full commit ID.");
-            return ServerAdministrationExitCodes.Success;
-        }
         if (arguments.Count < 2) return InvalidArguments(usage);
 
         var operation = arguments[1];
@@ -732,12 +717,6 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
     private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         const string usage = "Usage: codex-server github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
-        if (arguments.Count == 2 && arguments[1] == "--help")
-        {
-            _output.WriteLine(usage);
-            _output.WriteLine("relationships reads parent, sub-issues, blocked-by, and blocking relationships. graph renders a bounded read-only hierarchy and its dependency edges; use --max-depth, --max-issues, and --max-edges to adjust its limits. parent sets a parent Issue number or uses 'none' to clear it; sub-issues assigns or removes one parent relationship for up to 50 children. dependency and dependency-batch administer GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. JSON responses use contractVersion 1. Enqueue and refresh remain explicit queue actions.");
-            return ServerAdministrationExitCodes.Success;
-        }
         if (arguments.Count < 3) return InvalidArguments(usage);
 
         var operation = arguments[1];

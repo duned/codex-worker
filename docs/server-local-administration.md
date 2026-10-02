@@ -15,6 +15,9 @@ codex-server config validate
 codex-server config validate --json
 codex-server config set EnableLocalProvisioning true
 codex-server config set AllowLocalProvisioningElevation true --json
+codex-server worker list
+codex-server worker list --json
+codex-server worker list --limit 100 --offset 0
 codex-server worker show <worker-id>
 codex-server worker enable <worker-id>
 codex-server worker drain <worker-id>
@@ -58,6 +61,12 @@ codex-server provision create <node-id|server> <capability-id> <typed-action> [-
 codex-server provision cancel <command-id> [--json]
 codex-server provision reconcile <command-id> --node-quiescent [--json]
 ```
+
+Root `--help` / `-h` is an index. Each command family and leaf supports the same aliases, for example `codex-server backup --help`, `codex-server worker show -h`, and `codex-server github access --help`. Help does not load configuration, open databases, or start the Server. Invalid arguments exit non-zero and point to the selected command's help.
+
+`worker list` discovers registered Worker IDs in ascending ID order, with name, version, platform, availability, lifecycle, scheduling policy, active assignment count, and last-seen time. It reads the existing database without initialization or migration. It uses the same explicit database/service configuration resolution as other Worker commands; an optional positional database path is supported. Defaults are limit 100 and offset 0; bounds are 1..100 and 0..10000. Empty pages are reported clearly. Use `worker show` for details and `diagnostics` for aggregates.
+
+`worker list --json` returns a versioned object with `contractVersion: 1`, `limit`, `offset`, `hasMore`, and `workers`. Each Worker summary contains `workerId`, `displayName`, `workerVersion`, `platform`, `availability`, `lifecycleState`, `schedulingPolicy`, `activeAssignments`, and `lastSeenAtUtc`. No credential payloads, capabilities, or project inventories are included. Use `hasMore` and increment `offset` by `limit` to page through results; pages reflect current registry state.
 
 `status` checks the configured local database through the Server health service. It reports control-plane persistence readiness and explicitly reports process health as `not-observed`: a separate offline command cannot establish whether the web process is running. `diagnostics` summarizes registered Worker availability and lifecycle, reported capacity, and project count from the local registry. It does not probe node capabilities, and Worker availability does not establish project eligibility.
 

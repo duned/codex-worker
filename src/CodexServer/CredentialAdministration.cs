@@ -106,12 +106,21 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
     public async Task<int> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
-        if (arguments.Count == 0 || arguments.Count == 1 && arguments[0] == "--help")
-        {
-            _output.WriteLine(Usage);
-            _output.WriteLine("Create and replace prompt for secrets without echo. Use --secret-stdin for piped input. Secret values are never accepted as arguments or printed.");
-            return ServerAdministrationExitCodes.Success;
-        }
+        var helpArguments = arguments.Count == 0
+            ? (IReadOnlyList<string>)["credential", "--help"]
+            : ["credential", .. arguments];
+        if (ServerCommandHelp.TryWrite(helpArguments, _output)) return ServerAdministrationExitCodes.Success;
+        var result = await RunCoreAsync(arguments, cancellationToken);
+        if (result == ServerAdministrationExitCodes.InvalidArguments)
+            _error.WriteLine(ServerCommandHelp.UsageHint(helpArguments));
+        return result;
+    }
+
+    private async Task<int> RunCoreAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        if (arguments.Count == 0)
+            return InvalidArguments("Missing credential operation.");
 
         var operation = arguments[0];
         if (!TryParseOptions(arguments, out var positionals, out var json, out var secretFromStandardInput,

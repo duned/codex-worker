@@ -97,16 +97,21 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
     public async Task<int> RunAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
+        var helpArguments = (IReadOnlyList<string>)["provision", .. arguments];
+        if (ServerCommandHelp.TryWrite(helpArguments, _output)) return ServerAdministrationExitCodes.Success;
+        var result = await RunCoreAsync(arguments, cancellationToken);
+        if (result == ServerAdministrationExitCodes.InvalidArguments)
+            _error.WriteLine(ServerCommandHelp.UsageHint(helpArguments));
+        return result;
+    }
+
+    private async Task<int> RunCoreAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
         if (!TryParse(arguments, out var request, out var parseError))
             return InvalidArguments(parseError);
         if (request is null)
-            return InvalidArguments("Invalid provisioning administration arguments. Run 'codex-server provision --help' for usage.");
-        if (request.Help)
-        {
-            _output.WriteLine(Usage);
-            return ServerAdministrationExitCodes.Success;
-        }
-
+            return InvalidArguments("Invalid provisioning administration arguments.");
         var inspected = configurationService.Inspect(request.ConfigurationArguments);
         if (!inspected.Document.IsValid || inspected.Configuration is null)
         {
@@ -146,7 +151,7 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
                     WriteCommand(reconciled, request.Json);
                     break;
                 default:
-                    return InvalidArguments("Unknown provisioning command. Run 'codex-server provision --help' for usage.");
+                    return InvalidArguments("Unknown provisioning command.");
             }
             return ServerAdministrationExitCodes.Success;
         }
@@ -213,12 +218,7 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
     private static bool TryParse(IReadOnlyList<string> arguments, out CliRequest? request, out string error)
     {
         request = null;
-        error = "Invalid provisioning administration arguments. Run 'codex-server provision --help' for usage.";
-        if (arguments.Count == 1 && arguments[0] == "--help")
-        {
-            request = new("help", Help: true);
-            return true;
-        }
+        error = "Invalid provisioning administration arguments.";
         if (arguments.Count == 0 || arguments[0] is not ("list" or "show" or "create" or "cancel" or "reconcile")) return false;
 
         var verb = arguments[0];
@@ -346,22 +346,9 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
     private static bool IsConfigurationOptionValue(string value) => value.Length > 0;
 
     private sealed record CliRequest(string Verb, string? Id = null, ProvisioningCommandRequest? Command = null,
-        bool Json = false, bool NodeQuiescent = false, IReadOnlyList<string>? Configuration = null, bool Help = false,
+        bool Json = false, bool NodeQuiescent = false, IReadOnlyList<string>? Configuration = null,
         int Limit = 100, int Offset = 0)
     {
         public IReadOnlyList<string> ConfigurationArguments => Configuration ?? [];
     }
-
-    private const string Usage = """
-        Usage: codex-server provision <list|show|create|cancel|reconcile> [arguments] [options]
-               provision list [--limit 1..100] [--offset 0..10000] [--json]
-               provision show <command-id> [--json]
-               provision create <node-id|server> <capability-id> <typed-action> [--timeout-seconds 120] [--allow-elevation] [--repository owner/repository] [--json]
-               provision cancel <command-id> [--json]
-               provision reconcile <command-id> --node-quiescent [--json]
-
-        Commands inspect the configured local Server database and do not contact the running Server.
-        Cancellation applies only to queued commands. Running operations stop at their deadline;
-        reconcile only after verifying the target node is quiescent. Worker-local policy remains final authority.
-        """;
 }

@@ -7,52 +7,35 @@ public static class Program
     private const string Help = """
         Codex Server
         Usage: CodexServer [--Server:<setting>=<value>] [--Logging:<setting>=<value>]
-               CodexServer --help | --version
-               CodexServer status [--json] [Server configuration options]
-               CodexServer diagnostics [--json] [Server configuration options]
-               CodexServer config <show|validate|set> [arguments] [options]
-               CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
-               CodexServer executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]
-               CodexServer github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]
-               CodexServer credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin]
-               CodexServer provision <list|show|create|cancel|reconcile> [arguments]
-               CodexServer worker-token create [database-path]
-               CodexServer worker-token revoke <registration-token> [database-path]
-               CodexServer worker-token revoke-worker <worker-id> [database-path]
-               CodexServer worker <show|enable|drain|disable|revoke-token|revoke-delivery-token> <worker-id> [database-path]
-               CodexServer backup <export|restore> <archive-path> <database-path>
-               CodexServer backup validate <archive-path>
+               codex-server <command> [arguments] [options]
+               codex-server --help | -h | --version
 
-        No arguments starts the web Server. Help, version and administrative commands
-        do not start the Server. Status and diagnostics inspect configured local state;
-        they do not contact the running loopback Server. Process health is not observed.
-        Configuration show and validate are offline and do not open the database.
-        Project administration reads and writes the configured local Server database;
-        create/update take a CentralProjectDefinition JSON file and mutations require a revision.
-        Execution administration inspects a bounded local queue, cancels queued requests, and reconciles only expired uncertain attempts with explicit integration evidence.
-        GitHub Issue administration uses the Server service account's gh login and project-scoped repositories. Create, title/body edits, configured eligibility labels, and blocked-by relationships are explicit; --preview validates and displays changes without applying them. Read access does not establish Issue write or Git push authorization. Worker execution labels, comments and Issue closure remain Worker-owned.
-        Backup restore requires the Server to be stopped and takes an exclusive database access lock.
+        Commands:
+          status, diagnostics  Inspect local Server readiness and aggregate state
+          config               Show, validate or update installed configuration
+          projects             Manage project definitions and revisions
+          executions           Inspect, cancel or reconcile execution requests
+          github               Inspect project Issues and manage eligibility/relationships
+          credential           Manage protected credentials and Worker assignments
+          provision            Queue and inspect typed node provisioning operations
+          worker               List registered Worker IDs, inspect and control scheduling
+          worker-token         Create or revoke Worker registration/API tokens
+          backup               Export, validate or restore Server backups
 
-        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|set|projects ...|executions ...|github ...|credential ...|provision ...|backup ...|worker-token ...|worker ...
-        The installed helper uses /etc/codex-server/server.env and the service account
-        for local administration, Worker administration and token commands, even while codex-server.service is running.
-        Create a Worker token with sudo codex-server worker-token create.
-        The one-use bootstrap token is printed only to stdout and expires in 15 minutes.
-        Protect that output; use codex-worker register --token-stdin to register.
-
-        Direct token and Worker administration commands require an explicit database-path or configured
-        Server:DataDirectory / Server:DatabasePath (environment: Server__DataDirectory /
-        Server__DatabasePath). They never silently select the invoking user's home.
-        --help (-h) prints this help; --version prints the Server version.
+        No arguments starts the web Server. Administration runs locally without starting it.
+        Use codex-server <command> --help (or -h) for contextual command help.
+        Installed Linux helper: sudo codex-server <command>; uses /etc/codex-server/server.env
+        and the service account. Example: sudo codex-server worker-token create
         """;
 
     public static async Task<int> Main(string[] args)
     {
-        if (args is ["--help"] or ["-h"] || args is ["worker-token", "--help"] or ["worker", "--help"] or ["backup", "--help"] or ["credential", "--help"])
+        if (args is ["--help"] or ["-h"])
         {
             Console.WriteLine(Help);
             return 0;
         }
+        if (ServerCommandHelp.TryWrite(args, Console.Out)) return 0;
         if (args is ["--version"])
         {
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
@@ -71,13 +54,13 @@ public static class Program
             }
             catch (ArgumentException)
             {
-                Console.Error.WriteLine("Invalid administrative arguments. Run CodexServer --help for usage.");
+                Console.Error.WriteLine("Invalid administrative arguments. " + ServerCommandHelp.UsageHint(args));
                 return 2;
             }
             catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
             {
                 // Do not echo arguments or exception messages: these can contain credentials.
-                Console.Error.WriteLine("Administrative command failed. Check the service state configuration, file permissions and command usage (CodexServer --help).");
+                Console.Error.WriteLine("Administrative command failed. Check the service state configuration and file permissions. " + ServerCommandHelp.UsageHint(args));
                 return 1;
             }
         }
@@ -149,72 +132,6 @@ public static class Program
                 (++index == args.Length || args[index].StartsWith("--", StringComparison.Ordinal))) return false;
         }
         return true;
-    }
-}
-
-internal static class WorkerAdministrationCommand
-{
-    public static async Task RunAsync(string[] args)
-    {
-        if (args.Length < 3 || args.Length > 4 || args[1] is not ("show" or "enable" or "drain" or "disable" or "revoke-token" or "revoke-delivery-token") ||
-            !Guid.TryParseExact(args[2], "N", out _))
-            throw new ArgumentException("Usage: codex-server worker <show|enable|drain|disable|revoke-token|revoke-delivery-token> <worker-id> [database-path]");
-        var configuration = new ServerConfiguration();
-        var section = ServerApplication.CreateBuilder([]).Configuration.GetSection("Server");
-        section.Bind(configuration);
-        var serviceContext = Environment.GetEnvironmentVariable("CODEX_SERVER_OPERATOR_SERVICE_CONTEXT") == "1";
-        if (args.Length == 3 && !serviceContext && section["DataDirectory"] is null && section["DatabasePath"] is null)
-            throw new InvalidDataException("Worker administration requires explicit service state configuration.");
-        configuration.Validate();
-        var database = args.Length == 4 ? Path.GetFullPath(args[3]) : configuration.ResolveDatabasePath();
-        var registry = new SqliteRegistryStore(database, configuration.WorkerStaleAfterSeconds,
-            leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
-            leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds);
-        var credentials = new SqliteCredentialStore(database);
-        await registry.InitializeAsync();
-        await credentials.InitializeAsync();
-        var workerId = args[2];
-        var worker = await registry.GetWorkerAsync(workerId);
-        if (worker is null)
-        {
-            Console.WriteLine("Worker was not found.");
-            return;
-        }
-        switch (args[1])
-        {
-            case "show":
-                var delivery = await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId);
-                Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Worker = worker, CredentialDeliveryAuthorization = delivery },
-                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }));
-                break;
-            case "enable":
-            case "drain":
-            case "disable":
-                var policy = args[1] switch
-                {
-                    "enable" => WorkerSchedulingPolicy.Enabled,
-                    "drain" => WorkerSchedulingPolicy.Draining,
-                    _ => WorkerSchedulingPolicy.Disabled
-                };
-                worker = await registry.SetWorkerSchedulingPolicyAsync(workerId, policy) ?? worker;
-                var drainState = worker.SchedulingPolicy == WorkerSchedulingPolicy.Draining
-                    ? worker.ActiveAssignments == 0 ? "drained" : $"draining; {worker.ActiveAssignments} active assignments retain their leases"
-                    : worker.SchedulingPolicy.ToLowerInvariant();
-                Console.WriteLine($"Worker scheduling policy: {drainState}.");
-                break;
-            case "revoke-token":
-                var apiTokenRevoked = await registry.RevokeWorkerTokenAsync(workerId);
-                Console.WriteLine(apiTokenRevoked
-                    ? "Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery. The shared Server registration-token fallback remains server-wide if configured."
-                    : "No active per-Worker API authentication token was found.");
-                break;
-            case "revoke-delivery-token":
-                var deliveryTokenRevoked = await credentials.RevokeWorkerDeliveryTokenAsync(workerId);
-                Console.WriteLine(deliveryTokenRevoked
-                    ? "Worker credential-delivery authorization revoked. Worker API authentication is unchanged."
-                    : "No active Worker credential-delivery authorization was found.");
-                break;
-        }
     }
 }
 

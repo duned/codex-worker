@@ -1812,12 +1812,27 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkersAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkersAsync(CancellationToken cancellationToken = default) =>
+        ReadWorkersAsync(null, 0, cancellationToken);
+
+    internal Task<IReadOnlyList<WorkerRegistrationResponse>> GetWorkerPageAsync(int limit, int offset, CancellationToken cancellationToken = default)
     {
-        await using var connection = new SqliteConnection(ConnectionString);
+        if (limit is < 1 or > 101 || offset is < 0 or > 10_000) throw new ArgumentOutOfRangeException(nameof(limit));
+        return ReadWorkersAsync(limit, offset, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<WorkerRegistrationResponse>> ReadWorkersAsync(int? limit, int offset, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(limit is null ? ConnectionString : new SqliteConnectionStringBuilder(ConnectionString) { Mode = SqliteOpenMode.ReadOnly }.ToString());
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.registration_json IS NOT NULL ORDER BY w.worker_id;";
+        if (limit is { } pageSize)
+        {
+            command.CommandText = command.CommandText.TrimEnd(';') + " LIMIT $limit OFFSET $offset;";
+            command.Parameters.AddWithValue("$limit", pageSize);
+            command.Parameters.AddWithValue("$offset", offset);
+        }
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var workers = new List<WorkerRegistrationResponse>();
         while (await reader.ReadAsync(cancellationToken))
