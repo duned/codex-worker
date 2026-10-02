@@ -112,7 +112,7 @@ public static class Program
                     ? await new ServerCredentialAdministrationCli(configuration, new LocalServerCredentialAdministrationServiceFactory())
                         .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
                 : await new ServerAdministrationCli(configuration, new LocalServerAdministrationServiceFactory())
-                    .RunAsync(args.Skip(1).ToArray(), cancellation.Token);
+                    .RunAsync(args, cancellation.Token);
             if (userCancellation.IsCancellationRequested)
             {
                 Console.Error.WriteLine("Server administration command canceled.");
