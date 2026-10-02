@@ -340,7 +340,7 @@ release_list() {
   need_command gh || return 1
   local response
   printf 'Querying repository releases...\n'
-  if ! response=$(gh release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt,url 2>&1); then
+  if ! response=$(gh release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt 2>&1); then
     response=${response//$'\n'/ }
     error "could not query repository releases${response:+: $response}"
     return 1
@@ -555,11 +555,11 @@ main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
   case $command in
-    --help|-h|help) ;;
+    --help|-h|help|h) ;;
     *) validate_repository "$command" || return 1 ;;
   esac
   case $command in
-    --help|-h|help) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
+    --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
     status|s) (($# == 0)) || { error 'status does not accept options'; help_hint; return 2; }; status_command ;;
     deploy|d) (($# == 0)) || { error 'deploy does not accept options'; help_hint; return 2; }; deploy_command ;;
     log|l) log_command "$@" ;;

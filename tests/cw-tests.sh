@@ -112,6 +112,9 @@ export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
 (
   cd "$caller_dir"
   "$fixture_bin/cw" --help | grep -Fq 'status, s'
+  "$fixture_bin/cw" h > "$test_root/fixture-help-h.out"
+  "$fixture_bin/cw" --help > "$test_root/fixture-help-long.out"
+  cmp "$test_root/fixture-help-h.out" "$test_root/fixture-help-long.out"
   "$fixture_bin/cw" status > "$test_root/symlink-status.out"
   grep -Fq "  root     $fixture_repo" "$test_root/symlink-status.out"
   grep -Fq "  - main" "$test_root/symlink-status.out"
@@ -157,6 +160,9 @@ export CW_DEPLOY_DIR="$test_root/apps/worker"
 printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 
 "$repo_root/cw" --help | grep -Fq 'status, s'
+"$repo_root/cw" --help > "$test_root/help-long.out"
+"$repo_root/cw" h > "$test_root/help-h.out"
+cmp "$test_root/help-h.out" "$test_root/help-long.out"
 "$repo_root/cw" -h >/dev/null
 "$repo_root/cw" help >/dev/null
 : > "$test_root/sudo.args"
@@ -241,6 +247,10 @@ XML
   cat > "$repo/packaging/release.sh" <<'RELEASE'
 #!/usr/bin/env bash
 printf '%s\n' "$#" "$1" > "$CW_TEST_ROOT/release.args"
+if [[ -f $CW_TEST_ROOT/fail-existing-tag ]]; then
+  printf "Tag 'v%s' already exists on origin; refusing to overwrite it.\n" "$1" >&2
+  exit 1
+fi
 [[ ! -f $CW_TEST_ROOT/fail-release ]] || exit "$(<"$CW_TEST_ROOT/fail-release")"
 RELEASE
   chmod +x "$repo/packaging/release.sh"
@@ -258,7 +268,7 @@ RELEASE
 # the existing script. These fixtures never create tags or contact GitHub.
 release_repo="$test_root/release-success"
 setup_version_repo release-success
-printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z","url":"https://example.invalid/releases/v9.8.7"},{"tagName":"v9.8.6","isDraft":false,"isPrerelease":false,"publishedAt":"2026-08-01T00:00:00Z","url":"https://example.invalid/releases/v9.8.6"}]\n' > "$test_root/releases.json"
+printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z"},{"tagName":"v9.8.6","name":"v9.8.6","isDraft":false,"isPrerelease":false,"publishedAt":"2026-08-01T00:00:00Z"}]\n' > "$test_root/releases.json"
 release_output=$("$release_repo/cw" r 9.8.7)
 grep -Fq 'Publishing Worker 9.8.7' <<<"$release_output"
 grep -Fq 'Release 9.8.7 published successfully' <<<"$release_output"
@@ -309,23 +319,38 @@ fi
 [[ $release_script_code == 1 ]]
 grep -Fq 'release script failed with exit code 1' "$test_root/release-script-failure.out"
 rm "$test_root/fail-release" "$test_root/release.args"
+touch "$test_root/fail-existing-tag"
+if "$release_repo/cw" r 9.8.7 >"$test_root/release-existing-tag.out" 2>&1; then
+  echo 'existing release tag unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq "Tag 'v9.8.7' already exists on origin; refusing to overwrite it." "$test_root/release-existing-tag.out"
+grep -Fq 'release script failed with exit code 1' "$test_root/release-existing-tag.out"
+rm "$test_root/fail-existing-tag" "$test_root/release.args"
 
 # Inspection uses structured provider data and does not alter repository state.
 release_head=$(git -C "$release_repo" rev-parse HEAD)
 release_status=$(git -C "$release_repo" status --porcelain)
+: > "$test_root/gh.args"
 latest_output=$("$release_repo/cw" r)
 grep -Fq 'v9.8.7  published  2026-09-01T00:00:00Z' <<<"$latest_output"
-grep -Fq 'https://example.invalid/releases/v9.8.7' <<<"$latest_output"
+! grep -Fq 'https://' <<<"$latest_output"
 long_latest_output=$("$release_repo/cw" release)
-grep -Fq 'v9.8.7  published  2026-09-01T00:00:00Z' <<<"$long_latest_output"
+[[ "$long_latest_output" == "$latest_output" ]]
 list_output=$("$release_repo/cw" r list)
 [[ $(grep -c '^v9\.8\.' <<<"$list_output") == 2 ]]
 [[ $(sed -n '2p' <<<"$list_output" | cut -d' ' -f1) == v9.8.7 ]]
 [[ $(sed -n '3p' <<<"$list_output" | cut -d' ' -f1) == v9.8.6 ]]
+long_list_output=$("$release_repo/cw" release list)
+[[ "$long_list_output" == "$list_output" ]]
+[[ $(wc -l < "$test_root/gh.args") == 4 ]]
+while IFS= read -r query_args; do
+  [[ $query_args == 'release list --limit 20 --json tagName,name,isDraft,isPrerelease,publishedAt' ]]
+done < "$test_root/gh.args"
 [[ $(git -C "$release_repo" rev-parse HEAD) == "$release_head" ]]
 [[ $(git -C "$release_repo" status --porcelain) == "$release_status" ]]
 printf '[]\n' > "$test_root/releases.json"
 grep -Fq 'No releases found' <("$release_repo/cw" r)
+grep -Fq 'No releases found' <("$release_repo/cw" release list)
 printf '[{"tagName":"v9.8.7","isDraft":false,"isPrerelease":false}]\n' > "$test_root/releases.json"
 touch "$test_root/fail-gh"
 if "$release_repo/cw" r list >"$test_root/release-query-failure.out" 2>&1; then
