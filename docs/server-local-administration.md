@@ -13,6 +13,8 @@ codex-server config show
 codex-server config show --json
 codex-server config validate
 codex-server config validate --json
+codex-server config set EnableLocalProvisioning true
+codex-server config set AllowLocalProvisioningElevation true --json
 codex-server worker show <worker-id>
 codex-server worker enable <worker-id>
 codex-server worker drain <worker-id>
@@ -61,9 +63,13 @@ codex-server provision reconcile <command-id> --node-quiescent [--json]
 
 `config show` displays effective non-secret settings. Data-directory and database paths are redacted. `config validate` checks Server settings and path resolution without opening or creating the database. Registration, management, and credential-encryption secrets are not included in either output. JSON documents include `contractVersion: 1` for callers that need a versioned output contract.
 
+`config set <setting> <value>` atomically updates a supported value in the installed `/etc/codex-server/server.env`: `ListenUrl`, `DataDirectory`, `DatabasePath`, `EnableLocalProvisioning`, `AllowLocalProvisioningElevation`, `WorkerStaleAfterSeconds`, `ExecutionLeaseDurationSeconds`, and `ExecutionLeaseRenewalIntervalSeconds`. It validates the resulting Server configuration, preserves file ownership and mode, and reports that the service must be restarted. The installed helper uses a fixed configuration path and invokes only this setting allowlist as root; all values remain ordinary arguments and are validated before writing.
+
 Worker commands use the configured Server database directly and do not contact the running Server. `worker show` emits the Worker registry projection and the separate credential-delivery authorization status. `enable`, `drain`, and `disable` change only the Server-owned scheduling policy. Enabled Workers may receive assignments; Draining and Disabled Workers receive none. Both policies preserve already assigned or running executions and their leases. The active assignment count makes a drain visible until it reaches zero; the stored policy remains Draining until an operator enables or disables scheduling. Reported heartbeat lifecycle and readiness remain Worker observations.
 
 `provision` inspects and changes the typed provisioning command history in the same local Server database. `create` uses the bounded shared command and capability contracts, requires a registered Worker to be online, and queues work without contacting loopback. Worker-local provisioning policy remains final authority, and Server-local mutation/elevation opt-ins apply to Server commands. `cancel` only cancels queued commands. A running command cannot be remotely cancelled; it retains its node/capability conflict lock until a terminal report or deadline. After the deadline, verify that the node process has stopped, then pass `--node-quiescent` to `reconcile`; this closes the uncertain operation without retrying it or claiming its mutation was undone. The CLI never treats provisioning state as project eligibility or execution readiness.
+
+Failed typed commands retain a stable high-level diagnostic plus a bounded failure code and, for ordinary nonzero exits, the process exit code. Failure details use fixed descriptions for sudo denial, missing executables, process failures, verification failures, and timeouts. The local CLI JSON, management API, and dashboard expose those details. Process output and credentials are never persisted or logged. Server journal entries correlate lifecycle and failure records by command ID.
 
 Legacy plan and typed-command history views return the newest 100 records by default. Pass `--limit 1..100` and `--offset 0..10000` to `provision list`; the matching `GET /api/v1/provisioning` and `GET /api/v1/provisioning/commands` endpoints accept the same query parameters. The dashboard's existing history views use the default recent page. This bounds responses while retaining persisted history in SQLite.
 

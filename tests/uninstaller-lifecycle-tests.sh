@@ -118,6 +118,8 @@ prepare() {
     mkdir -p "$root/opt/codex-worker.previous.test" "$root/opt/codex-worker.next.test" "$root/opt/codex-worker.failed.test"
   else
     ln -s "$root/opt/$TEST_SERVICE/app" "$root/usr/local/bin/codex-server"
+    mkdir -p "$root/etc/sudoers.d"
+    touch "$root/etc/sudoers.d/codex-server-provisioning"
   fi
   # Enable account cleanup in a relocated copy, with every account tool mocked.
   sed 's/if \[\[ -n $test_root \]\]; then/if false; then/' \
@@ -147,6 +149,7 @@ run_uninstall() {
 }
 assert_final() {
   [[ ! -e $unit && ! -L $link && ! -e $root/active && ! -e $root/cached ]]
+  if [[ $component == server ]]; then [[ ! -e $root/etc/sudoers.d/codex-server-provisioning ]]; fi
   for path in "$root/opt/$TEST_SERVICE" "$root/var/log/$TEST_SERVICE" "$root/run/$TEST_SERVICE" \
     "$root/usr/local/bin/$TEST_SERVICE" "$root/opt/$TEST_SERVICE.previous."* \
     "$root/opt/$TEST_SERVICE.failed."* "$root/opt/$TEST_SERVICE.next."*; do

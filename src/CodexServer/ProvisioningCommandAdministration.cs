@@ -186,6 +186,11 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
         if (command.StartedAtUtc is { } started) _output.WriteLine($"Started: {started:O}");
         if (command.DeadlineUtc is { } deadline) _output.WriteLine($"Deadline: {deadline:O}");
         if (command.CompletedAtUtc is { } completed) _output.WriteLine($"Completed: {completed:O}");
+        if (command.FailureDetail is { } failure)
+        {
+            _output.WriteLine($"Failure: {failure.Description}");
+            if (failure.ProcessExitCode is { } exitCode) _output.WriteLine($"Process exit code: {exitCode}");
+        }
     }
 
     private int NotFound(string message)

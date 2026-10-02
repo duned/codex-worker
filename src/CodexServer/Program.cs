@@ -10,7 +10,7 @@ public static class Program
                CodexServer --help | --version
                CodexServer status [--json] [Server configuration options]
                CodexServer diagnostics [--json] [Server configuration options]
-               CodexServer config <show|validate> [--json] [Server configuration options]
+               CodexServer config <show|validate|set> [arguments] [options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
                CodexServer executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]
                CodexServer github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]
@@ -33,7 +33,7 @@ public static class Program
         GitHub Issue administration uses the Server service account's gh login and project-scoped repositories. Create, title/body edits, configured eligibility labels, and blocked-by relationships are explicit; --preview validates and displays changes without applying them. Read access does not establish Issue write or Git push authorization. Worker execution labels, comments and Issue closure remain Worker-owned.
         Backup restore requires the Server to be stopped and takes an exclusive database access lock.
 
-        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|executions ...|provision <operation>|worker <operation>
+        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|set|projects ...|executions ...|github ...|credential ...|provision ...|backup ...|worker-token ...|worker ...
         The installed helper uses /etc/codex-server/server.env and the service account
         for local administration, Worker administration and token commands, even while codex-server.service is running.
         Create a Worker token with sudo codex-server worker-token create.

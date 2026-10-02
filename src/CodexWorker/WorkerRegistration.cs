@@ -406,7 +406,9 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             async Task ReportAsync(ProvisioningCommandReport report, CancellationToken token)
             {
                 using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
-                message.Content = JsonContent.Create(report);
+                // Failure detail is retained by the local Server executor. Keep Worker reports
+                // on the established wire contract for mixed-version Server installations.
+                message.Content = JsonContent.Create(report with { FailureDetail = null });
                 using var acknowledgement = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, token);
                 acknowledgement.EnsureSuccessStatusCode();
             }

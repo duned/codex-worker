@@ -409,12 +409,13 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var optionStart = configurationCommand ? 2 : 1;
         if (configurationCommand && (arguments.Count == 1 || arguments[1] == "--help"))
         {
-            _output.WriteLine("Usage: codex-server config <show|validate> [--json] [Server configuration options]");
+            _output.WriteLine("Usage: codex-server config <show|validate|set> [arguments] [options]");
+            _output.WriteLine("Set atomically updates one explicitly supported installed Server setting.");
             return ServerAdministrationExitCodes.Success;
         }
         if (configurationCommand && arguments.Count == 3 && arguments[2] == "--help")
         {
-            _output.WriteLine("Usage: codex-server config <show|validate> [--json] [Server configuration options]");
+            _output.WriteLine("Usage: codex-server config <show|validate|set> [arguments] [options]");
             return ServerAdministrationExitCodes.Success;
         }
         if (!configurationCommand && arguments.Count == 2 && arguments[1] == "--help")
@@ -422,6 +423,8 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             _output.WriteLine("Usage: codex-server <status|diagnostics> [--json] [Server configuration options]");
             return ServerAdministrationExitCodes.Success;
         }
+        if (configurationCommand && operation == "set")
+            return RunConfigurationMutation(arguments);
         if (configurationCommand ? operation is not ("show" or "validate") : operation is not ("status" or "diagnostics"))
             return InvalidArguments("Invalid Server administration command. Run 'codex-server --help' for usage.");
 
@@ -1229,6 +1232,47 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             WriteConfigurationFailure(inspected.Document, json: false);
 
         return inspected.Document.IsValid ? ServerAdministrationExitCodes.Success : ServerAdministrationExitCodes.OperationalFailure;
+    }
+
+    private int RunConfigurationMutation(IReadOnlyList<string> arguments)
+    {
+        var json = arguments.Count == 5 && arguments[4] == "--json";
+        if (arguments.Count is not (4 or 5) || arguments.Count == 5 && !json ||
+            arguments[2].StartsWith("--", StringComparison.Ordinal) || arguments[3].StartsWith("--", StringComparison.Ordinal))
+            return InvalidArguments("Usage: codex-server config set <setting> <value> [--json].");
+
+        var inspected = configurationService.Inspect([]);
+        if (inspected.Configuration is null || !inspected.Document.IsValid)
+        {
+            _error.WriteLine("Server configuration is invalid. Run 'codex-server config validate' for details.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+        var configurationPath = Environment.GetEnvironmentVariable("CODEX_SERVER_CONFIGURATION_FILE");
+        if (string.IsNullOrWhiteSpace(configurationPath))
+        {
+            _error.WriteLine("Configuration mutation is available through the installed 'sudo codex-server config set' helper.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+
+        var setting = ServerConfigurationMutation.CanonicalSetting(arguments[2]);
+        try
+        {
+            ServerConfigurationMutation.Set(configurationPath, setting, arguments[3], inspected.Configuration);
+            var result = new ServerConfigurationMutationDocument(1, true, $"Server:{setting}", RestartRequired: true);
+            if (json) _output.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+            else _output.WriteLine($"Server:{setting} updated. Restart codex-server.service to apply the change.");
+            return ServerAdministrationExitCodes.Success;
+        }
+        catch (ArgumentException)
+        {
+            _error.WriteLine("Invalid or unsupported Server configuration setting or value. Run 'codex-server config --help' for supported settings.");
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            _error.WriteLine("Server configuration could not be updated. Check the installed configuration, its ownership and permissions, then run 'codex-server config validate'.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
     }
 
     private int InvalidArguments(string message)

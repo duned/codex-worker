@@ -33,6 +33,9 @@ public sealed class ServerAdministrationDispatchTests
                 ServerAdministrationExitCodes.InvalidArguments);
             await AssertCommandAsync(["credential", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
             await AssertCommandAsync(["provision", "list", "--json", dataDirectory], ServerAdministrationExitCodes.Success);
+            await AssertCommandAsync(["backup", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
+            await AssertCommandAsync(["worker-token", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
+            await AssertCommandAsync(["worker", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
         }
         finally
         {

@@ -153,14 +153,16 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         if (operation.Request.NodeId != node) throw new InvalidOperationException("Operation is not owned by this node.");
         if (ProvisioningCommandProtocol.Terminal(operation.Status))
         {
-            if (operation.Status == report.Status && operation.Diagnostic == report.Diagnostic && operation.PublicIdentity == report.PublicIdentity) return operation;
+            if (operation.Status == report.Status && operation.Diagnostic == report.Diagnostic &&
+                operation.PublicIdentity == report.PublicIdentity && operation.FailureDetail == report.FailureDetail) return operation;
             throw new InvalidOperationException("Operation is already terminal.");
         }
         if (operation.Status != ProvisioningCommandStatus.Running) throw new InvalidOperationException("Operation has not been dispatched.");
         if (report.LoginInstructions is { } instructions) _loginInstructions[id] = instructions;
         if (ProvisioningCommandProtocol.Terminal(report.Status)) _loginInstructions.TryRemove(id, out _);
         return operation with { Status = report.Status, Diagnostic = report.Diagnostic,
-            PublicIdentity = report.PublicIdentity, CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
+            PublicIdentity = report.PublicIdentity, FailureDetail = report.FailureDetail,
+            CompletedAtUtc = ProvisioningCommandProtocol.Terminal(report.Status) ? UtcNow : null };
     }, token);
 
     public async Task<ProvisioningCommand?> CancelAsync(string id, CancellationToken token = default) => await ChangeAsync(id, operation =>

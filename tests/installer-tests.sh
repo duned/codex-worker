@@ -67,6 +67,7 @@ fi
 grep -q 'Unknown option' "$temp_dir/unknown.txt"
 
 source "$installer"
+trap 'rm -rf -- "$temp_dir"' EXIT
 # Exercise the exact helper emitted by the installer, with systemd isolated.
 mkdir -p "$temp_dir/stubs"
 export PATH="$temp_dir/stubs:$PATH"
@@ -122,6 +123,20 @@ for admin_command in projects executions; do
   fi
   grep -Fxq "$admin_command" "$CODEX_HELPER_ARGUMENTS"
 done
+for admin_root in github credential backup; do
+  case "$admin_root" in
+    github) admin_args=(github access codex-worker-test) ;;
+    credential) admin_args=(credential list) ;;
+    backup) admin_args=(backup validate /tmp/codex-server-backup.tar.gz) ;;
+  esac
+  if [[ $EUID == 0 ]]; then
+    bash "$temp_dir/codex-server" "${admin_args[@]}"
+  else
+    bash "$temp_dir/helper-command.sh" "${admin_args[@]}"
+  fi
+  grep -Fxq "$admin_root" "$CODEX_HELPER_ARGUMENTS"
+  tail -n "${#admin_args[@]}" "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf '%s\n' "${admin_args[@]}")
+done
 if [[ $EUID == 0 ]]; then
   bash "$temp_dir/codex-server" config show
 else
@@ -135,6 +150,12 @@ else
   bash "$temp_dir/provision-command.sh" provision list
 fi
 tail -n 3 "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf '/opt/codex-server/current/CodexServer\nprovision\nlist\n')
+sed 's/if \[\[ $EUID -ne 0 \]\]; then/if false; then/' "$temp_dir/codex-server" > "$temp_dir/config-helper"
+bash "$temp_dir/config-helper" config set EnableLocalProvisioning true --json
+grep -Fxq -- '--property=User=root' "$CODEX_HELPER_ARGUMENTS"
+grep -Fxq -- '--property=Environment=CODEX_SERVER_CONFIGURATION_FILE=/etc/codex-server/server.env' "$CODEX_HELPER_ARGUMENTS"
+grep -Fxq -- '--property=Environment=HOME=/var/lib/codex-server' "$CODEX_HELPER_ARGUMENTS"
+tail -n 6 "$CODEX_HELPER_ARGUMENTS" | diff -u - <(printf '/opt/codex-server/current/CodexServer\nconfig\nset\nEnableLocalProvisioning\ntrue\n--json\n')
 # Help/version bypass sudo and systemd and dispatch directly to the executable.
 cat > "$temp_dir/server-cli" <<'EOF'
 #!/usr/bin/env bash
@@ -150,6 +171,82 @@ done
 # The helper never sources the secret-bearing systemd environment as shell code.
 ! grep -Eq '(^|[[:space:]])(source|\.) /etc/codex-server/server.env' "$temp_dir/codex-server"
 grep -Fq 'Server__DataDirectory=/var/lib/codex-server' "$installer"
+write_provisioning_sudoers > "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq 'codex-server ALL=(root) NOPASSWD: CODEX_SERVER_PROVISIONING' "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq '/usr/bin/apt-get install -y --no-install-recommends gh' "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq '/usr/bin/apt-get install -y --no-install-recommends git openssh-client' "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq '/usr/bin/npm install --global --prefix /usr/local' "$temp_dir/codex-server-provisioning.sudoers"
+! grep -Eq 'NOPASSWD:[[:space:]]*ALL|/usr/bin/apt-get([[:space:]]|$)(,|$)' "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq 'sudoers.d/codex-server-provisioning' "$installer"
+grep -Fq 'chown root:root "$temporary_policy"' "$installer"
+grep -Fq 'chmod 0440 "$temporary_policy"' "$installer"
+grep -Fq 'visudo -cf "$temporary_policy"' "$installer"
+if command -v visudo >/dev/null 2>&1; then visudo -cf "$temp_dir/codex-server-provisioning.sudoers" >/dev/null 2>&1; fi
+
+cat > "$temp_dir/bootstrap-server" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state=$CODEX_BOOTSTRAP_STATE
+log=$CODEX_BOOTSTRAP_LOG
+case "$1 ${2:-}" in
+  'config show')
+    read -r enabled elevation < "$state"
+    printf '{\n  "enableLocalProvisioning": %s,\n  "allowLocalProvisioningElevation": %s\n}\n' "$enabled" "$elevation"
+    ;;
+  'config set')
+    read -r enabled elevation < "$state"
+    if [[ $3 == EnableLocalProvisioning ]]; then enabled=$4; else elevation=$4; fi
+    printf '%s %s\n' "$enabled" "$elevation" > "$state"
+    printf 'config set %s %s\n' "$3" "$4" >> "$log"
+    ;;
+  'provision create')
+    printf '%s\n' "$*" >> "$log"
+    [[ $* == 'provision create server github-cli install --allow-elevation --timeout-seconds 600 --json' ]]
+    printf '{\n  "id": "0123456789abcdef0123456789abcdef",\n  "status": "Pending"\n}\n'
+    ;;
+  'provision show')
+    count=0; [[ ! -f $CODEX_BOOTSTRAP_POLLS ]] || read -r count < "$CODEX_BOOTSTRAP_POLLS"
+    count=$((count + 1)); printf '%s\n' "$count" > "$CODEX_BOOTSTRAP_POLLS"
+    status=Running; [[ $count -lt 2 ]] || status=Succeeded
+    printf '{\n  "id": "%s",\n  "status": "%s"\n}\n' "$3" "$status"
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$temp_dir/bootstrap-server"
+cat > "$temp_dir/stubs/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >> "$CODEX_BOOTSTRAP_LOG"
+EOF
+cat > "$temp_dir/stubs/sleep" <<'EOF'
+#!/usr/bin/env bash
+:
+EOF
+chmod +x "$temp_dir/stubs/systemctl" "$temp_dir/stubs/sleep"
+export CODEX_BOOTSTRAP_STATE="$temp_dir/bootstrap-state"
+export CODEX_BOOTSTRAP_LOG="$temp_dir/bootstrap-log"
+export CODEX_BOOTSTRAP_POLLS="$temp_dir/bootstrap-polls"
+printf 'false false\n' > "$CODEX_BOOTSTRAP_STATE"
+: > "$CODEX_BOOTSTRAP_LOG"
+server_helper="$temp_dir/bootstrap-server"
+bootstrap_github_cli=true
+keep_bootstrap_provisioning_policy=false
+bootstrap_restore_needed=false
+bootstrap_github_cli_installation
+grep -Fxq 'provision create server github-cli install --allow-elevation --timeout-seconds 600 --json' "$CODEX_BOOTSTRAP_LOG"
+grep -Fxq 'config set EnableLocalProvisioning true' "$CODEX_BOOTSTRAP_LOG"
+grep -Fxq 'config set AllowLocalProvisioningElevation true' "$CODEX_BOOTSTRAP_LOG"
+read -r bootstrap_enabled bootstrap_elevation < "$CODEX_BOOTSTRAP_STATE"
+[[ $bootstrap_enabled == false && $bootstrap_elevation == false ]]
+
+printf 'false false\n' > "$CODEX_BOOTSTRAP_STATE"
+rm -f "$CODEX_BOOTSTRAP_POLLS"
+: > "$CODEX_BOOTSTRAP_LOG"
+keep_bootstrap_provisioning_policy=true
+bootstrap_github_cli_installation
+read -r bootstrap_enabled bootstrap_elevation < "$CODEX_BOOTSTRAP_STATE"
+[[ $bootstrap_enabled == true && $bootstrap_elevation == true ]]
+! grep -Fxq 'config set EnableLocalProvisioning false' "$CODEX_BOOTSTRAP_LOG"
 
 fresh_environment="$temp_dir/fresh-server.env"
 ensure_server_environment "$fresh_environment"

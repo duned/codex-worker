@@ -21,7 +21,8 @@ function setup(){
  const plan={id:'legacy-plan',workerId:'worker',state:'Running',createdAtUtc:'2026-10-01T00:00:00Z',actions:[],currentActionId:'install'};
  const commands=[
   {id:'pending-command',request:{nodeId:'worker',capabilityId:'git',action:'Install'},status:'Pending',diagnostic:'Queued',createdAtUtc:'2026-10-01T00:01:00Z'},
-  {id:'expired-command',request:{nodeId:'server',capabilityId:'git',action:'Install'},status:'Running',diagnostic:'Executing',createdAtUtc:'2026-10-01T00:02:00Z',deadlineUtc:'2000-01-01T00:00:00Z'}
+  {id:'expired-command',request:{nodeId:'server',capabilityId:'git',action:'Install'},status:'Running',diagnostic:'Executing',createdAtUtc:'2026-10-01T00:02:00Z',deadlineUtc:'2000-01-01T00:00:00Z'},
+  {id:'failed-command',request:{nodeId:'server',capabilityId:'github-cli',action:'Install'},status:'Failed',diagnostic:'ProcessFailed',failureDetail:{code:'ElevationDenied',description:'Non-interactive sudo authorization was denied.'},createdAtUtc:'2026-10-01T00:03:00Z'}
  ];
  const context=vm.createContext({$,managementToken:'management',provisioningActionPending:false,confirm:()=>confirmation,Date,encodeURIComponent,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
@@ -36,6 +37,7 @@ test('history combines legacy plans and typed commands while offering only appli
  assert.match(markup,/Legacy plan legacy-plan/);
  assert.match(markup,/Typed command pending-command/);
  assert.match(markup,/Cancel queued command/);
+ assert.match(markup,/Non-interactive sudo authorization was denied/);
  assert.match(markup,/expired-command/);
  assert.match(markup,/Reconcile after node quiescence/);
  const actions=s.$('provisioning').children;

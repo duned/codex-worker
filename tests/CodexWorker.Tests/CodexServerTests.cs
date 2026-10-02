@@ -42,7 +42,7 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/provisioning/commands",
                 request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.CheckConfiguration })).StatusCode);
             var installResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands",
-                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.Install });
+                request with { CapabilityId = "codex-cli", Action = CodexProvisioning.ProvisioningCommandAction.Install, AllowElevation = true });
             Assert.Equal(HttpStatusCode.Created, installResponse.StatusCode);
             var install = await installResponse.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
             Assert.NotNull(install);

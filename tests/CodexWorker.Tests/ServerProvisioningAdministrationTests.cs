@@ -3,9 +3,129 @@ namespace CodexWorker.Tests;
 using CodexProvisioning;
 using CodexServer;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 public sealed class ServerProvisioningAdministrationTests
 {
+    [Fact]
+    public async Task EnabledLocalPolicyDispatchesExplicitGithubInstallThroughProvisioningExecutor()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "codex-server.db");
+        var commands = new ProvisioningCommandStore(database);
+        await commands.InitializeAsync();
+        var operation = await commands.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Install,
+            AllowElevation: true));
+        var discovery = new NodeCapabilityDiscovery((executable, arguments, _) =>
+        {
+            if (executable is "gh" or "/usr/bin/gh")
+                return Task.FromResult(arguments.SequenceEqual(["--version"])
+                    ? (0, "gh version 2.0.0") : (1, "not authenticated"));
+            if (executable == "/usr/bin/apt-cache") return Task.FromResult((0, "Installed: (none)\nCandidate: 2.0.0"));
+            if (executable == "/usr/bin/dpkg") return Task.FromResult((1, string.Empty));
+            return Task.FromException<(int, string)>(new FileNotFoundException());
+        });
+        var calls = new List<(string Executable, IReadOnlyList<string> Arguments)>();
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true, isRoot: () => false,
+            processRunner: (executable, arguments, _) =>
+            {
+                calls.Add((executable, arguments));
+                return Task.FromResult(new ProvisioningProcessResult(0));
+            });
+        var configuration = new ServerConfiguration { EnableLocalProvisioning = true, AllowLocalProvisioningElevation = true };
+        using var loggerProvider = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(loggerProvider));
+        using var service = new LocalProvisioningCommandService(commands, executor, configuration,
+            loggerFactory.CreateLogger<LocalProvisioningCommandService>());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            _ = await loggerProvider.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, (await commands.GetAsync(operation.Id))?.Status);
+            Assert.Equal(2, calls.Count);
+            Assert.Equal("/usr/bin/sudo", calls[0].Executable);
+            Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "update" }, calls[0].Arguments);
+            Assert.Equal("/usr/bin/sudo", calls[1].Executable);
+            Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "gh" }, calls[1].Arguments);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task LocalElevationPolicyStillDeniesExplicitlyElevatedInstallWhenDisabled()
+    {
+        using var temporary = new TemporaryDirectory();
+        var commands = new ProvisioningCommandStore(Path.Combine(temporary.Path, "codex-server.db"));
+        await commands.InitializeAsync();
+        var operation = await commands.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Install,
+            AllowElevation: true));
+        var processCalls = 0;
+        var executor = new NodeProvisioningCommandExecutor(new NodeCapabilityDiscovery(), supportsApt: () => true,
+            isRoot: () => false, processRunner: (_, _, _) =>
+            {
+                processCalls++;
+                return Task.FromResult(new ProvisioningProcessResult(0));
+            });
+        var configuration = new ServerConfiguration { EnableLocalProvisioning = true, AllowLocalProvisioningElevation = false };
+        using var loggerProvider = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(loggerProvider));
+        using var service = new LocalProvisioningCommandService(commands, executor, configuration,
+            loggerFactory.CreateLogger<LocalProvisioningCommandService>());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await loggerProvider.Warning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var completed = await commands.GetAsync(operation.Id);
+            Assert.Equal(ProvisioningCommandStatus.Failed, completed?.Status);
+            Assert.Equal(ProvisioningDiagnostic.Denied, completed?.Diagnostic);
+            Assert.Equal(0, processCalls);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task LocalProvisioningLogsSanitizedFailureDetails()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "codex-server.db");
+        var commands = new ProvisioningCommandStore(database);
+        await commands.InitializeAsync();
+        var operation = await commands.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Install,
+            AllowElevation: true));
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "2.0")));
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true, isRoot: () => false,
+            processRunner: (_, _, _) => Task.FromResult(new ProvisioningProcessResult(1,
+                "sudo: a password is required; management-token=private-value")));
+        var configuration = new ServerConfiguration { EnableLocalProvisioning = true, AllowLocalProvisioningElevation = true };
+        using var loggerProvider = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(loggerProvider));
+        using var service = new LocalProvisioningCommandService(commands, executor, configuration,
+            loggerFactory.CreateLogger<LocalProvisioningCommandService>());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            var warning = await loggerProvider.Warning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var completed = await commands.GetAsync(operation.Id);
+            Assert.Equal(ProvisioningFailureCode.ElevationDenied, completed?.FailureDetail?.Code);
+            Assert.Contains("Non-interactive sudo authorization was denied", warning, StringComparison.Ordinal);
+            Assert.DoesNotContain("private-value", warning, StringComparison.Ordinal);
+            Assert.DoesNotContain("management-token", warning, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task LocalCliPreservesMixedPlanAndTypedHistoryAndSupportsCancellationAndQuiescenceReconciliation()
     {
@@ -126,6 +246,28 @@ public sealed class ServerProvisioningAdministrationTests
         : IProvisioningCommandAdministrationServiceFactory
     {
         public IProvisioningCommandAdministrationService Create(ServerConfiguration configuration) => service;
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+        public TaskCompletionSource<string> Warning { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<string> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(Warning, Completion);
+        public void Dispose() { }
+
+        private sealed class RecordingLogger(TaskCompletionSource<string> warning, TaskCompletionSource<string> completion) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                var message = formatter(state, exception);
+                if (logLevel == LogLevel.Warning) warning.TrySetResult(message);
+                if (logLevel == LogLevel.Information && message.Contains("completed as Succeeded", StringComparison.Ordinal))
+                    completion.TrySetResult(message);
+            }
+        }
     }
 
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider

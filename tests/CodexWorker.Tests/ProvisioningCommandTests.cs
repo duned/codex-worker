@@ -81,6 +81,25 @@ public sealed class ProvisioningCommandTests
     }
 
     [Fact]
+    public async Task ExecutorClassifiesSudoDenialWithoutRetainingProcessOutput()
+    {
+        var executor = new NodeProvisioningCommandExecutor(Discovery(), supportsApt: () => true, isRoot: () => false,
+            processRunner: (_, _, _) => Task.FromResult(new ProvisioningProcessResult(1,
+                "sudo: a password is required; private-token=do-not-retain")));
+
+        var result = await executor.ExecuteAsync(Running(new("server", "git", ProvisioningCommandAction.Install,
+            AllowElevation: true)), permitted: true);
+
+        Assert.Equal(ProvisioningCommandStatus.Failed, result.Status);
+        Assert.Equal(ProvisioningDiagnostic.ProcessFailed, result.Diagnostic);
+        Assert.Equal(ProvisioningFailureCode.ElevationDenied, result.FailureDetail?.Code);
+        Assert.Null(result.FailureDetail?.ProcessExitCode);
+        Assert.Contains("sudo authorization was denied", result.FailureDetail?.Description ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("do-not-retain", JsonSerializer.Serialize(result), StringComparison.Ordinal);
+        Assert.DoesNotContain("private-token", JsonSerializer.Serialize(result), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task InstallUpgradeAndUninstallCanBeRepeatedAndRefreshTheObservedState()
     {
         var installed = false;
@@ -164,6 +183,35 @@ public sealed class ProvisioningCommandTests
             await Assert.ThrowsAsync<InvalidOperationException>(() => restarted.ReportAsync(pending.Id, "server", new(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing)));
             await restarted.CreateAsync(pending.Request);
             Assert.Equal(other.Id, Assert.Single(await restarted.ListAsync(), item => item.Request.CapabilityId == "codex-cli").Id);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task ProvisioningFailureDetailIsPersistedAndSurvivesStoreRestart()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "provisioning-failure-detail-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "registry.db");
+            var store = new ProvisioningCommandStore(path);
+            await store.InitializeAsync();
+            var pending = await store.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Install, AllowElevation: true));
+            var running = await store.ClaimAsync("server");
+            Assert.NotNull(running);
+            var detail = new ProvisioningFailureDetail(ProvisioningFailureCode.ElevationDenied);
+
+            var failed = await store.ReportAsync(pending.Id, "server",
+                new ProvisioningCommandReport(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed,
+                    FailureDetail: detail));
+
+            Assert.Equal(detail, failed?.FailureDetail);
+            var restarted = new ProvisioningCommandStore(path);
+            await restarted.InitializeAsync();
+            var recovered = await restarted.GetAsync(pending.Id);
+            Assert.Equal(detail, recovered?.FailureDetail);
+            Assert.Equal("Non-interactive sudo authorization was denied.", recovered?.FailureDetail?.Description);
         }
         finally { Directory.Delete(directory, true); }
     }
