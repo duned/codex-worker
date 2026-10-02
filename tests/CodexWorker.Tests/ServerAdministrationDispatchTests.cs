@@ -2,6 +2,7 @@ namespace CodexWorker.Tests;
 
 using CodexServer;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class ServerAdministrationDispatchTests
 {
     [Fact]

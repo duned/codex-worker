@@ -446,14 +446,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
 
     internal static async Task<GitHubReadCommandResult> RunGhAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        var start = new ProcessStartInfo("gh")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        var start = await CreateGhStartInfoAsync(arguments, cancellationToken);
         using var process = new Process { StartInfo = start };
         try
         {
@@ -476,6 +469,22 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
             throw new IOException("GitHub read operation timed out.");
         }
         return new(process.ExitCode, await stdout, await stderr);
+    }
+
+    internal static async Task<ProcessStartInfo> CreateGhStartInfoAsync(IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken, string? root = null)
+    {
+        var start = new ProcessStartInfo("gh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        await CodexProvisioning.NodeGitHubSetup.ApplyGitHubEnvironmentAsync(start, cancellationToken,
+            root, requireManagedAuthentication: true);
+        return start;
     }
 
     private static async Task<string> ReadBoundedAsync(StreamReader reader, int maximumCharacters)

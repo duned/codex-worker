@@ -47,10 +47,12 @@ public sealed class NodeGitHubSetup
 
     // Existing operator gh configuration remains untouched. Once setup is explicitly requested,
     // trusted gh calls use the product directory; Codex's stripped environment is unchanged.
-    public static async Task ApplyGitHubEnvironmentAsync(ProcessStartInfo start, CancellationToken token)
+    // Server administration requires managed setup; standalone Worker callers retain their existing context.
+    public static async Task ApplyGitHubEnvironmentAsync(ProcessStartInfo start, CancellationToken token,
+        string? root = null, bool requireManagedAuthentication = false)
     {
         if (Path.GetFileName(start.FileName) != "gh") return;
-        var environment = await GitHubEnvironmentAsync(token);
+        var environment = await GitHubEnvironmentAsync(token, root, requireManagedAuthentication);
         foreach (var (key, value) in environment)
             if (value is null) start.Environment.Remove(key); else start.Environment[key] = value;
         start.Environment.Remove("GH_TOKEN");
@@ -58,11 +60,16 @@ public sealed class NodeGitHubSetup
         start.Environment.Remove("GH_ENTERPRISE_TOKEN");
     }
 
-    public static async Task<IReadOnlyDictionary<string, string?>> GitHubEnvironmentAsync(CancellationToken token, string? root = null)
+    public static async Task<IReadOnlyDictionary<string, string?>> GitHubEnvironmentAsync(CancellationToken token,
+        string? root = null, bool requireManagedAuthentication = false)
     {
         var directory = Path.Combine(root ?? DefaultRoot, "github");
         VerifyPath(directory);
-        if (!Directory.Exists(directory)) return new Dictionary<string, string?>();
+        if (!Directory.Exists(directory))
+        {
+            if (requireManagedAuthentication) throw new IOException("Managed GitHub authentication has not been prepared.");
+            return new Dictionary<string, string?>();
+        }
         if (HasUnrelatedAuthentication(directory)) throw new IOException("Unrelated GitHub authentication must be reconciled locally.");
         await VerifyGitHubOwnershipAsync(directory, token);
         return new Dictionary<string, string?> { ["GH_CONFIG_DIR"] = directory };

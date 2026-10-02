@@ -3,6 +3,7 @@ namespace CodexWorker.Tests;
 using CodexProvisioning;
 using CodexWorker;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class ProvisioningCliTests
 {
     [Theory]
