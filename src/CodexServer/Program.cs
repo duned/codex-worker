@@ -31,7 +31,7 @@ public static class Program
         create/update take a CentralProjectDefinition JSON file and mutations require a revision.
         Execution administration inspects a bounded local queue, cancels queued requests, and reconciles only expired uncertain attempts with explicit integration evidence.
         GitHub Issue administration uses the Server service account's gh login and project-scoped repositories. Create, title/body edits, configured eligibility labels, and blocked-by relationships are explicit; --preview validates and displays changes without applying them. Read access does not establish Issue write or Git push authorization. Worker execution labels, comments and Issue closure remain Worker-owned.
-        Backup restore requires the service to be stopped.
+        Backup restore requires the Server to be stopped and takes an exclusive database access lock.
 
         Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|executions ...|provision <operation>|worker <operation>
         The installed helper uses /etc/codex-server/server.env and the service account

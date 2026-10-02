@@ -50,7 +50,8 @@ public interface IRegistryStore
     Task<ExecutionLease?> RenewExecutionLeaseAsync(string executionId, ExecutionLeaseRenewal renewal, CancellationToken cancellationToken = default);
     Task ExpireLeasesAsync(CancellationToken cancellationToken = default);
     Task<ProvisioningPlan> CreateProvisioningPlanAsync(CreateProvisioningPlanRequest request, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default,
+        int limit = 100, int offset = 0);
     Task<ProvisioningPlan?> GetProvisioningPlanAsync(string planId, CancellationToken cancellationToken = default);
     Task<ProvisioningPlan?> AcceptProvisioningPlanAsync(string workerId, CancellationToken cancellationToken = default);
     Task<ProvisioningPlan?> ReportProvisioningPlanAsync(string planId, ProvisioningWorkerReport report, CancellationToken cancellationToken = default);
@@ -710,6 +711,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     failure TEXT NULL
                 );
                 CREATE INDEX IF NOT EXISTS ix_provisioning_plans_worker_state ON provisioning_plans (worker_id, state, created_at_utc);
+                CREATE INDEX IF NOT EXISTS ix_provisioning_plans_history ON provisioning_plans (created_at_utc DESC, id DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -1371,12 +1373,17 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return plan;
     }
 
-    public async Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ProvisioningPlan>> GetProvisioningPlansAsync(CancellationToken cancellationToken = default,
+        int limit = 100, int offset = 0)
     {
+        if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit), "Provisioning plan history limit must be between 1 and 100.");
+        if (offset is < 0 or > 10_000) throw new ArgumentOutOfRangeException(nameof(offset), "Provisioning plan history offset must be between 0 and 10000.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, worker_id, created_at_utc, state, actions_json, current_action_id, started_at_utc, completed_at_utc, result, failure FROM provisioning_plans ORDER BY created_at_utc, id;";
+        command.CommandText = "SELECT id, worker_id, created_at_utc, state, actions_json, current_action_id, started_at_utc, completed_at_utc, result, failure FROM provisioning_plans ORDER BY created_at_utc DESC, id DESC LIMIT $limit OFFSET $offset;";
+        command.Parameters.AddWithValue("$limit", limit);
+        command.Parameters.AddWithValue("$offset", offset);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var plans = new List<ProvisioningPlan>();
         while (await reader.ReadAsync(cancellationToken)) plans.Add(ReadProvisioningPlan(reader));

@@ -70,6 +70,13 @@ public sealed class ServerProvisioningAdministrationTests
         Assert.DoesNotContain("secret", output.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Invalid provisioning administration arguments", error.ToString(), StringComparison.Ordinal);
 
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(
+            ["list", "--limit", "1", "--offset", "1", "--json", dataDirectory]));
+        using (var page = JsonDocument.Parse(output.ToString()))
+            Assert.Equal(createdId, Assert.Single(page.RootElement.EnumerateArray()).GetProperty("id").GetString());
+        Assert.Equal(ServerAdministrationExitCodes.InvalidArguments, await cli.RunAsync(["list", "--limit", "101", dataDirectory]));
+
         var restarted = new ProvisioningCommandStore(database, clock);
         await restarted.InitializeAsync();
         Assert.Equal(2, (await restarted.ListAsync()).Count);

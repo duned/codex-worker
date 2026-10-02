@@ -5,7 +5,7 @@ using System.Text.Json;
 
 public interface IProvisioningCommandAdministrationService
 {
-    Task<IReadOnlyList<ProvisioningCommand>> ListAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProvisioningCommand>> ListAsync(CancellationToken cancellationToken = default, int limit = 100, int offset = 0);
     Task<ProvisioningCommand?> GetAsync(string id, CancellationToken cancellationToken = default);
     Task<ProvisioningCommand> CreateAsync(ProvisioningCommandRequest request, CancellationToken cancellationToken = default);
     Task<ProvisioningCommand?> CancelAsync(string id, CancellationToken cancellationToken = default);
@@ -35,10 +35,11 @@ public sealed class LocalProvisioningCommandAdministrationServiceFactory : IProv
 public sealed class LocalProvisioningCommandAdministrationService(string databasePath, IRegistryStore registry,
     ProvisioningCommandStore commands) : IProvisioningCommandAdministrationService
 {
-    public async Task<IReadOnlyList<ProvisioningCommand>> ListAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ProvisioningCommand>> ListAsync(CancellationToken cancellationToken = default,
+        int limit = 100, int offset = 0)
     {
         await EnsureDatabaseAsync(cancellationToken);
-        return await commands.ListAsync(cancellationToken);
+        return await commands.ListAsync(cancellationToken, limit, offset);
     }
 
     public async Task<ProvisioningCommand?> GetAsync(string id, CancellationToken cancellationToken = default)
@@ -119,7 +120,7 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
             switch (request.Verb)
             {
                 case "list":
-                    WriteCommands(await service.ListAsync(cancellationToken), request.Json);
+                    WriteCommands(await service.ListAsync(cancellationToken, request.Limit, request.Offset), request.Json);
                     break;
                 case "show":
                     if (request.Id is not { } showId) return InvalidArguments("A provisioning command ID is required.");
@@ -217,6 +218,8 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
         var allowElevation = false;
         var nodeQuiescent = false;
         var timeoutSeconds = 120;
+        var limit = 100;
+        var offset = 0;
         string? repository = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 1; index < arguments.Count; index++)
@@ -254,6 +257,14 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
                     if (!TryReadOptionValue(arguments, ref index, argument, out var timeoutText) ||
                         !int.TryParse(timeoutText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out timeoutSeconds)) return false;
                     break;
+                case "--limit":
+                    if (!TryReadOptionValue(arguments, ref index, argument, out var limitText) ||
+                        !int.TryParse(limitText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit)) return false;
+                    break;
+                case "--offset":
+                    if (!TryReadOptionValue(arguments, ref index, argument, out var offsetText) ||
+                        !int.TryParse(offsetText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out offset)) return false;
+                    break;
                 case "--repository":
                     if (!TryReadOptionValue(arguments, ref index, argument, out repository)) return false;
                     break;
@@ -265,21 +276,23 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
         ProvisioningCommandRequest? command = null;
         switch (verb)
         {
-            case "list" when positionals.Count == 0 && !allowElevation && !nodeQuiescent && repository is null && timeoutSeconds == 120:
+            case "list" when positionals.Count == 0 && !allowElevation && !nodeQuiescent && repository is null && timeoutSeconds == 120 &&
+                limit is >= 1 and <= 100 && offset is >= 0 and <= 10_000:
                 break;
             case "show" or "cancel" or "reconcile" when positionals.Count == 1 && Guid.TryParseExact(positionals[0], "N", out _) &&
-                !allowElevation && repository is null && timeoutSeconds == 120 && (verb == "reconcile" || !nodeQuiescent):
+                !allowElevation && repository is null && timeoutSeconds == 120 && limit == 100 && offset == 0 &&
+                (verb == "reconcile" || !nodeQuiescent):
                 id = positionals[0];
                 if (verb == "reconcile" && !nodeQuiescent) return false;
                 break;
-            case "create" when positionals.Count == 3 && !nodeQuiescent:
+            case "create" when positionals.Count == 3 && !nodeQuiescent && limit == 100 && offset == 0:
                 if (!TryAction(positionals[2], out var action)) return false;
                 command = new(positionals[0], positionals[1], action, timeoutSeconds, allowElevation, repository);
                 if (!ProvisioningCommandProtocol.Valid(command) || !ProvisioningCommandProtocol.Supported(command)) return false;
                 break;
             default: return false;
         }
-        request = new(verb, id, command, json, nodeQuiescent, configuration);
+        request = new(verb, id, command, json, nodeQuiescent, configuration, Limit: limit, Offset: offset);
         error = string.Empty;
         return true;
     }
@@ -323,14 +336,15 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
     private static bool IsConfigurationOptionValue(string value) => value.Length > 0;
 
     private sealed record CliRequest(string Verb, string? Id = null, ProvisioningCommandRequest? Command = null,
-        bool Json = false, bool NodeQuiescent = false, IReadOnlyList<string>? Configuration = null, bool Help = false)
+        bool Json = false, bool NodeQuiescent = false, IReadOnlyList<string>? Configuration = null, bool Help = false,
+        int Limit = 100, int Offset = 0)
     {
         public IReadOnlyList<string> ConfigurationArguments => Configuration ?? [];
     }
 
     private const string Usage = """
         Usage: codex-server provision <list|show|create|cancel|reconcile> [arguments] [options]
-               provision list [--json]
+               provision list [--limit 1..100] [--offset 0..10000] [--json]
                provision show <command-id> [--json]
                provision create <node-id|server> <capability-id> <typed-action> [--timeout-seconds 120] [--allow-elevation] [--repository owner/repository] [--json]
                provision cancel <command-id> [--json]

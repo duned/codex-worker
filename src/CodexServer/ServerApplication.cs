@@ -49,18 +49,20 @@ public static class ServerApplication
         configuration.Validate();
         builder.WebHost.UseUrls(configuration.ListenUrl);
         builder.Services.AddSingleton(configuration);
+        var databasePath = configuration.ResolveDatabasePath();
+        builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
         builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
         builder.Services.AddSingleton<IServerGitHubReadService>(githubReadService ?? new ServerGitHubReadService());
         builder.Services.AddSingleton<IServerGitHubIssueWriteService>(githubIssueWriteService ?? new ServerGitHubIssueWriteService());
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
             services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>(),
             issueWriter: services.GetRequiredService<IServerGitHubIssueWriteService>()));
-        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
+        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
-        builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(configuration.ResolveDatabasePath()));
+        builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
-        builder.Services.AddSingleton(_ => new ProvisioningCommandStore(configuration.ResolveDatabasePath()));
+        builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton<NodeProvisioningCommandExecutor>();
         builder.Services.AddHostedService<LocalProvisioningCommandService>();
         builder.Services.AddHostedService<ExecutionLeaseExpirationService>();
@@ -72,10 +74,19 @@ public static class ServerApplication
             context.Response.Headers["X-Codex-Request-Id"] = context.TraceIdentifier;
             await next(context);
         });
-        var persistence = app.Services.GetRequiredService<IRegistryStore>();
-        await persistence.InitializeAsync(cancellationToken);
-        await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
-        await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
+        try
+        {
+            _ = app.Services.GetRequiredService<ServerDatabaseAccessLock>();
+            var persistence = app.Services.GetRequiredService<IRegistryStore>();
+            await persistence.InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
         app.Logger.LogInformation("Codex Server {Version} initialized in {RuntimeMode} mode; listening on {ListenUrl}; persistent data directory: {DataDirectory}",
             DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
         app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
@@ -135,8 +146,16 @@ public static class ServerApplication
             }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
-        app.MapGet("/api/v1/provisioning/commands", async (HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
-            Authorized(context, settings, management: true) ? Results.Ok(await commands.ListAsync(context.RequestAborted)) : Results.Unauthorized());
+        app.MapGet("/api/v1/provisioning/commands", async (HttpContext context, ServerConfiguration settings,
+            ProvisioningCommandStore commands, int? limit, int? offset) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var pageLimit = limit ?? 100;
+            var pageOffset = offset ?? 0;
+            if (pageLimit is < 1 or > 100 || pageOffset is < 0 or > 10_000)
+                return Results.BadRequest(new { error = "Provisioning history limit must be 1..100 and offset must be 0..10000." });
+            return Results.Ok(await commands.ListAsync(context.RequestAborted, pageLimit, pageOffset));
+        });
         app.MapGet("/api/v1/provisioning/commands/{id}", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
@@ -381,10 +400,15 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
-        app.MapGet("/api/v1/provisioning", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        app.MapGet("/api/v1/provisioning", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            int? limit, int? offset) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
-            return Results.Ok(await store.GetProvisioningPlansAsync(context.RequestAborted));
+            var pageLimit = limit ?? 100;
+            var pageOffset = offset ?? 0;
+            if (pageLimit is < 1 or > 100 || pageOffset is < 0 or > 10_000)
+                return Results.BadRequest(new { error = "Provisioning history limit must be 1..100 and offset must be 0..10000." });
+            return Results.Ok(await store.GetProvisioningPlansAsync(context.RequestAborted, pageLimit, pageOffset));
         });
         app.MapGet("/api/v1/provisioning/{planId}", async (string planId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {

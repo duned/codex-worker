@@ -50,6 +50,9 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             var operation = await response.Content.ReadFromJsonAsync<CodexProvisioning.ProvisioningCommand>();
             Assert.NotNull(operation);
+            var boundedHistory = await client.GetFromJsonAsync<CodexProvisioning.ProvisioningCommand[]>("/api/v1/provisioning/commands?limit=1");
+            Assert.Single(Assert.IsType<CodexProvisioning.ProvisioningCommand[]>(boundedHistory));
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/provisioning/commands?limit=101")).StatusCode);
             for (var attempt = 0; attempt < 100; attempt++)
             {
                 operation = await client.GetFromJsonAsync<CodexProvisioning.ProvisioningCommand>($"/api/v1/provisioning/commands/{operation.Id}");
@@ -69,6 +72,10 @@ public sealed class CodexServerTests
             var workerId = Guid.NewGuid().ToString("N");
             var workerToken = new string('t', 40);
             await registry.RegisterWorkerAsync(new(2, workerId, "Worker", "1.0", "linux", 1, []));
+            await registry.CreateProvisioningPlanAsync(new CreateProvisioningPlanRequest(workerId, []));
+            var planHistory = await client.GetFromJsonAsync<ProvisioningPlan[]>("/api/v1/provisioning?limit=1");
+            Assert.Single(Assert.IsType<ProvisioningPlan[]>(planHistory));
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/provisioning?offset=10001")).StatusCode);
             var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
             Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId })).StatusCode);
@@ -465,6 +472,8 @@ public sealed class CodexServerTests
                 Assert.Equal(SqliteRegistryStore.CurrentSchemaVersion, manifest.RootElement.GetProperty("registrySchemaVersion").GetInt32());
                 Assert.Contains("legacy provisioning plans", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
                 Assert.Contains("typed provisioning command history when present", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
+                Assert.Contains("credential metadata; ready credentials require re-provisioning", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
+                Assert.Contains("revoked Worker API-token metadata", manifest.RootElement.GetProperty("contents").EnumerateArray().Select(item => item.GetString()));
             }
             var entry = Assert.IsType<System.IO.Compression.ZipArchiveEntry>(archive.GetEntry("state.sqlite"));
             await using var stream = entry.Open();
@@ -493,6 +502,21 @@ public sealed class CodexServerTests
         Assert.Equal(typedCommand.Id, restoredTypedCommand.Id);
         Assert.Equal(ProvisioningCommandStatus.Pending, restoredTypedCommand.Status);
         Assert.Equal("revoked", restoredWorker?.AuthenticationCredentialStatus);
+
+        await using (var metadataConnection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = restoredDatabase, Mode = SqliteOpenMode.ReadOnly }.ToString()))
+        {
+            await metadataConnection.OpenAsync();
+            await using var metadataCommand = metadataConnection.CreateCommand();
+            metadataCommand.CommandText = "SELECT COUNT(*) FROM worker_auth_tokens WHERE revoked_at_utc IS NOT NULL AND token_hash=zeroblob(length(token_hash));";
+            Assert.Equal(1L, Assert.IsType<long>(await metadataCommand.ExecuteScalarAsync()));
+            metadataCommand.CommandText = "SELECT COUNT(*) FROM worker_bootstrap_tokens;";
+            Assert.Equal(0L, Assert.IsType<long>(await metadataCommand.ExecuteScalarAsync()));
+            metadataCommand.CommandText = "SELECT COUNT(*) FROM worker_credential_auth;";
+            Assert.Equal(0L, Assert.IsType<long>(await metadataCommand.ExecuteScalarAsync()));
+            metadataCommand.CommandText = "SELECT COUNT(*) FROM credentials WHERE status='NeedsReprovision' AND assigned_worker_id IS NULL AND length(nonce)=0 AND length(ciphertext)=0 AND length(tag)=0;";
+            Assert.Equal(2L, Assert.IsType<long>(await metadataCommand.ExecuteScalarAsync()));
+        }
+
         var restoredCredentials = new SqliteCredentialStore(restoredDatabase, encryptionKey);
         await restoredCredentials.InitializeAsync();
         var restoredCredentialMetadata = await restoredCredentials.ListAsync();
@@ -508,6 +532,58 @@ public sealed class CodexServerTests
         Assert.Equal("Ready", (await restoredCredentials.ReplaceSecretAsync(credential.Id, new CredentialSecretInput("re-entered-test-secret")))?.Status);
         await restoredCredentials.AssignAsync(credential.Id, workerId);
         Assert.Equal("re-entered-test-secret", await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
+    }
+
+    [Fact]
+    public async Task BackupRejectsTypedProvisioningHistoryThatDoesNotMatchItsCurrentSchema()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "server.db");
+        var archivePath = Path.Combine(temporary.Path, "backup.zip");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var commands = new ProvisioningCommandStore(database);
+        await commands.InitializeAsync();
+        await commands.CreateAsync(new("server", "git", ProvisioningCommandAction.Detect));
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE provisioning_commands SET body='{}';";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => new ServerBackup(database).ExportAsync(archivePath));
+        Assert.False(File.Exists(archivePath));
+    }
+
+    [Fact]
+    public async Task BackupRestoreRequiresExclusiveOfflineServerDatabaseAccess()
+    {
+        using var temporary = new TemporaryDirectory();
+        var sourceDatabase = Path.Combine(temporary.Path, "source.db");
+        var targetDatabase = Path.Combine(temporary.Path, "target.db");
+        var archivePath = Path.Combine(temporary.Path, "backup.zip");
+        var sourceRegistry = new SqliteRegistryStore(sourceDatabase);
+        await sourceRegistry.InitializeAsync();
+        var project = await sourceRegistry.CreateProjectAsync(new CentralProjectDefinition("Backup", "owner/repo", "main", "snapshot"));
+        await new SqliteCredentialStore(sourceDatabase, Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))).InitializeAsync();
+        await new ProvisioningCommandStore(sourceDatabase).InitializeAsync();
+        await new ServerBackup(sourceDatabase).ExportAsync(archivePath);
+
+        var targetRegistry = new SqliteRegistryStore(targetDatabase);
+        await targetRegistry.InitializeAsync();
+        var retained = await targetRegistry.CreateProjectAsync(new CentralProjectDefinition("Retained", "owner/retained", "main", "keep"));
+        await using (var app = await ServerApplication.BuildAsync(Args($"http://127.0.0.1:{ReservePort()}", targetDatabase)))
+        {
+            var exception = await Assert.ThrowsAsync<IOException>(() => new ServerBackup(targetDatabase).RestoreOfflineAsync(archivePath));
+            Assert.Contains("Stop the Server", exception.Message, StringComparison.Ordinal);
+            Assert.Equal(retained.Id, (await targetRegistry.GetProjectAsync(retained.Id))?.Id);
+        }
+
+        await new ServerBackup(targetDatabase).RestoreOfflineAsync(archivePath);
+        var restored = Assert.IsType<CentralProject>(await new SqliteRegistryStore(targetDatabase).GetProjectAsync(project.Id));
+        Assert.Equal(project.Name, restored.Name);
     }
 
     [Fact]
