@@ -26,6 +26,22 @@ The .NET suite exercises the local CLI adapters, authenticated management API ro
 | Backup and restore | `CodexServerTests` | Backup round-trip retains control-plane history and credential/token metadata needed for recovery, scrubs secret payloads and active authorizations, validates typed command rows when present, rejects incompatible state before replacement, and refuses restore while a Server instance owns the database lock. |
 | Dashboard administration | all `tests/dashboard/*.test.cjs` | Project, Worker, execution, provisioning, GitHub, and credential views render existing API contracts and expose only the supported operator actions. |
 
+## Issue #140 acceptance map
+
+The local control-plane criteria are covered by existing Server contracts and the campaign above. This map distinguishes what can be inspected or administered locally from the separate evidence required before remote exposure.
+
+| Issue #140 area | Local administration boundary and evidence | Result |
+| --- | --- | --- |
+| Projects and requirements | The Server registry owns project definitions, revision-checked lifecycle, requirements, and eligibility policy. The CLI and dashboard use Server-owned contracts; project deletion is refused while queued or active work refers to the project. | Locally inspectable and manageable. |
+| GitHub Issues and workflow | The Server provides project-scoped Issue reads, relationship inspection, bounded metadata/relationship writes, eligibility refresh, and explicit enqueue. Worker orchestration retains execution claiming, lifecycle labels/comments, closing, and Git integration. | Locally administrable within the documented ownership boundary; live provider authorization depends on the Server service account. |
+| Scheduling and assignment | SQLite-backed queue uniqueness, eligibility checks, capacity reservations, leases, generation-fenced reports, and uncertain-attempt reconciliation are exercised through Server tests. | Deterministic local contracts; cluster-wide limits and remote transport security are outside this campaign. |
+| Worker registration and lifecycle | Registration, heartbeat observations, capability/readiness reporting, scheduling enable/drain/disable, and independent API/delivery-token revocation are visible through Server administration. | Locally inspectable and manageable; a disabled or revoked Worker’s active lease still follows the documented recovery path. |
+| Global state and diagnostics | `status`, `diagnostics`, and `config show|validate` inspect the configured local Server state with bounded, redacted output. Health/readiness and Worker/project eligibility remain distinct signals. | Locally diagnosable; this does not provide a durable unified event log, metrics service, or remote process health probe. |
+| Provisioning and authentication | Local operators can inspect typed provisioning history and invoke supported Server-local actions. Server-held provider credentials expose metadata and controlled secret input/delivery; node login state remains node-local and uses typed flows. | Safely inspectable within existing allowlists and authorization boundaries; no arbitrary remote shell or private-key transfer. |
+| CLI, HTTP API, and dashboard consistency | The local CLI adapts Server application/registry services, HTTP exposes the management contracts, and dashboard scripts consume those contracts. The .NET and dashboard suites provide the campaign checks listed above. | Design boundary is shared; fresh local evidence is the command result below. |
+
+This acceptance map establishes local operability and recoverable control-plane behavior. It does not establish that a Server exposed to the Internet is ready for deployment; the transport, TLS, network, identity, secret-delivery, remote enrollment, and remote recovery controls in the final paragraph remain prerequisites for that separate phase.
+
 PASS means the deterministic contract tests pass. FAIL means an assertion or command fails. UNAVAILABLE means an environment prerequisite prevented the suite from reaching its assertions. Intentionally unsupported behavior includes live provider/node authorization, remote Server-to-Worker security, remote shell/control, and remote deployment readiness; these are not simulated as passing.
 
 ## Backup recovery boundary
@@ -40,7 +56,7 @@ The running Server holds `<database-path>.access-lock`; offline restore must acq
 
 | Check | Observed result |
 | --- | --- |
-| `dotnet test CodexWorker.sln -m:1` | UNAVAILABLE: restore failed with `NU1301`; the sandbox denied access to `https://api.nuget.org/v3/index.json`, so the suite did not reach compilation or test assertions. The default parallel invocation also stopped before build because sandbox policy denied MSBuild's named-pipe socket. |
+| `dotnet test CodexWorker.sln -m:1` | UNAVAILABLE: restore failed with `NU1301`; this environment denied access to `https://api.nuget.org/v3/index.json`, so the suite did not reach compilation or test assertions. |
 | `node --test tests/dashboard/*.test.cjs` | PASS: 6 test files, 6 passed, 0 failed. |
 
 The local campaign does not establish clean remote deployment readiness. Before remote exposure, deployment work still needs an approved transport/authentication design, TLS and network policy, least-privilege service identities and filesystem permissions, protected configuration/secret delivery, remote Worker enrollment and revocation procedures, and a separately scoped remote recovery exercise. Live GitHub access also still depends on service-account login and provider-side repository permissions.
