@@ -39,6 +39,7 @@ case "$1" in
     ;;
   stop) [[ ! -f $CW_TEST_ROOT/fail-stop ]] || { echo 'Failed to stop service: Access denied' >&2; exit 1; }; rm -f "$CW_TEST_ROOT/active" ;;
   start) [[ ! -f $CW_TEST_ROOT/fail-start ]] || { echo 'Failed to start service: Access denied' >&2; exit 1; }; touch "$CW_TEST_ROOT/active" ;;
+  restart) [[ ! -f $CW_TEST_ROOT/fail-restart ]] || { echo 'Failed to restart service: Access denied' >&2; exit 1; }; touch "$CW_TEST_ROOT/active"; [[ ! -f $CW_TEST_ROOT/restart-inactive ]] || rm -f "$CW_TEST_ROOT/active" ;;
   show) printf '1\n' ;;
   *) exit 0 ;;
 esac
@@ -49,6 +50,10 @@ printf '%s\n' "$*" >> "$CW_TEST_ROOT/sudo.args"
 [[ ${1:-} == -n ]] || { echo 'interactive sudo invocation' >&2; exit 90; }
 shift
 if [[ -f $CW_TEST_ROOT/fail-sudo-stop && ${1:-} == systemctl && ${2:-} == stop ]]; then
+  echo 'sudo: a password is required' >&2
+  exit 1
+fi
+if [[ -f $CW_TEST_ROOT/fail-sudo-restart && ${1:-} == systemctl && ${2:-} == restart ]]; then
   echo 'sudo: a password is required' >&2
   exit 1
 fi
@@ -112,6 +117,7 @@ export CW_DEPLOY_DIR="$test_root/apps/fixture worker"
 (
   cd "$caller_dir"
   "$fixture_bin/cw" --help | grep -Fq 'status, s'
+  "$fixture_bin/cw" --help | grep -Fq 'restart, rs'
   "$fixture_bin/cw" h > "$test_root/fixture-help-h.out"
   "$fixture_bin/cw" --help > "$test_root/fixture-help-long.out"
   cmp "$test_root/fixture-help-h.out" "$test_root/fixture-help-long.out"
@@ -160,6 +166,7 @@ export CW_DEPLOY_DIR="$test_root/apps/worker"
 printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 
 "$repo_root/cw" --help | grep -Fq 'status, s'
+"$repo_root/cw" --help | grep -Fq 'restart, rs'
 "$repo_root/cw" --help > "$test_root/help-long.out"
 "$repo_root/cw" h > "$test_root/help-h.out"
 cmp "$test_root/help-h.out" "$test_root/help-long.out"
@@ -178,6 +185,36 @@ grep -Fq 'Beta' "$test_root/projects.out"
 grep -Fxq -- '-u cw-test -n 300 -f --no-pager' "$test_root/journal.args"
 "$repo_root/cw" log
 grep -Fxq -- '-u cw-test -n 100 --no-pager' "$test_root/journal.args"
+: > "$test_root/sudo.args"
+: > "$test_root/systemctl.args"
+rm -f "$test_root/active"
+"$repo_root/cw" restart > "$test_root/restart.out"
+grep -Fxq 'Restarted Worker service cw-test; service is active.' "$test_root/restart.out"
+grep -Fxq -- '-n systemctl restart cw-test' "$test_root/sudo.args"
+grep -Fxq -- 'restart cw-test' "$test_root/systemctl.args"
+"$repo_root/cw" rs > "$test_root/restart-alias.out"
+grep -Fq 'Restarted Worker service cw-test' "$test_root/restart-alias.out"
+[[ $(grep -Fc -- '-n systemctl restart cw-test' "$test_root/sudo.args") == 2 ]]
+touch "$test_root/fail-sudo-restart"
+if "$repo_root/cw" restart > "$test_root/restart-sudo-fail.out" 2>&1; then
+  echo 'restart unexpectedly succeeded without sudo authorization' >&2; exit 1
+fi
+grep -Fq 'sudo authorization failed' "$test_root/restart-sudo-fail.out"
+rm "$test_root/fail-sudo-restart"
+touch "$test_root/fail-restart"
+if "$repo_root/cw" rs > "$test_root/restart-fail.out" 2>&1; then
+  echo 'failed service restart unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'systemd restart failed' "$test_root/restart-fail.out"
+! grep -Fq 'Restarted Worker service' "$test_root/restart-fail.out"
+rm "$test_root/fail-restart"
+touch "$test_root/restart-inactive"
+if "$repo_root/cw" restart > "$test_root/restart-inactive.out" 2>&1; then
+  echo 'inactive service restart unexpectedly reported success' >&2; exit 1
+fi
+grep -Fq 'did not become active after restart' "$test_root/restart-inactive.out"
+! grep -Fq 'Restarted Worker service' "$test_root/restart-inactive.out"
+rm "$test_root/restart-inactive"
 if "$repo_root/cw" nonsense >"$test_root/unknown.out" 2>&1; then
   echo 'unknown command unexpectedly succeeded' >&2; exit 1
 fi

@@ -16,6 +16,7 @@ Usage: ./cw <command> [options]
 Developer and local Worker operations:
   status, s       Show repository and local Worker service status
   deploy, d       Publish this checkout to ~/apps/codex-worker and restart the service
+  restart, rs     Restart the installed Worker service
   log, l          Show Worker journal (default: last 100 lines)
     -f            Follow the journal
     -n COUNT      Show COUNT lines
@@ -32,6 +33,9 @@ Environment overrides:
 cw deploy manages a system-level Worker service and requires suitable sudo
 permission for non-interactive systemctl stop/start operations. It does not
 create a product release or change the repository product version.
+
+cw restart (or cw rs) restarts the installed Worker service and verifies that
+it is active before reporting success.
 
 cw v <version> (or cw version <version>) updates Directory.Build.props,
 commits the version change, and pushes it to origin/main. It does not publish
@@ -506,6 +510,17 @@ deploy_command() {
   if [[ -d $backup ]]; then printf 'Previous deployment preserved at %s\n' "$backup"; fi
 }
 
+restart_command() {
+  need_command sudo || return 1
+  need_command systemctl || return 1
+  service_mutation restart || return 1
+  if ! systemctl is-active --quiet "$service_name"; then
+    error "Worker service $service_name did not become active after restart"
+    return 1
+  fi
+  printf 'Restarted Worker service %s; service is active.\n' "$service_name"
+}
+
 log_command() {
   need_command journalctl || return 1
   local follow=false lines=100
@@ -562,6 +577,7 @@ main() {
     --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
     status|s) (($# == 0)) || { error 'status does not accept options'; help_hint; return 2; }; status_command ;;
     deploy|d) (($# == 0)) || { error 'deploy does not accept options'; help_hint; return 2; }; deploy_command ;;
+    restart|rs) (($# == 0)) || { error 'restart does not accept options'; help_hint; return 2; }; restart_command ;;
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
     version|v) version_command "$@" ;;
