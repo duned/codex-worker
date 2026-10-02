@@ -148,8 +148,10 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
             operation.Request.Action is ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey)
             throw new InvalidDataException("Public identity is required for this action.");
         if (report.LoginInstructions is not null && (operation.Request.Action != ProvisioningCommandAction.Login ||
-            operation.Request.CapabilityId != "codex-cli" || operation.DeadlineUtc <= UtcNow))
-            throw new InvalidDataException("Login instructions do not belong to an active Codex login.");
+            operation.Request.CapabilityId is not ("codex-cli" or "github-cli") || operation.DeadlineUtc <= UtcNow ||
+            report.LoginInstructions.VerificationUri == "https://auth.openai.com/codex/device" && operation.Request.CapabilityId != "codex-cli" ||
+            report.LoginInstructions.VerificationUri == "https://github.com/login/device" && operation.Request.CapabilityId != "github-cli"))
+            throw new InvalidDataException("Login instructions do not belong to an active device login.");
         if (operation.Request.NodeId != node) throw new InvalidOperationException("Operation is not owned by this node.");
         if (ProvisioningCommandProtocol.Terminal(operation.Status))
         {

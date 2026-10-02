@@ -12,7 +12,7 @@ public static class CodexDeviceLogin
     public const string VerificationUri = "https://auth.openai.com/codex/device";
 
     public static bool Valid(CodexLoginInstructions? instructions) => instructions is not null &&
-        instructions.VerificationUri == VerificationUri && instructions.UserCode is not null &&
+        instructions.VerificationUri is VerificationUri or "https://github.com/login/device" && instructions.UserCode is not null &&
         Regex.IsMatch(instructions.UserCode, @"\A[A-Z0-9]{4}-[A-Z0-9]{4,5}\z");
 
     internal static CodexLoginInstructions? Parse(string output)

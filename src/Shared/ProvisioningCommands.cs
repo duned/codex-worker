@@ -60,7 +60,7 @@ public static class ProvisioningCommandProtocol
     public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
     {
         ProvisioningCommandAction.Detect => true,
-        ProvisioningCommandAction.Login => request.CapabilityId == "codex-cli",
+        ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli",
         ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId is "git" or "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
         ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
@@ -154,7 +154,9 @@ public sealed class NodeProvisioningCommandExecutor
             }
             if (NodeGitHubSetup.Handles(request))
             {
-                var result = await _githubSetup.ExecuteAsync(request, timeout.Token);
+                var result = await _githubSetup.ExecuteAsync(request, timeout.Token, reportProgress is null ? null :
+                    async instructions => await reportProgress(new(ProvisioningCommandStatus.Running,
+                        ProvisioningDiagnostic.Executing, LoginInstructions: instructions), timeout.Token));
                 await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
                 refreshed = true;
                 return result.Status == ProvisioningCommandStatus.Failed && result.FailureDetail is null

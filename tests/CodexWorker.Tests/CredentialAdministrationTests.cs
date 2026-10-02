@@ -107,6 +107,35 @@ public sealed class CredentialAdministrationTests
         Assert.Contains("encryption is not configured", error.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task LocalCredentialCliReadsInteractiveSecretWithoutStdinOrEchoingIt()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "server.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var credentials = new SqliteCredentialStore(database,
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        await credentials.InitializeAsync();
+        var service = new LocalServerCredentialAdministrationService(database, registry, credentials);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var secret = "interactive-secret-value";
+        var cli = new ServerCredentialAdministrationCli(new ServerConfigurationAdministrationService(),
+            new CredentialServiceFactory(service), output: output, error: error,
+            interactiveSecretReader: _ => Task.FromResult(secret));
+
+        var result = await cli.RunAsync(["create", "github", "api-token", "--json",
+            $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}"]);
+
+        Assert.Equal(ServerAdministrationExitCodes.Success, result);
+        Assert.DoesNotContain(secret, output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Secret:", error.ToString(), StringComparison.Ordinal);
+        using var response = JsonDocument.Parse(output.ToString());
+        Assert.Equal("Ready", response.RootElement.GetProperty("status").GetString());
+    }
+
     private sealed class CredentialServiceFactory(IServerCredentialAdministrationService service)
         : IServerCredentialAdministrationServiceFactory
     {

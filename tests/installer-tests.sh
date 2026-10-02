@@ -260,7 +260,7 @@ printf 'CODEX_SERVER_MANAGEMENT_TOKEN=existing\n' > "$legacy_environment"
 ensure_server_environment "$legacy_environment"
 ! grep -q 'Server__DataDirectory' "$legacy_environment"
 custom_environment="$temp_dir/custom-server.env"
-printf 'Server__DataDirectory=/srv/custom\nServer__DatabasePath=custom.db\nCODEX_SERVER_MANAGEMENT_TOKEN=existing\n' > "$custom_environment"
+printf 'Server__DataDirectory=/srv/custom\nServer__DatabasePath=custom.db\nCODEX_SERVER_MANAGEMENT_TOKEN=existing\nCODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=existing-encryption-key\n' > "$custom_environment"
 cp "$custom_environment" "$temp_dir/custom-original.env"
 ensure_server_environment "$custom_environment"
 cmp "$custom_environment" "$temp_dir/custom-original.env"
@@ -282,12 +282,37 @@ ensure_management_token "$environment_file"
   echo 'Installer changed the management token on rerun.' >&2
   exit 1
 }
+encryption_setup_output="$(ensure_credential_encryption_key "$environment_file")"
+[[ -z "$encryption_setup_output" ]] || {
+  echo 'Installer printed output while generating the credential encryption key.' >&2
+  exit 1
+}
+generated_encryption_key="$(sed -n 's/^CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=//p' "$environment_file")"
+[[ $(printf '%s' "$generated_encryption_key" | base64 --decode | wc -c) == 32 ]] || {
+  echo 'Installer did not generate a 256-bit credential encryption key.' >&2
+  exit 1
+}
+[[ "$generated_encryption_key" != "$generated_token" ]] || {
+  echo 'Installer reused the management token as the credential encryption key.' >&2
+  exit 1
+}
+ensure_credential_encryption_key "$environment_file"
+[[ "$(sed -n 's/^CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=//p' "$environment_file")" == "$generated_encryption_key" ]] || {
+  echo 'Installer changed the credential encryption key on rerun.' >&2
+  exit 1
+}
 
 operator_environment_file="$temp_dir/operator-server.env"
 printf 'SERVER__ListenUrl=http://127.0.0.1:5090\nCODEX_SERVER_MANAGEMENT_TOKEN=operator-token\n' > "$operator_environment_file"
 ensure_management_token "$operator_environment_file"
+printf 'CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=operator-encryption-key\n' >> "$operator_environment_file"
+ensure_credential_encryption_key "$operator_environment_file"
 [[ "$(sed -n 's/^CODEX_SERVER_MANAGEMENT_TOKEN=//p' "$operator_environment_file")" == 'operator-token' ]] || {
   echo 'Installer changed an operator-configured management token.' >&2
+  exit 1
+}
+[[ "$(sed -n 's/^CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=//p' "$operator_environment_file")" == 'operator-encryption-key' ]] || {
+  echo 'Installer changed an operator-configured credential encryption key.' >&2
   exit 1
 }
 

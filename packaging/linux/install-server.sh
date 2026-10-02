@@ -68,6 +68,22 @@ ensure_management_token() {
   unset management_token
 }
 
+ensure_credential_encryption_key() (
+  set +x
+  local environment_file="$1"
+
+  if grep -Eq '^[[:space:]]*CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY[[:space:]]*=' "$environment_file"; then
+    return 0
+  fi
+
+  command -v openssl >/dev/null 2>&1 || fail 'OpenSSL is required to generate the Server credential encryption key.'
+  local encryption_key
+  encryption_key="$(openssl rand -base64 32)" || fail 'Could not generate the Server credential encryption key.'
+  [[ "$encryption_key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || fail 'OpenSSL returned an invalid Server credential encryption key.'
+  printf '\nCODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY=%s\n' "$encryption_key" >> "$environment_file" || fail 'Could not save the Server credential encryption key.'
+  unset encryption_key
+)
+
 write_operator_helper() {
   cat <<'EOF'
 #!/usr/bin/env bash
@@ -116,6 +132,7 @@ ensure_server_environment() (
     printf 'Server__DataDirectory=/var/lib/codex-server\n' > "$environment_file"
   fi
   ensure_management_token "$environment_file"
+  ensure_credential_encryption_key "$environment_file"
 )
 
 write_provisioning_sudoers() {

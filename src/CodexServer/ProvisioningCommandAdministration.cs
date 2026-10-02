@@ -178,13 +178,18 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
     {
         if (json)
         {
-            _output.WriteLine(JsonSerializer.Serialize(command with { LoginInstructions = null }, JsonOptions));
+            _output.WriteLine(JsonSerializer.Serialize(command, JsonOptions));
             return;
         }
         _output.WriteLine($"{command.Id} · {command.Request.NodeId} · {command.Request.CapabilityId} · {command.Request.Action} · {command.Status} · {command.Diagnostic}");
         _output.WriteLine($"Created: {command.CreatedAtUtc:O}");
         if (command.StartedAtUtc is { } started) _output.WriteLine($"Started: {started:O}");
         if (command.DeadlineUtc is { } deadline) _output.WriteLine($"Deadline: {deadline:O}");
+        if (command.LoginInstructions is { } login)
+        {
+            _output.WriteLine($"Device login: {login.VerificationUri}");
+            _output.WriteLine($"One-time code: {login.UserCode}");
+        }
         if (command.CompletedAtUtc is { } completed) _output.WriteLine($"Completed: {completed:O}");
         if (command.FailureDetail is { } failure)
         {

@@ -118,6 +118,69 @@ public sealed class NodeGitHubSetupTests
     }
 
     [Fact]
+    public async Task GitHubLoginUsesPreparedProductDirectoryPublishesOnlyDeviceChallengeAndVerifiesStatus()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var node = new TestNode();
+        var managedDirectory = Path.Combine(node.Root, "github");
+        string? loginDirectory = null;
+        var setup = new NodeGitHubSetup(node.Root,
+            (_, arguments, _) =>
+            {
+                node.Calls.Add(("/usr/bin/gh", arguments));
+                return Task.FromResult((0, ""));
+            }, unrelatedAuthentication: () => false,
+            login: async (directory, publish, token) =>
+            {
+                loginDirectory = directory;
+                await publish(new("https://github.com/login/device", "ABCD-1234"), token);
+                return 0;
+            });
+        var request = new ProvisioningCommandRequest("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, (await setup.ExecuteAsync(request, CancellationToken.None)).Status);
+
+        CodexLoginInstructions? observed = null;
+        var login = await setup.ExecuteAsync(request with { Action = ProvisioningCommandAction.Login }, CancellationToken.None,
+            instructions => { observed = instructions; return Task.CompletedTask; });
+
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, login.Status);
+        Assert.Equal(managedDirectory, loginDirectory);
+        Assert.Equal(new CodexLoginInstructions("https://github.com/login/device", "ABCD-1234"), observed);
+        var verification = Assert.Single(node.Calls);
+        Assert.Equal("/usr/bin/gh", verification.Tool);
+        Assert.Equal(new[] { "auth", "status", "--hostname", "github.com" }, verification.Args);
+        Assert.DoesNotContain("ABCD-1234", JsonSerializer.Serialize(login), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GitHubLoginFailureAndCancellationDoNotReportAuthenticationSuccess()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var node = new TestNode();
+        var setup = new NodeGitHubSetup(node.Root, (_, _, _) => Task.FromResult((1, "private-token")),
+            unrelatedAuthentication: () => false,
+            login: (_, _, _) => Task.FromResult(1));
+        var request = new ProvisioningCommandRequest("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication);
+        await setup.ExecuteAsync(request, CancellationToken.None);
+        var failed = await setup.ExecuteAsync(request with { Action = ProvisioningCommandAction.Login }, CancellationToken.None,
+            _ => Task.CompletedTask);
+        Assert.Equal(ProvisioningCommandStatus.Failed, failed.Status);
+        Assert.DoesNotContain("private-token", JsonSerializer.Serialize(failed), StringComparison.Ordinal);
+
+        using var cancellation = new CancellationTokenSource();
+        var cancelling = new NodeGitHubSetup(node.Root, unrelatedAuthentication: () => false,
+            login: (_, _, token) => { cancellation.Cancel(); return Task.FromCanceled<int>(token); });
+        var executor = new NodeProvisioningCommandExecutor(
+            new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0"))), githubSetup: cancelling);
+        var now = DateTimeOffset.UtcNow;
+        var command = new ProvisioningCommand(Guid.NewGuid().ToString("N"), request with { Action = ProvisioningCommandAction.Login },
+            now, ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing, now, now.AddMinutes(1));
+        var cancelled = await executor.ExecuteAsync(command, permitted: true, cancellationToken: cancellation.Token,
+            reportProgress: (_, _) => Task.CompletedTask);
+        Assert.Equal(ProvisioningCommandStatus.Cancelled, cancelled.Status);
+    }
+
+    [Fact]
     public async Task ExecutorDenialCancellationAndFailureDoNotLeakOutputOrRunUnpermittedSetup()
     {
         if (!OperatingSystem.IsLinux()) return;

@@ -33,7 +33,7 @@ public static class CapabilityCatalog
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
         new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
-        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "checkauthentication", "logout"]),
+        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]),
         new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"])
     ]);
 

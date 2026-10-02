@@ -24,6 +24,16 @@ public sealed class ProvisioningCommandTests
     }
 
     [Fact]
+    public void GitHubDeviceLoginIsRegisteredAndAcceptsOnlyExpectedChallengeUrls()
+    {
+        Assert.True(ProvisioningCommandProtocol.Supported(new("server", "github-cli", ProvisioningCommandAction.Login)));
+        Assert.True(ProvisioningCommandProtocol.ValidReport(new(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing,
+            LoginInstructions: new("https://github.com/login/device", "ABCD-1234"))));
+        Assert.False(ProvisioningCommandProtocol.ValidReport(new(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing,
+            LoginInstructions: new("https://attacker.example/device", "ABCD-1234"))));
+    }
+
+    [Fact]
     public void AdvertisedActionsHaveRegisteredCommandExecutors()
     {
         foreach (var definition in CapabilityCatalog.Definitions)

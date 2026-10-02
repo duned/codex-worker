@@ -93,12 +93,13 @@ public sealed class LocalServerCredentialAdministrationService(string databasePa
 /// <summary>Local, secret-safe CLI for Server-managed credential metadata and assignment.</summary>
 public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdministrationService configurationService,
     IServerCredentialAdministrationServiceFactory serviceFactory, TextReader? input = null, TextWriter? output = null,
-    TextWriter? error = null)
+    TextWriter? error = null, Func<CancellationToken, Task<string>>? interactiveSecretReader = null)
 {
     private const int MaximumSecretLength = 16_384;
     private readonly TextReader _input = input ?? Console.In;
     private readonly TextWriter _output = output ?? Console.Out;
     private readonly TextWriter _error = error ?? Console.Error;
+    private readonly Func<CancellationToken, Task<string>> _interactiveSecretReader = interactiveSecretReader ?? ReadInteractiveSecretAsync;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private const string Usage = "Usage: codex-server credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin] [Server configuration options]";
 
@@ -108,7 +109,7 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
         if (arguments.Count == 0 || arguments.Count == 1 && arguments[0] == "--help")
         {
             _output.WriteLine(Usage);
-            _output.WriteLine("Create and replace read the secret from standard input. Secret values are never accepted as arguments or printed.");
+            _output.WriteLine("Create and replace prompt for secrets without echo. Use --secret-stdin for piped input. Secret values are never accepted as arguments or printed.");
             return ServerAdministrationExitCodes.Success;
         }
 
@@ -125,7 +126,7 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
             _ => -1
         };
         var needsSecret = operation is "create" or "replace";
-        if (expectedPositionals < 0 || positionals.Count != expectedPositionals || needsSecret != secretFromStandardInput)
+        if (expectedPositionals < 0 || positionals.Count != expectedPositionals || secretFromStandardInput && !needsSecret)
             return InvalidArguments(Usage);
 
         var inspected = configurationService.Inspect(configurationArguments);
@@ -151,7 +152,7 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
                     break;
                 case "create":
                     var created = await service.CreateAsync(positionals[0], positionals[1],
-                        new CredentialSecretInput(await ReadSecretAsync(cancellationToken)), cancellationToken);
+                        new CredentialSecretInput(await ReadSecretAsync(secretFromStandardInput, cancellationToken)), cancellationToken);
                     WriteMetadata(created, json);
                     break;
                 case "assign":
@@ -161,7 +162,7 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
                     break;
                 case "replace":
                     var replaced = await service.ReplaceSecretAsync(positionals[0],
-                        new CredentialSecretInput(await ReadSecretAsync(cancellationToken)), cancellationToken);
+                        new CredentialSecretInput(await ReadSecretAsync(secretFromStandardInput, cancellationToken)), cancellationToken);
                     if (replaced is null) return NotFound();
                     WriteMetadata(replaced, json);
                     break;
@@ -196,8 +197,17 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
         }
     }
 
-    private async Task<string> ReadSecretAsync(CancellationToken cancellationToken)
+    private async Task<string> ReadSecretAsync(bool secretFromStandardInput, CancellationToken cancellationToken)
     {
+        if (!secretFromStandardInput)
+        {
+            _error.Write("Secret: ");
+            var secret = await _interactiveSecretReader(cancellationToken);
+            _error.WriteLine();
+            if (string.IsNullOrWhiteSpace(secret) || secret.Length > MaximumSecretLength)
+                throw new InvalidDataException($"Credential secret must contain 1 to {MaximumSecretLength} characters.");
+            return secret;
+        }
         var builder = new StringBuilder();
         var buffer = new char[1024];
         string value;
@@ -223,6 +233,31 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
         if (string.IsNullOrWhiteSpace(value) || value.Length > MaximumSecretLength)
             throw new InvalidDataException($"Credential secret must contain 1 to {MaximumSecretLength} characters.");
         return value;
+    }
+
+    private static Task<string> ReadInteractiveSecretAsync(CancellationToken cancellationToken)
+    {
+        if (Console.IsInputRedirected)
+            throw new InvalidOperationException("Interactive secret entry requires a terminal; use --secret-stdin for piped input.");
+
+        var secret = new StringBuilder();
+        try
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var key = Console.ReadKey(intercept: true);
+                if (key.Key == ConsoleKey.Enter) break;
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (secret.Length > 0) secret.Length--;
+                    continue;
+                }
+                if (!char.IsControl(key.KeyChar) && secret.Length < MaximumSecretLength) secret.Append(key.KeyChar);
+            }
+            return Task.FromResult(secret.ToString());
+        }
+        finally { secret.Clear(); }
     }
 
     private void WriteList(IReadOnlyList<CredentialMetadata> credentials, bool json)

@@ -3,6 +3,7 @@ namespace CodexProvisioning;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 /// <summary>The only SSH material allowed across the provisioning boundary.</summary>
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
@@ -17,6 +18,7 @@ public sealed class NodeGitHubSetup
     private readonly string _root;
     private readonly Func<bool> _unrelatedAuthentication;
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>> _run;
+    private readonly Func<string, Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>> _login;
     public static string DefaultRoot
     {
         get
@@ -28,17 +30,20 @@ public sealed class NodeGitHubSetup
     }
 
     public NodeGitHubSetup(string? root = null,
-        Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? run = null, Func<bool>? unrelatedAuthentication = null)
+        Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? run = null,
+        Func<bool>? unrelatedAuthentication = null,
+        Func<string, Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>>? login = null)
     {
         _root = root ?? DefaultRoot;
         _unrelatedAuthentication = unrelatedAuthentication ?? (() => HasUnrelatedAuthentication(Path.Combine(_root, "github")));
         _run = run ?? RunAsync;
+        _login = login ?? GitHubDeviceLogin.RunAsync;
     }
 
     public static bool Handles(ProvisioningCommandRequest request) => request.Action is
         ProvisioningCommandAction.PrepareAuthentication or ProvisioningCommandAction.GenerateSshKey or
         ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.RemoveSshKey or ProvisioningCommandAction.VerifyRepositoryAccess ||
-        request.CapabilityId == "github-cli" && request.Action == ProvisioningCommandAction.Logout;
+        request.CapabilityId == "github-cli" && request.Action is (ProvisioningCommandAction.Logout or ProvisioningCommandAction.Login);
 
     // Existing operator gh configuration remains untouched. Once setup is explicitly requested,
     // trusted gh calls use the product directory; Codex's stripped environment is unchanged.
@@ -48,6 +53,9 @@ public sealed class NodeGitHubSetup
         var environment = await GitHubEnvironmentAsync(token);
         foreach (var (key, value) in environment)
             if (value is null) start.Environment.Remove(key); else start.Environment[key] = value;
+        start.Environment.Remove("GH_TOKEN");
+        start.Environment.Remove("GITHUB_TOKEN");
+        start.Environment.Remove("GH_ENTERPRISE_TOKEN");
     }
 
     public static async Task<IReadOnlyDictionary<string, string?>> GitHubEnvironmentAsync(CancellationToken token, string? root = null)
@@ -60,7 +68,8 @@ public sealed class NodeGitHubSetup
         return new Dictionary<string, string?> { ["GH_CONFIG_DIR"] = directory };
     }
 
-    public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommandRequest request, CancellationToken token)
+    public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommandRequest request, CancellationToken token,
+        Func<CodexLoginInstructions, Task>? reportLoginInstructions = null)
     {
         if (!OperatingSystem.IsLinux()) return Failure(ProvisioningDiagnostic.Unsupported);
         if (!ProvisioningCommandProtocol.Valid(request) || !Handles(request)) return Failure(ProvisioningDiagnostic.Unsupported);
@@ -95,6 +104,23 @@ public sealed class NodeGitHubSetup
             if (logout.ExitCode != 0) return Failure(ProvisioningDiagnostic.ProcessFailed);
             var status = await _run("/usr/bin/gh", ["auth", "status", "--hostname", "github.com"], token);
             return status.ExitCode != 0 ? Success() : Failure(ProvisioningDiagnostic.ProcessFailed);
+        }
+
+        if (request.Action == ProvisioningCommandAction.Login)
+        {
+            if (reportLoginInstructions is null || !Directory.Exists(directory) || _unrelatedAuthentication())
+                return Failure(ProvisioningDiagnostic.Denied);
+            await VerifyGitHubOwnershipAsync(directory, token);
+            var code = await _login(directory, async (instructions, progressToken) =>
+            {
+                if (instructions.VerificationUri != "https://github.com/login/device" || !CodexDeviceLogin.Valid(instructions))
+                    throw new InvalidOperationException("Invalid GitHub device login instructions.");
+                await reportLoginInstructions(instructions);
+                progressToken.ThrowIfCancellationRequested();
+            }, token);
+            if (code != 0) return Failure(ProvisioningDiagnostic.ProcessFailed);
+            var authenticationStatus = await _run("/usr/bin/gh", ["auth", "status", "--hostname", "github.com"], token);
+            return authenticationStatus.ExitCode == 0 ? Success() : Failure(ProvisioningDiagnostic.ProcessFailed);
         }
 
         var key = Path.Combine(directory, "github_ed25519");
@@ -149,6 +175,77 @@ public sealed class NodeGitHubSetup
         if (derived.ExitCode != 0 || ParseIdentity(derived.Output.Trim()).PublicKey != identity.PublicKey)
             throw new IOException("Managed keypair does not match.");
         return identity;
+    }
+
+    private static class GitHubDeviceLogin
+    {
+        private const string VerificationUri = "https://github.com/login/device";
+
+        public static async Task<int> RunAsync(string configurationDirectory,
+            Func<CodexLoginInstructions, CancellationToken, Task> publish, CancellationToken token)
+        {
+            using var process = new Process { StartInfo = new("/usr/bin/gh")
+            {
+                UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true
+            } };
+            foreach (var argument in new[] { "auth", "login", "--hostname", "github.com", "--web", "--git-protocol", "https" })
+                process.StartInfo.ArgumentList.Add(argument);
+            process.StartInfo.Environment["GH_CONFIG_DIR"] = configurationDirectory;
+            process.StartInfo.Environment["GH_PROMPT_DISABLED"] = "1";
+            process.StartInfo.Environment["GH_BROWSER"] = "/usr/bin/true";
+            process.StartInfo.Environment.Remove("GH_TOKEN");
+            process.StartInfo.Environment.Remove("GITHUB_TOKEN");
+            process.StartInfo.Environment.Remove("GH_ENTERPRISE_TOKEN");
+            process.Start();
+            process.StandardInput.Close();
+            using var drains = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var output = DrainLoginOutputAsync(process.StandardOutput, publish, drains.Token);
+            var error = DrainLoginOutputAsync(process.StandardError, publish, drains.Token);
+            try
+            {
+                var exited = process.WaitForExitAsync(token);
+                var pending = new List<Task> { exited, output, error };
+                while (pending.Count > 0)
+                {
+                    var completed = await Task.WhenAny(pending);
+                    await completed;
+                    pending.Remove(completed);
+                    if (completed == exited) drains.CancelAfter(TimeSpan.FromSeconds(3));
+                }
+                return process.ExitCode;
+            }
+            finally
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+                drains.Cancel();
+                try { await Task.WhenAll(output, error); }
+                catch (OperationCanceledException) when (drains.IsCancellationRequested) { }
+            }
+        }
+
+        private static async Task DrainLoginOutputAsync(StreamReader reader,
+            Func<CodexLoginInstructions, CancellationToken, Task> publish, CancellationToken token)
+        {
+            var buffer = new char[256];
+            var recent = string.Empty;
+            var published = false;
+            int count;
+            while ((count = await reader.ReadAsync(buffer.AsMemory(), token)) != 0)
+            {
+                if (published) continue;
+                recent += new string(buffer, 0, count);
+                if (recent.Length > 4096) recent = recent[^4096..];
+                var plain = Regex.Replace(recent, @"\x1B\[[0-9;]*m", "");
+                if (!Regex.IsMatch(plain, @"(?<!\S)https://github\.com/login/device(?=\s|$)")) continue;
+                var code = Regex.Match(plain, @"(?<![A-Z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Z0-9-])");
+                if (!code.Success) continue;
+                await publish(new(VerificationUri, code.Value), token);
+                published = true;
+                recent = string.Empty;
+            }
+        }
     }
 
     private static SshPublicIdentity ParseIdentity(string text)
