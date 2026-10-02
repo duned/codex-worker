@@ -259,6 +259,43 @@ public sealed class WorkerV011Tests
         Assert.Contains("https://github.com/owner/repo/issues/17", notification);
     }
 
+    [Fact]
+    public async Task CorrectedMetadataCanRetryAfterCleanPreparationFailureInResumeMode()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.IssueLabels = ["ready"];
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\neffort: turbo" };
+
+        var rejected = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Blocked, rejected!.Kind);
+        var preparation = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("preparation-failed", preparation.RecoveryState);
+        Assert.Null(preparation.RetryOfExecutionId);
+        Assert.Equal(0, h.Git.Started);
+
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\neffort: low" };
+        var retried = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, retried!.Kind);
+        var entries = await history.ReadAllAsync();
+        Assert.Equal(2, entries.Count);
+        var fresh = entries.Single(entry => entry.AttemptNumber == 2);
+        Assert.Null(fresh.RetryOfExecutionId);
+        Assert.False(fresh.Resumed);
+        Assert.Equal("low", fresh.EffectiveEffort);
+        Assert.Equal("Blocked", preparation.State);
+        Assert.Equal("preparation-failed", entries.Single(entry => entry.ExecutionId == preparation.ExecutionId).RecoveryState);
+        Assert.Equal(1, h.Git.Started);
+        Assert.False(h.Git.LastResume);
+        Assert.Null(h.Git.LastRetryOf);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("clean preparation failure", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

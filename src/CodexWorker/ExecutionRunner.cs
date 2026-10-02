@@ -209,7 +209,12 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             else if (ex is OperationCanceledException && ct.IsCancellationRequested)
                 output.FailureReason(execution.ExecutionId, "Cancellation/interruption", "Execution was cancelled or interrupted.");
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message,
-                ex is PreExecutionInfrastructureException ? null : "uncertain");
+                ex switch
+                {
+                    PreExecutionInfrastructureException { InnerException: ProjectCheckoutDirtyException } => null,
+                    PreExecutionInfrastructureException => "preparation-failed",
+                    _ => "uncertain"
+                });
             throw;
         }
     }
@@ -294,15 +299,18 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         IssueExecutionReport report, CancellationToken ct)
     {
         GitRecoveryInfo? recovery = null;
-        await _repositoryGate.WaitAsync(ct);
-        try
+        if (context.Execution.MetadataError is null)
         {
-            if (kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked)
-                recovery = await git.PreserveFailedIssueChangesAsync(ct);
-            else
-                await git.DiscardUncommittedIssueChangesAsync(ct);
+            await _repositoryGate.WaitAsync(ct);
+            try
+            {
+                if (kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked)
+                    recovery = await git.PreserveFailedIssueChangesAsync(ct);
+                else
+                    await git.DiscardUncommittedIssueChangesAsync(ct);
+            }
+            finally { _repositoryGate.Release(); }
         }
-        finally { _repositoryGate.Release(); }
         var completedReport = report with
         {
             RecoveryBranch = recovery?.Branch,
@@ -314,7 +322,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             $"{completedReport.Failure}\n{completedReport.FinalValidationDiagnostics}";
         await SaveHistoryAsync(CreateEntry(context.Execution, completedReport, null, historyFailure) with
         {
-            RecoveryState = recovery is not null ? "recoverable" : kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked ? "cleaned-no-changes" : null,
+            RecoveryState = context.Execution.MetadataError is not null ? "preparation-failed" :
+                recovery is not null ? "recoverable" : kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked ? "cleaned-no-changes" : null,
             RecoveryBaseCommit = recovery?.BaseCommit,
             RecoveryStatus = recovery?.StatusSummary,
             RecoveryExpiresAtUtc = recovery is null ? null : DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays)

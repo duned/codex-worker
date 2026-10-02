@@ -183,7 +183,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // including older rows that recorded the conflict as a failed task.
         var freshAfterConflict = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
             latest is not null && IsTerminalIntegrationConflict(latest);
-        var retryOf = !freshAfterConflict && latest?.State is "Failed" or "Blocked" ? latest : null;
+        // Metadata validation and other explicitly classified pre-workspace failures have no
+        // execution state to resume. A new ready label starts a clean attempt even in resume mode.
+        var freshAfterPreparationFailure = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
+            latest?.RecoveryState == "preparation-failed";
+        var retryOf = !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
@@ -208,6 +212,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             }
             if (freshAfterConflict)
                 _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · explicit ready after integration conflict starts a fresh execution; previous execution {latest!.ExecutionId} is preserved.");
+            if (freshAfterPreparationFailure)
+                _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · explicit ready after clean preparation failure starts a fresh execution; previous execution {latest!.ExecutionId} is preserved.");
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
@@ -310,7 +316,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (PreExecutionInfrastructureException ex)
         {
-            await RejectPreparationAsync(execution, issue, config.GitHub.WorkingLabel, ex.Message, CancellationToken.None);
+            await RejectPreparationAsync(execution, issue, config.GitHub.WorkingLabel, ex.Message, CancellationToken.None,
+                ex.InnerException is ProjectCheckoutDirtyException ? null : "preparation-failed");
             return null;
         }
         catch (Exception ex)
@@ -396,10 +403,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     }
 
     private async Task RejectPreparationAsync(WorkerExecution execution, GitHubIssue issue, string claimedLabel,
-        string reason, CancellationToken ct)
+        string reason, CancellationToken ct, string? recoveryState = "uncertain")
     {
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
-        await RecordInfrastructureFailureAsync(execution, safeReason);
+        await RecordInfrastructureFailureAsync(execution, safeReason, recoveryState);
         var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · preparation rejected · {safeReason}";
         _operationalLog(diagnostic);
         _output.Warning(diagnostic);
@@ -549,7 +556,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         CancellationToken ct)
     {
         execution.TransitionTo(state);
-        try { await SaveHistoryAsync(CreateEntry(execution, report, null, null), ct); }
+        var entry = CreateEntry(execution, report, null, null);
+        if (execution.MetadataError is not null) entry = entry with { RecoveryState = "preparation-failed" };
+        try { await SaveHistoryAsync(entry, ct); }
         catch (WorkerInfrastructureException ex) { _output.Warning($"Execution completed, but its final history details could not be saved: {ex.Message}"); }
     }
 
@@ -568,7 +577,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         GitHubOperationException.Find(error) is { IsMutation: true }
             ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
 
-    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string recoveryState = "uncertain")
+    private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain")
     {
         if (!execution.IsTerminal) execution.TransitionTo(ExecutionState.InfrastructureFailure);
         try
