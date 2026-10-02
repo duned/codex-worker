@@ -12,6 +12,7 @@ public static class Program
                CodexServer diagnostics [--json] [Server configuration options]
                CodexServer config <show|validate> [--json] [Server configuration options]
                CodexServer projects <list|show|create|update|enable|disable|delete> [arguments] [--json] [Server configuration options]
+               CodexServer executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]
                CodexServer credential <list|show|create|assign|replace|revoke> [arguments] [--json] [--secret-stdin]
                CodexServer provision <list|show|create|cancel|reconcile> [arguments]
                CodexServer worker-token create [database-path]
@@ -27,9 +28,10 @@ public static class Program
         Configuration show and validate are offline and do not open the database.
         Project administration reads and writes the configured local Server database;
         create/update take a CentralProjectDefinition JSON file and mutations require a revision.
+        Execution administration inspects a bounded local queue, cancels queued requests, and reconciles only expired uncertain attempts with explicit integration evidence.
         Backup restore requires the service to be stopped.
 
-        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|provision <operation>|worker <operation>
+        Installed Linux Server: sudo codex-server status|diagnostics|config show|validate|projects ...|executions ...|provision <operation>|worker <operation>
         The installed helper uses /etc/codex-server/server.env and the service account
         for local administration, Worker administration and token commands, even while codex-server.service is running.
         Create a Worker token with sudo codex-server worker-token create.
@@ -54,7 +56,7 @@ public static class Program
             Console.WriteLine($"Codex Server {ServerApplication.DisplayVersion}");
             return 0;
         }
-        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "credential" or "provision")
+        if (args.Length > 0 && args[0] is "status" or "diagnostics" or "config" or "projects" or "executions" or "credential" or "provision")
             return await RunLocalAdministrationAsync(args);
         if (args.Length > 0 && args[0] is "backup" or "worker-token" or "worker")
         {

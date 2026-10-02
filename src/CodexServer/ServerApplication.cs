@@ -526,10 +526,21 @@ public static class ServerApplication
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
             catch (ProjectInUseException ex) { return Results.Conflict(new { error = ex.Message, queued = ex.Queued, assigned = ex.Assigned, running = ex.Running }); }
         });
-        app.MapGet("/api/v1/executions", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        app.MapGet("/api/v1/executions", async (string? projectId, string? state, string? workType, string? workId,
+            int? limit, int? offset, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
-            return Results.Ok(await store.GetExecutionsAsync(context.RequestAborted));
+            var query = new ExecutionQuery(projectId, state, workType, workId, limit ?? 50, offset ?? 0);
+            var error = ExecutionAdministrationValidation.QueryError(query);
+            if (error is not null) return Results.BadRequest(new { error });
+            return Results.Ok(await store.ListExecutionsAsync(query, context.RequestAborted));
+        });
+        app.MapGet("/api/v1/executions/{executionRequestId}", async (string executionRequestId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var execution = await store.GetExecutionAsync(executionRequestId, context.RequestAborted);
+            return execution is null ? Results.NotFound() : Results.Ok(execution);
         });
         app.MapPost("/api/v1/executions", async (EnqueueExecutionRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -542,20 +553,38 @@ public static class ServerApplication
                 return Results.Created($"/api/v1/executions/{created.Id}", created);
             }
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (ExecutionRequestConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
-        app.MapPost("/api/v1/executions/{executionRequestId}/state", async (string executionRequestId, ExecutionStateTransition transition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        app.MapPost("/api/v1/executions/{executionRequestId}/state", async (string executionRequestId, HttpContext context, ServerConfiguration settings) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            return Results.Json(new { error = "Execution states are owned by Worker assignment and report contracts. Use queued cancellation or uncertain execution reconciliation." },
+                statusCode: StatusCodes.Status410Gone);
+        });
+        app.MapPost("/api/v1/executions/{executionRequestId}/cancel", async (string executionRequestId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             try
             {
-                var updated = await store.TransitionExecutionAsync(executionRequestId, transition, context.RequestAborted);
-                return updated is null ? Results.NotFound() : Results.Ok(updated);
+                var execution = await store.CancelQueuedExecutionAsync(executionRequestId, context.RequestAborted);
+                return execution is null ? Results.NotFound() : Results.Ok(execution);
+            }
+            catch (ExecutionRequestCancellationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/v1/executions/{executionRequestId}/reconcile", async (string executionRequestId,
+            ExecutionReconciliationRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            try
+            {
+                var result = await store.ReconcileUncertainExecutionAsync(executionRequestId, request, context.RequestAborted);
+                return result is null ? Results.NotFound() : Results.Ok(result);
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
-            catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
-            catch (ExecutionRequestTransitionException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (ExecutionRequestReconciliationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         return app;
     }

@@ -133,6 +133,15 @@ public interface IServerProjectAdministrationService
     Task<bool> RemoveProjectAsync(string projectId, long expectedRevision, CancellationToken cancellationToken = default);
 }
 
+public interface IServerExecutionAdministrationService
+{
+    Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
+        ExecutionReconciliationRequest request, CancellationToken cancellationToken = default);
+}
+
 public sealed class LocalServerAdministrationServiceFactory : IServerAdministrationServiceFactory
 {
     public IServerAdministrationService Create(ServerConfiguration configuration)
@@ -147,7 +156,8 @@ public sealed class LocalServerAdministrationServiceFactory : IServerAdministrat
 
 /// <summary>Reads local Server state through the existing registry and health service contracts.</summary>
 public sealed class LocalServerAdministrationService(ServerConfiguration configuration, IRegistryStore registry,
-    IServerHealthService healthService, TimeProvider? timeProvider = null) : IServerAdministrationService, IServerProjectAdministrationService
+    IServerHealthService healthService, TimeProvider? timeProvider = null) : IServerAdministrationService,
+    IServerProjectAdministrationService, IServerExecutionAdministrationService
 {
     private const string LocalStatusDiagnostic = "The configured Server database is unavailable or not initialized.";
 
@@ -226,6 +236,31 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         return await registry.RemoveProjectAsync(projectId, expectedRevision, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.ListExecutionsAsync(query, cancellationToken);
+    }
+
+    public async Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.GetExecutionAsync(executionRequestId, cancellationToken);
+    }
+
+    public async Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.CancelQueuedExecutionAsync(executionRequestId, cancellationToken);
+    }
+
+    public async Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
+        ExecutionReconciliationRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await registry.ReconcileUncertainExecutionAsync(executionRequestId, request, cancellationToken);
+    }
+
     private async Task EnsurePersistenceAvailableAsync(CancellationToken cancellationToken)
     {
         var status = await GetStatusAsync(cancellationToken);
@@ -267,6 +302,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
         var command = arguments[0];
         if (command == "projects") return await RunProjectsAsync(arguments, cancellationToken);
+        if (command == "executions") return await RunExecutionsAsync(arguments, cancellationToken);
         var configurationCommand = command == "config";
         var operation = configurationCommand && arguments.Count > 1 ? arguments[1] : command;
         var optionStart = configurationCommand ? 2 : 1;
@@ -449,6 +485,166 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             _error.WriteLine("Local project administration failed. Check the configured Server database, definition file, and file permissions.");
             return ServerAdministrationExitCodes.OperationalFailure;
         }
+    }
+
+    private async Task<int> RunExecutionsAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        const string usage = "Usage: codex-server executions <list|show|cancel|reconcile> [arguments] [filters] [--json] [Server configuration options]";
+        if (arguments.Count == 2 && arguments[1] == "--help")
+        {
+            _output.WriteLine(usage);
+            _output.WriteLine("List accepts --project, --state, --work-type, --work-id, --limit (1..100) and --offset (0..10000). Reconcile requires an expired uncertain execution, an explicit disposition, and evidence; Integrated also requires the full commit ID.");
+            return ServerAdministrationExitCodes.Success;
+        }
+        if (arguments.Count < 2) return InvalidArguments(usage);
+
+        var operation = arguments[1];
+        var positional = new List<string>();
+        var configurationArguments = new List<string>();
+        var filters = new Dictionary<string, string>(StringComparer.Ordinal);
+        var json = false;
+        for (var index = 2; index < arguments.Count; index++)
+        {
+            var argument = arguments[index];
+            if (argument == "--json" && !json)
+            {
+                json = true;
+                continue;
+            }
+            if (IsConfigurationOption(argument))
+            {
+                configurationArguments.Add(argument);
+                if (!argument.Contains('=') && index + 1 < arguments.Count && !arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+                    configurationArguments.Add(arguments[++index]);
+                else if (!argument.Contains('=')) return InvalidArguments(usage);
+                continue;
+            }
+            if (argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                var separator = argument.IndexOf('=');
+                var name = separator < 0 ? argument[2..] : argument[2..separator];
+                var value = separator < 0 && index + 1 < arguments.Count ? arguments[++index] :
+                    separator < 0 ? "" : argument[(separator + 1)..];
+                if (value.Length == 0 || !filters.TryAdd(name, value)) return InvalidArguments(usage);
+                continue;
+            }
+            positional.Add(argument);
+        }
+
+        var validPositionals = operation switch
+        {
+            "list" => positional.Count == 0,
+            "show" or "cancel" => positional.Count == 1,
+            "reconcile" => positional.Count is 3 or 4,
+            _ => false
+        };
+        if (!validPositionals) return InvalidArguments(usage);
+        if (operation != "list" && filters.Count != 0) return InvalidArguments(usage);
+        if (filters.Keys.Any(key => key is not ("project" or "state" or "work-type" or "work-id" or "limit" or "offset")))
+            return InvalidArguments(usage);
+        if (!int.TryParse(filters.GetValueOrDefault("limit", "50"), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var limit) ||
+            !int.TryParse(filters.GetValueOrDefault("offset", "0"), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var offset))
+            return InvalidArguments("Execution list limit and offset must be decimal integers.");
+
+        var query = new ExecutionQuery(filters.GetValueOrDefault("project"), filters.GetValueOrDefault("state"),
+            filters.GetValueOrDefault("work-type"), filters.GetValueOrDefault("work-id"), limit, offset);
+        if (operation == "list" && ExecutionAdministrationValidation.QueryError(query) is { } queryError)
+            return InvalidArguments(queryError);
+
+        var inspected = configurationService.Inspect(configurationArguments);
+        if (!inspected.Document.IsValid || inspected.Configuration is null)
+        {
+            WriteConfigurationFailure(inspected.Document, json);
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+
+        try
+        {
+            if (serviceFactory.Create(inspected.Configuration) is not IServerExecutionAdministrationService executions)
+            {
+                _error.WriteLine("Local execution administration is unavailable through the configured Server service.");
+                return ServerAdministrationExitCodes.OperationalFailure;
+            }
+            switch (operation)
+            {
+                case "list":
+                    var items = await executions.ListExecutionsAsync(query, cancellationToken);
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(items, JsonOptions));
+                    else if (items.Count == 0) _output.WriteLine("No matching execution requests were found.");
+                    else foreach (var item in items) _output.WriteLine($"{item.Id}\t{item.State}\t{item.ProjectId}\t{item.WorkReference.Type}:{item.WorkReference.Id}\tattempt {item.AttemptNumber}");
+                    break;
+                case "show":
+                    var shown = await executions.GetExecutionAsync(positional[0], cancellationToken);
+                    if (shown is null) return ExecutionNotFound(positional[0]);
+                    WriteExecution(shown, json);
+                    break;
+                case "cancel":
+                    var cancelled = await executions.CancelQueuedExecutionAsync(positional[0], cancellationToken);
+                    if (cancelled is null) return ExecutionNotFound(positional[0]);
+                    WriteExecution(cancelled, json);
+                    break;
+                case "reconcile":
+                    var reconciliationRequest = new ExecutionReconciliationRequest(positional[1], positional[2],
+                        positional.Count == 4 ? positional[3] : null);
+                    if (ExecutionAdministrationValidation.ReconciliationError(reconciliationRequest) is { } reconciliationError)
+                        return InvalidArguments(reconciliationError);
+                    var reconciled = await executions.ReconcileUncertainExecutionAsync(positional[0], reconciliationRequest, cancellationToken);
+                    if (reconciled is null) return ExecutionNotFound(positional[0]);
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(reconciled, JsonOptions));
+                    else
+                    {
+                        _output.WriteLine($"Execution {reconciled.Execution.Id} reconciled as {reconciled.Execution.RecoveryState}.");
+                        if (reconciled.Retry is not null) _output.WriteLine($"Queued linked retry {reconciled.Retry.Id} (attempt {reconciled.Retry.AttemptNumber}).");
+                    }
+                    break;
+            }
+            return ServerAdministrationExitCodes.Success;
+        }
+        catch (OperationCanceledException) { return ServerAdministrationExitCodes.Canceled; }
+        catch (ExecutionRequestCancellationException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (ExecutionRequestReconciliationException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
+        catch (InvalidDataException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.InvalidArguments;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            _error.WriteLine("Local execution administration failed. Check the configured Server database and file permissions.");
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+    }
+
+    private void WriteExecution(ExecutionRequest execution, bool json)
+    {
+        if (json)
+        {
+            _output.WriteLine(JsonSerializer.Serialize(execution, JsonOptions));
+            return;
+        }
+        _output.WriteLine($"Execution: {execution.Id}");
+        _output.WriteLine($"State: {execution.State}");
+        _output.WriteLine($"Work: {execution.WorkReference.Type}:{execution.WorkReference.Id} · project {execution.ProjectId}");
+        _output.WriteLine($"Attempt: {execution.AttemptNumber}{(execution.RetryOfExecutionId is null ? "" : $" · retry of {execution.RetryOfExecutionId}")}");
+        if (execution.RecoveryState is not null) _output.WriteLine($"Recovery: {execution.RecoveryState} · {execution.RecoveryReason}");
+        if (execution.Lease is not null) _output.WriteLine($"Lease: {execution.Lease.State} · generation {execution.Lease.Generation} · Worker {execution.Lease.WorkerId}");
+        if (execution.CompletionSummary is not null) _output.WriteLine($"Summary: {execution.CompletionSummary}");
+    }
+
+    private int ExecutionNotFound(string executionId)
+    {
+        _error.WriteLine($"Execution '{ServerAdministrationRedaction.Redact(executionId)}' was not found.");
+        return ServerAdministrationExitCodes.NotFound;
     }
 
     private async Task<CentralProjectDefinition> ReadProjectDefinitionAsync(string path, CancellationToken cancellationToken)

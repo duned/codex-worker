@@ -1143,7 +1143,7 @@ public sealed class CodexServerTests
         await Assert.ThrowsAsync<ProjectDisabledException>(() => store.EnqueueExecutionAsync(
             new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3"))));
         Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
-        await Assert.ThrowsAsync<ProjectDisabledException>(() => store.TransitionExecutionAsync(queued.Id,
+        await Assert.ThrowsAsync<ExecutionRequestTransitionException>(() => store.TransitionExecutionAsync(queued.Id,
             new ExecutionStateTransition("Assigned", workerId)));
         var paused = (await store.GetExecutionsAsync()).Single(execution => execution.Id == queued.Id);
         Assert.Equal("Queued", paused.State);
@@ -1334,7 +1334,7 @@ public sealed class CodexServerTests
                 new ProjectLifecycleUpdateRequest(true, 2));
             Assert.Equal(HttpStatusCode.Conflict, staleLifecycle.StatusCode);
             using var rejectedEnqueue = await client.PostAsJsonAsync("/api/v1/executions",
-                new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "disabled")));
+                new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
             Assert.Equal(HttpStatusCode.Conflict, rejectedEnqueue.StatusCode);
             using var delete = await client.DeleteAsync($"/api/v1/projects/{project.Id}?expectedRevision=3");
             Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
@@ -1366,8 +1366,8 @@ public sealed class CodexServerTests
 
             using var assignment = await client.PostAsJsonAsync($"/api/v1/executions/{execution.Id}/state",
                 new ExecutionStateTransition("Assigned", "manual-worker"));
-            Assert.Equal(HttpStatusCode.Conflict, assignment.StatusCode);
-            Assert.Contains("disabled", await assignment.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(HttpStatusCode.Gone, assignment.StatusCode);
+            Assert.Contains("Worker assignment", await assignment.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
             using var delete = await client.DeleteAsync($"/api/v1/projects/{project.Id}?expectedRevision=2");
 
             Assert.Equal(HttpStatusCode.Conflict, delete.StatusCode);
@@ -1733,7 +1733,7 @@ public sealed class CodexServerTests
     }
 
     [Fact]
-    public async Task ExecutionQueuePersistsFifoTransitionsAndAllowsLaterAttemptsAcrossProjects()
+    public async Task ExecutionQueuePersistsFifoWorkerReportsAndAllowsLaterAttemptsAcrossProjects()
     {
         using var temporary = new TemporaryDirectory();
         var database = Path.Combine(temporary.Path, "queue.db");
@@ -1747,20 +1747,33 @@ public sealed class CodexServerTests
         clock.Advance(TimeSpan.FromSeconds(1));
         var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, new WorkReference("github-issue", "43")));
         await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectA.Id, work)));
-        var sameIssueOtherProject = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectB.Id, work));
+        var sameIssueOtherProject = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(projectB.Id, new WorkReference("issue", "42")));
         Assert.Equal(new[] { first.Id, second.Id, sameIssueOtherProject.Id }, (await store.GetExecutionsAsync()).Select(x => x.Id));
 
-        var assigned = await store.TransitionExecutionAsync(first.Id, new ExecutionStateTransition("Assigned", "worker-a"));
-        Assert.Equal("Assigned", assigned!.State);
-        Assert.Equal("worker-a", assigned.AssignedWorkerId);
-        Assert.NotNull(assigned.AssignedAtUtc);
-        Assert.Equal(new ExecutionLease(first.Id, "worker-a", 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(15), "Active"), assigned.Lease);
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(projectA.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "queue worker", "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var assigned = (await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
+            new Dictionary<string, int> { [projectA.Id] = 1 }))).Assignment;
+        Assert.NotNull(assigned);
+        Assert.Equal(new WorkReference("github-issue", "42", "https://github.com/team/alpha/issues/42"), assigned.Work);
+        var assignment = await store.GetExecutionAsync(first.Id);
+        Assert.NotNull(assignment);
+        Assert.Equal(assigned.AssignmentId, assignment.AssignmentId);
+        Assert.Equal(first.Id, assigned.ServerExecutionId);
+        var leased = assignment;
+        Assert.Equal("Assigned", leased!.State);
+        Assert.Equal(workerId, leased.AssignedWorkerId);
+        Assert.NotNull(leased.AssignedAtUtc);
+        var lease = Assert.IsType<ExecutionLease>(leased.Lease);
+        Assert.Equal(new ExecutionLease(first.Id, workerId, 1, clock.GetUtcNow(), clock.GetUtcNow().AddMinutes(15), "Active"), lease);
         var started = DateTimeOffset.Parse("2026-02-01T00:00:03Z");
-        var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Running", "Implementing", started, Generation: assigned.Lease!.Generation));
+        var running = await store.ReportExecutionAsync(first.Id, new WorkerExecutionReport(workerId, assigned.AssignmentId, "run-a", "Running", "Implementing", started, Generation: lease.Generation));
         Assert.Equal("Running", running!.State);
         Assert.Equal("run-a", running.ExecutionId);
-        var finalReport = new WorkerExecutionReport("worker-a", assigned.AssignmentId!, "run-a", "Completed", null,
-            started, started.AddMinutes(2), 120000, "passed", "integrated", null, false, "Implemented Issue #42.", assigned.Lease!.Generation);
+        var finalReport = new WorkerExecutionReport(workerId, assigned.AssignmentId, "run-a", "Completed", null,
+            started, started.AddMinutes(2), 120000, "passed", "integrated", null, false, "Implemented Issue #42.", lease.Generation);
         var completed = await store.ReportExecutionAsync(first.Id, finalReport);
         var duplicate = await store.ReportExecutionAsync(first.Id, finalReport);
         Assert.Equal("Completed", completed!.State);
@@ -1788,6 +1801,91 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task ManagedWorkReferencesAreCanonicalPositiveGitHubIssuesAndRemainUniqueAcrossAliasesAndRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "canonical-issues.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Canonical", "Team/Compiler", "main", "", []));
+
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id,
+            new WorkReference("issue", "00042", "https://github.com/team/compiler/issues/42")));
+
+        Assert.Equal(new WorkReference("github-issue", "42", "https://github.com/Team/Compiler/issues/42"), first.WorkReference);
+        await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("GITHUB-ISSUE", "42"))));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("pull-request", "42"))));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("issue", "0"))));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("issue", "42abc"))));
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("issue", "43", "https://github.com/other/repo/issues/43"))));
+
+        var concurrentRequests = new[]
+        {
+            new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "99")),
+            new EnqueueExecutionRequest(project.Id, new WorkReference("github-issue", "099"))
+        };
+        var results = await Task.WhenAll(concurrentRequests.Select(async request =>
+        {
+            try
+            {
+                await store.EnqueueExecutionAsync(request);
+                return true;
+            }
+            catch (ExecutionRequestConflictException) { return false; }
+        }));
+        Assert.Single(results, created => created);
+        Assert.Single(results, created => !created);
+
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        var persisted = Assert.Single(await restarted.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, WorkType: "issue", WorkId: "42", Limit: 10)));
+        Assert.Equal(first.WorkReference, persisted.WorkReference);
+        await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => restarted.EnqueueExecutionAsync(new EnqueueExecutionRequest(
+            project.Id, new WorkReference("issue", "42"))));
+    }
+
+    [Fact]
+    public async Task ExecutionAdministrationFiltersDetailsCancelsOnlyQueuedWorkAndPersistsAcrossRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "execution-administration.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Administration", "team/admin", "main", "", []));
+        var assignedRequest = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var cancelled = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var filtered = await store.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, WorkType: "issue", WorkId: "0002", Limit: 1));
+        Assert.Equal(assignedRequest.Id, Assert.Single(filtered).Id);
+        Assert.Equal(assignedRequest.Id, (await store.GetExecutionAsync(assignedRequest.Id))!.Id);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.ListExecutionsAsync(new ExecutionQuery(Limit: 101)));
+
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "admin worker", "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var assignment = (await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).Assignment!;
+        Assert.Equal(assignedRequest.Id, assignment.ServerExecutionId);
+        await Assert.ThrowsAsync<ExecutionRequestCancellationException>(() => store.CancelQueuedExecutionAsync(assignedRequest.Id));
+        var cancelledRequest = await store.CancelQueuedExecutionAsync(cancelled.Id);
+        Assert.Equal("Cancelled", cancelledRequest!.State);
+        Assert.Null(cancelledRequest.Lease);
+        await Assert.ThrowsAsync<ExecutionRequestTransitionException>(() => store.TransitionExecutionAsync(assignedRequest.Id,
+            new ExecutionStateTransition("Completed")));
+
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.Equal("Cancelled", (await restarted.GetExecutionAsync(cancelled.Id))!.State);
+        Assert.Equal("Assigned", (await restarted.GetExecutionAsync(assignedRequest.Id))!.State);
+        Assert.Equal(2, (await restarted.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, Limit: 100))).Count);
+    }
+
+    [Fact]
     public async Task AssignmentLeaseIsExclusiveDurableAndReleasedOnTerminalReport()
     {
         using var temporary = new TemporaryDirectory();
@@ -1804,7 +1902,7 @@ public sealed class CodexServerTests
             await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 1, capabilities));
             await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 1, capabilities, []));
         }
-        var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "lease-1")));
+        var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
         WorkerAssignmentRequest Request(string worker) => new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
         var attempts = await Task.WhenAll(store.RequestAssignmentAsync(Request(firstWorker)), store.RequestAssignmentAsync(Request(secondWorker)));
         var acquired = Assert.Single(attempts, x => x.HasWork).Assignment!;
@@ -1856,9 +1954,9 @@ public sealed class CodexServerTests
             await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, worker, worker, "1.0", "test", 2, capabilities));
             await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, worker, "1.0", "running", 0, 2, capabilities, []));
         }
-        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-1")));
-        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-2")));
-        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "renew-3")));
+        var first = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var second = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
         WorkerAssignmentRequest Request(string worker) => new(worker, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
         var firstAssignment = (await store.RequestAssignmentAsync(Request(owner))).Assignment!;
         var secondAssignment = (await store.RequestAssignmentAsync(Request(owner))).Assignment!;
@@ -1914,11 +2012,11 @@ public sealed class CodexServerTests
         WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 5, capabilities));
         await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 5, capabilities, []));
-        var safe = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "safe")));
-        var implementing = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "implementing")));
-        var validating = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "validating")));
-        var claiming = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "claiming")));
-        var uncertain = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "uncertain")));
+        var safe = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var implementing = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "2")));
+        var validating = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "3")));
+        var claiming = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "4")));
+        var uncertain = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "5")));
         WorkerAssignmentRequest request = new(workerId, true, 5, new Dictionary<string, int> { [project.Id] = 5 });
         var safeAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
         var implementingAssignment = (await store.RequestAssignmentAsync(request)).Assignment!;
@@ -1960,13 +2058,39 @@ public sealed class CodexServerTests
         Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == uncertain.Id);
         Assert.Equal("LeaseExpiredUncertain", firstRead.Single(x => x.Id == claiming.Id).RecoveryState);
         Assert.DoesNotContain(firstRead, x => x.RetryOfExecutionId == claiming.Id);
+        await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => afterRestart.EnqueueExecutionAsync(
+            new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "5"))));
+
+        var verifiedRetry = await afterRestart.ReconcileUncertainExecutionAsync(uncertain.Id,
+            new ExecutionReconciliationRequest("NotIntegrated", "Checked authoritative base branch and confirmed the execution commit is absent."));
+        Assert.NotNull(verifiedRetry);
+        Assert.Equal("Failed", verifiedRetry.Execution.State);
+        Assert.Equal("OperatorRetryQueued", verifiedRetry.Execution.RecoveryState);
+        Assert.Equal(uncertain.Id, verifiedRetry.Retry!.RetryOfExecutionId);
+        Assert.Equal(2, verifiedRetry.Retry.AttemptNumber);
+        Assert.Equal("Queued", verifiedRetry.Retry.State);
+        await Assert.ThrowsAsync<ExecutionRequestReconciliationException>(() => afterRestart.ReconcileUncertainExecutionAsync(uncertain.Id,
+            new ExecutionReconciliationRequest("NotIntegrated", "Duplicate operator request.")));
+
+        var verifiedIntegrated = await afterRestart.ReconcileUncertainExecutionAsync(claiming.Id,
+            new ExecutionReconciliationRequest("Integrated", "Confirmed the commit on the protected base branch.", new string('a', 40)));
+        Assert.NotNull(verifiedIntegrated);
+        Assert.Null(verifiedIntegrated.Retry);
+        Assert.Equal("Failed", verifiedIntegrated.Execution.State);
+        Assert.Equal("OperatorVerifiedIntegrated", verifiedIntegrated.Execution.RecoveryState);
+        Assert.Contains(new string('a', 40), Assert.IsType<string>(verifiedIntegrated.Execution.IntegrationResult));
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => afterRestart.ReportExecutionAsync(uncertain.Id,
+            new WorkerExecutionReport(workerId, uncertainAssignment.AssignmentId, "late-worker-report", "Completed",
+                CompletedAtUtc: clock.GetUtcNow(), Generation: uncertainAssignment.Lease!.Generation)));
 
         var secondRead = await afterRestart.GetExecutionsAsync();
-        Assert.Equal(8, secondRead.Count);
+        Assert.Equal(9, secondRead.Count);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == safe.Id);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == implementing.Id);
         Assert.Single(secondRead, x => x.RetryOfExecutionId == validating.Id);
-        Assert.Single(secondRead, x => x.Id == uncertain.Id);
+        Assert.Single(secondRead, x => x.RetryOfExecutionId == uncertain.Id);
+        Assert.Single(secondRead, x => x.Id == uncertain.Id && x.RecoveryState == "OperatorRetryQueued");
+        Assert.Single(secondRead, x => x.Id == claiming.Id && x.RecoveryState == "OperatorVerifiedIntegrated");
     }
 
     private static async Task<long> LeaseCountAsync(string database, string executionId)
@@ -2112,7 +2236,7 @@ public sealed class CodexServerTests
             var projectResponse = await client.PostAsJsonAsync("/api/v1/projects", projectDefinition);
             var project = (await projectResponse.Content.ReadFromJsonAsync<CentralProject>())!;
             client.DefaultRequestHeaders.Authorization = null;
-            var request = new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "7", "https://example.test/7"));
+            var request = new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "7", "https://github.com/team/queue/issues/7"));
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/executions", request)).StatusCode);
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "execution-test-token");
             var created = await client.PostAsJsonAsync("/api/v1/executions", request);
@@ -2120,15 +2244,29 @@ public sealed class CodexServerTests
             using var representation = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
             Assert.Equal(project.Id, representation.RootElement.GetProperty("projectId").GetString());
             Assert.Equal("Queued", representation.RootElement.GetProperty("state").GetString());
+            Assert.Equal("github-issue", representation.RootElement.GetProperty("workReference").GetProperty("type").GetString());
             Assert.Equal("7", representation.RootElement.GetProperty("workReference").GetProperty("id").GetString());
             Assert.True(representation.RootElement.TryGetProperty("createdAtUtc", out _));
+            var executionId = representation.RootElement.GetProperty("id").GetString()!;
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/executions", request)).StatusCode);
             var list = await client.GetFromJsonAsync<ExecutionRequest[]>("/api/v1/executions");
             var queued = Assert.Single(list!);
             Assert.Equal("Queued", queued.State);
             Assert.Equal("no compatible worker", queued.PendingReason);
             Assert.Contains("requires Docker; capability unavailable", queued.MissingRequirements!);
-            Assert.Contains("Execution queue", await (await client.GetAsync("/")).Content.ReadAsStringAsync());
+            Assert.Equal(executionId, (await client.GetFromJsonAsync<ExecutionRequest>($"/api/v1/executions/{executionId}"))!.Id);
+            Assert.Single((await client.GetFromJsonAsync<ExecutionRequest[]>($"/api/v1/executions?projectId={project.Id}&state=Queued&limit=1"))!);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/executions?limit=101")).StatusCode);
+            Assert.Equal(HttpStatusCode.Gone, (await client.PostAsJsonAsync($"/api/v1/executions/{executionId}/state",
+                new ExecutionStateTransition("Completed"))).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/executions",
+                new EnqueueExecutionRequest(project.Id, new WorkReference("pull-request", "8")))).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/v1/executions",
+                new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "8", "https://github.com/other/repo/issues/8")))).StatusCode);
+            using var cancelled = await client.PostAsync($"/api/v1/executions/{executionId}/cancel", content: null);
+            Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+            Assert.Equal("Cancelled", (await cancelled.Content.ReadFromJsonAsync<ExecutionRequest>())!.State);
+            Assert.Contains("Execution administration", await (await client.GetAsync("/")).Content.ReadAsStringAsync());
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }

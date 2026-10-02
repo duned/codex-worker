@@ -34,6 +34,11 @@ public interface IRegistryStore
     Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default);
     Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default);
+    Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
+        ExecutionReconciliationRequest request, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default);
     Task<ExecutionRequest?> ReportExecutionAsync(string executionRequestId, WorkerExecutionReport report, CancellationToken cancellationToken = default);
     Task<ExecutionLease?> RenewExecutionLeaseAsync(string executionId, ExecutionLeaseRenewal renewal, CancellationToken cancellationToken = default);
@@ -48,6 +53,10 @@ public interface IRegistryStore
 
 public sealed record WorkReference(string Type, string Id, string? Url = null);
 public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference);
+public sealed record ExecutionQuery(string? ProjectId = null, string? State = null, string? WorkType = null,
+    string? WorkId = null, int Limit = 50, int Offset = 0);
+public sealed record ExecutionReconciliationRequest(string Disposition, string Evidence, string? IntegrationCommit = null);
+public sealed record ExecutionReconciliationResult(ExecutionRequest Execution, ExecutionRequest? Retry);
 public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference WorkReference,
     DateTimeOffset CreatedAtUtc, string State, string? AssignedWorkerId, DateTimeOffset? AssignedAtUtc, string? ExecutionId,
     string? AssignmentId = null, string? CurrentStage = null, string? WorkerExecutionId = null,
@@ -113,21 +122,113 @@ public static class ProvisioningPlanValidation
 
 public static class ExecutionRequestValidation
 {
+    private static readonly Regex IssueUrlPattern = new("^/([^/]+)/([^/]+)/issues/([1-9][0-9]*)$", RegexOptions.CultureInvariant);
+
     public static string? Error(EnqueueExecutionRequest? request)
     {
         if (request is null) return "Execution request is required.";
-        if (string.IsNullOrWhiteSpace(request.ProjectId) || request.ProjectId.Length > 80) return "projectId must contain 1 to 80 characters.";
+        if (!Printable(request.ProjectId, 80)) return "projectId must contain 1 to 80 printable characters.";
         if (request.WorkReference is null) return "workReference is required.";
-        if (string.IsNullOrWhiteSpace(request.WorkReference.Type) || request.WorkReference.Type.Length > 80 || request.WorkReference.Type.Any(char.IsControl)) return "workReference.type must contain 1 to 80 printable characters.";
-        if (string.IsNullOrWhiteSpace(request.WorkReference.Id) || request.WorkReference.Id.Length > 300 || request.WorkReference.Id.Any(char.IsControl)) return "workReference.id must contain 1 to 300 printable characters.";
-        if (request.WorkReference.Url is { Length: > 2000 } || request.WorkReference.Url?.Any(char.IsControl) == true) return "workReference.url must contain at most 2000 printable characters.";
+        if (!CanonicalIssueType(request.WorkReference.Type)) return "workReference.type must identify a supported GitHub Issue (issue or github-issue).";
+        if (!Printable(request.WorkReference.Id, 300) || !int.TryParse(request.WorkReference.Id.Trim(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)
+            return "workReference.id must be a positive decimal GitHub Issue number.";
+        if (request.WorkReference.Url is { } url &&
+            (!TryParseIssueUrl(url, out var urlIssueNumber, out _, out _) || urlIssueNumber != issueNumber))
+            return "workReference.url must be a canonical GitHub Issue URL matching workReference.id.";
         return null;
+    }
+
+    public static WorkReference Canonicalize(WorkReference reference, string repository)
+    {
+        var identity = NormalizeIdentity(reference);
+        var canonicalId = identity.Id;
+        if (reference.Url is { } url)
+        {
+            if (!TryParseIssueUrl(url, out var urlIssueNumber, out var owner, out var name) ||
+                urlIssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) != canonicalId ||
+                !string.Equals(repository, $"{owner}/{name}", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("workReference.url must identify this project's GitHub repository and Issue.");
+            return new("github-issue", canonicalId, $"https://github.com/{repository}/issues/{canonicalId}");
+        }
+        return new("github-issue", canonicalId);
+    }
+
+    public static WorkReference NormalizeIdentity(WorkReference reference)
+    {
+        if (!CanonicalIssueType(reference.Type) || !Printable(reference.Id, 300) ||
+            !int.TryParse(reference.Id.Trim(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)
+            throw new InvalidDataException("Only positive numbered GitHub Issue work references are supported.");
+        return new("github-issue", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static bool CanonicalIssueType(string? type) => type is { Length: > 0 and <= 80 } raw && !raw.Any(char.IsControl) &&
+        raw.Trim() is { } value &&
+        (string.Equals(value, "issue", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(value, "github-issue", StringComparison.OrdinalIgnoreCase));
+
+    private static bool Printable(string? value, int limit) => !string.IsNullOrWhiteSpace(value) && value.Length <= limit && !value.Any(char.IsControl);
+
+    private static bool TryParseIssueUrl(string value, out int issueNumber, out string owner, out string repository)
+    {
+        issueNumber = 0;
+        owner = string.Empty;
+        repository = string.Empty;
+        if (value.Length > 2000 || value.Any(char.IsControl) ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+            !string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) || uri.Port != 443 ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            return false;
+        var match = IssueUrlPattern.Match(uri.AbsolutePath);
+        return match.Success && int.TryParse(match.Groups[3].Value, System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture, out issueNumber) &&
+               (owner = match.Groups[1].Value).Length > 0 && (repository = match.Groups[2].Value).Length > 0;
     }
 }
 
 public sealed class ExecutionRequestConflictException() : Exception("An active execution request already exists for this project and work reference.") { }
 public sealed class ExecutionRequestTransitionException() : Exception("The requested execution state transition is invalid.") { }
 public sealed class ExecutionRequestOwnershipException() : Exception("Execution report was rejected because its lease is stale or lifecycle state has advanced.") { }
+public sealed class ExecutionRequestCancellationException() : Exception("Only queued execution requests can be cancelled by an operator.") { }
+public sealed class ExecutionRequestReconciliationException(string message) : Exception(message);
+
+public static class ExecutionAdministrationValidation
+{
+    private static readonly HashSet<string> States = new(StringComparer.Ordinal)
+        { "Queued", "Assigned", "Running", "Completed", "Failed", "Cancelled" };
+
+    public static string? QueryError(ExecutionQuery? query)
+    {
+        if (query is null) return "Execution query is required.";
+        if (query.ProjectId is { } projectId && (string.IsNullOrWhiteSpace(projectId) || projectId.Length > 80 || projectId.Any(char.IsControl)))
+            return "projectId must contain at most 80 printable characters.";
+        if (query.State is { } state && !States.Contains(state)) return "state is not a supported execution state.";
+        if (query.WorkType is { } type && !string.Equals(type, "issue", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(type, "github-issue", StringComparison.OrdinalIgnoreCase))
+            return "workType must identify a supported GitHub Issue.";
+        if (query.WorkId is { } workId && (!int.TryParse(workId.Trim(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0))
+            return "workId must be a positive decimal GitHub Issue number.";
+        if (query.Limit is < 1 or > 100) return "limit must be between 1 and 100.";
+        if (query.Offset is < 0 or > 10000) return "offset must be between 0 and 10000.";
+        return null;
+    }
+
+    public static string? ReconciliationError(ExecutionReconciliationRequest? request)
+    {
+        if (request is null || request.Disposition is not ("NotIntegrated" or "Integrated"))
+            return "disposition must be NotIntegrated or Integrated.";
+        if (string.IsNullOrWhiteSpace(request.Evidence) || request.Evidence.Length > 1000 || request.Evidence.Any(char.IsControl))
+            return "evidence must contain 1 to 1000 printable characters.";
+        if (request.Disposition == "Integrated" && (request.IntegrationCommit is null ||
+                !Regex.IsMatch(request.IntegrationCommit, "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$", RegexOptions.CultureInvariant)))
+            return "Integrated disposition requires a full 40 or 64 character integration commit ID.";
+        if (request.Disposition == "NotIntegrated" && request.IntegrationCommit is not null)
+            return "NotIntegrated disposition cannot include an integration commit ID.";
+        return null;
+    }
+}
 
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
@@ -364,7 +465,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     int leaseDurationSeconds = 900, int leaseRenewalIntervalSeconds = 60) : IRegistryStore
 {
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery FROM execution_requests";
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -389,7 +490,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 12);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 13);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -460,6 +561,46 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             {
                 command.CommandText = "ALTER TABLE workers ADD COLUMN scheduling_policy TEXT NOT NULL DEFAULT 'Enabled' CHECK (scheduling_policy IN ('Enabled','Draining','Disabled')); UPDATE schema_metadata SET schema_version = 12 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 12;
+            }
+            if (schemaVersion == 12)
+            {
+                command.CommandText = """
+                    ALTER TABLE execution_requests RENAME TO execution_requests_v12;
+                    CREATE TABLE execution_requests (
+                        queue_order INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        id TEXT NOT NULL UNIQUE,
+                        project_id TEXT NOT NULL,
+                        work_type TEXT NOT NULL,
+                        work_id TEXT NOT NULL,
+                        work_reference_json TEXT NOT NULL,
+                        created_at_utc TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (state IN ('Queued', 'Assigned', 'Running', 'Completed', 'Failed', 'Cancelled')),
+                        assigned_worker_id TEXT NULL,
+                        assigned_at_utc TEXT NULL,
+                        execution_id TEXT NULL,
+                        assignment_id TEXT NULL,
+                        current_stage TEXT NULL,
+                        worker_execution_id TEXT NULL,
+                        started_at_utc TEXT NULL,
+                        completed_at_utc TEXT NULL,
+                        duration_ms INTEGER NULL,
+                        validation_result TEXT NULL,
+                        integration_result TEXT NULL,
+                        failure_classification TEXT NULL,
+                        recoverable INTEGER NOT NULL DEFAULT 0,
+                        completion_summary TEXT NULL,
+                        recovery_state TEXT NULL,
+                        recovery_reason TEXT NULL,
+                        retry_of_execution_id TEXT NULL,
+                        attempt_number INTEGER NOT NULL DEFAULT 1,
+                        workspace_recovery TEXT NULL
+                    );
+                    INSERT INTO execution_requests SELECT * FROM execution_requests_v12;
+                    DROP TABLE execution_requests_v12;
+                    UPDATE schema_metadata SET schema_version = 13 WHERE singleton = 1;
+                    """;
+                await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -498,7 +639,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     work_id TEXT NOT NULL,
                     work_reference_json TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK (state IN ('Queued', 'Assigned', 'Running', 'Completed', 'Failed')),
+                    state TEXT NOT NULL CHECK (state IN ('Queued', 'Assigned', 'Running', 'Completed', 'Failed', 'Cancelled')),
                     assigned_worker_id TEXT NULL,
                     assigned_at_utc TEXT NULL,
                     execution_id TEXT NULL,
@@ -554,32 +695,63 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (error is not null) throw new InvalidDataException(error);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
         var id = Guid.NewGuid().ToString("N");
         var now = _timeProvider.GetUtcNow();
-        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) SELECT $id, $projectId, $workType, $workId, $workReference, $created, 'Queued' FROM projects WHERE project_id = $projectId AND COALESCE(json_extract(configuration_json, '$.enabled'), 1) = 1;";
+        // Take SQLite's write lock before scanning canonical aliases so concurrent enqueues serialize.
+        command.CommandText = "UPDATE projects SET project_id=project_id WHERE project_id=$projectId;";
+        command.Parameters.AddWithValue("$projectId", request.ProjectId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.Clear();
+        command.CommandText = "SELECT configuration_json, created_at_utc FROM projects WHERE project_id=$projectId;";
+        command.Parameters.AddWithValue("$projectId", request.ProjectId);
+        await using var projectReader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await projectReader.ReadAsync(cancellationToken)) throw new KeyNotFoundException($"Project '{request.ProjectId}' was not found.");
+        var project = ToProject(request.ProjectId, projectReader.GetString(0), projectReader.GetString(1));
+        await projectReader.DisposeAsync();
+        if (!project.Enabled) throw new ProjectDisabledException();
+
+        var canonicalWork = ExecutionRequestValidation.Canonicalize(request.WorkReference, project.Repository);
+        command.Parameters.Clear();
+        command.CommandText = "SELECT work_reference_json FROM execution_requests WHERE project_id=$projectId AND (state IN ('Queued','Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain'));";
+        command.Parameters.AddWithValue("$projectId", request.ProjectId);
+        await using (var activeReader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await activeReader.ReadAsync(cancellationToken))
+            {
+                var existing = JsonSerializer.Deserialize<WorkReference>(activeReader.GetString(0), ProjectJson);
+                if (existing is null) throw new InvalidDataException("Stored work reference is invalid.");
+                try
+                {
+                    var existingCanonical = ExecutionRequestValidation.NormalizeIdentity(existing);
+                    if (existingCanonical.Type == canonicalWork.Type && existingCanonical.Id == canonicalWork.Id)
+                        throw new ExecutionRequestConflictException();
+                }
+                catch (InvalidDataException)
+                {
+                    // Historical records that do not use the supported Issue contract remain visible,
+                    // but cannot collide with or be used to reserve a supported Issue.
+                }
+            }
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state) VALUES ($id, $projectId, $workType, $workId, $workReference, $created, 'Queued');";
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$projectId", request.ProjectId);
-        command.Parameters.AddWithValue("$workType", request.WorkReference.Type);
-        command.Parameters.AddWithValue("$workId", request.WorkReference.Id);
-        command.Parameters.AddWithValue("$workReference", JsonSerializer.Serialize(request.WorkReference, ProjectJson));
+        command.Parameters.AddWithValue("$workType", canonicalWork.Type);
+        command.Parameters.AddWithValue("$workId", canonicalWork.Id);
+        command.Parameters.AddWithValue("$workReference", JsonSerializer.Serialize(canonicalWork, ProjectJson));
         command.Parameters.AddWithValue("$created", now.ToString("O"));
         try
         {
-            if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
-            {
-                command.Parameters.Clear();
-                command.CommandText = "SELECT configuration_json, created_at_utc FROM projects WHERE project_id = $projectId;";
-                command.Parameters.AddWithValue("$projectId", request.ProjectId);
-                await using var projectReader = await command.ExecuteReaderAsync(cancellationToken);
-                if (!await projectReader.ReadAsync(cancellationToken)) throw new KeyNotFoundException($"Project '{request.ProjectId}' was not found.");
-                var project = ToProject(request.ProjectId, projectReader.GetString(0), projectReader.GetString(1));
-                if (!project.Enabled) throw new ProjectDisabledException();
-                throw new InvalidOperationException("Execution request could not be queued because the project changed concurrently.");
-            }
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new ExecutionRequestConflictException(); }
-        return new(id, request.ProjectId, request.WorkReference, now, "Queued", null, null, null);
+        await transaction.CommitAsync(cancellationToken);
+        return new(id, request.ProjectId, canonicalWork, now, "Queued", null, null, null);
     }
 
     public async Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default)
@@ -641,6 +813,26 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var workerCapabilities = heartbeat.Capabilities ?? registration?.Capabilities ?? [];
         var projects = await ReadProjectsByIdAsync(command, cancellationToken);
 
+        var issueReservations = new Dictionary<(string ProjectId, string WorkType, string WorkId), string>();
+        command.Parameters.Clear();
+        command.CommandText = "SELECT id, project_id, work_reference_json FROM execution_requests WHERE state IN ('Queued','Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain') ORDER BY queue_order;";
+        await using (var reservationsReader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reservationsReader.ReadAsync(cancellationToken))
+            {
+                var projectId = reservationsReader.GetString(1);
+                if (!projects.ContainsKey(projectId)) continue;
+                var work = JsonSerializer.Deserialize<WorkReference>(reservationsReader.GetString(2), ProjectJson);
+                if (work is null) continue;
+                try
+                {
+                    var canonical = ExecutionRequestValidation.NormalizeIdentity(work);
+                    issueReservations.TryAdd((projectId, canonical.Type, canonical.Id), reservationsReader.GetString(0));
+                }
+                catch (InvalidDataException) { }
+            }
+        }
+
         command.Parameters.Clear();
         command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc FROM execution_requests WHERE state = 'Queued' ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -660,6 +852,11 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
                 !candidateProject.Enabled ||
                 !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities).IsEligible) continue;
+            WorkReference canonicalWork;
+            try { canonicalWork = ExecutionRequestValidation.Canonicalize(queuedItem.Work, candidateProject.Repository); }
+            catch (InvalidDataException) { continue; }
+            if (!issueReservations.TryGetValue((queuedItem.ProjectId, canonicalWork.Type, canonicalWork.Id), out var reservationId) ||
+                reservationId != queuedItem.Id) continue;
             command.Parameters.Clear();
             command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND assigned_worker_id = $worker AND state = 'Assigned';";
             command.Parameters.AddWithValue("$project", queuedItem.ProjectId);
@@ -667,7 +864,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             var currentProjectAssignments = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
             if (currentProjectAssignments < request.ProjectCapacities[queuedItem.ProjectId])
             {
-                candidate = queuedItem;
+                candidate = (queuedItem.Id, queuedItem.ProjectId, canonicalWork, queuedItem.Created);
                 break;
             }
         }
@@ -736,6 +933,225 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 : execution);
         }
         return result;
+    }
+
+    public async Task<IReadOnlyList<ExecutionRequest>> ListExecutionsAsync(ExecutionQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var error = ExecutionAdministrationValidation.QueryError(query);
+        if (error is not null) throw new InvalidDataException(error);
+        await ExpireLeasesAsync(cancellationToken);
+        var workType = query.WorkType is null ? null : "github-issue";
+        var workId = query.WorkId is null ? null : int.Parse(query.WorkId.Trim(), System.Globalization.CultureInfo.InvariantCulture)
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = ExecutionSelect + " WHERE ($project IS NULL OR project_id=$project) AND ($state IS NULL OR state=$state) AND ($type IS NULL OR work_type IN ('issue','github-issue')) AND ($workId IS NULL OR work_id=$workId OR (work_type IN ('issue','github-issue') AND work_id NOT GLOB '*[^0-9]*' AND CAST(work_id AS INTEGER)=CAST($workId AS INTEGER))) ORDER BY queue_order DESC LIMIT $limit OFFSET $offset;";
+        command.Parameters.AddWithValue("$project", (object?)query.ProjectId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$state", (object?)query.State ?? DBNull.Value);
+        command.Parameters.AddWithValue("$type", (object?)workType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$workId", (object?)workId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$limit", query.Limit);
+        command.Parameters.AddWithValue("$offset", query.Offset);
+        var result = new List<ExecutionRequest>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            while (await reader.ReadAsync(cancellationToken)) result.Add(ReadExecution(reader));
+        return await DecorateQueuedExecutionsAsync(result, cancellationToken);
+    }
+
+    public async Task<ExecutionRequest?> GetExecutionAsync(string executionRequestId, CancellationToken cancellationToken = default)
+    {
+        await ExpireLeasesAsync(cancellationToken);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = ExecutionSelect + " WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        ExecutionRequest? result;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            result = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        return result is null ? null : (await DecorateQueuedExecutionsAsync([result], cancellationToken))[0];
+    }
+
+    private async Task<IReadOnlyList<ExecutionRequest>> DecorateQueuedExecutionsAsync(IReadOnlyList<ExecutionRequest> executions,
+        CancellationToken cancellationToken)
+    {
+        if (!executions.Any(execution => execution.State == "Queued")) return executions;
+        var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
+        var workers = await GetWorkersAsync(cancellationToken);
+        return executions.Select(execution => execution.State == "Queued"
+            ? execution with { PendingReason = PendingReasonFor(execution, projects, workers),
+                MissingRequirements = MissingFor(execution, projects, workers) }
+            : execution).ToArray();
+    }
+
+    public async Task<ExecutionRequest?> CancelQueuedExecutionAsync(string executionRequestId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = "UPDATE execution_requests SET state='Cancelled', completed_at_utc=$now, completion_summary='Cancelled by Server operator before assignment.' WHERE id=$id AND state='Queued';";
+        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            command.Parameters.Clear();
+            command.CommandText = "SELECT 1 FROM execution_requests WHERE id=$id;";
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            if (await command.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return null;
+            }
+            throw new ExecutionRequestCancellationException();
+        }
+        var result = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, executionRequestId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return result;
+    }
+
+    public async Task<ExecutionReconciliationResult?> ReconcileUncertainExecutionAsync(string executionRequestId,
+        ExecutionReconciliationRequest request, CancellationToken cancellationToken = default)
+    {
+        var error = ExecutionAdministrationValidation.ReconciliationError(request);
+        if (error is not null) throw new InvalidDataException(error);
+        await ExpireLeasesAsync(cancellationToken);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.Transaction = (SqliteTransaction)transaction;
+        command.CommandText = ExecutionSelect + " WHERE id=$id;";
+        command.Parameters.AddWithValue("$id", executionRequestId);
+        ExecutionRequest? source;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            source = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
+        if (source is null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+        if (source.State != "Failed" || source.RecoveryState != "LeaseExpiredUncertain" || source.Lease?.State != "Expired")
+            throw new ExecutionRequestReconciliationException("Only an expired uncertain execution can be reconciled by an operator.");
+
+        // Serialize the reservation check and retry insertion with concurrent enqueue operations.
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE projects SET project_id=project_id WHERE project_id=$projectId;";
+        command.Parameters.AddWithValue("$projectId", source.ProjectId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.Clear();
+        command.CommandText = "SELECT configuration_json, created_at_utc FROM projects WHERE project_id=$projectId;";
+        command.Parameters.AddWithValue("$projectId", source.ProjectId);
+        CentralProject project;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken)) throw new ExecutionRequestReconciliationException("The execution project no longer exists.");
+            project = ToProject(source.ProjectId, reader.GetString(0), reader.GetString(1));
+        }
+        WorkReference canonicalWork;
+        try { canonicalWork = ExecutionRequestValidation.Canonicalize(source.WorkReference, project.Repository); }
+        catch (InvalidDataException ex) { throw new ExecutionRequestReconciliationException(ex.Message); }
+
+        var evidence = SecretSanitizer.Sanitize(request.Evidence.Trim(), 1000);
+        var resolvedAt = _timeProvider.GetUtcNow();
+        ExecutionRequest? retry = null;
+        if (request.Disposition == "NotIntegrated")
+        {
+            command.Parameters.Clear();
+            command.CommandText = "SELECT id, work_reference_json, attempt_number FROM execution_requests WHERE project_id=$projectId AND id!=$sourceId AND (state IN ('Queued','Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain'));";
+            command.Parameters.AddWithValue("$projectId", source.ProjectId);
+            command.Parameters.AddWithValue("$sourceId", source.Id);
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            {
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var existing = JsonSerializer.Deserialize<WorkReference>(reader.GetString(1), ProjectJson)
+                        ?? throw new InvalidDataException("Stored work reference is invalid.");
+                    try
+                    {
+                        var existingCanonical = ExecutionRequestValidation.NormalizeIdentity(existing);
+                        if (existingCanonical.Type == canonicalWork.Type && existingCanonical.Id == canonicalWork.Id)
+                            throw new ExecutionRequestReconciliationException("An active request already reserves this GitHub Issue.");
+                    }
+                    catch (InvalidDataException)
+                    {
+                        // Keep unsupported historical references visible without treating them as GitHub Issue reservations.
+                    }
+                }
+            }
+
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE execution_requests SET recovery_state='OperatorRetryQueued', recovery_reason=$reason WHERE id=$id AND state='Failed' AND recovery_state='LeaseExpiredUncertain' AND EXISTS (SELECT 1 FROM execution_leases WHERE execution_id=$id AND generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id) AND state='Expired');";
+            command.Parameters.AddWithValue("$reason", $"Operator verified no integration occurred at {resolvedAt:O}. Evidence: {evidence}");
+            command.Parameters.AddWithValue("$id", source.Id);
+            if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new ExecutionRequestReconciliationException("Execution recovery state changed before reconciliation.");
+
+            command.Parameters.Clear();
+            command.CommandText = "SELECT work_reference_json, attempt_number FROM execution_requests WHERE project_id=$projectId;";
+            command.Parameters.AddWithValue("$projectId", source.ProjectId);
+            var attemptNumber = source.AttemptNumber;
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            {
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var existing = JsonSerializer.Deserialize<WorkReference>(reader.GetString(0), ProjectJson);
+                    if (existing is null) continue;
+                    try
+                    {
+                        var existingCanonical = ExecutionRequestValidation.NormalizeIdentity(existing);
+                        if (existingCanonical.Type == canonicalWork.Type && existingCanonical.Id == canonicalWork.Id)
+                            attemptNumber = Math.Max(attemptNumber, reader.GetInt32(1));
+                    }
+                    catch (InvalidDataException) { }
+                }
+            }
+            attemptNumber++;
+            var retryId = Guid.NewGuid().ToString("N");
+            command.Parameters.Clear();
+            command.CommandText = "INSERT INTO execution_requests (id,project_id,work_type,work_id,work_reference_json,created_at_utc,state,retry_of_execution_id,attempt_number,recovery_reason,workspace_recovery) VALUES ($id,$project,$type,$workId,$work,$created,'Queued',$retryOf,$attempt,'Operator retry after verified non-integration.','FreshWorkspaceRequired');";
+            command.Parameters.AddWithValue("$id", retryId);
+            command.Parameters.AddWithValue("$project", source.ProjectId);
+            command.Parameters.AddWithValue("$type", canonicalWork.Type);
+            command.Parameters.AddWithValue("$workId", canonicalWork.Id);
+            command.Parameters.AddWithValue("$work", JsonSerializer.Serialize(canonicalWork, ProjectJson));
+            command.Parameters.AddWithValue("$created", resolvedAt.ToString("O"));
+            command.Parameters.AddWithValue("$retryOf", source.Id);
+            command.Parameters.AddWithValue("$attempt", attemptNumber);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+            retry = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, retryId, cancellationToken);
+        }
+        else
+        {
+            var reason = $"Operator verified integration at {resolvedAt:O}, commit {request.IntegrationCommit}. Evidence: {evidence}";
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE execution_requests SET recovery_state='OperatorVerifiedIntegrated', recovery_reason=$reason, integration_result=$integration WHERE id=$id AND state='Failed' AND recovery_state='LeaseExpiredUncertain' AND EXISTS (SELECT 1 FROM execution_leases WHERE execution_id=$id AND generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id) AND state='Expired');";
+            command.Parameters.AddWithValue("$reason", reason);
+            command.Parameters.AddWithValue("$integration", $"Verified integrated commit {request.IntegrationCommit}");
+            command.Parameters.AddWithValue("$id", source.Id);
+            if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new ExecutionRequestReconciliationException("Execution recovery state changed before reconciliation.");
+        }
+
+        var updatedSource = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, source.Id, cancellationToken)
+            ?? throw new InvalidDataException("Reconciled execution was not found.");
+        await transaction.CommitAsync(cancellationToken);
+        return new(updatedSource, retry);
+    }
+
+    private static async Task<ExecutionRequest?> ReadExecutionInTransactionAsync(SqliteConnection connection,
+        SqliteTransaction transaction, string executionRequestId, CancellationToken cancellationToken)
+    {
+        await using var read = connection.CreateCommand();
+        read.Transaction = transaction;
+        read.CommandText = ExecutionSelect + " WHERE id=$id;";
+        read.Parameters.AddWithValue("$id", executionRequestId);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
     }
 
     private static string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
@@ -1077,75 +1493,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
 
     public async Task<ExecutionRequest?> TransitionExecutionAsync(string executionRequestId, ExecutionStateTransition transition, CancellationToken cancellationToken = default)
     {
-        if (transition is null || (transition.AssignedWorkerId is not null && !Printable(transition.AssignedWorkerId, 128)) ||
-            (transition.ExecutionId is not null && !Printable(transition.ExecutionId, 200)))
-            throw new InvalidDataException("State transition contract is invalid.");
-        var valid = transition.State switch
-        {
-            "Assigned" => !string.IsNullOrWhiteSpace(transition.AssignedWorkerId),
-            "Running" => transition.AssignedWorkerId is null,
-            "Completed" or "Failed" => transition.AssignedWorkerId is null,
-            _ => false
-        };
-        if (!valid) throw new InvalidDataException("State transition contract is invalid.");
-        await using var connection = new SqliteConnection(ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "UPDATE execution_requests SET state = $next, assigned_worker_id = COALESCE($worker, assigned_worker_id), assigned_at_utc = CASE WHEN $next = 'Assigned' THEN $now ELSE assigned_at_utc END, assignment_id = CASE WHEN $next = 'Assigned' THEN $assignment ELSE assignment_id END, execution_id = COALESCE($executionId, execution_id) WHERE id = $id AND (state = CASE $next WHEN 'Assigned' THEN 'Queued' WHEN 'Running' THEN 'Assigned' WHEN 'Completed' THEN 'Running' WHEN 'Failed' THEN 'Running' ELSE '' END) AND ($next != 'Running' OR ($workerForRun IS NULL AND assigned_worker_id IS NOT NULL) OR assigned_worker_id = $workerForRun) AND ($next != 'Assigned' OR EXISTS (SELECT 1 FROM projects p WHERE p.project_id = execution_requests.project_id AND COALESCE(json_extract(p.configuration_json, '$.enabled'), 1) = 1));";
-        command.Parameters.AddWithValue("$next", transition.State);
-        command.Parameters.AddWithValue("$worker", (object?)transition.AssignedWorkerId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$workerForRun", (object?)transition.AssignedWorkerId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
-        command.Parameters.AddWithValue("$assignment", Guid.NewGuid().ToString("N"));
-        command.Parameters.AddWithValue("$executionId", (object?)transition.ExecutionId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$id", executionRequestId);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
-        {
-            await using var exists = connection.CreateCommand();
-            exists.Transaction = (SqliteTransaction)transaction;
-            exists.CommandText = "SELECT r.state, p.project_id, COALESCE(json_extract(p.configuration_json, '$.enabled'), 1) FROM execution_requests r LEFT JOIN projects p ON p.project_id = r.project_id WHERE r.id = $id;";
-            exists.Parameters.AddWithValue("$id", executionRequestId);
-            await using var existsReader = await exists.ExecuteReaderAsync(cancellationToken);
-            if (!await existsReader.ReadAsync(cancellationToken)) return null;
-            if (transition.State == "Assigned" && existsReader.GetString(0) == "Queued" &&
-                !existsReader.IsDBNull(1) && existsReader.GetInt32(2) == 0)
-                throw new ProjectDisabledException("Project is disabled and cannot receive new assignments.");
-            throw new ExecutionRequestTransitionException();
-        }
-        if (transition.State == "Assigned")
-        {
-            command.Parameters.Clear();
-            command.CommandText = "SELECT COALESCE(MAX(generation), 0) + 1 FROM execution_leases WHERE execution_id=$id;";
-            command.Parameters.AddWithValue("$id", executionRequestId);
-            var generation = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
-            var acquired = _timeProvider.GetUtcNow();
-            command.Parameters.Clear();
-            command.CommandText = "INSERT INTO execution_leases (execution_id, generation, worker_id, acquired_at_utc, expires_at_utc, state) VALUES ($id, $generation, $worker, $acquired, $expires, 'Active');";
-            command.Parameters.AddWithValue("$id", executionRequestId);
-            command.Parameters.AddWithValue("$generation", generation);
-            command.Parameters.AddWithValue("$worker", transition.AssignedWorkerId!);
-            command.Parameters.AddWithValue("$acquired", acquired.ToString("O"));
-            command.Parameters.AddWithValue("$expires", acquired.Add(_leaseDuration).ToString("O"));
-            await command.ExecuteNonQueryAsync(cancellationToken);
-        }
-        if (transition.State is "Completed" or "Failed")
-        {
-            command.Parameters.Clear();
-            command.CommandText = "UPDATE execution_leases SET state='Released' WHERE execution_id=$id AND state='Active';";
-            command.Parameters.AddWithValue("$id", executionRequestId);
-            await command.ExecuteNonQueryAsync(cancellationToken);
-        }
-        await using var read = connection.CreateCommand();
-        read.Transaction = (SqliteTransaction)transaction;
-        read.CommandText = ExecutionSelect + " WHERE id = $id;";
-        read.Parameters.AddWithValue("$id", executionRequestId);
-        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
-        var result = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
-        await reader.DisposeAsync();
-        await transaction.CommitAsync(cancellationToken);
-        return result;
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new ExecutionRequestTransitionException();
     }
 
     private static bool Printable(string value, int maxLength) => !string.IsNullOrWhiteSpace(value) && value.Length <= maxLength && !value.Any(char.IsControl);

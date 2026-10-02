@@ -221,6 +221,39 @@ public sealed class ServerAdministrationTests
         Assert.True(deletedJson.RootElement.GetProperty("deleted").GetBoolean());
     }
 
+    [Fact]
+    public async Task ExecutionsCliListsDetailsFiltersAndCancelsQueuedWorkFromLocalRegistry()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "executions.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new CentralProjectDefinition("CLI executions", "team/cli-executions", "main", "", []));
+        var execution = await registry.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "73")));
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(),
+            new LocalServerAdministrationServiceFactory(), output, error);
+        string[] options = [$"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}"];
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["executions", "list", "--json", "--project", project.Id, "--work-type", "issue", "--work-id", "73", .. options]));
+        using var listed = JsonDocument.Parse(output.ToString());
+        Assert.Equal(execution.Id, Assert.Single(listed.RootElement.EnumerateArray()).GetProperty("id").GetString());
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["executions", "show", execution.Id, "--json", .. options]));
+        using var shown = JsonDocument.Parse(output.ToString());
+        Assert.Equal("github-issue", shown.RootElement.GetProperty("workReference").GetProperty("type").GetString());
+        output.GetStringBuilder().Clear();
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["executions", "cancel", execution.Id, "--json", .. options]));
+        using var cancelled = JsonDocument.Parse(output.ToString());
+        Assert.Equal("Cancelled", cancelled.RootElement.GetProperty("state").GetString());
+        Assert.Equal("Cancelled", (await registry.GetExecutionAsync(execution.Id))!.State);
+        Assert.Empty(error.ToString());
+    }
+
     private sealed class StubAdministrationFactory : IServerAdministrationServiceFactory
     {
         public StubAdministrationService Service { get; } = new();

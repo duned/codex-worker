@@ -114,6 +114,14 @@ for admin_command in status diagnostics; do
   fi
   grep -Fxq "$admin_command" "$CODEX_HELPER_ARGUMENTS"
 done
+for admin_command in projects executions; do
+  if [[ $EUID == 0 ]]; then
+    bash "$temp_dir/codex-server" "$admin_command" list
+  else
+    bash "$temp_dir/helper-command.sh" "$admin_command" list
+  fi
+  grep -Fxq "$admin_command" "$CODEX_HELPER_ARGUMENTS"
+done
 if [[ $EUID == 0 ]]; then
   bash "$temp_dir/codex-server" config show
 else
