@@ -130,6 +130,104 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Fact]
+    public async Task IssueWriteServiceUsesProjectScopedTypedArgumentsAndReturnsSafeFailures()
+    {
+        var commands = new List<IReadOnlyList<string>>();
+        Task<GitHubReadCommandResult> Run(IReadOnlyList<string> arguments, CancellationToken _)
+        {
+            commands.Add(arguments.ToArray());
+            if (arguments.SequenceEqual(["api", "repos/team/project/issues/32", "--jq", ".id"]))
+                return Task.FromResult(new GitHubReadCommandResult(0, "12345\n", ""));
+            if (arguments.Contains("--jq", StringComparer.Ordinal))
+                return Task.FromResult(new GitHubReadCommandResult(0,
+                    "{\"number\":31,\"title\":\"Created\",\"body\":\"Details\",\"html_url\":\"https://github.com/team/project/issues/31\"}", ""));
+            return Task.FromResult(new GitHubReadCommandResult(0, "", ""));
+        }
+
+        var writer = new ServerGitHubIssueWriteService(Run);
+        var project = Project(issueReadyLabel: "ready", issueBlockedLabel: "blocked");
+        var created = await writer.CreateIssueAsync(project, "Add feature", "Details");
+        var updated = await writer.UpdateIssueAsync(project, 31, "Changed", "New body");
+        await writer.AddLabelAsync(project, 31, "ready");
+        await writer.RemoveLabelAsync(project, 31, "blocked");
+        await writer.AddBlockedByAsync(project, 31, 32);
+        await writer.RemoveBlockedByAsync(project, 31, 32);
+
+        Assert.Equal(31, created.Number);
+        Assert.Equal("https://github.com/team/project/issues/31", updated.Url);
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "POST", "repos/team/project/issues", "-f",
+            "title=Add feature", "-f", "body=Details", "--jq", "{number,title,body,html_url}"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "PATCH", "repos/team/project/issues/31", "-f",
+            "title=Changed", "-f", "body=New body", "--jq", "{number,title,body,html_url}"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "POST", "repos/team/project/issues/31/labels", "-f", "labels[]=ready"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "DELETE", "repos/team/project/issues/31/labels/blocked"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "POST", "repos/team/project/issues/31/dependencies/blocked_by", "-F", "issue_id=12345"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "DELETE", "repos/team/project/issues/31/dependencies/blocked_by/12345"]));
+        Assert.DoesNotContain(commands.SelectMany(args => args), argument => argument is "close" or "comment");
+        await Assert.ThrowsAsync<InvalidDataException>(() => writer.AddLabelAsync(project, 31, "worker:done"));
+
+        var failingWriter = new ServerGitHubIssueWriteService((_, _) => Task.FromResult(
+            new GitHubReadCommandResult(1, "private-output", "HTTP 403: token=do-not-report")));
+        var failure = await Assert.ThrowsAsync<GitHubIssueWriteUnavailableException>(() =>
+            failingWriter.CreateIssueAsync(project, "Safe title", "Safe body"));
+        Assert.Equal("write-permission", failure.Code);
+        Assert.Contains("scoped Issue write permission", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("do-not-report", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-output", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IssueMutationPreviewValidationAndIdempotencyStayProjectScoped()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "github-write-preview.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "ready", issueBlockedLabel: "blocked"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(41, labels: ["ready"], blockers: [BlockingIssue(42, "open")]));
+        read.Add(project.Repository, Issue(42));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        var createPreview = await service.CreateIssueAsync(project.Id, new("New task", "Task body", PreviewOnly: true));
+        Assert.True(createPreview.PreviewOnly);
+        Assert.Null(createPreview.IssueNumber);
+        Assert.Empty(writer.Operations);
+        var updatePreview = await service.UpdateIssueAsync(project.Id, 41, new(Title: "Edited title", PreviewOnly: true));
+        Assert.True(updatePreview.Changed);
+        Assert.Equal("Edited title", updatePreview.Title);
+        Assert.Equal("Task details", updatePreview.Body);
+        Assert.Empty(writer.Operations);
+
+        var alreadyReady = await service.SetIssueLabelAsync(project.Id, 41, new("ready", Applied: true));
+        Assert.False(alreadyReady.Changed);
+        var removePreview = await service.SetIssueLabelAsync(project.Id, 41, new("ready", Applied: false, PreviewOnly: true));
+        Assert.True(removePreview.PreviewOnly);
+        Assert.True(removePreview.Changed);
+        var existingRelationship = await service.SetIssueBlockedByAsync(project.Id, 41, new(42, Applied: true));
+        Assert.False(existingRelationship.Changed);
+        var removeRelationshipPreview = await service.SetIssueBlockedByAsync(project.Id, 41, new(42, Applied: false, PreviewOnly: true));
+        Assert.True(removeRelationshipPreview.Changed);
+        Assert.Empty(writer.Operations);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.SetIssueLabelAsync(project.Id, 41,
+            new("worker:done", Applied: true)));
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.SetIssueBlockedByAsync(project.Id, 41,
+            new(41, Applied: true)));
+        Assert.Empty(writer.Operations);
+
+        var created = await service.CreateIssueAsync(project.Id, new("New task", "Task body"));
+        var updated = await service.UpdateIssueAsync(project.Id, 41, new(Body: "Updated body"));
+        var labelAdded = await service.SetIssueLabelAsync(project.Id, 41, new("blocked", Applied: true));
+        var dependencyRemoved = await service.SetIssueBlockedByAsync(project.Id, 41, new(42, Applied: false));
+        Assert.Equal("create", created.Operation);
+        Assert.Equal("update", updated.Operation);
+        Assert.True(labelAdded.Changed);
+        Assert.True(dependencyRemoved.Changed);
+        Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:remove" }, writer.Operations);
+    }
+
+    [Fact]
     public async Task GitHubApiRequiresManagementAuthBoundsIssueQueriesAndOnlyExplicitlyEnqueuesEligibleIssues()
     {
         using var temporary = new TemporaryDirectory();
@@ -180,6 +278,80 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Fact]
+    public async Task GitHubMutationApiRequiresManagementAuthAndPreviewsBeforeScopedWrites()
+    {
+        using var temporary = new TemporaryDirectory();
+        const string managementToken = "github-mutation-admin-token";
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", managementToken);
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            var github = new FakeServerGitHubReadService();
+            github.Add("team/project", Issue(55, labels: ["ready"]));
+            github.Add("team/project", Issue(56));
+            var writer = new FakeGitHubIssueWriteService();
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "github-mutation-api.db")),
+                githubReadService: github, githubIssueWriteService: writer);
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var project = await registry.CreateProjectAsync(ProjectDefinition("Mutation API", "team/project", "ready", "blocked"));
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            const string issuePath = "/api/v1/projects/";
+            using var unauthenticated = await client.PostAsJsonAsync($"{issuePath}{project.Id}/github/issues",
+                new GitHubIssueCreateRequest("New issue", "Body", PreviewOnly: true));
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", managementToken);
+
+            using var previewResponse = await client.PostAsJsonAsync($"{issuePath}{project.Id}/github/issues",
+                new GitHubIssueCreateRequest("New issue", "Body", PreviewOnly: true));
+            Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
+            var preview = await previewResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>();
+            Assert.True(preview!.PreviewOnly);
+            Assert.Empty(writer.Operations);
+
+            using var createdResponse = await client.PostAsJsonAsync($"{issuePath}{project.Id}/github/issues",
+                new GitHubIssueCreateRequest("New issue", "Body"));
+            Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+            var created = await createdResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>();
+            Assert.Equal(101, created!.IssueNumber);
+
+            using var updateRequest = new HttpRequestMessage(HttpMethod.Patch, $"{issuePath}{project.Id}/github/issues/55")
+            {
+                Content = JsonContent.Create(new GitHubIssueUpdateRequest(Title: "Edited"))
+            };
+            using var updateResponse = await client.SendAsync(updateRequest);
+            Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+            var updated = await updateResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>();
+            Assert.Equal("Edited", updated!.Title);
+
+            using var invalidLabel = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/labels/configured",
+                new GitHubIssueLabelRequest("worker:done", Applied: true));
+            Assert.Equal(HttpStatusCode.BadRequest, invalidLabel.StatusCode);
+            using var labelResponse = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/labels/configured",
+                new GitHubIssueLabelRequest("blocked", Applied: true));
+            Assert.Equal(HttpStatusCode.OK, labelResponse.StatusCode);
+            var labelResult = await labelResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>();
+            Assert.True(labelResult!.Applied);
+
+            using var dependencyPreview = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/dependencies/blocked-by",
+                new GitHubIssueDependencyRequest(56, Applied: true, PreviewOnly: true));
+            Assert.Equal(HttpStatusCode.OK, dependencyPreview.StatusCode);
+            Assert.True((await dependencyPreview.Content.ReadFromJsonAsync<GitHubIssueMutationResult>())!.PreviewOnly);
+            using var dependencyWrite = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/dependencies/blocked-by",
+                new GitHubIssueDependencyRequest(56, Applied: true));
+            Assert.Equal(HttpStatusCode.OK, dependencyWrite.StatusCode);
+
+            Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:add" }, writer.Operations);
+            Assert.Empty(await registry.GetExecutionsAsync());
+            Assert.DoesNotContain(writer.Operations, operation => operation.Contains("comment", StringComparison.OrdinalIgnoreCase) ||
+                operation.Contains("close", StringComparison.OrdinalIgnoreCase));
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
     public async Task LocalCliListsIssuesAndEnqueuesOnlyOnExplicitCommand()
     {
         using var temporary = new TemporaryDirectory();
@@ -202,6 +374,41 @@ public sealed class ServerGitHubAdministrationTests
 
         Assert.Single(await registry.GetExecutionsAsync());
         Assert.Contains("Execution:", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(error.ToString());
+    }
+
+    [Fact]
+    public async Task LocalCliPreviewsIssueMutationsAndScopesLabelAdministration()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "github-mutation-cli.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("CLI project", issueReadyLabel: "ready", issueBlockedLabel: "blocked"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(31, labels: ["ready"]));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        var factory = new StubGitHubAdministrationFactory(service);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(), factory, output, error);
+        var configuration = new[] { $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}" };
+
+        Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(["github", "create", project.Id,
+            "--title", "New issue", "--body", "Details", "--preview", .. configuration]));
+        Assert.Contains("Preview: create Issue", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(writer.Operations);
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(["github", "update", project.Id, "31",
+            "--body", "Updated", "--preview", .. configuration]));
+        Assert.Contains("Body: Updated", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(writer.Operations);
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success, await cli.RunAsync(["github", "label", project.Id, "31", "remove", "ready", .. configuration]));
+        Assert.Equal(new[] { "label:remove" }, writer.Operations);
         Assert.Empty(error.ToString());
     }
 
@@ -289,6 +496,52 @@ public sealed class ServerGitHubAdministrationTests
         {
             var registry = new SqliteRegistryStore(configuration.ResolveDatabasePath());
             return new LocalServerAdministrationService(configuration, registry, new ServerHealthService(registry), githubAdministration: github);
+        }
+    }
+
+    private sealed class FakeGitHubIssueWriteService : IServerGitHubIssueWriteService
+    {
+        public List<string> Operations { get; } = [];
+
+        public Task<GitHubIssueWriteResponse> CreateIssueAsync(CentralProject project, string title, string body,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add("create");
+            return Task.FromResult(new GitHubIssueWriteResponse(101, title, body, $"https://github.com/{project.Repository}/issues/101"));
+        }
+
+        public Task<GitHubIssueWriteResponse> UpdateIssueAsync(CentralProject project, int issueNumber, string? title, string? body,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add("update");
+            return Task.FromResult(new GitHubIssueWriteResponse(issueNumber, title ?? $"Issue {issueNumber}", body ?? "Task details",
+                $"https://github.com/{project.Repository}/issues/{issueNumber}"));
+        }
+
+        public Task AddLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default)
+        {
+            Operations.Add("label:add");
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveLabelAsync(CentralProject project, int issueNumber, string label, CancellationToken cancellationToken = default)
+        {
+            Operations.Add("label:remove");
+            return Task.CompletedTask;
+        }
+
+        public Task AddBlockedByAsync(CentralProject project, int issueNumber, int blockerIssueNumber,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add("blocked-by:add");
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveBlockedByAsync(CentralProject project, int issueNumber, int blockerIssueNumber,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add("blocked-by:remove");
+            return Task.CompletedTask;
         }
     }
 

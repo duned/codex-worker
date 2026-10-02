@@ -151,7 +151,8 @@ public sealed class LocalServerAdministrationServiceFactory : IServerAdministrat
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds);
         return new LocalServerAdministrationService(configuration, registry, new ServerHealthService(registry),
-            githubAdministration: new ServerGitHubAdministrationService(registry, new ServerGitHubReadService()));
+            githubAdministration: new ServerGitHubAdministrationService(registry, new ServerGitHubReadService(),
+                issueWriter: new ServerGitHubIssueWriteService()));
     }
 }
 
@@ -281,6 +282,34 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
     {
         await EnsurePersistenceAvailableAsync(cancellationToken);
         return await RequireGitHubAdministration().GetIssueAsync(projectId, issueNumber, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> CreateIssueAsync(string projectId, GitHubIssueCreateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().CreateIssueAsync(projectId, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> UpdateIssueAsync(string projectId, int issueNumber,
+        GitHubIssueUpdateRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().UpdateIssueAsync(projectId, issueNumber, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> SetIssueLabelAsync(string projectId, int issueNumber,
+        GitHubIssueLabelRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().SetIssueLabelAsync(projectId, issueNumber, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> SetIssueBlockedByAsync(string projectId, int issueNumber,
+        GitHubIssueDependencyRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().SetIssueBlockedByAsync(projectId, issueNumber, request, cancellationToken);
     }
 
     public async Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
@@ -671,11 +700,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
     private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        const string usage = "Usage: codex-server github <access|issues|issue|enqueue|refresh> <project-id> [issue-number] [--state open|closed|all] [--limit 1..100] [--label <name>] [--json] [Server configuration options]";
+        const string usage = "Usage: codex-server github <access|issues|issue|enqueue|refresh|create|update|label|dependency> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
         if (arguments.Count == 2 && arguments[1] == "--help")
         {
             _output.WriteLine(usage);
-            _output.WriteLine("Issue discovery is read-only. Enqueue and refresh are explicit actions. Project issueReadyLabel and issueBlockedLabel control label eligibility; every open blocked-by dependency also makes an Issue ineligible.");
+            _output.WriteLine("Create and update accept bounded --title and --body values. Label administration is limited to the project's configured issueReadyLabel and issueBlockedLabel. dependency administers GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. Enqueue and refresh remain explicit queue actions.");
             return ServerAdministrationExitCodes.Success;
         }
         if (arguments.Count < 3) return InvalidArguments(usage);
@@ -687,11 +716,15 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var state = "open";
         var limit = 50;
         string? label = null;
+        string? title = null;
+        string? body = null;
+        var preview = false;
         var seenOptions = new HashSet<string>(StringComparer.Ordinal);
         for (var index = 2; index < arguments.Count; index++)
         {
             var argument = arguments[index];
             if (argument == "--json" && !json) { json = true; continue; }
+            if (argument == "--preview" && !preview) { preview = true; continue; }
             if (IsConfigurationOption(argument))
             {
                 configurationArguments.Add(argument);
@@ -704,12 +737,14 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             {
                 var separator = argument.IndexOf('=');
                 var name = separator < 0 ? argument[2..] : argument[2..separator];
-                if (name is not ("state" or "limit" or "label") || !seenOptions.Add(name)) return InvalidArguments(usage);
+                if (name is not ("state" or "limit" or "label" or "title" or "body") || !seenOptions.Add(name)) return InvalidArguments(usage);
                 var value = separator >= 0 ? argument[(separator + 1)..] :
                     index + 1 < arguments.Count && !arguments[index + 1].StartsWith("--", StringComparison.Ordinal) ? arguments[++index] : "";
-                if (string.IsNullOrWhiteSpace(value)) return InvalidArguments(usage);
+                if (value.Length == 0 && name is ("state" or "limit" or "label")) return InvalidArguments(usage);
                 if (name == "state") state = value;
                 else if (name == "label") label = value;
+                else if (name == "title") title = value;
+                else if (name == "body") body = value;
                 else if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out limit))
                     return InvalidArguments("GitHub Issue limit must be a decimal integer from 1 to 100.");
                 continue;
@@ -719,16 +754,35 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
         var expected = operation switch
         {
-            "access" or "issues" => 1,
-            "issue" or "enqueue" or "refresh" => 2,
+            "access" or "issues" or "create" => 1,
+            "issue" or "enqueue" or "refresh" or "update" => 2,
+            "label" or "dependency" => 4,
             _ => -1
         };
-        if (expected < 0 || positionals.Count != expected || operation is not "issues" && (seenOptions.Contains("state") || seenOptions.Contains("limit") || seenOptions.Contains("label")))
+        var invalidOptions = operation switch
+        {
+            "issues" => seenOptions.Any(option => option is not ("state" or "limit" or "label")),
+            "create" or "update" => seenOptions.Any(option => option is not ("title" or "body")),
+            _ => seenOptions.Count > 0
+        };
+        if (expected < 0 || positionals.Count != expected || invalidOptions || preview && operation is not ("create" or "update" or "label" or "dependency"))
             return InvalidArguments(usage);
         int issueNumber = 0;
-        if (expected == 2 && (!int.TryParse(positionals[1], System.Globalization.NumberStyles.None,
+        if (operation is ("issue" or "enqueue" or "refresh" or "update" or "label" or "dependency") &&
+            (!int.TryParse(positionals[1], System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out issueNumber) || issueNumber <= 0))
             return InvalidArguments("Issue number must be a positive decimal integer.");
+        var applied = positionals.Count == 4 && positionals[2] == "add";
+        if ((operation is "label" or "dependency") && positionals[2] is not ("add" or "remove"))
+            return InvalidArguments("Mutation action must be add or remove.");
+        int blockerIssueNumber = 0;
+        if (operation == "dependency" && (!int.TryParse(positionals[3], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out blockerIssueNumber) || blockerIssueNumber <= 0))
+            return InvalidArguments("Blocking Issue number must be a positive decimal integer.");
+        if (operation == "create" && GitHubIssueMutationValidation.CreateError(new(title, body)) is { } createError)
+            return InvalidArguments(createError);
+        if (operation == "update" && GitHubIssueMutationValidation.UpdateError(new(title, body, preview)) is { } updateError)
+            return InvalidArguments(updateError);
         if (operation == "issues" && (state is not ("open" or "closed" or "all") || limit is < 1 or > 100))
             return InvalidArguments("GitHub Issue query must use state open, closed, or all and limit 1 to 100.");
 
@@ -789,11 +843,35 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                     else foreach (var execution in refreshed)
                         _output.WriteLine($"{execution.Id}\t{execution.State}\t{execution.ManagedEligibilityState}\t{string.Join("; ", execution.ManagedEligibilityReasons ?? [])}");
                     break;
+                case "create":
+                    var createResult = await github.CreateIssueAsync(positionals[0], new GitHubIssueCreateRequest(title, body, preview), cancellationToken);
+                    WriteGitHubMutation(createResult, json);
+                    break;
+                case "update":
+                    var updateResult = await github.UpdateIssueAsync(positionals[0], issueNumber,
+                        new GitHubIssueUpdateRequest(title, body, preview), cancellationToken);
+                    WriteGitHubMutation(updateResult, json);
+                    break;
+                case "label":
+                    var labelResult = await github.SetIssueLabelAsync(positionals[0], issueNumber,
+                        new GitHubIssueLabelRequest(positionals[3], applied, preview), cancellationToken);
+                    WriteGitHubMutation(labelResult, json);
+                    break;
+                case "dependency":
+                    var dependencyResult = await github.SetIssueBlockedByAsync(positionals[0], issueNumber,
+                        new GitHubIssueDependencyRequest(blockerIssueNumber, applied, preview), cancellationToken);
+                    WriteGitHubMutation(dependencyResult, json);
+                    break;
             }
             return ServerAdministrationExitCodes.Success;
         }
         catch (OperationCanceledException) { return ServerAdministrationExitCodes.Canceled; }
         catch (GitHubIssueNotFoundException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.NotFound;
+        }
+        catch (KeyNotFoundException exception)
         {
             _error.WriteLine(exception.Message);
             return ServerAdministrationExitCodes.NotFound;
@@ -810,6 +888,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             return ServerAdministrationExitCodes.Conflict;
         }
         catch (GitHubReadUnavailableException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.OperationalFailure;
+        }
+        catch (GitHubIssueWriteUnavailableException exception)
         {
             _error.WriteLine(exception.Message);
             return ServerAdministrationExitCodes.OperationalFailure;
@@ -834,6 +917,23 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             _output.WriteLine("  Blocked by: " + string.Join(", ", issue.BlockedBy.Select(blocker => $"#{blocker.Number} ({blocker.State})")));
         foreach (var reason in issue.EligibilityReasons) _output.WriteLine($"  Eligibility: {reason}");
         _output.WriteLine($"  {issue.Url}");
+    }
+
+    private void WriteGitHubMutation(GitHubIssueMutationResult result, bool json)
+    {
+        if (json)
+        {
+            _output.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+            return;
+        }
+        _output.WriteLine(result.PreviewOnly ? $"Preview: {result.Operation} Issue in {result.Repository}." :
+            $"{result.Operation} Issue {(result.Changed ? "applied" : "already matched the requested state")} in {result.Repository}.");
+        if (result.IssueNumber is { } issueNumber) _output.WriteLine($"Issue: #{issueNumber}{(result.Url is null ? "" : $" · {result.Url}")}");
+        if (result.RelatedIssueNumber is { } relatedNumber)
+            _output.WriteLine($"Blocked by relationship: {(result.Applied == true ? "add" : "remove")} Issue #{relatedNumber}");
+        if (result.Label is { } label) _output.WriteLine($"Configured label: {(result.Applied == true ? "add" : "remove")} '{label}'");
+        if (result.Title is { } title) _output.WriteLine($"Title: {title}");
+        if (result.Body is { } body) _output.WriteLine($"Body: {body}");
     }
 
     private void WriteExecution(ExecutionRequest execution, bool json)

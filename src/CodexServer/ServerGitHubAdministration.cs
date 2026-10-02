@@ -3,7 +3,6 @@ namespace CodexServer;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 public sealed record GitHubIssueQuery(string State = "open", int Limit = 50, string? Label = null);
 public sealed record GitHubBlockingIssue(int Number, string Title, string State, string Url);
@@ -54,6 +53,14 @@ public interface IServerGitHubAdministrationService
     Task<IReadOnlyList<ManagedGitHubIssue>?> ListIssuesAsync(string projectId, GitHubIssueQuery query,
         CancellationToken cancellationToken = default);
     Task<ManagedGitHubIssue?> GetIssueAsync(string projectId, int issueNumber, CancellationToken cancellationToken = default);
+    Task<GitHubIssueMutationResult> CreateIssueAsync(string projectId, GitHubIssueCreateRequest request,
+        CancellationToken cancellationToken = default);
+    Task<GitHubIssueMutationResult> UpdateIssueAsync(string projectId, int issueNumber, GitHubIssueUpdateRequest request,
+        CancellationToken cancellationToken = default);
+    Task<GitHubIssueMutationResult> SetIssueLabelAsync(string projectId, int issueNumber, GitHubIssueLabelRequest request,
+        CancellationToken cancellationToken = default);
+    Task<GitHubIssueMutationResult> SetIssueBlockedByAsync(string projectId, int issueNumber, GitHubIssueDependencyRequest request,
+        CancellationToken cancellationToken = default);
     Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ExecutionRequest>?> RefreshQueuedEligibilityAsync(string projectId, int issueNumber,
@@ -65,7 +72,6 @@ public interface IServerGitHubAdministrationService
 /// <summary>Read-only Server GitHub integration using the Server service account's gh authentication.</summary>
 public sealed class ServerGitHubReadService : IServerGitHubReadService
 {
-    private static readonly Regex RepositoryPattern = new("^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\\.{1,2}$)[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant);
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<GitHubReadCommandResult>> _run;
     private readonly TimeProvider _timeProvider;
 
@@ -314,11 +320,10 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
     private static void ValidateProject(CentralProject project)
     {
         ArgumentNullException.ThrowIfNull(project);
-        if (string.IsNullOrWhiteSpace(project.Repository) || !RepositoryPattern.IsMatch(project.Repository))
-            throw new InvalidDataException("Project repository is not a supported GitHub owner/repository identifier.");
+        if (GitHubRepositoryValidation.Error(project) is { } error) throw new InvalidDataException(error);
     }
 
-    private static async Task<GitHubReadCommandResult> RunGhAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    internal static async Task<GitHubReadCommandResult> RunGhAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo("gh")
         {
@@ -371,10 +376,11 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
 
 /// <summary>Coordinates explicit Server Issue reads, eligibility checks, queueing, and assignment gating.</summary>
 public sealed class ServerGitHubAdministrationService(IRegistryStore registry, IServerGitHubReadService github,
-    TimeProvider? timeProvider = null) : IServerGitHubAdministrationService
+    TimeProvider? timeProvider = null, IServerGitHubIssueWriteService? issueWriter = null) : IServerGitHubAdministrationService
 {
     private const int MaximumRejectedAssignmentsPerRequest = 100;
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+    private readonly IServerGitHubIssueWriteService _issueWriter = issueWriter ?? new ServerGitHubIssueWriteService();
 
     public async Task<GitHubRepositoryAccess?> CheckAccessAsync(string projectId, CancellationToken cancellationToken = default)
     {
@@ -394,6 +400,84 @@ public sealed class ServerGitHubAdministrationService(IRegistryStore registry, I
     {
         var project = await registry.GetProjectAsync(projectId, cancellationToken);
         return project is null ? null : await github.GetIssueAsync(project, issueNumber, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> CreateIssueAsync(string projectId, GitHubIssueCreateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var project = await RequireProjectAsync(projectId, cancellationToken);
+        ValidateMutationProject(project);
+        if (GitHubIssueMutationValidation.CreateError(request) is { } error) throw new InvalidDataException(error);
+        if (request.PreviewOnly)
+            return new("create", project.Repository, true, true, null, null, request.Title, request.Body, null, null, null);
+        var title = request.Title ?? throw new InvalidDataException("Issue title is required.");
+        var body = request.Body ?? throw new InvalidDataException("Issue body is required.");
+        var created = await _issueWriter.CreateIssueAsync(project, title, body, cancellationToken);
+        return new("create", project.Repository, false, true, created.Number, created.Url, created.Title, created.Body, null, null, null);
+    }
+
+    public async Task<GitHubIssueMutationResult> UpdateIssueAsync(string projectId, int issueNumber,
+        GitHubIssueUpdateRequest request, CancellationToken cancellationToken = default)
+    {
+        var project = await RequireProjectAsync(projectId, cancellationToken);
+        ValidateMutationProject(project);
+        ValidateIssueNumber(issueNumber);
+        if (GitHubIssueMutationValidation.UpdateError(request) is { } error) throw new InvalidDataException(error);
+        var issue = await github.GetIssueAsync(project, issueNumber, cancellationToken)
+            ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
+        var title = request.Title ?? issue.Title;
+        var body = request.Body ?? issue.Body;
+        var changed = !string.Equals(title, issue.Title, StringComparison.Ordinal) ||
+            !string.Equals(body, issue.Body, StringComparison.Ordinal);
+        if (request.PreviewOnly || !changed)
+            return new("update", project.Repository, request.PreviewOnly, changed, issue.Number, issue.Url, title, body, null, null, null);
+        var updated = await _issueWriter.UpdateIssueAsync(project, issueNumber, request.Title, request.Body, cancellationToken);
+        return new("update", project.Repository, false, true, updated.Number, updated.Url, updated.Title, updated.Body, null, null, null);
+    }
+
+    public async Task<GitHubIssueMutationResult> SetIssueLabelAsync(string projectId, int issueNumber,
+        GitHubIssueLabelRequest request, CancellationToken cancellationToken = default)
+    {
+        var project = await RequireProjectAsync(projectId, cancellationToken);
+        ValidateMutationProject(project);
+        ValidateIssueNumber(issueNumber);
+        if (request is null) throw new InvalidDataException("Issue label request is required.");
+        if (GitHubIssueMutationValidation.LabelError(project, request.Label) is { } error) throw new InvalidDataException(error);
+        var label = request.Label ?? throw new InvalidDataException("Issue label is required.");
+        var issue = await github.GetIssueAsync(project, issueNumber, cancellationToken)
+            ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
+        var contains = issue.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+        var changed = contains != request.Applied;
+        if (request.PreviewOnly || !changed)
+            return new("label", project.Repository, request.PreviewOnly, changed, issue.Number, issue.Url, issue.Title, null,
+                label, request.Applied, null);
+        if (request.Applied) await _issueWriter.AddLabelAsync(project, issueNumber, label, cancellationToken);
+        else await _issueWriter.RemoveLabelAsync(project, issueNumber, label, cancellationToken);
+        return new("label", project.Repository, false, true, issue.Number, issue.Url, issue.Title, null,
+            label, request.Applied, null);
+    }
+
+    public async Task<GitHubIssueMutationResult> SetIssueBlockedByAsync(string projectId, int issueNumber,
+        GitHubIssueDependencyRequest request, CancellationToken cancellationToken = default)
+    {
+        var project = await RequireProjectAsync(projectId, cancellationToken);
+        ValidateMutationProject(project);
+        if (request is null) throw new InvalidDataException("Issue dependency request is required.");
+        if (GitHubIssueMutationValidation.DependencyError(issueNumber, request.BlockerIssueNumber) is { } error)
+            throw new InvalidDataException(error);
+        var issue = await github.GetIssueAsync(project, issueNumber, cancellationToken)
+            ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
+        var blocker = await github.GetIssueAsync(project, request.BlockerIssueNumber, cancellationToken)
+            ?? throw new GitHubIssueNotFoundException(project.Repository, request.BlockerIssueNumber);
+        var contains = issue.BlockedBy.Any(item => item.Number == blocker.Number);
+        var changed = contains != request.Applied;
+        if (request.PreviewOnly || !changed)
+            return new("blocked-by", project.Repository, request.PreviewOnly, changed, issue.Number, issue.Url,
+                issue.Title, null, null, request.Applied, blocker.Number);
+        if (request.Applied) await _issueWriter.AddBlockedByAsync(project, issueNumber, blocker.Number, cancellationToken);
+        else await _issueWriter.RemoveBlockedByAsync(project, issueNumber, blocker.Number, cancellationToken);
+        return new("blocked-by", project.Repository, false, true, issue.Number, issue.Url, issue.Title, null,
+            null, request.Applied, blocker.Number);
     }
 
     public async Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
@@ -474,4 +558,18 @@ public sealed class ServerGitHubAdministrationService(IRegistryStore registry, I
     private ManagedEligibilityUpdate EligibilityUpdate(ManagedGitHubIssue? issue, string repository, int issueNumber) => issue is null
         ? new("blocked", [$"GitHub Issue #{issueNumber} is missing or is no longer visible in '{repository}'."], _clock.GetUtcNow())
         : new(issue.IsEligible ? "eligible" : "blocked", issue.EligibilityReasons, _clock.GetUtcNow());
+
+    private async Task<CentralProject> RequireProjectAsync(string projectId, CancellationToken cancellationToken) =>
+        await registry.GetProjectAsync(projectId, cancellationToken)
+        ?? throw new KeyNotFoundException($"Project '{projectId}' was not found.");
+
+    private static void ValidateMutationProject(CentralProject project)
+    {
+        if (GitHubRepositoryValidation.Error(project) is { } error) throw new InvalidDataException(error);
+    }
+
+    private static void ValidateIssueNumber(int issueNumber)
+    {
+        if (issueNumber <= 0) throw new InvalidDataException("Issue number must be positive.");
+    }
 }

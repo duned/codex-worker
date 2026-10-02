@@ -40,7 +40,8 @@ public static class ServerApplication
         });
 
     public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default,
-        NodeCapabilityDiscovery? capabilityDiscovery = null, IServerGitHubReadService? githubReadService = null)
+        NodeCapabilityDiscovery? capabilityDiscovery = null, IServerGitHubReadService? githubReadService = null,
+        IServerGitHubIssueWriteService? githubIssueWriteService = null)
     {
         var builder = CreateBuilder(args);
         var configuration = new ServerConfiguration();
@@ -50,8 +51,10 @@ public static class ServerApplication
         builder.Services.AddSingleton(configuration);
         builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
         builder.Services.AddSingleton<IServerGitHubReadService>(githubReadService ?? new ServerGitHubReadService());
+        builder.Services.AddSingleton<IServerGitHubIssueWriteService>(githubIssueWriteService ?? new ServerGitHubIssueWriteService());
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
-            services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>()));
+            services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>(),
+            issueWriter: services.GetRequiredService<IServerGitHubIssueWriteService>()));
         builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(configuration.ResolveDatabasePath(), configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
@@ -522,6 +525,60 @@ public static class ServerApplication
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPost("/api/v1/projects/{projectId}/github/issues", async (string projectId, GitHubIssueCreateRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (GitHubIssueMutationValidation.CreateError(request) is { } error) return Results.BadRequest(new { error });
+            try
+            {
+                var result = await github.CreateIssueAsync(projectId, request, context.RequestAborted);
+                return request.PreviewOnly ? Results.Ok(result) : Results.Created(result.Url, result);
+            }
+            catch (KeyNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPatch("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}", async (string projectId, int issueNumber,
+            GitHubIssueUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
+            if (GitHubIssueMutationValidation.UpdateError(request) is { } error) return Results.BadRequest(new { error });
+            try { return Results.Ok(await github.UpdateIssueAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/labels/configured", async (string projectId,
+            int issueNumber, GitHubIssueLabelRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
+            try { return Results.Ok(await github.SetIssueLabelAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/dependencies/blocked-by", async (string projectId,
+            int issueNumber, GitHubIssueDependencyRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            try { return Results.Ok(await github.SetIssueBlockedByAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         app.MapPost("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/enqueue", async (string projectId,
             int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
