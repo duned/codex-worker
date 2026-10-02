@@ -15,6 +15,17 @@ public sealed class CommandLineTests
         Assert.Contains("Usage: codex-worker", output);
     }
 
+    [Fact]
+    public async Task ShortHelpCommandUsesTheRootHelpOutput()
+    {
+        var (aliasExitCode, aliasOutput) = await RunAsync(["h"]);
+        var (helpExitCode, helpOutput) = await RunAsync(["--help"]);
+
+        Assert.Equal(ProcessExitCodes.Success, aliasExitCode);
+        Assert.Equal(ProcessExitCodes.Success, helpExitCode);
+        Assert.Equal(helpOutput, aliasOutput);
+    }
+
     [Theory]
     [MemberData(nameof(CommandHelpArguments))]
     public async Task CommandHelpShowsCommandSpecificUsage(string[] args)
@@ -29,6 +40,10 @@ public sealed class CommandLineTests
     [Fact]
     public void CommandLineResolvesExplicitConfigurationForms()
     {
+        var status = WorkerCommandLine.Parse(["status"]);
+        Assert.Equal("status", status.Command);
+        Assert.Empty(status.Arguments);
+
         var run = WorkerCommandLine.Parse(["run", "--config", "override.yml"]);
         Assert.Equal("run", run.Command);
         Assert.Equal("override.yml", run.ConfigurationPath);

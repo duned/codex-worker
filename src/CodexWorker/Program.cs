@@ -28,9 +28,9 @@ public static class Program
             output.InfrastructureFailure($"{ex.Message} Use 'codex-worker --help' for usage.");
             return ProcessExitCodes.StartupFailure;
         }
-        if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
+        if (args is ["h"] || args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
         {
-            var helpCommand = args.Length > 0 && (args[0] is "--help" or "-h") ? "root" : commandLine.Command;
+            var helpCommand = args is ["h"] || (args.Length > 0 && (args[0] is "--help" or "-h")) ? "root" : commandLine.Command;
             if (helpCommand == "config" && commandLine.Arguments.FirstOrDefault() == "set") helpCommand = "config-set";
             PrintHelp(helpCommand);
             return ProcessExitCodes.Success;
