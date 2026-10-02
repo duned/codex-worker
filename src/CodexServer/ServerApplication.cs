@@ -526,6 +526,21 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
+        app.MapGet("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/relationships", async (string projectId,
+            int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
+            IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
+            try
+            {
+                var relationships = await github.GetIssueRelationshipsAsync(projectId, issueNumber, context.RequestAborted);
+                return relationships is null ? Results.NotFound() : Results.Ok(relationships);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
         app.MapPost("/api/v1/projects/{projectId}/github/issues", async (string projectId, GitHubIssueCreateRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
@@ -575,6 +590,51 @@ public static class ServerApplication
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             try { return Results.Ok(await github.SetIssueBlockedByAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/parent", async (string projectId,
+            int issueNumber, GitHubIssueParentRequest request, HttpContext context, ServerConfiguration settings,
+            IRegistryStore store, IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (request is null) return Results.BadRequest(new { error = "Issue parent request is required." });
+            if (GitHubIssueMutationValidation.ParentError(issueNumber, request.ParentIssueNumber) is { } error)
+                return Results.BadRequest(new { error });
+            try { return Results.Ok(await github.SetIssueParentAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/sub-issues", async (string projectId,
+            int issueNumber, GitHubIssueSubIssueBatchRequest request, HttpContext context, ServerConfiguration settings,
+            IRegistryStore store, IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (request is null) return Results.BadRequest(new { error = "Sub-issue batch request is required." });
+            if (GitHubIssueMutationValidation.BatchIssueNumbersError(issueNumber, request.ChildIssueNumbers, "sub-issue") is { } error)
+                return Results.BadRequest(new { error });
+            try { return Results.Ok(await github.SetIssueParentForChildrenAsync(projectId, issueNumber, request, context.RequestAborted)); }
+            catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+            catch (GitHubIssueWriteUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
+        app.MapPut("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}/dependencies/blocked-by/batch", async (string projectId,
+            int issueNumber, GitHubIssueDependencyBatchRequest request, HttpContext context, ServerConfiguration settings,
+            IRegistryStore store, IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
+            if (request is null) return Results.BadRequest(new { error = "Issue dependency batch request is required." });
+            if (GitHubIssueMutationValidation.BatchIssueNumbersError(issueNumber, request.BlockerIssueNumbers, "dependency") is { } error)
+                return Results.BadRequest(new { error });
+            try { return Results.Ok(await github.SetIssueBlockedByBatchAsync(projectId, issueNumber, request, context.RequestAborted)); }
             catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }

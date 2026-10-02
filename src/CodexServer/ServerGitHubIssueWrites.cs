@@ -8,7 +8,13 @@ public sealed record GitHubIssueUpdateRequest(string? Title = null, string? Body
 public sealed record GitHubIssueLabelRequest(string? Label, bool Applied, bool PreviewOnly = false);
 public sealed record GitHubIssueDependencyRequest(int BlockerIssueNumber, bool Applied, bool PreviewOnly = false);
 public sealed record GitHubIssueMutationResult(string Operation, string Repository, bool PreviewOnly, bool Changed,
-    int? IssueNumber, string? Url, string? Title, string? Body, string? Label, bool? Applied, int? RelatedIssueNumber);
+    int? IssueNumber, string? Url, string? Title, string? Body, string? Label, bool? Applied, int? RelatedIssueNumber,
+    int ContractVersion = 1);
+public sealed record GitHubIssueParentRequest(int? ParentIssueNumber, bool PreviewOnly = false);
+public sealed record GitHubIssueSubIssueBatchRequest(IReadOnlyList<int>? ChildIssueNumbers, bool Applied = true,
+    bool PreviewOnly = false);
+public sealed record GitHubIssueDependencyBatchRequest(IReadOnlyList<int>? BlockerIssueNumbers, bool Applied,
+    bool PreviewOnly = false);
 public sealed record GitHubIssueWriteResponse(int Number, string Title, string Body, string Url);
 
 public sealed class GitHubIssueWriteUnavailableException(string repository, string code, string message, Exception? inner = null)
@@ -29,6 +35,10 @@ public interface IServerGitHubIssueWriteService
     Task AddBlockedByAsync(CentralProject project, int issueNumber, int blockerIssueNumber,
         CancellationToken cancellationToken = default);
     Task RemoveBlockedByAsync(CentralProject project, int issueNumber, int blockerIssueNumber,
+        CancellationToken cancellationToken = default);
+    Task AddSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
+        CancellationToken cancellationToken = default);
+    Task RemoveSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
         CancellationToken cancellationToken = default);
 }
 
@@ -79,6 +89,26 @@ public static class GitHubIssueMutationValidation
             : issueNumber == blockerIssueNumber
                 ? "An Issue cannot be blocked by itself."
                 : null;
+
+    public static string? ParentError(int childIssueNumber, int? parentIssueNumber) =>
+        childIssueNumber <= 0 || parentIssueNumber is <= 0
+            ? "Issue numbers must be positive."
+            : parentIssueNumber == childIssueNumber
+                ? "An Issue cannot be its own parent."
+                : null;
+
+    public static string? BatchIssueNumbersError(int issueNumber, IReadOnlyList<int>? relatedIssueNumbers,
+        string relationshipName)
+    {
+        if (issueNumber <= 0) return "Issue number must be positive.";
+        if (relatedIssueNumbers is null || relatedIssueNumbers.Count is < 1 or > 50)
+            return $"A {relationshipName} batch must contain 1 to 50 Issue numbers.";
+        if (relatedIssueNumbers.Any(number => number <= 0)) return "Issue numbers must be positive.";
+        if (relatedIssueNumbers.Contains(issueNumber)) return $"An Issue cannot be related to itself as {relationshipName}.";
+        if (relatedIssueNumbers.Distinct().Count() != relatedIssueNumbers.Count)
+            return $"A {relationshipName} batch cannot contain duplicate Issue numbers.";
+        return null;
+    }
 
     private static string? TitleError(string? title) => string.IsNullOrWhiteSpace(title) || title.Length > MaximumTitleLength ||
         title.Any(char.IsControl) ? "Issue title must contain 1 to 256 printable characters." : null;
@@ -172,6 +202,28 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
         await RunAsync(project.Repository,
             ["api", "--method", "DELETE", $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocked_by/{blockerId}"],
             "remove Issue blocked-by relationship", cancellationToken);
+    }
+
+    public async Task AddSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateProject(project);
+        ValidateParent(parentIssueNumber, childIssueNumber);
+        var childId = await GetIssueIdAsync(project.Repository, childIssueNumber, cancellationToken);
+        await RunAsync(project.Repository,
+            ["api", "--method", "POST", $"repos/{project.Repository}/issues/{parentIssueNumber}/sub_issues", "-F", $"sub_issue_id={childId}"],
+            "add Issue parent relationship", cancellationToken);
+    }
+
+    public async Task RemoveSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateProject(project);
+        ValidateParent(parentIssueNumber, childIssueNumber);
+        var childId = await GetIssueIdAsync(project.Repository, childIssueNumber, cancellationToken);
+        await RunAsync(project.Repository,
+            ["api", "--method", "DELETE", $"repos/{project.Repository}/issues/{parentIssueNumber}/sub_issue", "-F", $"sub_issue_id={childId}"],
+            "remove Issue parent relationship", cancellationToken);
     }
 
     private async Task<long> GetIssueIdAsync(string repository, int issueNumber, CancellationToken cancellationToken)
@@ -271,6 +323,12 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
     private static void ValidateDependency(int issueNumber, int blockerIssueNumber)
     {
         if (GitHubIssueMutationValidation.DependencyError(issueNumber, blockerIssueNumber) is { } error)
+            throw new InvalidDataException(error);
+    }
+
+    private static void ValidateParent(int parentIssueNumber, int childIssueNumber)
+    {
+        if (GitHubIssueMutationValidation.ParentError(childIssueNumber, parentIssueNumber) is { } error)
             throw new InvalidDataException(error);
     }
 }

@@ -4,6 +4,7 @@ using CodexServer;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 
 public sealed class ServerGitHubAdministrationTests
@@ -29,6 +30,15 @@ public sealed class ServerGitHubAdministrationTests
                     """, ""));
             if (arguments[0] == "api" && arguments.Contains("repos/team/project/issues/7/dependencies/blocked_by"))
                 return Task.FromResult(new GitHubReadCommandResult(0, "[{\"number\":3,\"title\":\"Prerequisite\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/3\"}]\n", ""));
+            if (arguments.Contains("repos/team/project/issues/7/parent"))
+                return Task.FromResult(new GitHubReadCommandResult(0,
+                    "{\"number\":2,\"title\":\"Parent\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/2\"}", ""));
+            if (arguments.Contains("repos/team/project/issues/7/sub_issues"))
+                return Task.FromResult(new GitHubReadCommandResult(0,
+                    "[{\"number\":8,\"title\":\"Child\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/8\"}]", ""));
+            if (arguments.Contains("repos/team/project/issues/7/dependencies/blocking"))
+                return Task.FromResult(new GitHubReadCommandResult(0,
+                    "[{\"number\":9,\"title\":\"Blocked task\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/9\"}]", ""));
             return Task.FromResult(new GitHubReadCommandResult(1, "", "private-token=must-not-leak"));
         }
 
@@ -37,6 +47,7 @@ public sealed class ServerGitHubAdministrationTests
         var access = await service.CheckAccessAsync(project);
         var issues = await service.ListIssuesAsync(project, new GitHubIssueQuery("open", 2, "ready"));
         var detail = await service.GetIssueAsync(project, 7);
+        var relationships = await service.GetIssueRelationshipsAsync(project, 7);
 
         Assert.True(access.CliAuthenticated);
         Assert.True(access.RepositoryReadable);
@@ -50,6 +61,12 @@ public sealed class ServerGitHubAdministrationTests
         Assert.NotNull(detail);
         Assert.False(detail.IsEligible);
         Assert.Equal(3, Assert.Single(detail.BlockedBy).Number);
+        var relationshipResult = Assert.IsType<GitHubIssueRelationships>(relationships);
+        Assert.Equal(1, relationshipResult.ContractVersion);
+        Assert.Equal(2, relationshipResult.Parent!.Number);
+        Assert.Equal(8, Assert.Single(relationshipResult.SubIssues).Number);
+        Assert.Equal(3, Assert.Single(relationshipResult.BlockedBy).Number);
+        Assert.Equal(9, Assert.Single(relationshipResult.Blocking).Number);
         var query = Assert.Single(commands, command => command[0] == "issue" && command[1] == "list");
         Assert.Contains("--limit", query);
         Assert.Equal("2", query[Array.IndexOf(query.ToArray(), "--limit") + 1]);
@@ -152,6 +169,8 @@ public sealed class ServerGitHubAdministrationTests
         await writer.RemoveLabelAsync(project, 31, "blocked");
         await writer.AddBlockedByAsync(project, 31, 32);
         await writer.RemoveBlockedByAsync(project, 31, 32);
+        await writer.AddSubIssueAsync(project, 31, 32);
+        await writer.RemoveSubIssueAsync(project, 31, 32);
 
         Assert.Equal(31, created.Number);
         Assert.Equal("https://github.com/team/project/issues/31", updated.Url);
@@ -163,6 +182,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "DELETE", "repos/team/project/issues/31/labels/blocked"]));
         Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "POST", "repos/team/project/issues/31/dependencies/blocked_by", "-F", "issue_id=12345"]));
         Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "DELETE", "repos/team/project/issues/31/dependencies/blocked_by/12345"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "POST", "repos/team/project/issues/31/sub_issues", "-F", "sub_issue_id=12345"]));
+        Assert.Contains(commands, args => args.SequenceEqual(["api", "--method", "DELETE", "repos/team/project/issues/31/sub_issue", "-F", "sub_issue_id=12345"]));
         Assert.DoesNotContain(commands.SelectMany(args => args), argument => argument is "close" or "comment");
         await Assert.ThrowsAsync<InvalidDataException>(() => writer.AddLabelAsync(project, 31, "worker:done"));
 
@@ -225,6 +246,78 @@ public sealed class ServerGitHubAdministrationTests
         Assert.True(labelAdded.Changed);
         Assert.True(dependencyRemoved.Changed);
         Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:remove" }, writer.Operations);
+    }
+
+    [Fact]
+    public async Task RelationshipAdministrationSetsChangesClearsAndBatchesScopedIssueNumbers()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "github-relationships.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition());
+        var read = new FakeServerGitHubReadService();
+        foreach (var number in new[] { 10, 11, 20, 30, 40, 41 }) read.Add(project.Repository, Issue(number));
+        read.Add("team/other", Issue(99));
+        GitHubRelationshipIssue Ref(int number) => new(number, $"Issue {number}", "open",
+            $"https://github.com/{project.Repository}/issues/{number}");
+        read.AddRelationships(new(1, project.Repository, 10, Ref(10), Ref(30), [], [], []));
+        read.AddRelationships(new(1, project.Repository, 11, Ref(11), Ref(20), [], [], []));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        var changed = await service.SetIssueParentAsync(project.Id, 10, new(20));
+        var cleared = await service.SetIssueParentAsync(project.Id, 11, new(null));
+        Assert.True(changed.Changed);
+        Assert.Equal(20, changed.RelatedIssueNumber);
+        Assert.False(cleared.Applied);
+        Assert.Equal(new[] { "parent:remove:30:10", "parent:add:20:10", "parent:remove:20:11" }, writer.Operations);
+
+        var parentBatch = await service.SetIssueParentForChildrenAsync(project.Id, 20,
+            new([10, 11], PreviewOnly: true));
+        Assert.Equal(1, parentBatch.ContractVersion);
+        Assert.Equal(new[] { "preview", "unchanged" }, parentBatch.Items.Select(item => item.Status));
+        Assert.Equal(new[] { "parent:remove:30:10", "parent:add:20:10", "parent:remove:20:11" }, writer.Operations);
+
+        var dependencyPreview = await service.SetIssueBlockedByBatchAsync(project.Id, 10,
+            new([40, 41], Applied: true, PreviewOnly: true));
+        Assert.Equal(new[] { "preview", "preview" }, dependencyPreview.Items.Select(item => item.Status));
+        Assert.Equal(new[] { "parent:remove:30:10", "parent:add:20:10", "parent:remove:20:11" }, writer.Operations);
+        var dependencyBatch = await service.SetIssueBlockedByBatchAsync(project.Id, 10,
+            new([40, 41], Applied: true));
+        Assert.Equal(new[] { "changed", "changed" }, dependencyBatch.Items.Select(item => item.Status));
+        Assert.Equal(2, writer.Operations.Count(operation => operation == "blocked-by:add"));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.SetIssueParentForChildrenAsync(project.Id, 20,
+            new([10, 10])));
+        await Assert.ThrowsAsync<GitHubIssueNotFoundException>(() => service.SetIssueParentAsync(project.Id, 10, new(99)));
+        Assert.Equal(3, writer.Operations.Count(operation => operation.StartsWith("parent:", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task ParentBatchReportsPartialChangeWithSafeRecoveryGuidance()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "github-parent-partial.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition());
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(10));
+        read.Add(project.Repository, Issue(20));
+        read.Add(project.Repository, Issue(30));
+        read.AddRelationships(new(1, project.Repository, 10,
+            new(10, "Issue 10", "open", $"https://github.com/{project.Repository}/issues/10"),
+            new(30, "Issue 30", "open", $"https://github.com/{project.Repository}/issues/30"), [], [], []));
+        var writer = new FakeGitHubIssueWriteService { FailNextParentAdd = true };
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        var result = await service.SetIssueParentForChildrenAsync(project.Id, 20, new([10]));
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("partial", item.Status);
+        Assert.True(item.Changed);
+        var diagnostic = Assert.IsType<string>(item.Diagnostic);
+        Assert.Contains("removed parent Issue #30", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-token", diagnostic, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -301,7 +394,14 @@ public sealed class ServerGitHubAdministrationTests
             using var unauthenticated = await client.PostAsJsonAsync($"{issuePath}{project.Id}/github/issues",
                 new GitHubIssueCreateRequest("New issue", "Body", PreviewOnly: true));
             Assert.Equal(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
+            using var unauthenticatedRelationships = await client.GetAsync($"{issuePath}{project.Id}/github/issues/55/relationships");
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthenticatedRelationships.StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", managementToken);
+
+            using var relationshipsResponse = await client.GetAsync($"{issuePath}{project.Id}/github/issues/55/relationships");
+            Assert.Equal(HttpStatusCode.OK, relationshipsResponse.StatusCode);
+            var relationships = await relationshipsResponse.Content.ReadFromJsonAsync<GitHubIssueRelationships>();
+            Assert.Equal(1, relationships!.ContractVersion);
 
             using var previewResponse = await client.PostAsJsonAsync($"{issuePath}{project.Id}/github/issues",
                 new GitHubIssueCreateRequest("New issue", "Body", PreviewOnly: true));
@@ -342,7 +442,23 @@ public sealed class ServerGitHubAdministrationTests
                 new GitHubIssueDependencyRequest(56, Applied: true));
             Assert.Equal(HttpStatusCode.OK, dependencyWrite.StatusCode);
 
-            Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:add" }, writer.Operations);
+            using var parentPreview = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/56/parent",
+                new GitHubIssueParentRequest(55, PreviewOnly: true));
+            Assert.Equal(HttpStatusCode.OK, parentPreview.StatusCode);
+            Assert.True((await parentPreview.Content.ReadFromJsonAsync<GitHubIssueMutationResult>())!.PreviewOnly);
+            using var subIssueBatch = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/sub-issues",
+                new GitHubIssueSubIssueBatchRequest([56]));
+            Assert.Equal(HttpStatusCode.OK, subIssueBatch.StatusCode);
+            Assert.Equal("changed", (await subIssueBatch.Content.ReadFromJsonAsync<GitHubIssueRelationshipBatchResult>())!.Items[0].Status);
+            using var duplicateBatch = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/dependencies/blocked-by/batch",
+                new GitHubIssueDependencyBatchRequest([56, 56], Applied: true));
+            Assert.Equal(HttpStatusCode.BadRequest, duplicateBatch.StatusCode);
+            using var dependencyBatch = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/dependencies/blocked-by/batch",
+                new GitHubIssueDependencyBatchRequest([56], Applied: false, PreviewOnly: true));
+            Assert.Equal(HttpStatusCode.OK, dependencyBatch.StatusCode);
+            Assert.Equal(1, (await dependencyBatch.Content.ReadFromJsonAsync<GitHubIssueRelationshipBatchResult>())!.ContractVersion);
+
+            Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:add", "parent:add:55:56" }, writer.Operations);
             Assert.Empty(await registry.GetExecutionsAsync());
             Assert.DoesNotContain(writer.Operations, operation => operation.Contains("comment", StringComparison.OrdinalIgnoreCase) ||
                 operation.Contains("close", StringComparison.OrdinalIgnoreCase));
@@ -412,6 +528,58 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(error.ToString());
     }
 
+    [Fact]
+    public async Task LocalCliShowsVersionedRelationshipsAndBatchMutationOutcomes()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "github-relationships-cli.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("CLI relationships"));
+        var read = new FakeServerGitHubReadService();
+        foreach (var number in new[] { 30, 31, 32, 40 }) read.Add(project.Repository, Issue(number));
+        GitHubRelationshipIssue Ref(int number) => new(number, $"Issue {number}", "open",
+            $"https://github.com/{project.Repository}/issues/{number}");
+        read.AddRelationships(new(1, project.Repository, 31, Ref(31), Ref(30), [], [Ref(40)], []));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(),
+            new StubGitHubAdministrationFactory(service), output, error);
+        var configuration = new[] { $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}" };
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "relationships", project.Id, "31", "--json", .. configuration]));
+        using var json = JsonDocument.Parse(output.ToString());
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+        Assert.Equal(30, json.RootElement.GetProperty("parent").GetProperty("number").GetInt32());
+        Assert.Equal(40, Assert.Single(json.RootElement.GetProperty("blockedBy").EnumerateArray()).GetProperty("number").GetInt32());
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "relationships", project.Id, "31", .. configuration]));
+        Assert.Contains("Parent: #30", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Blocked by: #40", output.ToString(), StringComparison.Ordinal);
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "parent", project.Id, "31", "none", "--preview", .. configuration]));
+        Assert.Contains("Parent relationship: cleared", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(writer.Operations);
+        output.GetStringBuilder().Clear();
+
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "dependency-batch", project.Id, "31", "add", "40,32", "--json", .. configuration]));
+        using var batchJson = JsonDocument.Parse(output.ToString());
+        Assert.Equal(1, batchJson.RootElement.GetProperty("contractVersion").GetInt32());
+        Assert.Equal(2, batchJson.RootElement.GetProperty("items").GetArrayLength());
+        Assert.All(batchJson.RootElement.GetProperty("items").EnumerateArray(),
+            item => Assert.Equal("changed", item.GetProperty("status").GetString()));
+        Assert.Equal(2, writer.Operations.Count(operation => operation == "blocked-by:add"));
+        Assert.Empty(error.ToString());
+    }
+
     private static CentralProject Project(string name = "GitHub project", string repository = "team/project",
         string? issueReadyLabel = null, string? issueBlockedLabel = null) =>
         new("project-id", name, repository, "main", "", [], 1, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
@@ -446,7 +614,10 @@ public sealed class ServerGitHubAdministrationTests
     private sealed class FakeServerGitHubReadService(GitHubReadUnavailableException? failure = null) : IServerGitHubReadService
     {
         private readonly Dictionary<(string Repository, int Number), ManagedGitHubIssue> _issues = [];
+        private readonly Dictionary<(string Repository, int Number), GitHubIssueRelationships> _relationships = [];
         public void Add(string repository, ManagedGitHubIssue issue) => _issues[(repository, issue.Number)] = issue;
+        public void AddRelationships(GitHubIssueRelationships relationships) =>
+            _relationships[(relationships.Repository, relationships.IssueNumber)] = relationships;
 
         public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) =>
             Task.FromResult(new GitHubRepositoryAccess(project.Repository, true, true, "read-only access", DateTimeOffset.UnixEpoch));
@@ -488,6 +659,19 @@ public sealed class ServerGitHubAdministrationTests
                 string.Join(", ", issue.BlockedBy.Where(blocker => blocker.State == "open").Select(blocker => "#" + blocker.Number)) + ".");
             return Task.FromResult<ManagedGitHubIssue?>(issue with { IsEligible = reasons.Count == 0, EligibilityReasons = reasons });
         }
+
+        public Task<GitHubIssueRelationships?> GetIssueRelationshipsAsync(CentralProject project, int issueNumber,
+            CancellationToken cancellationToken = default)
+        {
+            if (failure is not null) return Task.FromException<GitHubIssueRelationships?>(failure);
+            if (!_issues.TryGetValue((project.Repository, issueNumber), out var issue)) return Task.FromResult<GitHubIssueRelationships?>(null);
+            if (_relationships.TryGetValue((project.Repository, issueNumber), out var relationships))
+                return Task.FromResult<GitHubIssueRelationships?>(relationships);
+            var blockers = issue.BlockedBy.Select(blocker => new GitHubRelationshipIssue(
+                blocker.Number, blocker.Title, blocker.State, blocker.Url)).ToArray();
+            var target = new GitHubRelationshipIssue(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url);
+            return Task.FromResult<GitHubIssueRelationships?>(new(1, project.Repository, issueNumber, target, null, [], blockers, []));
+        }
     }
 
     private sealed class StubGitHubAdministrationFactory(IServerGitHubAdministrationService github) : IServerAdministrationServiceFactory
@@ -502,6 +686,7 @@ public sealed class ServerGitHubAdministrationTests
     private sealed class FakeGitHubIssueWriteService : IServerGitHubIssueWriteService
     {
         public List<string> Operations { get; } = [];
+        public bool FailNextParentAdd { get; set; }
 
         public Task<GitHubIssueWriteResponse> CreateIssueAsync(CentralProject project, string title, string body,
             CancellationToken cancellationToken = default)
@@ -543,6 +728,26 @@ public sealed class ServerGitHubAdministrationTests
             Operations.Add("blocked-by:remove");
             return Task.CompletedTask;
         }
+
+        public Task AddSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add($"parent:add:{parentIssueNumber}:{childIssueNumber}");
+            if (FailNextParentAdd)
+            {
+                FailNextParentAdd = false;
+                return Task.FromException(new GitHubIssueWriteUnavailableException(project.Repository, "write-failed",
+                    "Provider rejected the request. Refresh the target before retrying."));
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task RemoveSubIssueAsync(CentralProject project, int parentIssueNumber, int childIssueNumber,
+            CancellationToken cancellationToken = default)
+        {
+            Operations.Add($"parent:remove:{parentIssueNumber}:{childIssueNumber}");
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider
@@ -576,4 +781,9 @@ public sealed class AlwaysEligibleServerGitHubReadService : IServerGitHubReadSer
         Task.FromResult<ManagedGitHubIssue?>(new ManagedGitHubIssue(issueNumber, $"Issue {issueNumber}", "", "OPEN",
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, $"https://github.com/{project.Repository}/issues/{issueNumber}",
             ["ready"], [], true, []));
+
+    public Task<GitHubIssueRelationships?> GetIssueRelationshipsAsync(CentralProject project, int issueNumber,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<GitHubIssueRelationships?>(new(1, project.Repository, issueNumber,
+            new(issueNumber, $"Issue {issueNumber}", "open", $"https://github.com/{project.Repository}/issues/{issueNumber}"), null, [], [], []));
 }

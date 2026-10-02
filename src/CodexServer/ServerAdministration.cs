@@ -284,6 +284,13 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         return await RequireGitHubAdministration().GetIssueAsync(projectId, issueNumber, cancellationToken);
     }
 
+    public async Task<GitHubIssueRelationships?> GetIssueRelationshipsAsync(string projectId, int issueNumber,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().GetIssueRelationshipsAsync(projectId, issueNumber, cancellationToken);
+    }
+
     public async Task<GitHubIssueMutationResult> CreateIssueAsync(string projectId, GitHubIssueCreateRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -310,6 +317,27 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
     {
         await EnsurePersistenceAvailableAsync(cancellationToken);
         return await RequireGitHubAdministration().SetIssueBlockedByAsync(projectId, issueNumber, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueMutationResult> SetIssueParentAsync(string projectId, int childIssueNumber,
+        GitHubIssueParentRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().SetIssueParentAsync(projectId, childIssueNumber, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueRelationshipBatchResult> SetIssueParentForChildrenAsync(string projectId,
+        int parentIssueNumber, GitHubIssueSubIssueBatchRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().SetIssueParentForChildrenAsync(projectId, parentIssueNumber, request, cancellationToken);
+    }
+
+    public async Task<GitHubIssueRelationshipBatchResult> SetIssueBlockedByBatchAsync(string projectId, int issueNumber,
+        GitHubIssueDependencyBatchRequest request, CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().SetIssueBlockedByBatchAsync(projectId, issueNumber, request, cancellationToken);
     }
 
     public async Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
@@ -700,11 +728,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
     private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        const string usage = "Usage: codex-server github <access|issues|issue|enqueue|refresh|create|update|label|dependency> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
+        const string usage = "Usage: codex-server github <access|issues|issue|relationships|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
         if (arguments.Count == 2 && arguments[1] == "--help")
         {
             _output.WriteLine(usage);
-            _output.WriteLine("Create and update accept bounded --title and --body values. Label administration is limited to the project's configured issueReadyLabel and issueBlockedLabel. dependency administers GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. Enqueue and refresh remain explicit queue actions.");
+            _output.WriteLine("relationships reads parent, sub-issues, blocked-by, and blocking relationships. parent sets a parent Issue number or uses 'none' to clear it; sub-issues assigns or removes one parent relationship for up to 50 children. dependency and dependency-batch administer GitHub blocked-by relationships. --preview validates and displays a mutation without applying it. JSON responses use contractVersion 1. Enqueue and refresh remain explicit queue actions.");
             return ServerAdministrationExitCodes.Success;
         }
         if (arguments.Count < 3) return InvalidArguments(usage);
@@ -755,8 +783,9 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var expected = operation switch
         {
             "access" or "issues" or "create" => 1,
-            "issue" or "enqueue" or "refresh" or "update" => 2,
-            "label" or "dependency" => 4,
+            "issue" or "relationships" or "enqueue" or "refresh" or "update" => 2,
+            "parent" => 3,
+            "label" or "dependency" or "sub-issues" or "dependency-batch" => 4,
             _ => -1
         };
         var invalidOptions = operation switch
@@ -765,20 +794,36 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             "create" or "update" => seenOptions.Any(option => option is not ("title" or "body")),
             _ => seenOptions.Count > 0
         };
-        if (expected < 0 || positionals.Count != expected || invalidOptions || preview && operation is not ("create" or "update" or "label" or "dependency"))
+        if (expected < 0 || positionals.Count != expected || invalidOptions || preview && operation is not
+            ("create" or "update" or "label" or "dependency" or "parent" or "sub-issues" or "dependency-batch"))
             return InvalidArguments(usage);
         int issueNumber = 0;
-        if (operation is ("issue" or "enqueue" or "refresh" or "update" or "label" or "dependency") &&
+        if (operation is ("issue" or "relationships" or "enqueue" or "refresh" or "update" or "label" or "dependency" or "parent" or "sub-issues" or "dependency-batch") &&
             (!int.TryParse(positionals[1], System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out issueNumber) || issueNumber <= 0))
             return InvalidArguments("Issue number must be a positive decimal integer.");
         var applied = positionals.Count == 4 && positionals[2] == "add";
-        if ((operation is "label" or "dependency") && positionals[2] is not ("add" or "remove"))
+        if ((operation is "label" or "dependency" or "sub-issues" or "dependency-batch") && positionals[2] is not ("add" or "remove"))
             return InvalidArguments("Mutation action must be add or remove.");
         int blockerIssueNumber = 0;
         if (operation == "dependency" && (!int.TryParse(positionals[3], System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out blockerIssueNumber) || blockerIssueNumber <= 0))
             return InvalidArguments("Blocking Issue number must be a positive decimal integer.");
+        int? parentIssueNumber = null;
+        if (operation == "parent" && !string.Equals(positionals[2], "none", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!int.TryParse(positionals[2], System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var parsedParent) || parsedParent <= 0)
+                return InvalidArguments("Parent Issue must be a positive decimal number or 'none'.");
+            parentIssueNumber = parsedParent;
+        }
+        IReadOnlyList<int>? relationshipIssueNumbers = null;
+        if (operation is "sub-issues" or "dependency-batch")
+        {
+            if (!TryParseIssueNumberList(positionals[3], out var parsedNumbers))
+                return InvalidArguments("Relationship batch must be a comma-separated list of 1 to 50 positive Issue numbers.");
+            relationshipIssueNumbers = parsedNumbers;
+        }
         if (operation == "create" && GitHubIssueMutationValidation.CreateError(new(title, body)) is { } createError)
             return InvalidArguments(createError);
         if (operation == "update" && GitHubIssueMutationValidation.UpdateError(new(title, body, preview)) is { } updateError)
@@ -830,6 +875,16 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                     if (json) _output.WriteLine(JsonSerializer.Serialize(issue, JsonOptions));
                     else WriteGitHubIssue(issue);
                     break;
+                case "relationships":
+                    var relationships = await github.GetIssueRelationshipsAsync(positionals[0], issueNumber, cancellationToken);
+                    if (relationships is null)
+                    {
+                        _error.WriteLine($"Project '{positionals[0]}' or GitHub Issue #{issueNumber} was not found.");
+                        return ServerAdministrationExitCodes.NotFound;
+                    }
+                    if (json) _output.WriteLine(JsonSerializer.Serialize(relationships, JsonOptions));
+                    else WriteGitHubRelationships(relationships);
+                    break;
                 case "enqueue":
                     var enqueued = await github.EnqueueIssueAsync(positionals[0], new WorkReference("github-issue",
                         issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), cancellationToken);
@@ -861,6 +916,23 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                     var dependencyResult = await github.SetIssueBlockedByAsync(positionals[0], issueNumber,
                         new GitHubIssueDependencyRequest(blockerIssueNumber, applied, preview), cancellationToken);
                     WriteGitHubMutation(dependencyResult, json);
+                    break;
+                case "parent":
+                    var parentResult = await github.SetIssueParentAsync(positionals[0], issueNumber,
+                        new GitHubIssueParentRequest(parentIssueNumber, preview), cancellationToken);
+                    WriteGitHubMutation(parentResult, json);
+                    break;
+                case "sub-issues":
+                    var subIssueResult = await github.SetIssueParentForChildrenAsync(positionals[0], issueNumber,
+                        new GitHubIssueSubIssueBatchRequest(relationshipIssueNumbers, applied, preview), cancellationToken);
+                    WriteGitHubRelationshipBatch(subIssueResult, json);
+                    if (subIssueResult.Items.Any(item => item.Status is "failed" or "partial")) return ServerAdministrationExitCodes.OperationalFailure;
+                    break;
+                case "dependency-batch":
+                    var dependencyBatchResult = await github.SetIssueBlockedByBatchAsync(positionals[0], issueNumber,
+                        new GitHubIssueDependencyBatchRequest(relationshipIssueNumbers, applied, preview), cancellationToken);
+                    WriteGitHubRelationshipBatch(dependencyBatchResult, json);
+                    if (dependencyBatchResult.Items.Any(item => item.Status is "failed" or "partial")) return ServerAdministrationExitCodes.OperationalFailure;
                     break;
             }
             return ServerAdministrationExitCodes.Success;
@@ -919,6 +991,42 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         _output.WriteLine($"  {issue.Url}");
     }
 
+    private void WriteGitHubRelationships(GitHubIssueRelationships relationships)
+    {
+        _output.WriteLine($"Relationships for #{relationships.IssueNumber} in {relationships.Repository}:");
+        IReadOnlyList<GitHubRelationshipIssue> parentIssues = relationships.Parent is { } parent
+            ? new[] { parent } : Array.Empty<GitHubRelationshipIssue>();
+        WriteRelationshipGroup("Parent", parentIssues);
+        WriteRelationshipGroup("Sub-issues", relationships.SubIssues);
+        WriteRelationshipGroup("Blocked by", relationships.BlockedBy);
+        WriteRelationshipGroup("Blocking", relationships.Blocking);
+    }
+
+    private void WriteRelationshipGroup(string heading, IReadOnlyList<GitHubRelationshipIssue> issues)
+    {
+        _output.WriteLine($"{heading}: {(issues.Count == 0 ? "none" : string.Join(", ", issues.Select(issue => $"#{issue.Number} ({issue.State}) {issue.Title}")))}");
+        foreach (var issue in issues) _output.WriteLine($"  {issue.Url}");
+    }
+
+    private void WriteGitHubRelationshipBatch(GitHubIssueRelationshipBatchResult result, bool json)
+    {
+        if (json)
+        {
+            _output.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+            return;
+        }
+        _output.WriteLine($"{result.Operation} relationship batch for {result.Repository}:");
+        foreach (var item in result.Items)
+        {
+            var issueText = result.Operation is "set-parent" or "remove-parent"
+                ? result.Operation == "set-parent"
+                    ? $"Child #{item.IssueNumber} → parent #{item.RelatedIssueNumber}"
+                    : $"Child #{item.IssueNumber} → parent relationship with Issue #{item.RelatedIssueNumber}"
+                : $"Issue #{item.IssueNumber} → blocked by #{item.RelatedIssueNumber}";
+            _output.WriteLine($"{item.Status}: {issueText}{(item.Diagnostic is null ? "" : $" — {item.Diagnostic}")}");
+        }
+    }
+
     private void WriteGitHubMutation(GitHubIssueMutationResult result, bool json)
     {
         if (json)
@@ -929,7 +1037,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         _output.WriteLine(result.PreviewOnly ? $"Preview: {result.Operation} Issue in {result.Repository}." :
             $"{result.Operation} Issue {(result.Changed ? "applied" : "already matched the requested state")} in {result.Repository}.");
         if (result.IssueNumber is { } issueNumber) _output.WriteLine($"Issue: #{issueNumber}{(result.Url is null ? "" : $" · {result.Url}")}");
-        if (result.RelatedIssueNumber is { } relatedNumber)
+        if (result.Operation == "parent")
+            _output.WriteLine(result.Applied == true
+                ? $"Parent relationship: set parent Issue #{result.RelatedIssueNumber}"
+                : "Parent relationship: cleared");
+        else if (result.RelatedIssueNumber is { } relatedNumber)
             _output.WriteLine($"Blocked by relationship: {(result.Applied == true ? "add" : "remove")} Issue #{relatedNumber}");
         if (result.Label is { } label) _output.WriteLine($"Configured label: {(result.Applied == true ? "add" : "remove")} '{label}'");
         if (result.Title is { } title) _output.WriteLine($"Title: {title}");
@@ -1011,6 +1123,24 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
     private static long ParseRevision(string value) => long.Parse(value, System.Globalization.NumberStyles.None,
         System.Globalization.CultureInfo.InvariantCulture);
+
+    private static bool TryParseIssueNumberList(string value, out IReadOnlyList<int> issueNumbers)
+    {
+        var values = value.Split(',', StringSplitOptions.None);
+        var parsed = new List<int>(values.Length);
+        foreach (var item in values)
+        {
+            if (!int.TryParse(item, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)
+            {
+                issueNumbers = [];
+                return false;
+            }
+            parsed.Add(issueNumber);
+        }
+        issueNumbers = parsed;
+        return parsed.Count is >= 1 and <= 50;
+    }
 
     private static bool TryParseProjectOptions(IReadOnlyList<string> arguments, int start,
         out IReadOnlyList<string> positionals, out bool json, out IReadOnlyList<string> configurationArguments)
