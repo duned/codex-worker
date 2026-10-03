@@ -17,7 +17,10 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _cachePath = Path.GetFullPath(cachePath);
     private readonly object _gate = new();
+    private IReadOnlyList<ServerProjectContract> _appliedProjects = [];
     private WorkerConfigurationSyncStatus _status = new(null, null, "not-synchronized", null, null);
+
+    public IReadOnlyList<ServerProjectContract> AppliedProjects { get { lock (_gate) return _appliedProjects; } }
 
     public WorkerConfigurationSyncStatus Status { get { lock (_gate) return _status; } }
     public bool HasCachedSnapshot => File.Exists(_cachePath);
@@ -75,10 +78,13 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
                 {
                     var unchanged = string.Equals(_status.AppliedVersion, desired.Version, StringComparison.Ordinal) && File.Exists(_cachePath);
                     if (!unchanged) PersistAtomically(desired);
+                    _appliedProjects = desired.Projects.ToArray();
                     _status = new(desired.Version, desired.Version, "synchronized",
                         unchanged ? _status.LastSuccessfulUpdateUtc : DateTimeOffset.UtcNow, null);
                 }
             }
+            if (!updateStatus)
+                lock (_gate) _appliedProjects = desired.Projects.ToArray();
             return applied;
         }
         catch (Exception ex) when (updateStatus)

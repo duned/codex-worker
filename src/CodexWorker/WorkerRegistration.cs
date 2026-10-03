@@ -19,7 +19,7 @@ public sealed record WorkerRegistrationContract(
     IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 
 /// <summary>A runtime, tool, or service currently available to this worker.</summary>
-public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null, string? Scope = null);
+public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
 
 public static class WorkerAuthenticationCapabilities
 {
@@ -44,7 +44,7 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
-public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null, string? Scope = null);
+public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true);

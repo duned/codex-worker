@@ -28,6 +28,31 @@ public sealed class WorkerHost
         _operationalLog = operationalLog ?? (_ => { });
     }
 
+    internal async Task RejectIncompatibleAssignmentAsync(WorkerAssignmentContract assignment,
+        WorkerConfiguration configuration, ExecutionHistoryStore history, string reason, CancellationToken token)
+    {
+        if (assignment.Work.Type is not ("issue" or "github-issue") ||
+            !int.TryParse(assignment.Work.Id, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0 ||
+            assignment.Lease is not { State: "Active", Generation: > 0 } lease)
+            throw new WorkerInfrastructureException("Incompatible assignment has no valid Issue or ownership lease.");
+        var now = _timeProvider.GetUtcNow();
+        var previous = (await history.ReadAllAsync(token)).Where(entry => entry.Project == configuration.Project.Name &&
+            entry.Repository == configuration.Project.Repository && entry.IssueNumber == issueNumber).ToArray();
+        var safeReason = FailureDiagnosticRedactor.Redact(reason, configuration.Environment.Variables.Values.ToArray());
+        if (safeReason.Length > 1000) safeReason = safeReason[..1000];
+        // No Issue claim or workspace exists. Record a terminal refusal so neither local
+        // recovery nor Server lease expiry mistakes it for an interrupted execution.
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), configuration.Project.Name,
+            configuration.Project.Repository, issueNumber, $"Issue #{issueNumber}", "", configuration.Git.BaseBranch,
+            now, now, "Blocked", 0, null, null, 0, [], null, null, null, safeReason,
+            RecoveryState: "preparation-failed", AttemptNumber: previous.Length == 0 ? 1 : previous.Max(item => item.AttemptNumber) + 1,
+            ServerExecutionId: assignment.ServerExecutionId, AssignmentId: assignment.AssignmentId,
+            OwnershipGeneration: lease.Generation);
+        await history.CreateAsync(entry, token);
+        await _registration.ReportExecutionAsync(_global.Server, entry, "Failed", null, lease.Generation, token);
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         var configuredProjects = _projects;
@@ -212,9 +237,8 @@ public sealed class WorkerHost
                 if (!managed && configuredProjects.Count > 0 && healthyRuntimes.Count == 0)
                 {
                     var observations = await _registration.InventoryDiscovery.GetAsync(cancellationToken: token);
-                    var missingProjectTool = observations.Any(state => state.Id is "git" or "github-cli" &&
-                        state.Installation == InstallationState.Missing);
-                    // Missing tools leave projects unavailable until their normal safety checks
+                    var missingProjectTool = !CapabilityCatalog.ExecutionReadiness(observations).Available;
+                    // Missing execution prerequisites leave projects unavailable until their normal safety checks
                     // can run. An absent checkout is still a standalone configuration failure.
                     if (!missingProjectTool || configuredProjects.Any(project => !Directory.Exists(project.Configuration.Project.Directory)))
                     {
@@ -268,10 +292,27 @@ public sealed class WorkerHost
                 var localReadiness = CapabilityCatalog.ExecutionReadiness(
                     await _registration.InventoryDiscovery.GetAsync(cancellationToken: token));
                 executionDependenciesReady = localReadiness.Available;
+                if (managedConfiguration is not null)
+                {
+                    var inventory = await _registration.InventoryDiscovery.GetAsync(cancellationToken: token);
+                    foreach (var project in runtimes.Where(project => validatedConfigurations.Contains(project.Configuration)))
+                    {
+                        var definition = managedConfiguration.AppliedProjects.FirstOrDefault(item =>
+                            MatchesServerProject(project.Configuration, item));
+                        if (definition is null) continue;
+                        var eligibility = CapabilityEligibility.Evaluate(CapabilityEligibility.ForProject(definition.Requirements, definition.Repository),
+                            heartbeatCapabilities, inventory);
+                        runtimeReadModel.Registry.ApplyExecutionEligibility(project.Configuration.Project.Name,
+                            project.Configuration, eligibility);
+                    }
+                }
                 var ready = agentReady && executionDependenciesReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
-                    (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration)));
+                    (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration) &&
+                        runtimeReadModel.Registry.Get(project.Configuration.Project.Name)?.State != ProjectLifecycleState.Unavailable));
                 lifecycle.SetExecutionReadiness(ready, localReadiness.Available
-                    ? readiness.DiagnosticCode : string.Join(", ", localReadiness.BlockingReasons));
+                    ? readiness.DiagnosticCode ?? string.Join("; ", runtimeReadModel.Registry.Status()
+                        .Where(project => project.UnavailableReason is not null).Select(project => $"{project.Name}: {project.UnavailableReason}"))
+                    : string.Join(", ", localReadiness.BlockingReasons));
                 runtimeReadModel.State = runtimeReadModel.Registry.WorkerDraining
                     ? (active.Count == 0 ? WorkerLifecycleStates.Drained : WorkerLifecycleStates.Draining) :
                     ready ? WorkerLifecycleStates.Running : WorkerLifecycleStates.NotReady;
@@ -499,6 +540,21 @@ public sealed class WorkerHost
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
                         }
+                        if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
+                            lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
+                            lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
+                            lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                        var assignmentEligibility = CapabilityEligibility.Evaluate(
+                            CapabilityEligibility.ForProject(assignment.Project.Requirements, assignment.Project.Repository), heartbeatCapabilities, await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken));
+                        if (!assignmentEligibility.IsEligible)
+                        {
+                            var reason = string.Join("; ", assignmentEligibility.MissingRequirements);
+                            await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history,
+                                reason, executionToken);
+                            runtimeReadModel.Events.Publish("assignment.rejected", reason, assignedProject.Configuration.Project.Name);
+                            continue;
+                        }
                         if (!runtimeReadModel.Registry.TryReserve(assignedProject.Configuration.Project.Name, assignedProject.Configuration))
                         {
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
@@ -506,11 +562,6 @@ public sealed class WorkerHost
                         }
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
-                        if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
-                            lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
-                            lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
-                            lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
                         var leaseStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
                         // Start guarding the assignment before any GitHub label/comment work in
                         // ClaimAssignedAsync; that work can itself outlive a short lease.
@@ -520,8 +571,11 @@ public sealed class WorkerHost
                         {
                             leaseStop.Cancel();
                             try { await leaseRenewal; } catch (OperationCanceledException) { }
-                            leaseStop.Dispose();
-                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            finally
+                            {
+                                leaseStop.Dispose();
+                                runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            }
                             PauseProjectForGitHubFailure(runtimeReadModel, assignedProject.Configuration.Project.Name, githubFailure,
                                 "The Server assignment remains leased until expiry reconciliation.");
                             continue;
@@ -530,16 +584,22 @@ public sealed class WorkerHost
                         {
                             leaseStop.Cancel();
                             try { await leaseRenewal; } catch (OperationCanceledException) { }
-                            leaseStop.Dispose();
-                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            finally
+                            {
+                                leaseStop.Dispose();
+                                runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            }
                             throw;
                         }
                         if (assignedExecution is null)
                         {
                             leaseStop.Cancel();
                             try { await leaseRenewal; } catch (OperationCanceledException) { }
-                            leaseStop.Dispose();
-                            runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            finally
+                            {
+                                leaseStop.Dispose();
+                                runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                            }
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
                         }
                         active.Add(assignedExecution, assignedProject);

@@ -95,11 +95,32 @@ public sealed class ProjectRuntimeRegistry
         lock (_gate)
         {
             if (!_projects.TryGetValue(name, out var entry)) return null;
+            entry.CapabilityBlocked = false;
             entry.UnavailableReason = reason;
             entry.State = ProjectLifecycleState.Unavailable;
             _events?.Publish("project.unavailable", reason, name);
             SignalChanged();
             return Info(name, entry);
+        }
+    }
+
+    /// <summary>Applies transient capability readiness without overriding operator or failure pauses.</summary>
+    public void ApplyExecutionEligibility(string name, WorkerConfiguration expectedConfiguration,
+        CodexProvisioning.CapabilityEligibilityResult eligibility)
+    {
+        lock (_gate)
+        {
+            if (!_projects.TryGetValue(name, out var entry) || !ReferenceEquals(entry.Configuration, expectedConfiguration)) return;
+            if (!eligibility.IsEligible && (entry.State == ProjectLifecycleState.Enabled ||
+                entry.State == ProjectLifecycleState.Unavailable && entry.CapabilityBlocked))
+            {
+                var reason = string.Join("; ", eligibility.MissingRequirements);
+                if (entry.State != ProjectLifecycleState.Unavailable || entry.UnavailableReason != reason)
+                    MarkUnavailable(name, reason);
+                entry.CapabilityBlocked = true;
+            }
+            else if (eligibility.IsEligible && entry.CapabilityBlocked && entry.State == ProjectLifecycleState.Unavailable)
+                Enable(name);
         }
     }
 
@@ -207,6 +228,7 @@ public sealed class ProjectRuntimeRegistry
             if (entry.State != target)
             {
                 entry.State = target;
+                entry.CapabilityBlocked = false;
                 if (target != ProjectLifecycleState.Unavailable) entry.UnavailableReason = null;
                 _events?.Publish(eventType, message, name);
                 if (target == ProjectLifecycleState.Enabled) SignalChanged();
@@ -239,6 +261,7 @@ public sealed class ProjectRuntimeRegistry
         public ProjectLifecycleState State = state;
         public int Active = active;
         public bool Removing;
+        public bool CapabilityBlocked;
         public string? UnavailableReason;
         public ProjectLifecycleState StateBeforeRemoval = state;
     }

@@ -253,7 +253,7 @@ public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRe
 
 /// <summary>A centrally declared capability required by a project.</summary>
 [JsonConverter(typeof(ProjectRequirementJsonConverter))]
-public sealed record ProjectRequirement(string Type, string Name, string? Version = null, string? Scope = null);
+public sealed record ProjectRequirement(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
 
 /// <summary>Reads the previous string form as a runtime while writing the structured contract.</summary>
 public sealed class ProjectRequirementJsonConverter : JsonConverter<ProjectRequirement>
@@ -427,7 +427,7 @@ public sealed record WorkerCredentialAccessStatus(string Status, DateTimeOffset?
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
-public sealed record WorkerCapability(string Type, string Name, string? Version = null, string? Scope = null);
+public sealed record WorkerCapability(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
 
 /// <summary>Reads legacy string capabilities and the extensible structured capability contract.</summary>
 public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapability>

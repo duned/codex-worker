@@ -548,6 +548,36 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task IncompatibleAssignmentCanRetryCleanlyInResumeModeOnceRequirementsAreRestored()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.GitHub.IssueLabels = ["ready"];
+        var now = DateTimeOffset.UtcNow;
+        var project = new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now);
+        var assignment = new WorkerAssignmentContract("assignment", "server-execution", project,
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-execution", "worker-id", 1, now, now.AddMinutes(5), "Active"));
+        var host = new WorkerHost(new GlobalWorkerConfiguration(), []);
+        await host.RejectIncompatibleAssignmentAsync(assignment, h.Worker.Configuration, history,
+            "Required runtime is missing.", CancellationToken.None);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Equal(0, h.Git.Started);
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        var entries = await history.ReadAllAsync();
+        var retry = entries.Single(entry => entry.State == "Completed");
+        Assert.Equal(2, retry.AttemptNumber);
+        Assert.False(retry.Resumed);
+        Assert.Null(retry.RetryOfExecutionId);
+        Assert.Equal("preparation-failed", entries.Single(entry => entry.State == "Blocked").RecoveryState);
+    }
+
+    [Fact]
     public async Task AssignedUnrecoverableResumeReturnsCompletedRejectionTaskInsteadOfFailingClaim()
     {
         using var database = new TempHistoryDatabase();

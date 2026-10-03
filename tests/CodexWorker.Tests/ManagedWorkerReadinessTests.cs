@@ -38,6 +38,45 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal(installed ? 1 : 0, provider.Calls);
     }
 
+    [Theory]
+    [InlineData("gh")]
+    [InlineData("codex")]
+    public async Task StandaloneWithConfiguredProjectsRemainsAliveWhenRequiredAuthenticationIsMissing(string executable)
+    {
+        using var temporary = new TemporaryDirectory();
+        using var stop = new CancellationTokenSource();
+        var instructions = Path.Combine(temporary.Path, "AGENTS.md");
+        await File.WriteAllTextAsync(instructions, "test instructions");
+        var discovery = new NodeCapabilityDiscovery((tool, arguments, _) => Task.FromResult(
+            (tool == (executable == "codex" ? CodexServiceEnvironment.Executable : executable) &&
+                arguments[0] is "auth" or "login" ? 1 : 0, "1.0.0")));
+        var capabilities = new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")));
+        var provider = new TestProvider { Available = true };
+        using var output = new StopOnStartedWriter(stop);
+        var configuration = new GlobalWorkerConfiguration
+        {
+            Projects = new() { Ownership = "standalone", Directory = temporary.Path },
+            Api = new() { Enabled = false }
+        };
+        var project = new WorkerConfiguration
+        {
+            Project = new() { Name = "Project", Repository = "owner/repo", Directory = temporary.Path },
+            Codex = new() { InstructionsFile = instructions }
+        };
+        var host = new WorkerHost(configuration, [("project.yml", project)], new WorkerConsole(output, interactive: false),
+            registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
+            agentAuthentication: provider);
+
+        // This checkout cannot complete its safety checks yet. Missing node authentication
+        // must leave the control loop available for provisioning rather than fail startup.
+        await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.True(stop.IsCancellationRequested);
+        Assert.Contains("Worker started.", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("unavailable", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(executable == "codex" ? 0 : 1, provider.Calls);
+    }
+
     private sealed class StopOnStartedWriter(CancellationTokenSource stop) : StringWriter
     {
         public override void Write(string? value)

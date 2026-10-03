@@ -76,6 +76,22 @@ public sealed class ManagedConfigurationTests
     }
 
     [Fact]
+    public void ExecutionRequirementsSurviveInvalidUpdatesAndCachedRestart()
+    {
+        using var fixture = new Fixture();
+        var project = fixture.Project(1) with { Requirements = [new("runtime", "dotnet", ">=10")] };
+        var desired = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        synchronizer.Apply(desired, fixture.LocalProjects);
+
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(desired with { Version = "invalid" }, fixture.LocalProjects));
+        Assert.Equal(project.Requirements, Assert.Single(synchronizer.AppliedProjects).Requirements);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        restarted.LoadLastValid(fixture.LocalProjects);
+        Assert.Equal(project.Requirements, Assert.Single(restarted.AppliedProjects).Requirements);
+    }
+
+    [Fact]
     public void InvalidUpdateKeepsLastValidSnapshotAvailableAndReportsError()
     {
         using var fixture = new Fixture();
