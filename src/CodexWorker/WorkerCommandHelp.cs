@@ -75,6 +75,15 @@ public static class WorkerCommandHelp
                 writer.WriteLine("Options: --json  Write the typed capability inventory contract as JSON.");
                 writer.WriteLine("Examples: codex-worker capabilities list; codex-worker capabilities refresh --json");
                 break;
+            case "credential":
+                writer.WriteLine("Usage: codex-worker credential status [--config <path>] [--json]");
+                writer.WriteLine("       codex-worker credential <check|login|logout> <github-cli|codex-cli> [--config <path>] [--json] [--timeout-seconds 5..600]");
+                writer.WriteLine("Administer node-local provider credentials as the Worker service account. Secrets are never displayed.");
+                writer.WriteLine("Login publishes a browser/device challenge and waits for completion (default deadline: 120 seconds).");
+                writer.WriteLine("For headless login, open the displayed URL on another device. JSON challenges go to stderr; the final result goes to stdout.");
+                writer.WriteLine("Login/logout obey worker.provisioning credential policy. Tool installation remains under 'provision'.");
+                writer.WriteLine("Readiness describes local tool state; repository permissions and Codex execution preflight remain separate checks.");
+                break;
             case "provision":
                 writer.WriteLine($"Usage: codex-worker provision <status|operation> {configOption} [options]");
                 writer.WriteLine("Show local policy and capability state, or run a bounded typed capability operation.");
@@ -97,7 +106,7 @@ public static class WorkerCommandHelp
                 break;
             default:
                 writer.WriteLine("Usage: codex-worker [command] [options]");
-                writer.WriteLine("Commands: run, status, diagnostics, config, capabilities, provision, register, update");
+                writer.WriteLine("Commands: run, status, diagnostics, config, capabilities, provision, credential, register, update");
                 writer.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 writer.WriteLine("Lifecycle: run starts foreground execution; Ctrl+C/SIGTERM requests graceful shutdown.");
                 writer.WriteLine("Installed service: sudo systemctl <start|stop|restart> codex-worker; the existing cw restart (rs) helper verifies restart.");

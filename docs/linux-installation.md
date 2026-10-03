@@ -151,6 +151,7 @@ The installed executable reads `/etc/codex-worker/worker.yml` by default. Admini
 /opt/codex-worker/CodexWorker config --help
 /opt/codex-worker/CodexWorker capabilities --help
 /opt/codex-worker/CodexWorker provision --help
+/opt/codex-worker/CodexWorker credential --help
 ```
 
 Inspect status, validate or update configuration, and list or refresh capability observations with:
@@ -180,6 +181,18 @@ sudo /opt/codex-worker/CodexWorker provision uninstall git --allow-elevation
 ```
 
 Supported typed actions include capability detection, package install/upgrade/uninstall, Git configuration checks, GitHub CLI authentication setup and checks, and bounded SSH key/repository-access operations. Package operations are available on Debian-based Linux systems; this installer supports Ubuntu 24.04 x86_64. A denied operation reports the controlling Worker policy and a remediation. `--json` writes versioned status, configuration, capability-inventory, and provisioning contracts to standard output; progress for interactive authentication remains separate from the final JSON result. The commands do not expose shell text or caller-selected packages.
+
+Use `credential` to administer the Worker service account's node-local GitHub/Codex authentication through the shared credential handlers:
+
+```sh
+sudo -u codex-worker /opt/codex-worker/CodexWorker credential status --json
+sudo -u codex-worker /opt/codex-worker/CodexWorker credential login github-cli --timeout-seconds 600
+sudo -u codex-worker /opt/codex-worker/CodexWorker credential login codex-cli --json
+sudo -u codex-worker /opt/codex-worker/CodexWorker credential check github-cli
+sudo -u codex-worker /opt/codex-worker/CodexWorker credential logout codex-cli
+```
+
+Run these commands with the same service-account environment and Codex home as the Worker service. Status separates installed tools, declared authentication dependencies, observed authentication, and local capability readiness. Login/logout require `worker.provisioning.enabled`, `allowNonPrivileged`, and `allowCredentials`; `deniedActions` takes precedence, including for read-only checks. Installation remains a `provision` operation. Login displays a typed one-time device challenge that can be completed in a browser on another machine, waits within the configured 5–600 second deadline (default 120), and verifies authentication after login. With `--json`, challenge reports go to stderr and the versioned final result goes to stdout. Private credentials remain in the node-local provider stores; neither human nor JSON output includes stored secrets or raw provider output. Logout removes provider-local login state; it does not revoke centrally managed credential records. Local readiness does not establish repository permissions, Server authorization, or authenticated Codex execution preflight.
 
 Create a one-time registration token on the Server, then bootstrap the Worker before starting its service. Use `--token-stdin` and supply the token through standard input from a protected secret source; do not capture it in shell history, tracing, or logs. It stores a stable identity, Server URL, and separate durable Worker credential beside the identity file with owner-only permissions before contacting the Server. This local staging makes a lost response recoverable: retry with the same identity file, and the Worker will authenticate with its durable credential if the Server already committed registration. An invalid, expired, or reused bootstrap token leaves staged credentials in place but creates no Server Worker; create a fresh token and rerun the command with the same identity file. Server bootstrap commits token consumption, durable authentication, and Worker visibility atomically. After successful bootstrap, the Worker uses the durable credential, so `CODEX_SERVER_REGISTRATION_TOKEN` does not need to be set in `worker.env`.
 

@@ -84,6 +84,7 @@ public static class Program
                 .ExecuteAsync(commandLine, cancellationToken);
         }
         if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output, cancellationToken);
+        if (commandLine.Command == "credential") return await CredentialAsync(commandLine, output, cancellationToken);
         if (commandLine.Command is "status" or "diagnostics" or "config" or "capabilities")
         {
             var administrationCli = new WorkerAdministrationCli(new WorkerStatusService(),
@@ -132,6 +133,29 @@ public static class Program
 
         try { await new WorkerHost(global, projects, output, operationalLog: message => Trace.WriteLine(message)).RunAsync(cancellationToken); return ProcessExitCodes.Success; }
         catch (Exception ex) { return ExitCodeFor(ex); }
+    }
+
+    private static async Task<int> CredentialAsync(WorkerCommandLine commandLine, WorkerConsole output, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var command = WorkerCredentialCli.Parse(commandLine.Arguments);
+            var configuration = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath);
+            var identity = command.IsStatus ? string.Empty :
+                await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+            var discovery = new CodexProvisioning.NodeCapabilityDiscovery();
+            var executor = new CodexProvisioning.NodeProvisioningCommandExecutor(discovery);
+            var service = new CodexProvisioning.NodeCredentialAdministration(discovery,
+                (request, token, progress) => WorkerProvisioning.ExecuteLocalAsync(request,
+                    configuration.Worker.Provisioning, discovery, token, progress, executor));
+            return await new WorkerCredentialCli(service, identity, Console.Out, Console.Error).RunAsync(command, cancellationToken);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            WorkerCliOutput.Failure(commandLine, output, Console.Out, "credential-failed",
+                "Local credential administration failed. Check command usage, Worker configuration, provider installation, and file permissions.");
+            return ProcessExitCodes.StartupFailure;
+        }
     }
 
     private static async Task<int> ProvisionAsync(WorkerCommandLine commandLine, WorkerConsole output, CancellationToken cancellationToken)
