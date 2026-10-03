@@ -263,13 +263,16 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         }
         if (result.ExitCode != 0)
         {
-            if (IsNotFound(result.StandardError)) return null;
+            // The Issue was already read successfully; this endpoint uses 404 for no parent.
+            if (System.Text.RegularExpressions.Regex.IsMatch(result.StandardError, @"\bHTTP 404\b",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase) || IsNotFound(result.StandardError)) return null;
             throw CreateReadFailure(repository, result, "GitHub parent relationship read");
         }
         try
         {
             using var document = JsonDocument.Parse(result.StandardOutput);
-            return ReadRelationshipIssue(document.RootElement, repository);
+            return document.RootElement.ValueKind == JsonValueKind.Null ? null :
+                ReadRelationshipIssue(document.RootElement, repository);
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {

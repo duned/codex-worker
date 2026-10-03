@@ -90,6 +90,55 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Theory]
+    [InlineData(1, "gh: No parent issue found (HTTP 404)", "")]
+    [InlineData(1, "gh: Not Found (HTTP 404)", "")]
+    [InlineData(0, "", "null")]
+    public async Task GraphAcceptsRootWithoutParent(int exitCode, string error, string output)
+    {
+        var service = new ServerGitHubReadService((arguments, _) =>
+        {
+            if (arguments[0] == "issue")
+                return Task.FromResult(new GitHubReadCommandResult(0, """
+                    {"number":7,"title":"Root","body":"","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[]}
+                    """, ""));
+            return Task.FromResult(arguments.Contains("repos/team/project/issues/7/parent")
+                ? new GitHubReadCommandResult(exitCode, output, error)
+                : new GitHubReadCommandResult(0, "[]", ""));
+        });
+        var graph = await GitHubIssueGraphBuilder.BuildAsync(7,
+            (number, token) => service.GetIssueRelationshipsAsync(Project(), number, token));
+        Assert.NotNull(graph);
+        Assert.Single(graph.Nodes);
+        Assert.Empty(graph.Edges);
+        Assert.False(graph.IsTruncated);
+    }
+
+    [Theory]
+    [InlineData("parent")]
+    [InlineData("sub_issues")]
+    [InlineData("dependencies/blocked_by")]
+    [InlineData("dependencies/blocking")]
+    public async Task RelationshipAuthenticationFailuresRemainActionable(string endpoint)
+    {
+        var service = new ServerGitHubReadService((arguments, _) =>
+        {
+            if (arguments[0] == "issue")
+                return Task.FromResult(new GitHubReadCommandResult(0, """
+                    {"number":7,"title":"Root","body":"","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[]}
+                    """, ""));
+            if (arguments.Contains($"repos/team/project/issues/7/{endpoint}"))
+                return Task.FromResult(new GitHubReadCommandResult(1, "", "gh: Bad credentials (HTTP 401) token=secret"));
+            return Task.FromResult(new GitHubReadCommandResult(0,
+                arguments.Contains("repos/team/project/issues/7/parent") ? "null" : "[]", ""));
+        });
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() =>
+            service.GetIssueRelationshipsAsync(Project(), 7));
+        Assert.Contains("HTTP status 401", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Server service-account authentication", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("list")]
     [InlineData("detail")]
     [InlineData("relationships")]

@@ -12,7 +12,8 @@ public sealed class GitHubIssueGraphTests
         {
             [1] = Relations(1, children: [Ref(2, "closed", ["done"])], blockedBy: [Ref(3, "closed", ["ready"])],
                 labels: ["ready"]),
-            [2] = Relations(2, parent: Ref(1), labels: ["done"], state: "closed")
+            [2] = Relations(2, parent: Ref(1), labels: ["done"], state: "closed"),
+            [3] = Relations(3, state: "closed", labels: ["ready"])
         };
 
         var graph = await Build(1, relationships);
@@ -22,11 +23,14 @@ public sealed class GitHubIssueGraphTests
         Assert.Equal(new[] { 1, 2, 3 }, graph.Nodes.Select(node => node.Number));
         Assert.Contains(new GitHubIssueGraphEdge(1, 2, "parent-child"), graph.Edges);
         Assert.Contains(new GitHubIssueGraphEdge(1, 3, "blocked-by"), graph.Edges);
-        Assert.Equal("reference", Assert.Single(graph.Nodes, node => node.Number == 3).Availability);
+        Assert.Equal("available", Assert.Single(graph.Nodes, node => node.Number == 3).Availability);
         Assert.Equal(
             "#1 [open] Issue 1 (labels: ready)\n" +
             "    Blocked by: #3 [closed] Issue 3 (labels: ready)\n" +
-            "└── #2 [closed] Issue 2 (labels: done)\n",
+            "└── #2 [closed] Issue 2 (labels: done)\n" +
+            "Related Issues:\n" +
+            "#3 [closed] Issue 3 (labels: ready)\n" +
+            "    Blocking: #1 [open] Issue 1 (labels: ready)\n",
             GitHubIssueGraphBuilder.RenderText(graph));
     }
 
@@ -81,9 +85,9 @@ public sealed class GitHubIssueGraphTests
     }
 
     [Fact]
-    public async Task GraphPreservesMissingAndInaccessibleChildReferencesAndMissingRootReturnsNull()
+    public async Task GraphPreservesMissingReferencesAndPropagatesReadFailures()
     {
-        var root = Relations(1, children: [Ref(2), Ref(3)]);
+        var root = Relations(1, children: [Ref(2)]);
         Task<GitHubIssueRelationships?> GetRelationship(int number, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -101,7 +105,11 @@ public sealed class GitHubIssueGraphTests
 
         Assert.NotNull(graph);
         Assert.Equal("missing", Assert.Single(graph.Nodes, node => node.Number == 2).Availability);
-        Assert.Equal("unavailable", Assert.Single(graph.Nodes, node => node.Number == 3).Availability);
+        await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => GitHubIssueGraphBuilder.BuildAsync(3, GetRelationship));
+        await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => GitHubIssueGraphBuilder.BuildAsync(1,
+            (number, token) => number == 1
+                ? Task.FromResult<GitHubIssueRelationships?>(Relations(1, children: [Ref(3)]))
+                : GetRelationship(number, token)));
         Assert.Null(missingRoot);
     }
 
@@ -124,8 +132,112 @@ public sealed class GitHubIssueGraphTests
         using var document = JsonDocument.Parse(firstJson);
         Assert.Equal(1, document.RootElement.GetProperty("contractVersion").GetInt32());
         Assert.Equal("team/project", document.RootElement.GetProperty("repository").GetString());
+        Assert.Equal(1, document.RootElement.GetProperty("rootIssueNumber").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("nodes").GetArrayLength());
+        Assert.All(document.RootElement.GetProperty("edges").EnumerateArray(), edge =>
+            Assert.Contains(edge.GetProperty("kind").GetString(), new[] { "parent-child", "blocked-by" }));
         Assert.Contains(graph.Edges, edge => edge.Kind == "blocked-by" && edge.FromIssueNumber == 3 && edge.ToIssueNumber == 1);
         Assert.Contains("Blocking: #3 [open] Issue 3", GitHubIssueGraphBuilder.RenderText(graph), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DependenciesExpandRecursivelyDeduplicateInverseEdgesAndDetectCycles()
+    {
+        var relationships = new Dictionary<int, GitHubIssueRelationships>
+        {
+            [1] = Relations(1, children: [Ref(2)], blockedBy: [Ref(3), Ref(3)]),
+            [2] = Relations(2, parent: Ref(1), blockedBy: [Ref(3)]),
+            [3] = Relations(3, blockedBy: [Ref(4)], blocking: [Ref(1), Ref(2)]),
+            [4] = Relations(4, blockedBy: [Ref(3)])
+        };
+        var calls = new List<int>();
+        var graph = await GitHubIssueGraphBuilder.BuildAsync(1, (number, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            calls.Add(number);
+            return Task.FromResult<GitHubIssueRelationships?>(relationships[number]);
+        });
+        Assert.NotNull(graph);
+        Assert.Equal(new[] { 1, 2, 3, 4 }, calls);
+        Assert.Equal(5, graph.Edges.Count);
+        Assert.True(graph.CycleDetected);
+        Assert.Contains(graph.Edges, edge => edge.Kind == "blocked-by" && edge.IsCycle);
+        Assert.All(graph.Nodes, node => Assert.Equal("available", node.Availability));
+    }
+
+    [Fact]
+    public async Task DependencyExpansionRespectsDepthIssueAndEdgeLimits()
+    {
+        var relationships = new Dictionary<int, GitHubIssueRelationships>
+        {
+            [1] = Relations(1, blockedBy: [Ref(2), Ref(3)]),
+            [2] = Relations(2, blockedBy: [Ref(4)]),
+            [3] = Relations(3),
+            [4] = Relations(4)
+        };
+        var depth = await Build(1, relationships, new(MaxDepth: 0));
+        Assert.NotNull(depth);
+        Assert.Contains("max-depth", depth.TruncationReasons);
+        Assert.DoesNotContain(depth.Nodes, node => node.Number == 4);
+        Assert.Equal("reference", Assert.Single(depth.Nodes, node => node.Number == 2).Availability);
+        var issues = await Build(1, relationships, new(MaxIssues: 2));
+        Assert.NotNull(issues);
+        Assert.Equal(2, issues.Nodes.Count);
+        Assert.Contains("max-issues", issues.TruncationReasons);
+        var edges = await Build(1, relationships, new(MaxEdges: 1));
+        Assert.NotNull(edges);
+        Assert.Single(edges.Edges);
+        Assert.Equal(2, edges.Nodes.Count);
+        Assert.Contains("max-edges", edges.TruncationReasons);
+    }
+
+    [Fact]
+    public async Task NestedTreeKeepsAncestorContinuationLines()
+    {
+        var graph = await Build(1, new Dictionary<int, GitHubIssueRelationships>
+        {
+            [1] = Relations(1, children: [Ref(2), Ref(3)]),
+            [2] = Relations(2, children: [Ref(4), Ref(5)]),
+            [3] = Relations(3),
+            [4] = Relations(4, blockedBy: [Ref(3)]),
+            [5] = Relations(5)
+        });
+        Assert.NotNull(graph);
+        var text = GitHubIssueGraphBuilder.RenderText(graph);
+        Assert.Contains("│   ├── #4", text, StringComparison.Ordinal);
+        Assert.Contains("│   │   Blocked by: #3", text, StringComparison.Ordinal);
+        Assert.Contains("│   └── #5", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ShortestDependencyPathAllowsExpansionAndMixedRelationshipsAreNotCycles()
+    {
+        var graph = await Build(1, new Dictionary<int, GitHubIssueRelationships>
+        {
+            [1] = Relations(1, children: [Ref(2)], blockedBy: [Ref(4)]),
+            [2] = Relations(2, children: [Ref(3)], blockedBy: [Ref(1)]),
+            [3] = Relations(3, children: [Ref(4)]),
+            [4] = Relations(4, children: [Ref(5)]),
+            [5] = Relations(5)
+        }, new(MaxDepth: 2));
+        Assert.NotNull(graph);
+        Assert.Equal("available", Assert.Single(graph.Nodes, node => node.Number == 5).Availability);
+        Assert.False(graph.CycleDetected);
+    }
+
+    [Fact]
+    public async Task MalformedResponsesAndCancellationAreNotConvertedToMissingNodes()
+    {
+        await Assert.ThrowsAsync<InvalidDataException>(() => GitHubIssueGraphBuilder.BuildAsync(1,
+            (number, _) => Task.FromResult<GitHubIssueRelationships?>(number == 1
+                ? Relations(1, children: [Ref(2)]) : Relations(3))));
+        using var cancellation = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => GitHubIssueGraphBuilder.BuildAsync(1,
+            (number, token) =>
+            {
+                cancellation.Cancel();
+                return Task.FromResult<GitHubIssueRelationships?>(Relations(number, children: [Ref(2)]));
+            }, cancellationToken: cancellation.Token));
     }
 
     private static Task<GitHubIssueGraph?> Build(int rootNumber,
