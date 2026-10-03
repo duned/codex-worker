@@ -130,10 +130,15 @@ public static class GitHubIssueMutationValidation
 public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteService
 {
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<GitHubReadCommandResult>> _run;
+    private readonly Func<CentralProject, int, CancellationToken, Task<long>>? _identityResolver;
 
     public ServerGitHubIssueWriteService(
-        Func<IReadOnlyList<string>, CancellationToken, Task<GitHubReadCommandResult>>? run = null) =>
+        Func<IReadOnlyList<string>, CancellationToken, Task<GitHubReadCommandResult>>? run = null,
+        Func<CentralProject, int, CancellationToken, Task<long>>? identityResolver = null)
+    {
         _run = run ?? ServerGitHubReadService.RunGhAsync;
+        _identityResolver = identityResolver;
+    }
 
     public async Task<GitHubIssueWriteResponse> CreateIssueAsync(CentralProject project, string title, string body,
         CancellationToken cancellationToken = default)
@@ -187,7 +192,7 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
     {
         ValidateProject(project);
         ValidateDependency(issueNumber, blockerIssueNumber);
-        var blockerId = await GetIssueIdAsync(project.Repository, blockerIssueNumber, cancellationToken);
+        var blockerId = await GetIssueIdAsync(project, blockerIssueNumber, cancellationToken);
         await RunAsync(project.Repository,
             ["api", "--method", "POST", $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocked_by", "-F", $"issue_id={blockerId}"],
             "add Issue blocked-by relationship", cancellationToken);
@@ -198,7 +203,7 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
     {
         ValidateProject(project);
         ValidateDependency(issueNumber, blockerIssueNumber);
-        var blockerId = await GetIssueIdAsync(project.Repository, blockerIssueNumber, cancellationToken);
+        var blockerId = await GetIssueIdAsync(project, blockerIssueNumber, cancellationToken);
         await RunAsync(project.Repository,
             ["api", "--method", "DELETE", $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocked_by/{blockerId}"],
             "remove Issue blocked-by relationship", cancellationToken);
@@ -209,7 +214,7 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
     {
         ValidateProject(project);
         ValidateParent(parentIssueNumber, childIssueNumber);
-        var childId = await GetIssueIdAsync(project.Repository, childIssueNumber, cancellationToken);
+        var childId = await GetIssueIdAsync(project, childIssueNumber, cancellationToken);
         await RunAsync(project.Repository,
             ["api", "--method", "POST", $"repos/{project.Repository}/issues/{parentIssueNumber}/sub_issues", "-F", $"sub_issue_id={childId}"],
             "add Issue parent relationship", cancellationToken);
@@ -220,14 +225,16 @@ public sealed class ServerGitHubIssueWriteService : IServerGitHubIssueWriteServi
     {
         ValidateProject(project);
         ValidateParent(parentIssueNumber, childIssueNumber);
-        var childId = await GetIssueIdAsync(project.Repository, childIssueNumber, cancellationToken);
+        var childId = await GetIssueIdAsync(project, childIssueNumber, cancellationToken);
         await RunAsync(project.Repository,
             ["api", "--method", "DELETE", $"repos/{project.Repository}/issues/{parentIssueNumber}/sub_issue", "-F", $"sub_issue_id={childId}"],
             "remove Issue parent relationship", cancellationToken);
     }
 
-    private async Task<long> GetIssueIdAsync(string repository, int issueNumber, CancellationToken cancellationToken)
+    private async Task<long> GetIssueIdAsync(CentralProject project, int issueNumber, CancellationToken cancellationToken)
     {
+        if (_identityResolver is not null) return await _identityResolver(project, issueNumber, cancellationToken);
+        var repository = project.Repository;
         var result = await RunAsync(repository, ["api", $"repos/{repository}/issues/{issueNumber}", "--jq", ".id"],
             "read Issue relationship identity", cancellationToken);
         if (!long.TryParse(result.StandardOutput.Trim(), System.Globalization.NumberStyles.None,

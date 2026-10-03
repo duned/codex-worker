@@ -53,10 +53,10 @@ public static class ServerApplication
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
         builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
         builder.Services.AddSingleton<IServerGitHubReadService>(githubReadService ?? new ServerGitHubReadService());
-        builder.Services.AddSingleton<IServerGitHubIssueWriteService>(githubIssueWriteService ?? new ServerGitHubIssueWriteService());
+
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
             services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>(),
-            issueWriter: services.GetRequiredService<IServerGitHubIssueWriteService>()));
+            issueWriter: githubIssueWriteService, cacheDatabasePath: databasePath));
         builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));

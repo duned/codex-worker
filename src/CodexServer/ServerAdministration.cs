@@ -152,7 +152,7 @@ public sealed class LocalServerAdministrationServiceFactory : IServerAdministrat
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds);
         return new LocalServerAdministrationService(configuration, registry, new ServerHealthService(registry),
             githubAdministration: new ServerGitHubAdministrationService(registry, new ServerGitHubReadService(),
-                issueWriter: new ServerGitHubIssueWriteService()));
+                cacheDatabasePath: configuration.ResolveDatabasePath()));
     }
 }
 
@@ -263,6 +263,10 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         await EnsurePersistenceAvailableAsync(cancellationToken);
         return await registry.ReconcileUncertainExecutionAsync(executionRequestId, request, cancellationToken);
     }
+
+    public IDisposable? BeginReadOperation(bool refresh = false) => RequireGitHubAdministration().BeginReadOperation(refresh);
+    public Task PrefetchIssueReadsAsync(string projectId, IReadOnlyList<int> issueNumbers, CancellationToken cancellationToken) =>
+        RequireGitHubAdministration().PrefetchIssueReadsAsync(projectId, issueNumbers, cancellationToken);
 
     public async Task<GitHubRepositoryAccess?> CheckAccessAsync(string projectId, CancellationToken cancellationToken = default)
     {
@@ -716,7 +720,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
 
     private async Task<int> RunGitHubAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        const string usage = "Usage: codex-server github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--json] [Server configuration options]";
+        const string usage = "Usage: codex-server github <access|issues|issue|relationships|graph|enqueue|refresh|create|update|label|dependency|parent|sub-issues|dependency-batch> <project-id> [arguments] [--preview] [--refresh] [--json] [Server configuration options]";
         if (arguments.Count < 3) return InvalidArguments(usage);
 
         var operation = arguments[1];
@@ -725,6 +729,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         var json = false;
         var state = "open";
         var limit = 50;
+        var refreshData = false;
         var maxDepth = 5;
         var maxIssues = 100;
         var maxEdges = 500;
@@ -736,6 +741,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         for (var index = 2; index < arguments.Count; index++)
         {
             var argument = arguments[index];
+            if (argument == "--refresh" && !refreshData && operation is ("issue" or "issues" or "relationships" or "graph")) { refreshData = true; continue; }
             if (argument == "--json" && !json) { json = true; continue; }
             if (argument == "--preview" && !preview) { preview = true; continue; }
             if (IsConfigurationOption(argument))
@@ -848,6 +854,7 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                 _error.WriteLine("Local GitHub administration is unavailable through the configured Server service.");
                 return ServerAdministrationExitCodes.OperationalFailure;
             }
+            using var readOperation = github.BeginReadOperation(refreshData);
             switch (operation)
             {
                 case "access":
@@ -892,7 +899,8 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
                 case "graph":
                     var graph = await GitHubIssueGraphBuilder.BuildAsync(issueNumber,
                         (number, token) => github.GetIssueRelationshipsAsync(positionals[0], number, token),
-                        graphOptions, cancellationToken);
+                        graphOptions, cancellationToken,
+                        (numbers, token) => github.PrefetchIssueReadsAsync(positionals[0], numbers, token));
                     if (graph is null)
                     {
                         _error.WriteLine($"Project '{positionals[0]}' or GitHub Issue #{issueNumber} was not found.");

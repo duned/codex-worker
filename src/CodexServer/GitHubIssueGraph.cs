@@ -28,7 +28,8 @@ public static class GitHubIssueGraphBuilder
 {
     public static async Task<GitHubIssueGraph?> BuildAsync(int rootIssueNumber,
         Func<int, CancellationToken, Task<GitHubIssueRelationships?>> getRelationships,
-        GitHubIssueGraphOptions? options = null, CancellationToken cancellationToken = default)
+        GitHubIssueGraphOptions? options = null, CancellationToken cancellationToken = default,
+        Func<IReadOnlyList<int>, CancellationToken, Task>? prefetch = null)
     {
         ArgumentNullException.ThrowIfNull(getRelationships);
         if (rootIssueNumber <= 0) throw new InvalidDataException("Issue number must be positive.");
@@ -42,7 +43,7 @@ public static class GitHubIssueGraphBuilder
             rootRelationships.Issue.Number != rootIssueNumber)
             throw new InvalidDataException("GitHub root relationship results did not match the requested Issue.");
 
-        var builder = new Builder(rootRelationships.Repository, rootIssueNumber, options, getRelationships, cancellationToken);
+        var builder = new Builder(rootRelationships.Repository, rootIssueNumber, options, getRelationships, cancellationToken, prefetch);
         await builder.TraverseAsync(rootRelationships);
         return builder.CreateGraph();
     }
@@ -81,10 +82,6 @@ public static class GitHubIssueGraphBuilder
                          .OrderBy(edge => edge.ToIssueNumber))
                 if (nodes.TryGetValue(edge.ToIssueNumber, out var blocker))
                     output.Append(annotationPrefix).Append("Blocked by: ").Append(FormatReference(blocker)).AppendLine();
-            foreach (var edge in dependencies.Where(edge => edge.ToIssueNumber == issueNumber && edge.FromIssueNumber != issueNumber)
-                         .OrderBy(edge => edge.FromIssueNumber))
-                if (nodes.TryGetValue(edge.FromIssueNumber, out var blocked))
-                    output.Append(annotationPrefix).Append("Blocking: ").Append(FormatReference(blocked)).AppendLine();
 
             if (!hierarchy.TryGetValue(issueNumber, out var children)) return;
             for (var index = 0; index < children.Length; index++)
@@ -98,7 +95,7 @@ public static class GitHubIssueGraphBuilder
         }
 
         WriteNode(graph.RootIssueNumber, string.Empty, true);
-        var related = graph.Nodes.Where(node => node.Availability == "available" && !shown.Contains(node.Number)).ToArray();
+        var related = graph.Nodes.Where(node => (node.Availability == "available" || dependencies.Any(edge => edge.FromIssueNumber == node.Number)) && !shown.Contains(node.Number)).ToArray();
         if (related.Length > 0)
         {
             output.AppendLine("Related Issues:");
@@ -121,14 +118,26 @@ public static class GitHubIssueGraphBuilder
     private static string FormatReference(GitHubIssueGraphNode node) =>
         $"#{node.Number} [{node.State}] {SafeTerminalText(node.Title)}{FormatLabels(node)}";
 
-    private static string FormatLabels(GitHubIssueGraphNode node) => node.Labels.Count == 0 ? string.Empty :
-        $" (labels: {string.Join(", ", node.Labels.Select(SafeTerminalText))}{(node.LabelsTruncated ? ", …" : string.Empty)})";
+    private static string FormatLabels(GitHubIssueGraphNode node)
+    {
+        var labels = node.Labels.Where(IsExecutionLabel)
+            .Where(label => !(node.State == "closed" && label.Equals("codex-done", StringComparison.OrdinalIgnoreCase)))
+            .Select(SafeTerminalText).ToArray();
+        if (labels.Length > 0) return $" (labels: {string.Join(", ", labels)})";
+        return node.State == "open" ? " (no execution label)" : string.Empty;
+    }
+
+    private static bool IsExecutionLabel(string label) => label.ToLowerInvariant() is
+        "ready" or "working" or "blocked" or "failed" or "done" or
+        "codex-ready" or "codex-working" or "codex-blocked" or "codex-failed" or "codex-done" or
+        "codex-integration-conflict" or "codex-integration-recovery";
 
     private static string SafeTerminalText(string value) =>
         new(value.Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
     private sealed class Builder(string repository, int rootIssueNumber, GitHubIssueGraphOptions options,
-        Func<int, CancellationToken, Task<GitHubIssueRelationships?>> getRelationships, CancellationToken cancellationToken)
+        Func<int, CancellationToken, Task<GitHubIssueRelationships?>> getRelationships, CancellationToken cancellationToken,
+        Func<IReadOnlyList<int>, CancellationToken, Task>? prefetch)
     {
         private readonly Dictionary<int, GitHubIssueGraphNode> _nodes = [];
         private readonly HashSet<GitHubIssueGraphEdge> _edges = [];
@@ -144,8 +153,15 @@ public static class GitHubIssueGraphBuilder
             var queued = new HashSet<int> { rootIssueNumber };
             SetNode(root.Issue, "available", 0);
             pending.Enqueue((root.Issue, 0));
-            while (pending.TryDequeue(out var entry))
+            var prefetchedDepth = 0;
+            while (pending.TryPeek(out var next))
             {
+                if (prefetch is not null && next.Depth > prefetchedDepth)
+                {
+                    await prefetch(pending.Where(item => item.Depth == next.Depth).Select(item => item.Issue.Number).ToArray(), cancellationToken);
+                    prefetchedDepth = next.Depth;
+                }
+                var entry = pending.Dequeue();
                 cancellationToken.ThrowIfCancellationRequested();
                 var relationships = entry.Issue.Number == rootIssueNumber ? root :
                     await getRelationships(entry.Issue.Number, cancellationToken);
@@ -267,7 +283,7 @@ public static class GitHubIssueGraphBuilder
             if (issue.Number <= 0 || state is not ("open" or "closed"))
                 throw new InvalidDataException("GitHub Issue graph received an invalid Issue reference.");
             var allLabels = issue.Labels.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            var labels = allLabels.Take(20).ToArray();
+            var labels = allLabels.OrderByDescending(IsExecutionLabel).ThenBy(label => label, StringComparer.Ordinal).Take(20).Order(StringComparer.Ordinal).ToArray();
             _nodes[issue.Number] = new(issue.Number, issue.Title, state, labels,
                 availability, hierarchyDepth) { LabelsTruncated = allLabels.Length > labels.Length };
         }

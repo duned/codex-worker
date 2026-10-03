@@ -86,7 +86,9 @@ public static class Program
             userCancellation.Cancel();
         };
         Console.CancelKeyPress += cancelHandler;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var timeoutSeconds = ServerAdministrationTimeoutPolicy.Seconds(args);
+        var timeoutDiagnostic = ServerAdministrationTimeoutPolicy.Diagnostic(args);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(userCancellation.Token, timeout.Token);
         try
         {
@@ -107,7 +109,7 @@ public static class Program
             }
             if (timeout.IsCancellationRequested)
             {
-                Console.Error.WriteLine("Server administration command timed out after 15 seconds. Check local database availability and try again.");
+                Console.Error.WriteLine(timeoutDiagnostic);
                 return ServerAdministrationExitCodes.OperationalFailure;
             }
             return exitCode;
@@ -119,7 +121,7 @@ public static class Program
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
-            Console.Error.WriteLine("Server administration command timed out after 15 seconds. Check local database availability and try again.");
+            Console.Error.WriteLine(timeoutDiagnostic);
             return ServerAdministrationExitCodes.OperationalFailure;
         }
         finally { Console.CancelKeyPress -= cancelHandler; }

@@ -6,6 +6,29 @@ using CodexServer;
 public sealed class GitHubIssueGraphTests
 {
     [Fact]
+    public async Task HumanOutputShowsOperationalLabelsAndEachDependencyFromTheBlockedPerspective()
+    {
+        var unrelated = Enumerable.Range(1, 25).Select(number => "aaa-tag-" + number).ToArray();
+        var relationships = new Dictionary<int, GitHubIssueRelationships>
+        {
+            [1] = Relations(1, children: [Ref(2), Ref(3)], labels: ["codex-roadmap"]),
+            [2] = Relations(2, parent: Ref(1), blockedBy: [Ref(3)], labels: [.. unrelated, "codex-working"]),
+            [3] = Relations(3, parent: Ref(1), blocking: [Ref(2)], state: "closed", labels: ["codex-done"])
+        };
+        var graph = await Build(1, relationships);
+        Assert.NotNull(graph);
+        var text = GitHubIssueGraphBuilder.RenderText(graph);
+        Assert.Contains("#1 [open] Issue 1 (no execution label)", text, StringComparison.Ordinal);
+        Assert.Contains("#2 [open] Issue 2 (labels: codex-working)", text, StringComparison.Ordinal);
+        Assert.Contains("#3 [closed] Issue 3", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("codex-done", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("aaa-tag", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("codex-roadmap", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Blocking:", text, StringComparison.Ordinal);
+        Assert.Equal(1, text.Split("Blocked by:", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public async Task GraphSeparatesHierarchyAndDependencyEdgesAndRendersStateAndLabels()
     {
         var relationships = new Dictionary<int, GitHubIssueRelationships>
@@ -29,8 +52,7 @@ public sealed class GitHubIssueGraphTests
             "    Blocked by: #3 [closed] Issue 3 (labels: ready)\n" +
             "└── #2 [closed] Issue 2 (labels: done)\n" +
             "Related Issues:\n" +
-            "#3 [closed] Issue 3 (labels: ready)\n" +
-            "    Blocking: #1 [open] Issue 1 (labels: ready)\n",
+            "#3 [closed] Issue 3 (labels: ready)\n",
             GitHubIssueGraphBuilder.RenderText(graph));
     }
 
@@ -137,7 +159,7 @@ public sealed class GitHubIssueGraphTests
         Assert.All(document.RootElement.GetProperty("edges").EnumerateArray(), edge =>
             Assert.Contains(edge.GetProperty("kind").GetString(), new[] { "parent-child", "blocked-by" }));
         Assert.Contains(graph.Edges, edge => edge.Kind == "blocked-by" && edge.FromIssueNumber == 3 && edge.ToIssueNumber == 1);
-        Assert.Contains("Blocking: #3 [open] Issue 3", GitHubIssueGraphBuilder.RenderText(graph), StringComparison.Ordinal);
+        Assert.Contains("Blocked by: #1 [open] Issue 1", GitHubIssueGraphBuilder.RenderText(graph), StringComparison.Ordinal);
     }
 
     [Fact]
