@@ -77,6 +77,12 @@ maybe_prompt_for_github_cli_bootstrap() {
   case "$bootstrap_answer" in [Yy]|[Yy][Ee][Ss]) bootstrap_github_cli=true ;; esac
 }
 
+configure_github_cli_bootstrap() {
+  if ! reuse_existing_github_cli_when_usable; then
+    maybe_prompt_for_github_cli_bootstrap
+  fi
+}
+
 ensure_management_token() {
   local environment_file="$1"
 
@@ -304,8 +310,7 @@ if [[ ${EUID} -ne 0 ]]; then
   fail 'Run as root (for example, curl -fsSL <installer-url> | sudo bash).'
 fi
 
-reuse_existing_github_cli_when_usable || true
-maybe_prompt_for_github_cli_bootstrap
+configure_github_cli_bootstrap
 
 if [[ -n "$publish_dir" ]]; then
   [[ -d "$publish_dir" ]] || fail "Published directory does not exist: $publish_dir"

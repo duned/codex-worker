@@ -244,7 +244,7 @@ public sealed class ServerCredentialAdministrationCli(IServerConfigurationAdmini
         return value;
     }
 
-    private static Task<string> ReadInteractiveSecretAsync(CancellationToken cancellationToken)
+    internal static Task<string> ReadInteractiveSecretAsync(CancellationToken cancellationToken)
     {
         if (Console.IsInputRedirected)
             throw new InvalidOperationException("Interactive secret entry requires a terminal; use --secret-stdin for piped input.");

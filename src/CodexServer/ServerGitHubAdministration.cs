@@ -197,7 +197,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         if (result.ExitCode != 0)
         {
             if (IsNotFound(result.StandardError)) return null;
-            throw CreateReadFailure(project.Repository, result.ExitCode, "Issue detail");
+            throw CreateReadFailure(project.Repository, result, "Issue detail");
         }
         try
         {
@@ -264,7 +264,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         if (result.ExitCode != 0)
         {
             if (IsNotFound(result.StandardError)) return null;
-            throw CreateReadFailure(repository, result.ExitCode, "GitHub parent relationship read");
+            throw CreateReadFailure(repository, result, "GitHub parent relationship read");
         }
         try
         {
@@ -281,7 +281,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
     private async Task<IReadOnlyList<GitHubRelationshipIssue>> ReadRelationshipIssuesAsync(string repository, string endpoint,
         CancellationToken cancellationToken)
     {
-        var result = await RunReadAsync(repository, ["api", "--paginate", "-F", "per_page=100", endpoint], cancellationToken);
+        var result = await RunReadAsync(repository, ["api", "--method", "GET", "--paginate", "-F", "per_page=100", endpoint], cancellationToken);
         try
         {
             var relationships = new List<GitHubRelationshipIssue>();
@@ -321,7 +321,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         CancellationToken cancellationToken)
     {
         var endpoint = $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by";
-        var result = await RunReadAsync(repository, ["api", "--paginate", "-F", "per_page=100", endpoint], cancellationToken);
+        var result = await RunReadAsync(repository, ["api", "--method", "GET", "--paginate", "-F", "per_page=100", endpoint], cancellationToken);
         try
         {
             var pages = ParsePages(result.StandardOutput);
@@ -362,13 +362,32 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
                 $"GitHub read access is unavailable for repository '{repository}'. Check Server service-account authentication and repository read access.",
                 "read-unavailable", exception);
         }
-        if (result.ExitCode != 0) throw CreateReadFailure(repository, result.ExitCode, "GitHub read operation");
+        if (result.ExitCode != 0) throw CreateReadFailure(repository, result, "GitHub read operation");
         return result;
     }
 
-    private static GitHubReadUnavailableException CreateReadFailure(string repository, int exitCode, string operation) =>
-        new(repository, $"{operation} failed for repository '{repository}' (gh exit {exitCode}). Check Server service-account authentication and repository read access.",
+    private static GitHubReadUnavailableException CreateReadFailure(string repository, GitHubReadCommandResult result, string operation) =>
+        new(repository, $"{operation} failed for repository '{repository}' (gh exit {result.ExitCode}).{SafeReadFailureDetail(result.StandardError)} Check Server service-account authentication and repository read access.",
             "read-failed");
+
+    private static string SafeReadFailureDetail(string error)
+    {
+        // Only recognized error categories and HTTP status codes leave the process
+        // boundary. stderr can contain credentials, URLs or arbitrary server text.
+        string[] categories = ["Resource not accessible by integration", "Resource not accessible by personal access token",
+            "Bad credentials", "API rate limit exceeded", "Not Found", "Forbidden", "Validation Failed",
+            "Requires authentication", "Method Not Allowed", "Could not resolve to an Issue", "Unknown JSON field"];
+        var category = categories.FirstOrDefault(value => error.Contains(value, StringComparison.OrdinalIgnoreCase));
+        var status = System.Text.RegularExpressions.Regex.Match(error, @"\bHTTP ([1-5][0-9]{2})\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var detail = category is null ? string.Empty : $" GitHub reported: {category}.";
+        if (status.Success) detail += $" HTTP status {status.Groups[1].Value}.";
+        if (status.Groups[1].Value == "404")
+            detail += " Verify repository/Issue visibility and API endpoint/method support.";
+        if (status.Groups[1].Value == "403")
+            detail += " Verify token permissions and API rate limits.";
+        return detail;
+    }
 
     private static ManagedGitHubIssue Evaluate(CentralProject project, IssueFields issue,
         IReadOnlyList<GitHubBlockingIssue> blockers)

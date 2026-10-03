@@ -107,8 +107,10 @@ public sealed class CredentialAdministrationTests
         Assert.Contains("encryption is not configured", error.ToString(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task LocalCredentialCliReadsInteractiveSecretWithoutStdinOrEchoingIt()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LocalCredentialCliReadsInteractiveSecretWithoutStdinOrEchoingIt(bool replace)
     {
         using var temporary = new TemporaryDirectory();
         var database = Path.Combine(temporary.Path, "server.db");
@@ -121,12 +123,24 @@ public sealed class CredentialAdministrationTests
         using var output = new StringWriter();
         using var error = new StringWriter();
         var secret = "interactive-secret-value";
+        var existing = replace ? await credentials.CreateAsync(new("github", "api-token", new("initial-secret"))) : null;
+        var clock = new AdministrationClock();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15), clock);
+        using var userCancellation = new CancellationTokenSource();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, userCancellation.Token);
         var cli = new ServerCredentialAdministrationCli(new ServerConfigurationAdministrationService(),
             new CredentialServiceFactory(service), output: output, error: error,
-            interactiveSecretReader: _ => Task.FromResult(secret));
+            interactiveSecretReader: token => CodexServer.Program.ReadCredentialSecretAsync(timeout, token, inputToken =>
+            {
+                // Arbitrarily long human input must not exhaust the command timer.
+                clock.Expire();
+                Assert.False(inputToken.IsCancellationRequested);
+                return Task.FromResult(secret);
+            }));
 
-        var result = await cli.RunAsync(["create", "github", "api-token", "--json",
-            $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}"]);
+        string[] command = existing is null ? ["create", "github", "api-token"] : ["replace", existing.Id];
+        var result = await cli.RunAsync([.. command, "--json",
+            $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}"], linked.Token);
 
         Assert.Equal(ServerAdministrationExitCodes.Success, result);
         Assert.DoesNotContain(secret, output.ToString(), StringComparison.Ordinal);
@@ -134,6 +148,65 @@ public sealed class CredentialAdministrationTests
         Assert.Contains("Secret:", error.ToString(), StringComparison.Ordinal);
         using var response = JsonDocument.Parse(output.ToString());
         Assert.Equal("Ready", response.RootElement.GetProperty("status").GetString());
+        clock.Expire();
+        Assert.True(timeout.IsCancellationRequested);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InteractiveInputPreservesCancellationAndRestoresDeadlineOnFailure(bool cancel)
+    {
+        var clock = new AdministrationClock();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15), clock);
+        using var userCancellation = new CancellationTokenSource();
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, userCancellation.Token);
+        async Task Read() => await CodexServer.Program.ReadCredentialSecretAsync(timeout, linked.Token, token =>
+        {
+            clock.Expire();
+            Assert.False(timeout.IsCancellationRequested);
+            if (cancel)
+            {
+                userCancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+            }
+            throw new InvalidOperationException("Input unavailable.");
+        });
+        if (cancel) await Assert.ThrowsAsync<OperationCanceledException>(Read);
+        else await Assert.ThrowsAsync<InvalidOperationException>(Read);
+        clock.Expire();
+        Assert.True(timeout.IsCancellationRequested);
+    }
+
+    private sealed class AdministrationClock : TimeProvider
+    {
+        private AdministrationTimer? _timer;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            _timer = new(callback, state, dueTime);
+            return _timer;
+        }
+        public void Expire() => _timer?.Expire();
+
+        private sealed class AdministrationTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+        {
+            private TimeSpan _dueTime = dueTime;
+            public void Expire()
+            {
+                if (_dueTime != Timeout.InfiniteTimeSpan) callback(state);
+            }
+            public bool Change(TimeSpan nextDueTime, TimeSpan period)
+            {
+                _dueTime = nextDueTime;
+                return true;
+            }
+            public void Dispose() => _dueTime = Timeout.InfiniteTimeSpan;
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     private sealed class CredentialServiceFactory(IServerCredentialAdministrationService service)

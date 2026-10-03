@@ -9,13 +9,21 @@ using Microsoft.Extensions.DependencyInjection;
 
 public sealed class ServerGitHubAdministrationTests
 {
-    [Fact]
-    public async Task ReadServiceBoundsQueriesReturnsLabelsAndBlockedByAndScopesAccessDiagnostics()
+    [Theory]
+    [InlineData("open", "OPEN")]
+    [InlineData("closed", "CLOSED")]
+    [InlineData("all", "OPEN")]
+    [InlineData("all", "CLOSED")]
+    public async Task ReadServiceBoundsQueriesReturnsLabelsAndBlockedByAndScopesAccessDiagnostics(string state, string issueState)
     {
         var commands = new List<IReadOnlyList<string>>();
         Task<GitHubReadCommandResult> Run(IReadOnlyList<string> arguments, CancellationToken _)
         {
             commands.Add(arguments);
+            // gh api fields imply POST unless GET is explicit. Simulate the API
+            // rejecting that method, even when the caller has healthy authentication.
+            if (arguments[0] == "api" && arguments.Contains("-F") && !arguments.Contains("GET"))
+                return Task.FromResult(new GitHubReadCommandResult(1, "", "gh: Not Found (HTTP 404)"));
             if (arguments.SequenceEqual(["auth", "status", "--hostname", "github.com"]))
                 return Task.FromResult(new GitHubReadCommandResult(0, "", ""));
             if (arguments.SequenceEqual(["api", "repos/team/project", "--jq", ".full_name"]))
@@ -23,11 +31,11 @@ public sealed class ServerGitHubAdministrationTests
             if (arguments[0] == "issue" && arguments[1] == "list")
                 return Task.FromResult(new GitHubReadCommandResult(0, """
                     [{"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}]}]
-                    """, ""));
+                    """.Replace("\"OPEN\"", $"\"{issueState}\"", StringComparison.Ordinal), ""));
             if (arguments[0] == "issue" && arguments[1] == "view")
                 return Task.FromResult(new GitHubReadCommandResult(0, """
                     {"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}]}
-                    """, ""));
+                    """.Replace("\"OPEN\"", $"\"{issueState}\"", StringComparison.Ordinal), ""));
             if (arguments[0] == "api" && arguments.Contains("repos/team/project/issues/7/dependencies/blocked_by"))
                 return Task.FromResult(new GitHubReadCommandResult(0, "[{\"number\":3,\"title\":\"Prerequisite\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/3\"}]\n", ""));
             if (arguments.Contains("repos/team/project/issues/7/parent"))
@@ -45,9 +53,11 @@ public sealed class ServerGitHubAdministrationTests
         var service = new ServerGitHubReadService(Run, new TestTimeProvider(DateTimeOffset.Parse("2026-09-10T00:00:00Z")));
         var project = Project(issueReadyLabel: "ready");
         var access = await service.CheckAccessAsync(project);
-        var issues = await service.ListIssuesAsync(project, new GitHubIssueQuery("open", 2, "ready"));
+        var issues = await service.ListIssuesAsync(project, new GitHubIssueQuery(state, 2, "ready"));
         var detail = await service.GetIssueAsync(project, 7);
         var relationships = await service.GetIssueRelationshipsAsync(project, 7);
+        var graph = await GitHubIssueGraphBuilder.BuildAsync(7,
+            (number, token) => service.GetIssueRelationshipsAsync(project, number, token), new(MaxDepth: 0));
 
         Assert.True(access.CliAuthenticated);
         Assert.True(access.RepositoryReadable);
@@ -57,7 +67,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.False(issue.IsEligible);
         Assert.Equal("ready", Assert.Single(issue.Labels));
         Assert.Equal(3, Assert.Single(issue.BlockedBy).Number);
-        Assert.Contains("#3", Assert.Single(issue.EligibilityReasons), StringComparison.Ordinal);
+        Assert.Contains(issue.EligibilityReasons, reason => reason.Contains("#3", StringComparison.Ordinal));
+        Assert.Equal(issueState, issue.State);
         Assert.NotNull(detail);
         Assert.False(detail.IsEligible);
         Assert.Equal(3, Assert.Single(detail.BlockedBy).Number);
@@ -68,11 +79,34 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("ready", Assert.Single(relationshipResult.SubIssues[0].Labels));
         Assert.Equal(3, Assert.Single(relationshipResult.BlockedBy).Number);
         Assert.Equal(9, Assert.Single(relationshipResult.Blocking).Number);
+        Assert.NotNull(graph);
+        Assert.Contains(graph.Nodes, node => node.Number == 7 && node.State == issueState.ToLowerInvariant());
         var query = Assert.Single(commands, command => command[0] == "issue" && command[1] == "list");
         Assert.Contains("--limit", query);
         Assert.Equal("2", query[Array.IndexOf(query.ToArray(), "--limit") + 1]);
+        Assert.Equal(state, query[Array.IndexOf(query.ToArray(), "--state") + 1]);
         Assert.Equal("ready", query[Array.IndexOf(query.ToArray(), "--label") + 1]);
         Assert.DoesNotContain(commands, command => command.Contains("permissions", StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("list")]
+    [InlineData("detail")]
+    [InlineData("relationships")]
+    public async Task ReadFailuresExposeOnlyRecognizedDiagnostics(string operation)
+    {
+        var service = new ServerGitHubReadService((_, _) => Task.FromResult(new GitHubReadCommandResult(1, "",
+            "gh: Resource not accessible by integration (HTTP 403)\nAuthorization: Bearer private-value token=private-token ghp_private_secret https://user:password@example.com")));
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(async () =>
+        {
+            if (operation == "list") await service.ListIssuesAsync(Project(), new());
+            else if (operation == "detail") await service.GetIssueAsync(Project(), 7);
+            else await service.GetIssueRelationshipsAsync(Project(), 7);
+        });
+        Assert.Contains("Resource not accessible by integration", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("HTTP status 403", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

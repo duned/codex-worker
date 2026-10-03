@@ -92,7 +92,8 @@ public static class Program
                 ? await new ServerProvisioningCommandCli(configuration, new LocalProvisioningCommandAdministrationServiceFactory())
                     .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
                 : args[0] == "credential"
-                    ? await new ServerCredentialAdministrationCli(configuration, new LocalServerCredentialAdministrationServiceFactory())
+                    ? await new ServerCredentialAdministrationCli(configuration, new LocalServerCredentialAdministrationServiceFactory(),
+                        interactiveSecretReader: token => ReadCredentialSecretAsync(timeout, token))
                         .RunAsync(args.Skip(1).ToArray(), cancellation.Token)
                 : await new ServerAdministrationCli(configuration, new LocalServerAdministrationServiceFactory())
                     .RunAsync(args, cancellation.Token);
@@ -119,6 +120,21 @@ public static class Program
             return ServerAdministrationExitCodes.OperationalFailure;
         }
         finally { Console.CancelKeyPress -= cancelHandler; }
+    }
+
+    internal static async Task<string> ReadCredentialSecretAsync(CancellationTokenSource timeout,
+        CancellationToken cancellationToken, Func<CancellationToken, Task<string>>? reader = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Local human input has no execution deadline. Ctrl+C still cancels input;
+        // resume the normal bounded administration work once the prompt finishes.
+        timeout.CancelAfter(Timeout.InfiniteTimeSpan);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await (reader ?? ServerCredentialAdministrationCli.ReadInteractiveSecretAsync)(cancellationToken);
+        }
+        finally { timeout.CancelAfter(TimeSpan.FromSeconds(15)); }
     }
 
     private static bool ValidHostArguments(string[] args)

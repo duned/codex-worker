@@ -245,7 +245,15 @@ chmod +x "$github_cli_executable"
 github_cli_is_usable
 assert_github_cli_reused() {
   bootstrap_github_cli=true
-  reuse_existing_github_cli_when_usable > "$temp_dir/github-cli-reuse.out"
+  (
+    maybe_prompt_for_github_cli_bootstrap() {
+      echo "Installer prompted despite healthy GitHub CLI." >&2
+      exit 1
+    }
+    configure_github_cli_bootstrap
+    [[ $bootstrap_github_cli == false ]]
+  ) > "$temp_dir/github-cli-reuse.out"
+  reuse_existing_github_cli_when_usable > /dev/null
   reuse_output="$(<"$temp_dir/github-cli-reuse.out")"
   [[ $bootstrap_github_cli == false ]]
   [[ $reuse_output == 'GitHub CLI is already installed and available; skipping installation.' ]]
