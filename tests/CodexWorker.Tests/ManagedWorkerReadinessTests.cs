@@ -134,15 +134,38 @@ public sealed class ManagedWorkerReadinessTests
         var provider = new TestProvider();
         var readiness = new ManagedCodexReadiness(provider);
         Assert.False(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        Assert.Equal("codex-cli:execution-preflight-failed", readiness.DiagnosticCode);
         await discovery.GetAsync(refresh: true);
         Assert.False(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
         Assert.Equal(1, provider.Calls);
         provider.Available = true;
         Assert.True(await readiness.EvaluateAsync(discovery, true, CancellationToken.None));
+        Assert.Null(readiness.DiagnosticCode);
         Assert.Equal(2, provider.Calls);
         using var stop = new CancellationTokenSource();
         stop.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readiness.EvaluateAsync(discovery, true, stop.Token));
+    }
+
+    [Fact]
+    public async Task RequiredDependencyLossLeavesAgentReadyWithoutRepeatingPreflight()
+    {
+        var githubAuthenticated = true;
+        var discovery = new NodeCapabilityDiscovery((executable, arguments, _) => Task.FromResult(
+            (executable == "gh" && arguments[0] == "auth" && !githubAuthenticated ? 1 : 0, "1.0.0")));
+        var provider = new TestProvider { Available = true };
+        var readiness = new ManagedCodexReadiness(provider);
+        Assert.True(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        githubAuthenticated = false;
+        await discovery.GetAsync(refresh: true);
+        Assert.True(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        Assert.False(CapabilityCatalog.ExecutionReadiness(await discovery.GetAsync()).Available);
+        Assert.Equal(1, provider.Calls);
+        githubAuthenticated = true;
+        await discovery.GetAsync(refresh: true);
+        Assert.True(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
+        Assert.True(CapabilityCatalog.ExecutionReadiness(await discovery.GetAsync()).Available);
+        Assert.Equal(1, provider.Calls);
     }
 
     private sealed class TestProvider : IAgentAuthenticationProvider

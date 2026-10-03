@@ -27,6 +27,29 @@ managed contract v2. Older clients remain accepted and appear with unknown
 provisioning facts. The scheduler continues to use its existing project-specific
 capability requirements. Node execution readiness is a conservative inventory
 summary, not a replacement for project eligibility, capacity, or lease decisions.
+Each capability also exposes `readiness.available` and bounded `readiness.blockingReasons`.
+Readiness is derived from the provider definition: installation, required typed
+authentication and local configuration, successful observation, and idle operation
+must all be satisfied. Providers with no credential dependency, such as .NET,
+can become available immediately after installation. Installed Codex or GitHub CLI
+without authentication remains installed and reports `authentication-required`.
+Worker lifecycle/status diagnostics qualify missing prerequisites with the provider
+ID, for example `github-cli:authentication-required`. Tool health is separate from
+Worker process health; missing tools leave a connected Worker alive and provisionable.
+
+Worker scheduling requires all catalog providers marked `requiredForExecution`,
+plus a successful agent execution preflight and existing project preparation.
+Optional workload providers do not block generic execution readiness. The Server
+also rejects new assignments when a reported inventory lacks execution prerequisites;
+clients without an inventory retain the existing requirement checks. A task requiring
+an inventoried tool also requires that provider's authentication and configuration;
+for example, a Docker task is ineligible until daemon access is satisfied. Repository
+access, task requirements, capacity and lease authority remain separate checks.
+Cached observations are periodically refreshed even while tasks are active; detected
+authentication loss stops new scheduling without cancelling existing executions.
+A failed agent preflight is retried only after changed agent observations or explicit
+provisioning, rather than a service retry loop.
+
 Server execution readiness is `not-applicable`. Connectivity and provisioning
 readiness describe whether the control plane can interact with the node, even
 when its tools are missing or authentication is required.

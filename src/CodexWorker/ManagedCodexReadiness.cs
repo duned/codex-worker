@@ -7,18 +7,18 @@ internal sealed class ManagedCodexReadiness(IAgentAuthenticationProvider provide
 {
     private CapabilityState? _lastObservation;
     private bool _ready;
+    internal string? DiagnosticCode { get; private set; }
 
     internal async Task<bool> EvaluateAsync(NodeCapabilityDiscovery discovery, bool changed,
         CancellationToken token)
     {
-        var observation = (await discovery.GetAsync(cancellationToken: token))
-            .Single(state => state.Id == "codex-cli") with { DetectedAtUtc = null };
+        var states = await discovery.GetAsync(cancellationToken: token);
+        var observation = states.Single(state => state.Id == "codex-cli") with { DetectedAtUtc = null };
         if (!changed && observation == _lastObservation) return _ready;
         _lastObservation = observation;
         _ready = false;
-        if (observation.Installation != InstallationState.Installed ||
-            observation.Authentication != RequirementState.Satisfied ||
-            observation.Health != CapabilityHealth.Healthy) return false;
+        DiagnosticCode = null;
+        if (!CapabilityCatalog.Ready([observation])) return false;
         try
         {
             await provider.ValidateAsync(token);
@@ -26,6 +26,7 @@ internal sealed class ManagedCodexReadiness(IAgentAuthenticationProvider provide
         }
         catch (WorkerInfrastructureException)
         {
+            DiagnosticCode = "codex-cli:execution-preflight-failed";
             // A failed readiness probe does not kill a provisionable node. Retry only
             // after an observation changes or an explicit provisioning operation.
         }

@@ -20,7 +20,10 @@ public sealed record CapabilityInventoryItem(
     IReadOnlyList<ProvidedToolKind> Provides,
     LocalConfigurationDependencyKind? ConfigurationDependency,
     int? RequiredMajorVersion,
-    bool RequiredForExecution);
+    bool RequiredForExecution)
+{
+    public CapabilityReadiness Readiness { get; init; } = new(false, ["not-detected"]);
+}
 
 public static class CapabilityInventoryReporter
 {
@@ -38,7 +41,8 @@ public static class CapabilityInventoryReporter
             return new CapabilityInventoryItem(definition.Id, definition.DisplayName, state.Installation,
                 state.DetectedVersion, state.Update, state.Authentication, state.Configuration, state.Health,
                 state.DiagnosticCode, capability.AvailableActions, definition.AuthenticationDependencies, definition.Provides,
-                definition.ConfigurationDependency, definition.RequiredMajorVersion, definition.RequiredForExecution);
+                definition.ConfigurationDependency, definition.RequiredMajorVersion, definition.RequiredForExecution)
+                { Readiness = capability.Readiness };
         }).ToArray();
         return new(1, items);
     }
@@ -62,6 +66,7 @@ public static class CapabilityInventoryReporter
             var dimensions = new[] { authentication, configuration }.Where(value => value is not null);
             writer.WriteLine($"{capability.Id}: installation={capability.Installation.ToString().ToLowerInvariant()} {version} " +
                 $"update={capability.Update.ToString().ToLowerInvariant()} {string.Join(" ", dimensions)} " +
+                $"available={capability.Readiness.Available.ToString().ToLowerInvariant()} blocking-reasons={string.Join(",", capability.Readiness.BlockingReasons)} " +
                 $"health={capability.Health.ToString().ToLowerInvariant()} diagnostic={capability.DiagnosticCode ?? "none"} actions={actions} " +
                 $"authentication-dependencies={DisplayAuthenticationDependencies(capability.AuthenticationDependencies)} " +
                 $"provides={string.Join(",", capability.Provides)} configuration-dependency={capability.ConfigurationDependency?.ToString() ?? "none"} " +

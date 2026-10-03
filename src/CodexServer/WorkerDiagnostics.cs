@@ -36,13 +36,21 @@ public static class WorkerDiagnosticsDerivation
             ? Has(capabilities, "authentication", "git-repository")
             : projects.All(project => Has(capabilities, "authentication", "git-repository", project.Repository));
         var aiReady = Has(capabilities, "agent-provider", "codex");
+        if (worker.CapabilityInventory is { } localInventory)
+        {
+            githubReady &= CapabilityCatalog.ProvidesTool(ProvidedToolKind.GitHubCli, localInventory);
+            gitReady &= CapabilityCatalog.ProvidesTool(ProvidedToolKind.Git, localInventory);
+            aiReady &= CapabilityCatalog.ProvidesTool(ProvidedToolKind.CodexCli, localInventory);
+        }
         var readiness = projects.Select(project =>
         {
-            var result = WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), capabilities);
+            var result = WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), capabilities, worker.CapabilityInventory);
             return new WorkerProjectReadiness(project.Id, project.Name, result.IsEligible, result.MissingRequirements);
         }).ToArray();
 
         var reasons = new List<string>();
+        if (worker.CapabilityInventory is { } inventory)
+            reasons.AddRange(CapabilityCatalog.ExecutionReadiness(inventory).BlockingReasons);
         if (worker.SchedulingPolicy == WorkerSchedulingPolicy.Disabled) reasons.Add("Scheduling disabled by Server operator");
         if (worker.SchedulingPolicy == WorkerSchedulingPolicy.Draining)
             reasons.Add(worker.ActiveAssignments == 0 ? "Drain complete; scheduling remains paused" :

@@ -900,7 +900,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
-            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0)
+            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0 ||
+            heartbeat.CapabilityInventory is { } inventory && !CapabilityCatalog.ExecutionReadiness(inventory).Available)
         {
             await transaction.CommitAsync(cancellationToken);
             return new(false, null);
@@ -987,7 +988,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             }
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
                 !candidateProject.Enabled ||
-                !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities).IsEligible) continue;
+                !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities, heartbeat.CapabilityInventory).IsEligible) continue;
             WorkReference canonicalWork;
             try { canonicalWork = ExecutionRequestValidation.Canonicalize(queuedItem.Work, candidateProject.Repository); }
             catch (InvalidDataException) { continue; }
@@ -1380,7 +1381,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
         if (!project.Enabled) return "project is disabled";
-        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
+        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
         var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
@@ -1394,9 +1395,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return [];
         if (!project.Enabled) return [];
-        if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible)) return [];
+        if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible)) return [];
         if (workers.Count == 0) return WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), []).MissingRequirements;
-        return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).MissingRequirements)
+        return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).MissingRequirements)
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
     }
 

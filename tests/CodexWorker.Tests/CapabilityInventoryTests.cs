@@ -30,6 +30,8 @@ public sealed class CapabilityInventoryTests
         Assert.Equal(InstallationState.Installed, github.Installation);
         Assert.Equal("2.3.4", github.DetectedVersion);
         Assert.Equal(RequirementState.Required, github.Authentication);
+        Assert.False(github.Readiness.Available);
+        Assert.Equal(["authentication-required"], github.Readiness.BlockingReasons);
         Assert.Equal([AuthenticationDependencyKind.GitHubCliLogin], github.AuthenticationDependencies);
         var codex = Assert.Single(inventory.Capabilities, capability => capability.Id == "codex-cli");
         Assert.Equal(InstallationState.Unknown, codex.Installation);
@@ -43,6 +45,8 @@ public sealed class CapabilityInventoryTests
         var json = JsonSerializer.Serialize(inventory, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.DoesNotContain("private-identity", json, StringComparison.Ordinal);
         Assert.DoesNotContain("private-key", json, StringComparison.Ordinal);
+        Assert.Contains("readiness", json, StringComparison.Ordinal);
+        Assert.Contains("blockingReasons", json, StringComparison.Ordinal);
         Assert.Contains("diagnosticCode", json, StringComparison.Ordinal);
         Assert.Contains("authenticationDependencies", json, StringComparison.Ordinal);
         Assert.Contains("GitHubCliLogin", json, StringComparison.Ordinal);
@@ -64,7 +68,7 @@ public sealed class CapabilityInventoryTests
 
         var listed = await CapabilityInventoryReporter.CreateAsync(discovery);
         var listedAgain = await CapabilityInventoryReporter.CreateAsync(discovery);
-        Assert.Equal(listed.Capabilities, listedAgain.Capabilities);
+        Assert.Equal(JsonSerializer.Serialize(listed), JsonSerializer.Serialize(listedAgain));
         Assert.Equal(4, detection);
 
         var refreshed = await CapabilityInventoryReporter.CreateAsync(discovery, refresh: true);

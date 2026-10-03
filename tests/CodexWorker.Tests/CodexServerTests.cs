@@ -20,6 +20,42 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task MissingLocalAuthenticationBlocksAssignmentDespiteRunningHeartbeat()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "readiness.db"));
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Readiness", "team/readiness", "main", "", []));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(2, workerId, "worker", "1.0", "test", 1, capabilities));
+        var inventory = CapabilityCatalog.Definitions.Where(item => item.RequiredForExecution).Select(definition =>
+            CapabilityCatalog.Unknown(definition) with
+            {
+                Installation = InstallationState.Installed, Health = CapabilityHealth.Healthy,
+                Authentication = definition.RequiresAuthentication ? RequirementState.Satisfied : null,
+                Configuration = definition.RequiresConfiguration ? RequirementState.Satisfied : null,
+                DetectedAtUtc = DateTimeOffset.UtcNow, DiagnosticCode = null
+            }).ToArray();
+        var missingAuth = inventory.Select(state => state.Id == "github-cli"
+            ? state with { Authentication = RequirementState.Required, DiagnosticCode = "authentication-required" } : state).ToArray();
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(2, workerId, "1.0", "running", 0, 1,
+            capabilities, [], CapabilityInventory: missingAuth));
+        await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
+        var worker = await store.GetWorkerAsync(workerId);
+        Assert.NotNull(worker);
+        var node = NodeProvisioning.Describe(worker, []);
+        Assert.Equal("healthy", node.Health);
+        Assert.Equal("connected", node.Connectivity);
+        Assert.Equal("not-ready", node.ExecutionReadiness);
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(2, workerId, "1.0", "running", 0, 1,
+            capabilities, [], CapabilityInventory: inventory));
+        Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+    }
+
+    [Fact]
     public async Task TypedProvisioningApiRejectsShellFieldsAndRunsKnownLocalAction()
     {
         using var temporary = new TemporaryDirectory();

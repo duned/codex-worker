@@ -31,7 +31,7 @@ public static class NodeProvisioning
         var executionStale = executionCapabilities.Any(item => item.State.DetectedAtUtc is null ||
             DateTimeOffset.UtcNow - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
         var ready = connected && !executionStale && worker.LifecycleState == "running" &&
-            CapabilityCatalog.Ready(executionCapabilities.Select(item => item.State));
+            CapabilityCatalog.ExecutionReadiness(capabilities.Select(item => item.State).ToArray()).Available;
         return new(worker.WorkerId, "worker", worker.DisplayName, connected ? "connected" : "disconnected",
             ready ? "ready" : "not-ready", !connected ? "unavailable" : operationRunning ? "busy" : "ready",
             stale, capabilities, !connected ? "unknown" : worker.Availability == "draining" ? "degraded" : "healthy");
@@ -62,6 +62,9 @@ public static class NodeProvisioning
             };
         }).ToArray();
         return node with { Capabilities = capabilities,
+            ExecutionReadiness = node.Kind == "worker" &&
+                !CapabilityCatalog.ExecutionReadiness(capabilities.Select(item => item.State).ToArray()).Available
+                ? "not-ready" : node.ExecutionReadiness,
             ProvisioningReadiness = capabilities.Any(item => item.State.Operation.State == CapabilityOperationState.Running)
                 ? "busy" : node.ProvisioningReadiness };
     }

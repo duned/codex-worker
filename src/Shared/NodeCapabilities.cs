@@ -43,7 +43,11 @@ public sealed record CapabilityState(string Id, InstallationState Installation, 
     UpdateState Update, RequirementState? Authentication, RequirementState? Configuration,
     CapabilityHealth Health, CapabilityOperation Operation, DateTimeOffset? DetectedAtUtc,
     string? DiagnosticCode = null);
-public sealed record NodeCapability(CapabilityDefinition Definition, CapabilityState State, IReadOnlyList<string> AvailableActions);
+public sealed record CapabilityReadiness(bool Available, IReadOnlyList<string> BlockingReasons);
+public sealed record NodeCapability(CapabilityDefinition Definition, CapabilityState State, IReadOnlyList<string> AvailableActions)
+{
+    public CapabilityReadiness Readiness => CapabilityCatalog.Evaluate(Definition, State);
+}
 public sealed record ProvisionableNode(string Id, string Kind, string DisplayName, string Connectivity,
     string ExecutionReadiness, string ProvisioningReadiness, bool ObservationsStale, IReadOnlyList<NodeCapability> Capabilities, string Health = "unknown");
 
@@ -73,10 +77,40 @@ public static class CapabilityCatalog
         new(definition, state, connected && state.Operation.State != CapabilityOperationState.Running
             ? definition.SupportedActions : []);
 
+    /// <summary>Installation alone does not satisfy a provider's typed local dependencies.
+    /// This result does not establish repository access or agent execution preflight.</summary>
+    public static CapabilityReadiness Evaluate(CapabilityDefinition definition, CapabilityState state)
+    {
+        var reasons = new List<string>();
+        if (state.Id != definition.Id || state.Installation == InstallationState.Unknown) reasons.Add("not-detected");
+        else if (state.Installation == InstallationState.Missing) reasons.Add("tool-missing");
+        if (state.Health == CapabilityHealth.Error) reasons.Add("probe-failed");
+        else if (state.Health == CapabilityHealth.Degraded) reasons.Add("not-detected");
+        if (definition.RequiresAuthentication && state.Authentication != RequirementState.Satisfied)
+            reasons.Add("authentication-required");
+        if (definition.RequiresConfiguration && state.Configuration != RequirementState.Satisfied)
+            reasons.Add("configuration-required");
+        if (state.Operation.State != CapabilityOperationState.Idle)
+            reasons.Add(state.Operation.State == CapabilityOperationState.Running ? "operation-running" : "operation-failed");
+        return new(reasons.Count == 0, reasons.Distinct(StringComparer.Ordinal).ToArray());
+    }
+
     public static bool Ready(IEnumerable<CapabilityState> states) => states.All(state =>
-        state.Installation == InstallationState.Installed && state.Health == CapabilityHealth.Healthy &&
-        state.Authentication is null or RequirementState.Satisfied &&
-        state.Configuration is null or RequirementState.Satisfied && state.Operation.State == CapabilityOperationState.Idle);
+        Definitions.FirstOrDefault(definition => definition.Id == state.Id) is { } definition &&
+        Evaluate(definition, state).Available);
+
+    /// <summary>Task-specific tool availability; overlapping providers may satisfy the same tool.</summary>
+    public static bool ProvidesTool(ProvidedToolKind tool, IReadOnlyList<CapabilityState> states) =>
+        Definitions.Where(definition => definition.Provides.Contains(tool)).Any(definition =>
+            Evaluate(definition, states.FirstOrDefault(state => state.Id == definition.Id) ?? Unknown(definition)).Available);
+
+    public static CapabilityReadiness ExecutionReadiness(IReadOnlyList<CapabilityState> states)
+    {
+        var reasons = Definitions.Where(definition => definition.RequiredForExecution).SelectMany(definition =>
+            Evaluate(definition, states.FirstOrDefault(state => state.Id == definition.Id) ?? Unknown(definition))
+                .BlockingReasons.Select(reason => $"{definition.Id}:{reason}")).ToArray();
+        return new(reasons.Length == 0, reasons);
+    }
 
     public static bool ValidInventory(IReadOnlyList<CapabilityState>? inventory)
     {
@@ -143,26 +177,31 @@ public sealed class NodeCapabilityDiscovery
                     {
                         var name = await _run(executable, ["config", "--get", "user.name"], cancellationToken);
                         var email = await _run(executable, ["config", "--get", "user.email"], cancellationToken);
-                        state = state with { Configuration = name.ExitCode == 0 && email.ExitCode == 0 &&
-                            !string.IsNullOrWhiteSpace(name.Output) && !string.IsNullOrWhiteSpace(email.Output)
-                            ? RequirementState.Satisfied : RequirementState.Required };
+                        var configured = name.ExitCode == 0 && email.ExitCode == 0 &&
+                            !string.IsNullOrWhiteSpace(name.Output) && !string.IsNullOrWhiteSpace(email.Output);
+                        state = state with { Configuration = configured ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = configured ? null : "configuration-required" };
                     }
                     if (version.ExitCode == 0 && definition.RequiresAuthentication)
                     {
-                        var auth = await _run(executable, definition.Id == "github-cli" ? ["auth", "status", "--hostname", "github.com"] : ["login", "status"], cancellationToken);
-                        state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
-                            DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
+                        var authenticated = true;
+                        foreach (var dependency in definition.AuthenticationDependencies)
+                        {
+                            var probe = AuthenticationDependencyProbes.Get(dependency);
+                            var auth = await _run(probe.Executable, probe.Arguments, cancellationToken);
+                            authenticated &= auth.ExitCode == 0;
+                        }
+                        state = state with { Authentication = authenticated ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = authenticated ? state.DiagnosticCode : "authentication-required" };
                     }
                     if (state.Installation == InstallationState.Installed)
                         state = state with { Update = await DetectUpdateAsync(definition.Id, state.DetectedVersion, cancellationToken) };
                 }
-                catch (System.ComponentModel.Win32Exception)
+                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException)
                 {
-                    state = state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
-                }
-                catch (FileNotFoundException)
-                {
-                    state = state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
+                    state = state.Installation == InstallationState.Installed
+                        ? state with { Health = CapabilityHealth.Error, DiagnosticCode = "probe-failed" }
+                        : state with { Installation = InstallationState.Missing, Health = CapabilityHealth.Healthy, DiagnosticCode = "tool-missing" };
                 }
                 catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or IOException or UnauthorizedAccessException || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
                 {

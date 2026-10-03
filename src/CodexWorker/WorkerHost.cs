@@ -258,15 +258,20 @@ public sealed class WorkerHost
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
             var readiness = new ManagedCodexReadiness(agentAuthentication);
             var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
+            var executionDependenciesReady = false;
             async Task PublishReadinessAsync(CancellationToken token)
             {
                 heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider").ToArray();
                 if (agentReady)
                     heartbeatCapabilities = heartbeatCapabilities.Append(
                         WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
-                var ready = agentReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
+                var localReadiness = CapabilityCatalog.ExecutionReadiness(
+                    await _registration.InventoryDiscovery.GetAsync(cancellationToken: token));
+                executionDependenciesReady = localReadiness.Available;
+                var ready = agentReady && executionDependenciesReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
                     (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration)));
-                lifecycle.SetExecutionReadiness(ready);
+                lifecycle.SetExecutionReadiness(ready, localReadiness.Available
+                    ? readiness.DiagnosticCode : string.Join(", ", localReadiness.BlockingReasons));
                 runtimeReadModel.State = runtimeReadModel.Registry.WorkerDraining
                     ? (active.Count == 0 ? WorkerLifecycleStates.Drained : WorkerLifecycleStates.Draining) :
                     ready ? WorkerLifecycleStates.Running : WorkerLifecycleStates.NotReady;
@@ -443,10 +448,10 @@ public sealed class WorkerHost
                         heartbeatCapabilities = discoveredCapabilities;
                         await InitializeProjectsAsync(executionToken);
                     }
-                    agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
-                    await PublishReadinessAsync(executionToken);
                 }
-                while (agentReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
+                agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
+                await PublishReadinessAsync(executionToken);
+                while (agentReady && executionDependenciesReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
                     !ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
                     if (_global.Projects.Ownership == "managed")

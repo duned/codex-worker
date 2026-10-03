@@ -222,8 +222,9 @@ public sealed class NodeProvisioningCommandExecutor
                 {
                     ProvisioningCommandAction.CheckConfiguration when request.CapabilityId == "docker" => ["info", "--format", "{{.ServerVersion}}"],
                     ProvisioningCommandAction.CheckConfiguration => ["config", "--get", "user.name"],
-                    ProvisioningCommandAction.CheckAuthentication when request.CapabilityId == "github-cli" => ["auth", "status", "--hostname", "github.com"],
-                    ProvisioningCommandAction.CheckAuthentication => ["login", "status"],
+                    ProvisioningCommandAction.CheckAuthentication => AuthenticationDependencyProbes.Get(
+                        CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId)
+                            .AuthenticationDependencies.Single()).Arguments,
                     _ => ["logout"]
                 };
             }

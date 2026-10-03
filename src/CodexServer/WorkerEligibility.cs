@@ -1,5 +1,7 @@
 namespace CodexServer;
 
+using CodexProvisioning;
+
 public static class WorkerAuthenticationRequirements
 {
     public static IReadOnlyList<ProjectRequirement> ForRepository(string repository) =>
@@ -17,14 +19,26 @@ public static class WorkerAuthenticationRequirements
 public static class WorkerEligibility
 {
     public static WorkerEligibilityResult Evaluate(IEnumerable<ProjectRequirement>? requirements,
-        IEnumerable<WorkerCapability>? capabilities)
+        IEnumerable<WorkerCapability>? capabilities, IReadOnlyList<CapabilityState>? inventory = null)
     {
         var available = (capabilities ?? []).Select(Normalize).ToArray();
         var missing = new List<string>();
+        if (inventory is not null) missing.AddRange(CapabilityCatalog.ExecutionReadiness(inventory).BlockingReasons);
         foreach (var requirement in requirements ?? [])
         {
             var normalized = CentralProjectValidation.Normalize(requirement) with
             { Name = CanonicalName(requirement.Type, requirement.Name) };
+            if (inventory is not null && normalized.Type == "tool" &&
+                CapabilityCatalog.Definitions.FirstOrDefault(definition => definition.Id == normalized.Name) is { } provider)
+            {
+                var readiness = CapabilityCatalog.Evaluate(provider,
+                    inventory.FirstOrDefault(state => state.Id == provider.Id) ?? CapabilityCatalog.Unknown(provider));
+                if (!readiness.Available)
+                {
+                    missing.Add($"requires {Display(normalized)}; {string.Join(", ", readiness.BlockingReasons)}");
+                    continue;
+                }
+            }
             var matching = available.FirstOrDefault(capability => capability.Type == normalized.Type && capability.Name == normalized.Name &&
                 (normalized.Scope is null || string.Equals(capability.Scope, normalized.Scope, StringComparison.OrdinalIgnoreCase)));
             if (matching is null)

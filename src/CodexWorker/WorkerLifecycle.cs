@@ -10,13 +10,13 @@ public sealed class WorkerLifecycle
 
     public void SetReady(string readinessResult = "ready") => Update("ready", false, readinessResult: readinessResult);
 
-    public void SetExecutionReadiness(bool ready)
+    public void SetExecutionReadiness(bool ready, string? diagnostic = null)
     {
         lock (_gate)
         {
             if (_snapshot.DrainRequested) return;
             _snapshot = _snapshot with { State = ready ? "ready" : "not-ready",
-                ReconnectReadinessResult = ready ? "ready" : "Execution capabilities are unavailable." };
+                ReconnectReadinessResult = ready ? "ready" : diagnostic ?? "Execution capabilities are unavailable." };
         }
     }
 

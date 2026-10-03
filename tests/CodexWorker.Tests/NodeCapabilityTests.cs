@@ -7,6 +7,89 @@ using System.Text.Json;
 
 public sealed class NodeCapabilityTests
 {
+    [Theory]
+    [InlineData("codex-cli")]
+    [InlineData("github-cli")]
+    public async Task ReadinessTracksInstallationAuthenticationAndAuthenticationLoss(string id)
+    {
+        var installed = false;
+        var authenticated = false;
+        var discovery = new NodeCapabilityDiscovery((_, arguments, _) =>
+        {
+            if (!installed) return Task.FromException<(int, string)>(new FileNotFoundException());
+            return Task.FromResult((arguments[0] is "auth" or "login" && !authenticated ? 1 : 0, "tool 1.2.3"));
+        });
+        var definition = CapabilityCatalog.Definitions.Single(item => item.Id == id);
+        async Task<NodeCapability> Observe(bool refresh = false) => CapabilityCatalog.Describe(definition,
+            (await discovery.GetAsync(refresh)).Single(item => item.Id == id), connected: true);
+
+        var missing = await Observe();
+        Assert.False(missing.Readiness.Available);
+        Assert.Contains("tool-missing", missing.Readiness.BlockingReasons);
+        Assert.Equal(CapabilityHealth.Healthy, missing.State.Health);
+        installed = true;
+        var loginRequired = await Observe(refresh: true);
+        Assert.Equal(InstallationState.Installed, loginRequired.State.Installation);
+        Assert.Equal(["authentication-required"], loginRequired.Readiness.BlockingReasons);
+        authenticated = true;
+        Assert.False((await Observe()).Readiness.Available); // Cached observations grant no new readiness.
+        Assert.True((await Observe(refresh: true)).Readiness.Available);
+        authenticated = false;
+        var lost = await Observe(refresh: true);
+        Assert.Equal(InstallationState.Installed, lost.State.Installation);
+        Assert.False(lost.Readiness.Available);
+        Assert.Equal(["authentication-required"], lost.Readiness.BlockingReasons);
+    }
+
+    [Fact]
+    public void ReadinessUsesDefinitionDependenciesAndDoesNotRequireCredentialsForEveryProvider()
+    {
+        var sdk = CapabilityCatalog.Definitions.Single(item => item.Id == "dotnet-sdk");
+        var installed = CapabilityCatalog.Unknown(sdk) with
+        { Installation = InstallationState.Installed, Health = CapabilityHealth.Healthy, DiagnosticCode = null };
+        Assert.True(CapabilityCatalog.Evaluate(sdk, installed).Available);
+        Assert.True(CapabilityCatalog.ProvidesTool(ProvidedToolKind.DotNetSdk, [installed]));
+        Assert.True(CapabilityCatalog.ProvidesTool(ProvidedToolKind.DotNetRuntime, [installed]));
+        Assert.False(CapabilityCatalog.ProvidesTool(ProvidedToolKind.DockerEngine, [installed]));
+        var future = new CapabilityDefinition("future-tool", "Future tool", "future", [AuthenticationDependencyKind.GitHubCliLogin], false, []);
+        var missingAuth = installed with { Id = future.Id };
+        Assert.Equal(["authentication-required"], CapabilityCatalog.Evaluate(future, missingAuth).BlockingReasons);
+        Assert.True(CapabilityCatalog.Evaluate(future, missingAuth with { Authentication = RequirementState.Satisfied }).Available);
+        Assert.False(CapabilityCatalog.ExecutionReadiness([installed]).Available);
+    }
+
+    [Fact]
+    public void OptionalToolEligibilityRequiresItsConfigurationButDoesNotBlockOtherTasks()
+    {
+        var inventory = CapabilityCatalog.Definitions.Select(definition => CapabilityCatalog.Unknown(definition) with
+        {
+            Installation = InstallationState.Installed, Health = CapabilityHealth.Healthy,
+            Authentication = definition.RequiresAuthentication ? RequirementState.Satisfied : null,
+            Configuration = definition.RequiresConfiguration ? RequirementState.Satisfied : null,
+            DiagnosticCode = null
+        }).Select(state => state.Id == "docker" ? state with { Configuration = RequirementState.Required } : state).ToArray();
+        Assert.True(CapabilityCatalog.ExecutionReadiness(inventory).Available);
+        var result = WorkerEligibility.Evaluate([new("tool", "docker")], [new("tool", "docker")], inventory);
+        Assert.False(result.IsEligible);
+        Assert.Contains("configuration-required", Assert.Single(result.MissingRequirements), StringComparison.Ordinal);
+        Assert.True(WorkerEligibility.Evaluate([], [], inventory).IsEligible);
+        var ready = inventory.Select(state => state.Id == "docker" ? state with { Configuration = RequirementState.Satisfied } : state).ToArray();
+        Assert.True(WorkerEligibility.Evaluate([new("tool", "docker")], [new("tool", "docker")], ready).IsEligible);
+    }
+
+    [Fact]
+    public async Task AuthenticationProbeFailurePreservesObservedInstallation()
+    {
+        var discovery = new NodeCapabilityDiscovery((_, arguments, _) => arguments[0] == "login"
+            ? Task.FromException<(int, string)>(new FileNotFoundException("private-output"))
+            : Task.FromResult((0, "1.2.3")));
+        var state = (await discovery.GetAsync()).Single(item => item.Id == "codex-cli");
+        Assert.Equal(InstallationState.Installed, state.Installation);
+        Assert.Equal(CapabilityHealth.Error, state.Health);
+        Assert.Equal("probe-failed", state.DiagnosticCode);
+        Assert.False(CapabilityCatalog.Ready([state]));
+    }
+
     [Fact]
     public async Task DetectionSeparatesInstallationAndAuthenticationAndDiscardsSecretOutput()
     {
