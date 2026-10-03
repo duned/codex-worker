@@ -12,6 +12,7 @@ keep_bootstrap_provisioning_policy=false
 bootstrap_restore_needed=false
 bootstrap_previous_enabled=false
 bootstrap_previous_elevation=false
+github_cli_executable=/usr/bin/gh
 
 server_helper=/usr/local/bin/codex-server
 readonly provisioning_sudoers=/etc/sudoers.d/codex-server-provisioning
@@ -52,6 +53,29 @@ EOF
 }
 
 fail() { printf 'Codex Server installer: %s\n' "$*" >&2; exit 1; }
+
+github_cli_is_usable() {
+  local version_output
+  [[ -x $github_cli_executable ]] || return 1
+  version_output="$(timeout 5 "$github_cli_executable" --version 2>/dev/null)" || return 1
+  [[ $version_output =~ ^gh\ version\ [0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?([[:space:]]|$) ]]
+}
+
+reuse_existing_github_cli_when_usable() {
+  if github_cli_is_usable; then
+    bootstrap_github_cli=false
+    printf 'GitHub CLI is already installed and available; skipping installation.\n'
+    return 0
+  fi
+  return 1
+}
+
+maybe_prompt_for_github_cli_bootstrap() {
+  [[ $bootstrap_github_cli != true && $non_interactive != true && -r /dev/tty && -w /dev/tty ]] || return 0
+  local bootstrap_answer
+  read -r -p 'Install GitHub CLI on this Server through typed local provisioning? [y/N] ' bootstrap_answer </dev/tty
+  case "$bootstrap_answer" in [Yy]|[Yy][Ee][Ss]) bootstrap_github_cli=true ;; esac
+}
 
 ensure_management_token() {
   local environment_file="$1"
@@ -280,10 +304,8 @@ if [[ ${EUID} -ne 0 ]]; then
   fail 'Run as root (for example, curl -fsSL <installer-url> | sudo bash).'
 fi
 
-if [[ $bootstrap_github_cli != true && $non_interactive != true && -r /dev/tty && -w /dev/tty ]]; then
-  read -r -p 'Install GitHub CLI on this Server through typed local provisioning? [y/N] ' bootstrap_answer </dev/tty
-  case "$bootstrap_answer" in [Yy]|[Yy][Ee][Ss]) bootstrap_github_cli=true ;; esac
-fi
+reuse_existing_github_cli_when_usable || true
+maybe_prompt_for_github_cli_bootstrap
 
 if [[ -n "$publish_dir" ]]; then
   [[ -d "$publish_dir" ]] || fail "Published directory does not exist: $publish_dir"

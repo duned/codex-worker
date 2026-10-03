@@ -232,6 +232,70 @@ server_helper="$temp_dir/bootstrap-server"
 bootstrap_github_cli=true
 keep_bootstrap_provisioning_policy=false
 bootstrap_restore_needed=false
+
+# The installer checks only the supported executable's version command. It
+# deliberately does not probe authentication when deciding whether to install.
+github_cli_executable="$temp_dir/stubs/gh"
+cat > "$github_cli_executable" <<'EOF'
+#!/usr/bin/env bash
+[[ $# == 1 && $1 == --version ]] || exit 2
+printf 'gh version 2.55.0 (2025-01-01)\n'
+EOF
+chmod +x "$github_cli_executable"
+github_cli_is_usable
+assert_github_cli_reused() {
+  bootstrap_github_cli=true
+  reuse_existing_github_cli_when_usable > "$temp_dir/github-cli-reuse.out"
+  reuse_output="$(<"$temp_dir/github-cli-reuse.out")"
+  [[ $bootstrap_github_cli == false ]]
+  [[ $reuse_output == 'GitHub CLI is already installed and available; skipping installation.' ]]
+}
+assert_github_cli_reused # Upgrade
+assert_github_cli_reused # Reinstall
+[[ ! -e "$CODEX_BOOTSTRAP_LOG" ]] || ! grep -Fq 'provision create server github-cli install' "$CODEX_BOOTSTRAP_LOG"
+
+cat > "$github_cli_executable" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh version not-a-supported-version\n'
+EOF
+chmod +x "$github_cli_executable"
+bootstrap_github_cli=false
+if reuse_existing_github_cli_when_usable > /dev/null; then
+  echo 'Installer accepted an unusable GitHub CLI installation.' >&2
+  exit 1
+fi
+[[ $bootstrap_github_cli == false ]]
+bootstrap_github_cli=true
+if reuse_existing_github_cli_when_usable > /dev/null; then
+  echo 'Installer skipped the supported repair path for an unusable GitHub CLI.' >&2
+  exit 1
+fi
+[[ $bootstrap_github_cli == true ]]
+
+cat > "$github_cli_executable" <<'EOF'
+#!/usr/bin/env bash
+printf 'gh version 2.55.0\n'
+exit 1
+EOF
+chmod +x "$github_cli_executable"
+if github_cli_is_usable; then
+  echo 'Installer accepted a GitHub CLI whose version check failed.' >&2
+  exit 1
+fi
+
+github_cli_executable="$temp_dir/missing-gh"
+bootstrap_github_cli=false
+if reuse_existing_github_cli_when_usable > /dev/null; then
+  echo 'Installer accepted a missing GitHub CLI installation.' >&2
+  exit 1
+fi
+[[ $bootstrap_github_cli == false ]]
+non_interactive=true
+maybe_prompt_for_github_cli_bootstrap
+[[ $bootstrap_github_cli == false ]]
+non_interactive=false
+
+github_cli_executable=/usr/bin/gh
 bootstrap_github_cli_installation
 grep -Fxq 'provision create server github-cli install --allow-elevation --timeout-seconds 600 --json' "$CODEX_BOOTSTRAP_LOG"
 grep -Fxq 'config set EnableLocalProvisioning true' "$CODEX_BOOTSTRAP_LOG"
