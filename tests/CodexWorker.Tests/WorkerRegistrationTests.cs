@@ -399,6 +399,103 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("http://remote.example")]
+    [InlineData("https://user:secret@server.example")]
+    [InlineData("https://server.example?token=secret")]
+    [InlineData("https://server.example#secret")]
+    public async Task PersistedEndpointIsValidatedBeforeSendingCredentials(string endpoint)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        var identity = await WorkerIdentity.LoadOrCreateAsync(path);
+        var token = await WorkerAuthentication.LoadOrCreateTokenAsync(path);
+        await File.WriteAllTextAsync(path + ".server", endpoint);
+        var handler = new CaptureHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = path };
+        var failure = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new WorkerRegistrationClient(client).RegisterAsync(settings, 1, CancellationToken.None));
+        Assert.Null(handler.Uri);
+        Assert.DoesNotContain("secret", failure.Message, StringComparison.Ordinal);
+        Assert.Equal(identity, await WorkerIdentity.LoadAsync(path));
+        Assert.Equal(token, WorkerAuthentication.GetToken(settings));
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    public async Task RejectedOrRevokedRegistrationRetainsIdentityAndCredential(int statusCode)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        var identity = await WorkerIdentity.LoadOrCreateAsync(path);
+        var token = await WorkerAuthentication.LoadOrCreateTokenAsync(path);
+        var handler = new CaptureHandler((HttpStatusCode)statusCode);
+        using var client = new HttpClient(handler);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = path };
+        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() =>
+            new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).RegisterAsync(settings, 1, CancellationToken.None));
+        Assert.Contains($"HTTP {statusCode}", failure.Message);
+        Assert.DoesNotContain(token, failure.Message, StringComparison.Ordinal);
+        Assert.Equal(identity, await WorkerIdentity.LoadAsync(path));
+        Assert.Equal(token, WorkerAuthentication.GetToken(settings));
+    }
+
+    [Theory]
+    [InlineData("short")]
+    [InlineData("this-token-has-at-least-thirty-two-characters but-has-whitespace")]
+    public async Task InvalidPersistedCredentialIsNeverReplacedOrSent(string token)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        await WorkerIdentity.LoadOrCreateAsync(path);
+        await File.WriteAllTextAsync(path + ".token", token);
+        await Assert.ThrowsAsync<InvalidDataException>(() => WorkerAuthentication.LoadOrCreateTokenAsync(path));
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = path };
+        var handler = new CaptureHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new WorkerRegistrationClient(client).RegisterAsync(settings, 1, CancellationToken.None));
+        Assert.Null(handler.Uri);
+        Assert.Equal(token, await File.ReadAllTextAsync(path + ".token"));
+    }
+
+    [Fact]
+    public async Task ConcurrentCreationConvergesOnOneDurableIdentityAndCredential()
+    {
+        using var temporary = new TemporaryDirectory();
+        for (var attempt = 0; attempt < 32; attempt++)
+        {
+            var path = Path.Combine(temporary.Path, $"worker-id-{attempt}");
+            var identities = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => WorkerIdentity.LoadOrCreateAsync(path)));
+            var tokens = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => WorkerAuthentication.LoadOrCreateTokenAsync(path)));
+            Assert.All(identities, identity => Assert.Equal(identities[0], identity));
+            Assert.All(tokens, token => Assert.Equal(tokens[0], token));
+            Assert.Equal(identities[0], await WorkerIdentity.LoadAsync(path));
+            Assert.Equal(tokens[0], await WorkerAuthentication.LoadOrCreateTokenAsync(path));
+            Assert.Empty(Directory.GetFiles(temporary.Path, "*.tmp"));
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path + ".token"));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task InvalidBootstrapEndpointFailsBeforeCreatingIdentityOrCredential()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        await Assert.ThrowsAsync<InvalidDataException>(() => new WorkerRegistrationClient().BootstrapAsync(
+            new WorkerServerSettings { Enabled = true, Url = "http://remote.example", IdentityFile = path },
+            1, "bootstrap-test-token", CancellationToken.None));
+        Assert.False(File.Exists(path));
+        Assert.False(File.Exists(path + ".token"));
+        Assert.False(File.Exists(path + ".server"));
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

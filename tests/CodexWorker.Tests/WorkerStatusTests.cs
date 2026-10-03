@@ -11,7 +11,8 @@ public sealed class WorkerStatusTests
         using var fixture = new StatusFixture();
         fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\nworker:\n  maxParallelTasks: 3\n  provisioning:\n    enabled: true\n    allowNonPrivileged: true\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
-        File.WriteAllText(Path.Combine(fixture.DirectoryPath, "worker-id"), "local-id");
+        await WorkerIdentity.LoadOrCreateAsync(Path.Combine(fixture.DirectoryPath, "worker-id"));
+        await WorkerAuthentication.LoadOrCreateTokenAsync(Path.Combine(fixture.DirectoryPath, "worker-id"));
         var discovery = DiscoveryWith(new WorkerCapabilityContract("tool", "git", "2.45.0"),
             new WorkerCapabilityContract("tool", "github-cli", "2.50.0"),
             new WorkerCapabilityContract("tool", "codex-cli", "1.2.3"));
@@ -116,6 +117,72 @@ public sealed class WorkerStatusTests
         Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
     }
 
+    [Theory]
+    [InlineData("missing", "local-identity-missing", "missing")]
+    [InlineData("invalid-identity", "local-identity-invalid", "persisted")]
+    [InlineData("invalid-token", "local-identity-present", "invalid")]
+    [InlineData("valid", "local-identity-present", "persisted")]
+    public async Task StatusObservesRegistrationWithoutMutatingOrExposingLocalState(string scenario,
+        string expectedState, string expectedCredential)
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        var path = Path.Combine(fixture.DirectoryPath, "worker-id");
+        string? identity = null;
+        string? secret = null;
+        if (scenario != "missing")
+        {
+            identity = await WorkerIdentity.LoadOrCreateAsync(path);
+            secret = await WorkerAuthentication.LoadOrCreateTokenAsync(path);
+            await File.WriteAllTextAsync(path + ".server", "https://associated.example");
+            if (scenario == "invalid-identity") await File.WriteAllTextAsync(path, "private-invalid-identity");
+            if (scenario == "invalid-token") await File.WriteAllTextAsync(path + ".token", "private-invalid-token");
+        }
+        var discovery = DiscoveryWith(new("tool", "git"), new("tool", "github-cli"), new("tool", "codex-cli"));
+        var first = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery);
+        var restarted = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery);
+        Assert.Equal(expectedState, first.Registration.State);
+        Assert.Equal(expectedCredential, first.Registration.CredentialState);
+        Assert.Equal(first.Registration, restarted.Registration);
+        Assert.Equal("unverified", first.Registration.ServerAcceptance);
+        Assert.Equal("not-checked", first.Registration.ServerConnectivity);
+        Assert.Equal(scenario == "valid" ? "server-dependent-unverified" : "not-ready", first.Operation.Readiness);
+        Assert.Equal(scenario == "missing" ? "https://server.example" : "https://associated.example", first.Registration.ServerUrl);
+        Assert.NotNull(first.Runtime);
+        Assert.Equal(scenario is "missing" or "invalid-identity" ? null : identity, first.Registration.WorkerId);
+        foreach (var json in new[] { false, true })
+        {
+            using var output = new StringWriter();
+            WorkerStatusReporter.Write(first, json, output);
+            Assert.DoesNotContain("private-invalid", output.ToString(), StringComparison.Ordinal);
+            if (secret is not null) Assert.DoesNotContain(secret, output.ToString(), StringComparison.Ordinal);
+        }
+        if (scenario == "missing")
+        {
+            Assert.False(File.Exists(path));
+            Assert.False(File.Exists(path + ".token"));
+        }
+        if (scenario == "invalid-identity") Assert.Equal("private-invalid-identity", await File.ReadAllTextAsync(path));
+        if (scenario == "invalid-token") Assert.Equal("private-invalid-token", await File.ReadAllTextAsync(path + ".token"));
+    }
+
+    [Fact]
+    public async Task StatusDoesNotExposeInvalidPersistedServerAssociation()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        await File.WriteAllTextAsync(Path.Combine(fixture.DirectoryPath, "worker-id.server"), "https://user:private-secret@server.example/?token=private-secret");
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        Assert.Null(status.Registration.ServerUrl);
+        Assert.Equal("invalid", status.Registration.AssociationSource);
+        Assert.Contains("worker-server-association-invalid", status.Diagnostics);
+        using var output = new StringWriter();
+        WorkerStatusReporter.Write(status, true, output);
+        Assert.DoesNotContain("private-secret", output.ToString(), StringComparison.Ordinal);
+    }
+
     private static WorkerCapabilityDiscovery DiscoveryWith(params WorkerCapabilityContract[] capabilities)
     {
         var available = capabilities.ToDictionary(capability => capability.Name, StringComparer.OrdinalIgnoreCase);
@@ -137,8 +204,10 @@ public sealed class WorkerStatusTests
     private sealed class StatusFixture : IDisposable
     {
         private readonly string _directory = Path.Combine(Path.GetTempPath(), $"worker-status-{Guid.NewGuid():N}");
+        private readonly string? _previousServerToken = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
         public StatusFixture()
         {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", null);
             Directory.CreateDirectory(_directory);
             ConfigurationPath = Path.Combine(_directory, "worker.yml");
             ProjectsPath = Path.Combine(_directory, "projects");
@@ -167,6 +236,10 @@ public sealed class WorkerStatusTests
             codex:
               instructionsFile: AGENTS.md
             """);
-        public void Dispose() => Directory.Delete(_directory, recursive: true);
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", _previousServerToken);
+            Directory.Delete(_directory, recursive: true);
+        }
     }
 }

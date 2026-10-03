@@ -357,20 +357,27 @@ public sealed class WorkerServerSettings
         {
             var identityPath = IdentityFile ?? WorkerIdentity.DefaultPath;
             var path = Path.GetFullPath(identityPath) + ".server";
-            return File.Exists(path) ? File.ReadAllText(path).Trim() : Url;
+            var url = File.Exists(path) ? File.ReadAllText(path).Trim() : Url;
+            ValidateUrl(url);
+            return url;
         }
     }
 
     internal void Validate()
     {
         if (!Enabled) return;
-        if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") ||
+        ValidateUrl(Url);
+        if (HeartbeatIntervalSeconds is < 5 or > 300)
+            throw new InvalidDataException("server.heartbeatIntervalSeconds must be between 5 and 300.");
+    }
+
+    internal static void ValidateUrl(string url)
+    {
+        if (url.Length > 2048 || url.Any(char.IsControl) || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") ||
             string.IsNullOrWhiteSpace(uri.Host) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
             throw new InvalidDataException("server.url must be an absolute HTTP or HTTPS URL without credentials, query, or fragment.");
         if (uri.Scheme == "http" && !IsLoopback(uri.Host))
             throw new InvalidDataException("server.url must use HTTPS unless it points to loopback.");
-        if (HeartbeatIntervalSeconds is < 5 or > 300)
-            throw new InvalidDataException("server.heartbeatIntervalSeconds must be between 5 and 300.");
     }
 
     private static bool IsLoopback(string host) =>

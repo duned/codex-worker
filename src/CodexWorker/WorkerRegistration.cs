@@ -75,6 +75,15 @@ public static class WorkerIdentity
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worker-id");
 
+    /// <summary>Reads existing identity without creating or repairing local state.</summary>
+    public static async Task<string> LoadAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var existing = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
+        if (!Guid.TryParseExact(existing, "N", out _))
+            throw new InvalidDataException("Worker identity file does not contain a valid identity.");
+        return existing;
+    }
+
     public static async Task<string> LoadOrCreateAsync(string path, CancellationToken cancellationToken = default)
     {
         path = Path.GetFullPath(path);
@@ -82,9 +91,9 @@ public static class WorkerIdentity
         Directory.CreateDirectory(directory);
         try
         {
-            var existing = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
-            if (Guid.TryParseExact(existing, "N", out _)) return existing;
-            throw new InvalidDataException($"Worker identity file '{path}' does not contain a valid identity.");
+            var existing = await LoadAsync(path, cancellationToken);
+            RestrictFile(path);
+            return existing;
         }
         catch (FileNotFoundException) { }
 
@@ -94,11 +103,11 @@ public static class WorkerIdentity
         {
             await File.WriteAllTextAsync(temp, identity + Environment.NewLine, cancellationToken);
             RestrictFile(temp);
-            try { File.Move(temp, path, overwrite: false); }
+            try { WorkerRegistrationFile.Publish(temp, path); }
             catch (IOException) when (File.Exists(path))
             {
-                var winner = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
-                if (!Guid.TryParseExact(winner, "N", out _)) throw new InvalidDataException($"Worker identity file '{path}' does not contain a valid identity.");
+                var winner = await LoadAsync(path, cancellationToken);
+                RestrictFile(path);
                 return winner;
             }
             RestrictFile(path);
@@ -117,14 +126,23 @@ public static class WorkerIdentity
 public static class WorkerAuthentication
 {
     public static string TokenPath(string identityPath) => Path.GetFullPath(identityPath) + ".token";
+    internal static string ValidateToken(string token)
+    {
+        token = token.Trim();
+        if (token.Length is < 32 or > 4096 || token.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
+            throw new InvalidDataException("Persisted Worker authentication material is invalid.");
+        return token;
+    }
+
+    internal static async Task<string> LoadTokenAsync(string identityPath, CancellationToken cancellationToken) =>
+        ValidateToken(await File.ReadAllTextAsync(TokenPath(identityPath), cancellationToken));
     public static async Task<string> LoadOrCreateTokenAsync(string identityPath, CancellationToken cancellationToken = default)
     {
         var path = TokenPath(identityPath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         if (File.Exists(path))
         {
-            var existing = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
-            if (existing.Length < 32) throw new InvalidDataException("Persisted Worker authentication material is invalid.");
+            var existing = await LoadTokenAsync(identityPath, cancellationToken);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             return existing;
         }
@@ -134,8 +152,13 @@ public static class WorkerAuthentication
         {
             await File.WriteAllTextAsync(temp, token, cancellationToken);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            try { File.Move(temp, path, overwrite: false); }
-            catch (IOException) when (File.Exists(path)) { return (await File.ReadAllTextAsync(path, cancellationToken)).Trim(); }
+            try { WorkerRegistrationFile.Publish(temp, path); }
+            catch (IOException) when (File.Exists(path))
+            {
+                var existing = await LoadTokenAsync(identityPath, cancellationToken);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                return existing;
+            }
             return token;
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
@@ -145,9 +168,31 @@ public static class WorkerAuthentication
     {
         var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
         var path = TokenPath(identityPath);
-        if (File.Exists(path)) return File.ReadAllText(path).Trim();
+        if (File.Exists(path)) return ValidateToken(File.ReadAllText(path));
         return Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN") ?? "";
     }
+}
+
+internal static partial class WorkerRegistrationFile
+{
+    internal static void Publish(string temporaryPath, string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            File.Move(temporaryPath, path, overwrite: false);
+            return;
+        }
+
+        // Unix File.Move can race between its destination check and rename. Linking
+        // the completed file publishes it atomically without replacing another writer.
+        // The caller removes the temporary name in its finally block.
+        if (Link(temporaryPath, path) != 0)
+            throw new IOException("Could not publish Worker registration state.",
+                new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError()));
+    }
+
+    [LibraryImport("libc", EntryPoint = "link", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int Link(string existingPath, string newPath);
 }
 
 public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null,
@@ -197,6 +242,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         bootstrapToken = bootstrapToken.Trim();
         if (bootstrapToken.Length == 0 || bootstrapToken.Any(char.IsWhiteSpace))
             throw new WorkerStartupException("Bootstrap token must be a single nonempty value. Copy only the token, without its description.");
+        WorkerServerSettings.ValidateUrl(settings.Url);
         var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
         var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath, cancellationToken);
         var workerToken = await WorkerAuthentication.LoadOrCreateTokenAsync(identityPath, cancellationToken);

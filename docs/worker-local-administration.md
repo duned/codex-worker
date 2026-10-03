@@ -38,6 +38,27 @@ observations/success, 2 on invalid arguments or operational failure, and 130 on
 cancellation or provisioning/registration timeout. Retained enrollment credentials
 and interrupted provisioning state should be inspected before retrying mutations.
 
+The local status contract includes the validated stable `registration.workerId`,
+`credentialState` (`persisted`, `environment`, `missing`, `invalid`, `unreadable`,
+or `not-applicable`), validated `serverUrl`, and `associationSource`. Identity
+state distinguishes `local-identity-present`, `local-identity-missing`,
+`local-identity-invalid`, and `local-identity-unreadable`. Status never creates or
+repairs identity or credential files and never returns their secret contents.
+The `runtime` object reports the .NET framework and process/OS architectures;
+Worker version, observed capabilities and local readiness remain separate fields.
+
+`serverAcceptance` remains `unverified` for a configured Server: local identity,
+credentials and a persisted association do not prove successful enrollment or
+detect remote revocation. A `.server` file can describe an attempted enrollment
+whose response was rejected or lost. Restart preserves that identity and token;
+HTTP 401/403 does not regenerate them. Managed status reports `not-ready` when
+local identity, credentials or association are invalid or unavailable, and
+`server-dependent-unverified` when local prerequisites are present. Neither state
+authorizes offline managed scheduling. Persisted endpoints receive the same
+HTTPS (except loopback), credential/query/fragment rejection as configured URLs
+before authenticated requests. These are local contracts; they add no new remote
+transport or authority.
+
 Local provisioning uses the same shared `NodeProvisioningCommandExecutor` and
 provider catalog as Server. Supported package operations are `install`, `upgrade`
 and `uninstall` for `git`, `github-cli`, `codex-cli`, `dotnet-sdk`,

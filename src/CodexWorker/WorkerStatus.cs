@@ -14,12 +14,15 @@ public sealed record WorkerStatusDocument(
     WorkerStatusCapacity Capacity,
     WorkerStatusProvisioning Provisioning,
     IReadOnlyList<WorkerStatusCapability> Capabilities,
-    IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> Diagnostics,
+    WorkerStatusRuntime? Runtime = null);
 
 public sealed record WorkerStatusConfiguration(string Validity, string Path, int? ProjectCount, string? Ownership,
     string? ServerConfigured, string? DiagnosticCode);
 public sealed record WorkerStatusRegistration(string State, string ServerConfiguration, string ServerConnectivity,
-    string? IdentityFile);
+    string? IdentityFile, string? WorkerId = null, string CredentialState = "unknown",
+    string? ServerUrl = null, string AssociationSource = "unknown", string ServerAcceptance = "unverified");
+public sealed record WorkerStatusRuntime(string Framework, string ProcessArchitecture, string OsArchitecture);
 public sealed record WorkerStatusOperation(string Lifecycle, string Readiness, string ObservationScope);
 public sealed record WorkerStatusCapacity(int? Maximum, int? Active, string ObservationScope);
 public sealed record WorkerStatusProvisioning(bool Enabled, bool AllowNonPrivileged, bool AllowCredentials,
@@ -61,14 +64,15 @@ public static class WorkerStatusReporter
                 capabilities.Add(new WorkerStatusCapability(name is "dotnet" or "node" ? "runtime" : "tool", name,
                     "missing", null, "tool-missing"));
         var missingRequired = RequiredTools.Where(name => !foundNames.Contains(name)).ToArray();
-        var locallyReady = configuration is not null && missingRequired.Length == 0;
-        var identityPath = configuration is null ? null : configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath;
-        var identityPresent = identityPath is not null && File.Exists(identityPath);
         var provisioning = configuration?.Worker.Provisioning;
         var diagnostics = new List<string>();
         if (diagnostic is not null) diagnostics.Add(diagnostic);
         diagnostics.AddRange(missingRequired.Select(name => $"{name}-unavailable"));
-        if (configuration?.Projects.Ownership == "managed" && !identityPresent) diagnostics.Add("worker-identity-missing");
+        var registration = await ObserveRegistrationAsync(configuration, diagnostics, cancellationToken);
+        var locallyReady = configuration is not null && missingRequired.Length == 0 &&
+            (configuration.Projects.Ownership != "managed" ||
+                registration.State == "local-identity-present" &&
+                registration.CredentialState is ("persisted" or "environment") && registration.ServerUrl is not null);
         if (locallyReady && configuration?.Projects.Ownership == "managed") diagnostics.Add("server-state-unverified");
         if (!locallyReady && diagnostics.Count == 0) diagnostics.Add("worker-not-ready");
 
@@ -76,17 +80,55 @@ public static class WorkerStatusReporter
             new WorkerStatusConfiguration(configuration is null ? "invalid" : "valid", fullPath,
                 configuration is null ? null : projects.Count, configuration?.Projects.Ownership,
                 configuration is null ? null : configuration.Server.Enabled ? "configured" : "disabled", diagnostic),
-            new WorkerStatusRegistration(configuration is null ? "unknown" : configuration.Server.Enabled
-                    ? identityPresent ? "local-identity-present" : "local-identity-missing" : "standalone",
-                configuration is null ? "unknown" : configuration.Server.Enabled ? "configured" : "disabled",
-                configuration is null ? "unknown" : configuration.Server.Enabled ? "not-checked" : "not-applicable",
-                identityPath),
+            registration,
             new WorkerStatusOperation("unknown", !locallyReady ? "not-ready" :
                 configuration?.Projects.Ownership == "managed" ? "server-dependent-unverified" : "local-prerequisites-present", "local-observation-only"),
             new WorkerStatusCapacity(configuration?.Worker.MaxParallelTasks, null, "active-count-not-available-outside-running-worker"),
             new WorkerStatusProvisioning(provisioning?.Enabled ?? false, provisioning?.AllowNonPrivileged ?? false,
                 provisioning?.AllowCredentials ?? false, provisioning?.AllowedPrivilegedActions.Count ?? 0,
-                provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics);
+                provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics,
+            new WorkerStatusRuntime(RuntimeInformation.FrameworkDescription, RuntimeInformation.ProcessArchitecture.ToString(),
+                RuntimeInformation.OSArchitecture.ToString()));
+    }
+
+    private static async Task<WorkerStatusRegistration> ObserveRegistrationAsync(GlobalWorkerConfiguration? configuration,
+        List<string> diagnostics, CancellationToken cancellationToken)
+    {
+        if (configuration is null) return new("unknown", "unknown", "unknown", null);
+        var settings = configuration.Server;
+        var path = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
+        string? workerId = null;
+        var identityState = "present";
+        try { workerId = await WorkerIdentity.LoadAsync(path, cancellationToken); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            identityState = ex is FileNotFoundException or DirectoryNotFoundException ? "missing" :
+                ex is InvalidDataException ? "invalid" : "unreadable";
+        }
+        if (!settings.Enabled)
+            return new("standalone", "disabled", "not-applicable", path, workerId,
+                "not-applicable", AssociationSource: "not-applicable", ServerAcceptance: "not-applicable");
+
+        if (identityState != "present") diagnostics.Add($"worker-identity-{identityState}");
+        var credentialState = "persisted";
+        try { _ = await WorkerAuthentication.LoadTokenAsync(path, cancellationToken); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            credentialState = ex is FileNotFoundException or DirectoryNotFoundException
+                ? string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN")) ? "missing" : "environment"
+                : ex is InvalidDataException ? "invalid" : "unreadable";
+        }
+        if (credentialState is "missing" or "invalid" or "unreadable") diagnostics.Add($"worker-credential-{credentialState}");
+        string? serverUrl = null;
+        var source = File.Exists(Path.GetFullPath(path) + ".server") ? "persisted" : "configuration";
+        try { serverUrl = settings.EffectiveUrl; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            source = ex is InvalidDataException ? "invalid" : "unreadable";
+            diagnostics.Add($"worker-server-association-{source}");
+        }
+        return new($"local-identity-{identityState}", "configured", "not-checked", path, workerId,
+            credentialState, serverUrl, source);
     }
 
     public static void Write(WorkerStatusDocument status, bool json, TextWriter? writer = null)
@@ -102,10 +144,15 @@ public static class WorkerStatusReporter
         }
 
         writer.WriteLine($"Worker {status.WorkerVersion} ({status.Platform})");
+        if (status.Runtime is { } runtime)
+            writer.WriteLine($"Runtime: {runtime.Framework}; process: {runtime.ProcessArchitecture}; OS: {runtime.OsArchitecture}");
         writer.WriteLine($"Configuration: {status.Configuration.Validity} ({status.Configuration.Path})");
         if (status.Configuration.ProjectCount is int projectCount)
             writer.WriteLine($"Projects: {projectCount}; ownership: {status.Configuration.Ownership}");
         writer.WriteLine($"Server: {status.Registration.ServerConfiguration}; connectivity: {status.Registration.ServerConnectivity}; registration: {status.Registration.State}");
+        writer.WriteLine($"Identity: {status.Registration.WorkerId ?? "unknown"}; credential: {status.Registration.CredentialState}; Server acceptance: {status.Registration.ServerAcceptance}");
+        if (status.Registration.ServerUrl is { } serverUrl)
+            writer.WriteLine($"Server association: {serverUrl} ({status.Registration.AssociationSource})");
         writer.WriteLine($"Lifecycle: {status.Operation.Lifecycle}; readiness: {status.Operation.Readiness} ({status.Operation.ObservationScope})");
         writer.WriteLine($"Capacity: {status.Capacity.Active?.ToString() ?? "unknown"}/{status.Capacity.Maximum?.ToString() ?? "unknown"}");
         writer.WriteLine($"Provisioning: {(status.Provisioning.Enabled ? "enabled" : "disabled")}; non-privileged: {status.Provisioning.AllowNonPrivileged}; credentials: {status.Provisioning.AllowCredentials}; allow rules: {status.Provisioning.AllowedPrivilegedActionCount}; deny rules: {status.Provisioning.DeniedActionCount}");
@@ -121,6 +168,9 @@ public static class WorkerStatusReporter
         "configuration-not-found" => "Configuration file was not found; pass --config with a valid worker configuration path.",
         "configuration-invalid" => "Configuration could not be validated; run 'codex-worker config validate' for details.",
         "worker-identity-missing" => "Managed mode has no local Worker identity file; register this Worker or restore its identity before starting it.",
+        "worker-identity-invalid" or "worker-identity-unreadable" => "Local Worker identity cannot be validated; restore the existing identity or correct file access. Identity was not regenerated.",
+        "worker-credential-missing" or "worker-credential-invalid" or "worker-credential-unreadable" => "Local Worker credentials are unavailable or invalid; inspect registration and local file access. No credential was changed.",
+        "worker-server-association-invalid" or "worker-server-association-unreadable" => "Persisted Server association cannot be validated; correct the endpoint or local file access before connecting.",
         "server-state-unverified" => "Local tools are present; Server connectivity, managed configuration, and execution readiness were not checked.",
         "git-unavailable" => "Git is unavailable; install Git and ensure it is on PATH.",
         "github-cli-unavailable" => "GitHub CLI is unavailable; install gh and configure authentication.",
