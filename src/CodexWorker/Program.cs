@@ -7,6 +7,13 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args is ["--version"])
+        {
+            Console.WriteLine($"Codex Worker {ApplicationVersion.Display}");
+            return 0;
+        }
+        if (args.Length > 0 && args[0] == "update")
+            return await CodexProvisioning.SelfUpdateCommand.RunAsync(new("worker", "Codex Worker", ApplicationVersion.Display, "/opt/codex-worker/CodexWorker"), args[1..]);
         var output = new WorkerConsole();
         if (args is ["--codex-preflight"])
         {
@@ -268,7 +275,7 @@ public static class Program
                 break;
             default:
                 Console.WriteLine("Usage: codex-worker [command] [options]");
-                Console.WriteLine("Commands: run, status, config, capabilities, provision, register");
+                Console.WriteLine("Commands: run, status, config, capabilities, provision, register, update");
                 Console.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 Console.WriteLine($"Normal execution defaults to {WorkerCommandLine.DefaultConfigurationPath}.");
                 break;

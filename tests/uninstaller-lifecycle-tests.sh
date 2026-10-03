@@ -115,6 +115,7 @@ prepare() {
   ln -s "$unit" "$link"
   echo active > "$root/active"
   if [[ $component == worker ]]; then
+    ln -s /opt/codex-worker/CodexWorker "$root/usr/local/bin/codex-worker"
     mkdir -p "$root/opt/codex-worker.previous.test" "$root/opt/codex-worker.next.test" "$root/opt/codex-worker.failed.test"
   else
     ln -s "$root/opt/$TEST_SERVICE/app" "$root/usr/local/bin/codex-server"

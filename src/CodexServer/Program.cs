@@ -20,6 +20,7 @@ public static class Program
           provision            Queue and inspect typed node provisioning operations
           worker               List registered Worker IDs, inspect and control scheduling
           worker-token         Create or revoke Worker registration/API tokens
+          update               Check or install the latest stable packaged release
           backup               Export, validate or restore Server backups
 
         No arguments starts the web Server. Administration runs locally without starting it.
@@ -35,6 +36,8 @@ public static class Program
             Console.WriteLine(Help);
             return 0;
         }
+        if (args.Length > 0 && args[0] == "update")
+            return await CodexProvisioning.SelfUpdateCommand.RunAsync(new("server", "Codex Server", ServerApplication.DisplayVersion, "/opt/codex-server/current/CodexServer"), args[1..]);
         if (ServerCommandHelp.TryWrite(args, Console.Out)) return 0;
         if (args is ["--version"])
         {

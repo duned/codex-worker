@@ -169,6 +169,11 @@ uninstall_worker() {
   command -v systemctl >/dev/null 2>&1 || fail 'required command not found: systemctl'
   remove_service
   remove_worker_releases
+  local command_path="${test_root}/usr/local/bin/codex-worker"
+  # Remove only the installer-owned alias; retain unrelated operator commands.
+  if [[ -L $command_path && $(readlink -- "$command_path") == /opt/codex-worker/CodexWorker ]]; then
+    rm -- "$command_path" || fail 'could not remove Worker command entry point'
+  fi
   remove_path "$log_root" 'Worker logs'
   remove_path "$runtime_root" 'Worker runtime files'
 

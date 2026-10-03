@@ -917,5 +917,5 @@ public static class ServerApplication
     private sealed record ServerManagedConfigurationResponse(int ContractVersion, string Version,
         IReadOnlyList<CentralProject> Projects);
 
-    public static string DisplayVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.1.0";
+    public static string DisplayVersion => CodexProvisioning.ProductVersion.Display(Assembly.GetExecutingAssembly());
 }

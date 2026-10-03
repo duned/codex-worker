@@ -4,6 +4,8 @@
 
 Linux x64 self-contained Server and Worker release archives can be built with [`packaging/release-linux-x64.sh`](packaging/release-linux-x64.sh). Run `packaging/release.sh X.Y.Z` from a clean checkout to build and publish a versioned GitHub Release. See [Linux release packaging](docs/release-packaging.md) for prerequisites, artifact contents, and recovery steps.
 
+Installed hosts share `sudo codex-server update` and `sudo codex-worker update`, with `--check`, `--yes` and `--json`. See [self-update behavior and scripting contract](docs/self-update.md).
+
 ## Local developer operations
 
 From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local. You can optionally expose it through a PATH directory:

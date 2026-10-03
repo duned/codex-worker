@@ -73,6 +73,19 @@ mkdir -p "$temp_dir/stubs"
 export PATH="$temp_dir/stubs:$PATH"
 write_operator_helper > "$temp_dir/codex-server"
 bash -n "$temp_dir/codex-server"
+# Updates stay in the operator process; restarting Server must not kill its updater.
+mkdir -p "$temp_dir/app"
+cat > "$temp_dir/app/CodexServer" <<'EOF_UPDATE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CODEX_HELPER_UPDATE_ARGUMENTS"
+EOF_UPDATE
+chmod +x "$temp_dir/app/CodexServer"
+export CODEX_HELPER_UPDATE_ARGUMENTS="$temp_dir/update-arguments"
+sed -e "s|/opt/codex-server/current|$temp_dir/app|g" \
+  -e 's/$EUID -ne 0/1 -ne 1/' "$temp_dir/codex-server" > "$temp_dir/update-helper"
+bash "$temp_dir/update-helper" update --check --json
+printf '%s\n' update --check --json > "$temp_dir/expected-update-arguments"
+cmp "$temp_dir/expected-update-arguments" "$CODEX_HELPER_UPDATE_ARGUMENTS"
 cat > "$temp_dir/stubs/systemd-run" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CODEX_HELPER_ARGUMENTS"

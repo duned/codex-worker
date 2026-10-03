@@ -393,6 +393,9 @@ if [[ $start_requested == true ]]; then
   systemctl enable --now codex-worker || fail "Worker was installed but could not be enabled and started"
 fi
 
+install -d -o root -g root -m 0755 /usr/local/bin
+ln -sfn "$install_root/CodexWorker" /usr/local/bin/codex-worker || fail "could not install Worker command entry point"
+
 echo "Codex Worker $version installed in $install_root. Existing binaries are preserved at $backup_dir when present."
 if [[ $server_was_set == true ]]; then echo "Configured Codex Server URL in $config_root/worker.yml."; fi
 if [[ $capacity_was_set == true ]]; then echo "Configured Worker capacity to $requested_capacity."; fi

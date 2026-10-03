@@ -20,6 +20,7 @@ prepare_root() {
     -e "s|/var/lib/codex-worker|$LIFECYCLE_ROOT/var/lib/codex-worker|g" \
     -e "s|/var/log/codex-worker|$LIFECYCLE_ROOT/var/log/codex-worker|g" \
     -e "s|/etc/systemd/system|$LIFECYCLE_ROOT/etc/systemd/system|g" \
+    -e "s|/usr/local/bin|$LIFECYCLE_ROOT/usr/local/bin|g" \
     -e "s|/etc/os-release|$LIFECYCLE_ROOT/etc/os-release|g" \
     -e 's/${EUID} -ne 0/1 -ne 1/g' -e "$tty_rewrite" \
     "$repo_root/packaging/linux/install-worker.sh" > "$LIFECYCLE_ROOT/scripts/install-worker.sh"
@@ -181,6 +182,7 @@ assert_clean_failure() {
 prepare_root success
 run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
+[[ $(readlink "$LIFECYCLE_ROOT/usr/local/bin/codex-worker") == "$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker" ]]
 [[ $(grep -n '^register$' "$LIFECYCLE_ROOT/events" | cut -d: -f1) -lt \
    $(grep -n '^enable --now' "$LIFECYCLE_ROOT/events" | cut -d: -f1) ]]
 grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
