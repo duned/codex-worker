@@ -40,9 +40,13 @@ and interrupted provisioning state should be inspected before retrying mutations
 
 Local provisioning uses the same shared `NodeProvisioningCommandExecutor` and
 provider catalog as Server. Supported package operations are `install`, `upgrade`
-and `uninstall` for `git`, `github-cli` and `codex-cli` on Debian-based Linux.
-Other tools, including the .NET SDK, do not currently have a shared lifecycle
-provider; local administration does not install them through another path.
+and `uninstall` for `git`, `github-cli`, `codex-cli`, `dotnet-sdk`,
+`dotnet-runtime` and `docker` on Debian-based Linux with compatible configured
+apt sources. .NET providers require stable .NET 10 components; runtime provisioning
+includes ASP.NET Core. Docker separates installation from service-account daemon
+access (`checkconfiguration`), and requires no CLI login. Inventory also exposes
+typed provided-tool and local configuration dependency metadata. See
+[node provisioning policy](node-capabilities.md#net-and-docker-providers).
 
 Capability inventory and provisioning status expose `authenticationDependencies`
 as typed metadata: Git has an empty list (no tool-level authentication), GitHub

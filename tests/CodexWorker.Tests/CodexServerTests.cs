@@ -135,7 +135,7 @@ public sealed class CodexServerTests
             var server = nodes.RootElement[0];
             Assert.Equal("server", server.GetProperty("id").GetString());
             Assert.Equal("not-applicable", server.GetProperty("executionReadiness").GetString());
-            Assert.Equal(3, server.GetProperty("capabilities").GetArrayLength());
+            Assert.Equal(CapabilityCatalog.Definitions.Count, server.GetProperty("capabilities").GetArrayLength());
             Assert.Equal("Missing", server.GetProperty("capabilities")[0].GetProperty("state").GetProperty("installation").GetString());
             Assert.Equal("disconnected", nodes.RootElement[1].GetProperty("connectivity").GetString());
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/v1/nodes/server/capabilities/refresh", null)).StatusCode);

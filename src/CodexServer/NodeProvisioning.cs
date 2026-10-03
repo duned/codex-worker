@@ -27,7 +27,11 @@ public static class NodeProvisioning
         var operationRunning = capabilities.Any(item => item.State.Operation.State == CapabilityOperationState.Running);
         var stale = !connected || capabilities.Any(item => item.State.DetectedAtUtc is null ||
             DateTimeOffset.UtcNow - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
-        var ready = connected && !stale && worker.LifecycleState == "running" && CapabilityCatalog.Ready(capabilities.Select(item => item.State));
+        var executionCapabilities = capabilities.Where(item => item.Definition.RequiredForExecution).ToArray();
+        var executionStale = executionCapabilities.Any(item => item.State.DetectedAtUtc is null ||
+            DateTimeOffset.UtcNow - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
+        var ready = connected && !executionStale && worker.LifecycleState == "running" &&
+            CapabilityCatalog.Ready(executionCapabilities.Select(item => item.State));
         return new(worker.WorkerId, "worker", worker.DisplayName, connected ? "connected" : "disconnected",
             ready ? "ready" : "not-ready", !connected ? "unavailable" : operationRunning ? "busy" : "ready",
             stale, capabilities, !connected ? "unknown" : worker.Availability == "draining" ? "degraded" : "healthy");

@@ -16,7 +16,11 @@ public sealed record CapabilityInventoryItem(
     CapabilityHealth Health,
     string? DiagnosticCode,
     IReadOnlyList<string> AvailableActions,
-    IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies);
+    IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies,
+    IReadOnlyList<ProvidedToolKind> Provides,
+    LocalConfigurationDependencyKind? ConfigurationDependency,
+    int? RequiredMajorVersion,
+    bool RequiredForExecution);
 
 public static class CapabilityInventoryReporter
 {
@@ -33,7 +37,8 @@ public static class CapabilityInventoryReporter
             var capability = CapabilityCatalog.Describe(definition, state, connected: true);
             return new CapabilityInventoryItem(definition.Id, definition.DisplayName, state.Installation,
                 state.DetectedVersion, state.Update, state.Authentication, state.Configuration, state.Health,
-                state.DiagnosticCode, capability.AvailableActions, definition.AuthenticationDependencies);
+                state.DiagnosticCode, capability.AvailableActions, definition.AuthenticationDependencies, definition.Provides,
+                definition.ConfigurationDependency, definition.RequiredMajorVersion, definition.RequiredForExecution);
         }).ToArray();
         return new(1, items);
     }
@@ -58,7 +63,9 @@ public static class CapabilityInventoryReporter
             writer.WriteLine($"{capability.Id}: installation={capability.Installation.ToString().ToLowerInvariant()} {version} " +
                 $"update={capability.Update.ToString().ToLowerInvariant()} {string.Join(" ", dimensions)} " +
                 $"health={capability.Health.ToString().ToLowerInvariant()} diagnostic={capability.DiagnosticCode ?? "none"} actions={actions} " +
-                $"authentication-dependencies={DisplayAuthenticationDependencies(capability.AuthenticationDependencies)}");
+                $"authentication-dependencies={DisplayAuthenticationDependencies(capability.AuthenticationDependencies)} " +
+                $"provides={string.Join(",", capability.Provides)} configuration-dependency={capability.ConfigurationDependency?.ToString() ?? "none"} " +
+                $"required-major-version={capability.RequiredMajorVersion?.ToString() ?? "none"}");
         }
     }
 

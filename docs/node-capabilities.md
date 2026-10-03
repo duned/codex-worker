@@ -3,7 +3,8 @@
 `GET /api/v1/nodes` (management bearer authentication) returns the Server node
 with ID `server` and every registered Worker. Each capability includes a stable
 identifier, display metadata, observed state, and currently available actions.
-Initial identifiers are `git`, `github-cli`, and `codex-cli`. The shared
+Identifiers are `git`, `github-cli`, `codex-cli`, `dotnet-sdk`,
+`dotnet-runtime`, and `docker`. The shared
 CodexProvisioning assembly owns this contract and catalog; add future capability
 providers there rather than encoding tool-specific states in node lifecycle.
 
@@ -15,7 +16,7 @@ user.email in the service environment; their values are never returned. CLI
 authentication uses `gh auth status` and `codex login status` in the node's service
 environment. This is distinct from repository-scoped credentials and project
 execution eligibility. Update detection compares the installed and candidate
-package versions from the local apt index for Git/GitHub CLI, and compares Codex's
+package versions from the local apt index for apt-managed tools, and compares Codex's
 detected version with the official npm stable channel. An unavailable index,
 registry or version probe leaves update status `Unknown`, without invalidating
 installation or authentication observations. Apt observations reflect the last
@@ -43,8 +44,8 @@ success from an operation result alone.
 Worker operation state is projected from the latest applicable legacy plan or
 typed command, including its source, action and bounded diagnostic code. Running
 operations and disconnected Workers expose no available actions. The initial
-catalog advertises `refresh`, `install`, `update`, and `uninstall` for all three
-tools, plus `checkconfiguration` and SSH key/access actions for Git,
+catalog advertises `refresh`, `install`, `update`, and `uninstall` for all catalog
+tools, plus `checkconfiguration` for Docker, `checkconfiguration` and SSH key/access actions for Git,
 `prepareauthentication`/`checkauthentication`/`logout` for GitHub CLI, and
 `login`/`checkauthentication`/`logout` for Codex CLI. These indicate registered operations, not permission to mutate a node:
 local policy and platform support are checked at execution.
@@ -103,6 +104,48 @@ output. Inspect refreshed installation/version facts after `ProcessFailed`,
 or local authorization failures, and explicitly retry install/update/uninstall.
 The command store's existing acknowledgement/reconciliation rules prevent
 automatic replay of an uncertain operation.
+
+## .NET and Docker providers
+
+Provider definitions and local Worker inventory expose typed `provides`,
+`authenticationDependencies`, `configurationDependency`, `requiredMajorVersion`,
+and `requiredForExecution` metadata. GitHub CLI and Codex require their respective
+node-local CLI login independently of installation. .NET and Docker declare no
+authentication dependency. Workload tools are optional for the generic node
+execution-readiness summary; project capability requirements and execution
+preflight remain authoritative for scheduling.
+
+`dotnet-sdk` manages `dotnet-sdk-10.0` and provides the SDK, .NET runtime and
+ASP.NET Core runtime. `dotnet-runtime` manages `aspnetcore-runtime-10.0`, covering
+both runtimes needed by framework-dependent Worker/Server deployments, without
+requiring an SDK. Package names follow the
+[.NET Ubuntu installation guidance](https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu-install).
+Detection uses `dotnet --list-sdks` / `--list-runtimes`, selecting the newest
+stable 10.0 component rather than the SDK selected by a working directory's
+`global.json`. Runtime readiness requires both `Microsoft.NETCore.App` and
+`Microsoft.AspNetCore.App` 10.0; another major version or preview does not satisfy
+these providers. Final verification checks the managed `/usr/bin/dotnet` path.
+Compatible apt sources must already be configured for the node's distribution;
+the product does not add feeds, import keys or execute downloaded scripts.
+`PackageUnavailable` directs operators to configure compatible local sources.
+
+`docker` manages the distribution `docker.io` package, as permitted by the
+[Docker installation overview](https://docs.docker.com/engine/install/).
+The CLI version establishes installation. `docker info --format
+'{{.ServerVersion}}'` checks daemon access in the service account's Docker context;
+failed access reports configuration required, not missing authentication.
+`CheckConfiguration` repeats this read-only check without sudo. Operators must
+provide a running daemon and appropriate service-account access locally. The
+provider does not change group membership, socket permissions or daemon
+configuration, and never runs a container as a readiness probe. Package-manager
+installation success is independent of daemon readiness.
+
+All new providers use the existing bounded executor, local elevation policy,
+package mutation gate, failure refresh and cancellation semantics. Uninstall
+removes the selected package without purge/autoremove or explicit data deletion;
+Docker images/volumes, configuration and unrelated .NET versions are retained.
+Package-manager dependency rules still apply (for example removing a runtime can
+remove packages that depend on it). Review local dependencies before uninstall.
 
 ## Server dashboard
 

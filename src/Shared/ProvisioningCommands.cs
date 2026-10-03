@@ -10,7 +10,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable }
 
 /// <summary>Safe, bounded failure context. It contains no process output or caller-controlled text.</summary>
 public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null)
@@ -23,6 +23,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.VerificationFailed => "The provisioning process completed but capability verification failed.",
         ProvisioningFailureCode.ProcessStartFailed => "A provisioning process could not be started.",
         ProvisioningFailureCode.CapabilityDetectionFailed => "Capability detection failed.",
+        ProvisioningFailureCode.PackageUnavailable => "The managed tool package is unavailable. Configure compatible node-local apt sources and refresh their indexes before retrying.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
         _ => "Provisioning failed."
     };
@@ -61,9 +62,10 @@ public static class ProvisioningCommandProtocol
     {
         ProvisioningCommandAction.Detect => true,
         ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli",
-        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => request.CapabilityId is "git" or "github-cli" or "codex-cli",
+        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => ToolProvisioningProviders.AptPackage(request.CapabilityId) is not null || request.CapabilityId == "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
-        ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
+        ProvisioningCommandAction.CheckConfiguration => request.CapabilityId is "git" or "docker",
+        ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
             ProvisioningCommandAction.RemoveSshKey or ProvisioningCommandAction.VerifyRepositoryAccess => request.CapabilityId == "git",
         ProvisioningCommandAction.PrepareAuthentication => request.CapabilityId == "github-cli",
         _ => false
@@ -218,6 +220,7 @@ public sealed class NodeProvisioningCommandExecutor
                     : CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
                 arguments = request.Action switch
                 {
+                    ProvisioningCommandAction.CheckConfiguration when request.CapabilityId == "docker" => ["info", "--format", "{{.ServerVersion}}"],
                     ProvisioningCommandAction.CheckConfiguration => ["config", "--get", "user.name"],
                     ProvisioningCommandAction.CheckAuthentication when request.CapabilityId == "github-cli" => ["auth", "status", "--hostname", "github.com"],
                     ProvisioningCommandAction.CheckAuthentication => ["login", "status"],
@@ -225,7 +228,7 @@ public sealed class NodeProvisioningCommandExecutor
                 };
             }
             var verificationResult = await _run(executable, arguments, timeout.Token);
-            if (verificationResult.ExitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration)
+            if (verificationResult.ExitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration && command.Request.CapabilityId == "git")
                 verificationResult = await _run("git", ["config", "--get", "user.email"], timeout.Token);
             await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
             refreshed = true;
@@ -272,6 +275,9 @@ public sealed class NodeProvisioningCommandExecutor
             error.Contains("not in the sudoers", StringComparison.OrdinalIgnoreCase) ||
             error.Contains("not allowed to execute", StringComparison.OrdinalIgnoreCase))
             return ProvisioningFailureCode.ElevationDenied;
+        if (error.Contains("Unable to locate package", StringComparison.OrdinalIgnoreCase) ||
+            error.Contains("has no installation candidate", StringComparison.OrdinalIgnoreCase))
+            return ProvisioningFailureCode.PackageUnavailable;
         return ProvisioningFailureCode.ProcessExited;
     }
 

@@ -1,4 +1,5 @@
 using CodexWorker;
+using CodexProvisioning;
 using System.Net;
 using System.Text.Json;
 
@@ -243,7 +244,7 @@ public sealed class WorkerRegistrationTests
         Assert.DoesNotContain(registration.Capabilities, capability => capability.Type is "agent-provider" or "runtime" or "tool");
         Assert.All(registration.CapabilityInventory ?? [], state =>
             Assert.Equal(CodexProvisioning.InstallationState.Missing, state.Installation));
-        Assert.Equal(3, registration.CapabilityInventory?.Count);
+        Assert.Equal(CapabilityCatalog.Definitions.Count, registration.CapabilityInventory?.Count);
         Assert.True(File.Exists(settings.IdentityFile + ".token"));
     }
 

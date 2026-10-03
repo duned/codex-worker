@@ -65,10 +65,10 @@ public sealed class CapabilityInventoryTests
         var listed = await CapabilityInventoryReporter.CreateAsync(discovery);
         var listedAgain = await CapabilityInventoryReporter.CreateAsync(discovery);
         Assert.Equal(listed.Capabilities, listedAgain.Capabilities);
-        Assert.Equal(3, detection);
+        Assert.Equal(4, detection);
 
         var refreshed = await CapabilityInventoryReporter.CreateAsync(discovery, refresh: true);
-        Assert.Equal(6, detection);
+        Assert.Equal(8, detection);
         Assert.NotEqual(listed.Capabilities, refreshed.Capabilities);
     }
 }

@@ -35,8 +35,13 @@ public sealed class NodeCapabilityTests
     public async Task ExplicitRefreshRedetectsMachineFactsWhileOrdinaryReadsAreCached()
     {
         var installed = false;
-        var discovery = new NodeCapabilityDiscovery((_, _, _) => installed
-            ? Task.FromResult((0, "2.0")) : Task.FromException<(int, string)>(new FileNotFoundException()));
+        var discovery = new NodeCapabilityDiscovery((_, arguments, _) => installed
+            ? Task.FromResult((0, arguments[0] switch
+            {
+                "--list-sdks" => "10.0.100 [/sdk]",
+                "--list-runtimes" => "Microsoft.NETCore.App 10.0.1 [/runtime]\nMicrosoft.AspNetCore.App 10.0.1 [/runtime]",
+                _ => "2.0"
+            })) : Task.FromException<(int, string)>(new FileNotFoundException()));
         var before = await discovery.GetAsync();
         installed = true;
         Assert.Same(before, await discovery.GetAsync());
@@ -116,6 +121,25 @@ public sealed class NodeCapabilityTests
     }
 
     [Fact]
+    public void OptionalWorkloadProvidersDoNotMakeAnOtherwiseReadyWorkerUnavailable()
+    {
+        var inventory = CapabilityCatalog.Definitions.Where(item => item.RequiredForExecution)
+            .Select(definition => CapabilityCatalog.Unknown(definition) with
+            {
+                Installation = InstallationState.Installed,
+                Health = CapabilityHealth.Healthy,
+                Authentication = definition.RequiresAuthentication ? RequirementState.Satisfied : null,
+                Configuration = definition.RequiresConfiguration ? RequirementState.Satisfied : null,
+                DetectedAtUtc = DateTimeOffset.UtcNow,
+                DiagnosticCode = null
+            }).ToArray();
+        var node = NodeProvisioning.Describe(Worker() with { CapabilityInventory = inventory }, []);
+        Assert.Equal("ready", node.ExecutionReadiness);
+        Assert.True(node.ObservationsStale); // Optional tools remain unknown for older reports.
+        Assert.Equal(InstallationState.Unknown, Assert.Single(node.Capabilities, item => item.Definition.Id == "docker").State.Installation);
+    }
+
+    [Fact]
     public void InventoryRejectsDuplicateIdentifiersAndFreeFormDiagnostics()
     {
         var state = CapabilityCatalog.Unknown(CapabilityCatalog.Definitions[0]);
@@ -145,7 +169,7 @@ public sealed class NodeCapabilityTests
             Assert.NotNull(worker);
             Assert.Equal(inventory, worker.CapabilityInventory);
             var node = NodeProvisioning.Describe(worker, []);
-            Assert.Equal(3, node.Capabilities.Count);
+            Assert.Equal(CapabilityCatalog.Definitions.Count, node.Capabilities.Count);
             Assert.Equal("not-ready", node.ExecutionReadiness);
         }
         finally { Directory.Delete(directory, recursive: true); }

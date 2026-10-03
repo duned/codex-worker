@@ -19,12 +19,22 @@ public enum CapabilityOperationState { Idle, Running, Failed }
 [JsonConverter(typeof(JsonStringEnumConverter<AuthenticationDependencyKind>))]
 public enum AuthenticationDependencyKind { GitHubCliLogin, CodexCliLogin }
 
+[JsonConverter(typeof(JsonStringEnumConverter<ProvidedToolKind>))]
+public enum ProvidedToolKind { Git, GitHubCli, CodexCli, DotNetSdk, DotNetRuntime, AspNetCoreRuntime, DockerEngine }
+[JsonConverter(typeof(JsonStringEnumConverter<LocalConfigurationDependencyKind>))]
+public enum LocalConfigurationDependencyKind { GitIdentity, DockerDaemonAccess }
+
 /// <summary>Required node-local authentication, independent of installation and repository authorization.
 /// An empty dependency list declares that the tool needs no authentication.</summary>
 public sealed record CapabilityDefinition(string Id, string DisplayName, string Executable,
     IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies, bool RequiresConfiguration,
     IReadOnlyList<string> SupportedActions)
 {
+    public IReadOnlyList<ProvidedToolKind> Provides { get; init; } = [];
+    public LocalConfigurationDependencyKind? ConfigurationDependency { get; init; }
+    public int? RequiredMajorVersion { get; init; }
+    // Generic execution prerequisites only; workload tools remain project requirements.
+    public bool RequiredForExecution { get; init; } = true;
     public bool RequiresAuthentication => AuthenticationDependencies.Count > 0;
 }
 public sealed record CapabilityOperation(CapabilityOperationState State, string? Action = null, string? DiagnosticCode = null);
@@ -41,9 +51,15 @@ public static class CapabilityCatalog
 {
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
-        new("git", "Git", "git", Array.Empty<AuthenticationDependencyKind>(), true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
-        new("github-cli", "GitHub CLI", "gh", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.GitHubCliLogin]), false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]),
-        new("codex-cli", "Codex CLI", "codex", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.CodexCliLogin]), false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"])
+        new("git", "Git", "git", Array.Empty<AuthenticationDependencyKind>(), true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]) { Provides = [ProvidedToolKind.Git], ConfigurationDependency = LocalConfigurationDependencyKind.GitIdentity },
+        new("github-cli", "GitHub CLI", "gh", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.GitHubCliLogin]), false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]) { Provides = [ProvidedToolKind.GitHubCli] },
+        new("codex-cli", "Codex CLI", "codex", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.CodexCliLogin]), false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"]) { Provides = [ProvidedToolKind.CodexCli] },
+        new("dotnet-sdk", ".NET 10 SDK", "dotnet", [], false, ["refresh", "install", "update", "uninstall"])
+            { Provides = [ProvidedToolKind.DotNetSdk, ProvidedToolKind.DotNetRuntime, ProvidedToolKind.AspNetCoreRuntime], RequiredMajorVersion = 10, RequiredForExecution = false },
+        new("dotnet-runtime", ".NET 10 / ASP.NET Core Runtime", "dotnet", [], false, ["refresh", "install", "update", "uninstall"])
+            { Provides = [ProvidedToolKind.DotNetRuntime, ProvidedToolKind.AspNetCoreRuntime], RequiredMajorVersion = 10, RequiredForExecution = false },
+        new("docker", "Docker", "docker", [], true, ["refresh", "install", "update", "uninstall", "checkconfiguration"])
+            { Provides = [ProvidedToolKind.DockerEngine], ConfigurationDependency = LocalConfigurationDependencyKind.DockerDaemonAccess, RequiredForExecution = false }
     ]);
 
     public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,
@@ -73,7 +89,7 @@ public static class CapabilityCatalog
             (state.Configuration is null || Enum.IsDefined(state.Configuration.Value)) &&
             state.Operation is not null && Enum.IsDefined(state.Operation.State) &&
             (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
-            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" &&
+            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" or "configuration-required" &&
             state.Operation.DiagnosticCode is null or "operation-failed" &&
             state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration" or "prepareauthentication" or "generatesshkey" or "inspectsshkey" or "removesshkey" or "verifyrepositoryaccess");
     }
@@ -108,13 +124,22 @@ public sealed class NodeCapabilityDiscovery
                 try
                 {
                     var executable = definition.Id == "codex-cli" ? CodexServiceEnvironment.Executable : definition.Executable;
-                    var version = await _run(executable, ["--version"], cancellationToken);
-                    var match = Regex.Match(version.Output, @"(?<![\w])v?(\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?)(?![\w])");
+                    var version = await _run(executable, ToolProvisioningProviders.VersionArguments(definition.Id), cancellationToken);
+                    var detectedVersion = ToolProvisioningProviders.ParseVersion(definition.Id, version.Output);
                     state = state with { Installation = version.ExitCode == 0 ? InstallationState.Installed : InstallationState.Unknown,
-                        DetectedVersion = version.ExitCode == 0 && match.Success ? match.Groups[1].Value : null,
+                        DetectedVersion = version.ExitCode == 0 ? detectedVersion : null,
                         Health = version.ExitCode == 0 ? CapabilityHealth.Healthy : CapabilityHealth.Error,
                         DiagnosticCode = version.ExitCode == 0 ? null : "probe-failed" };
-                    if (version.ExitCode == 0 && definition.RequiresConfiguration)
+                    if (version.ExitCode == 0 && definition.RequiredMajorVersion is not null && detectedVersion is null)
+                        state = state with { Installation = InstallationState.Missing, DiagnosticCode = "tool-missing" };
+                    if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.DockerDaemonAccess)
+                    {
+                        var daemon = await _run(executable, ["info", "--format", "{{.ServerVersion}}"], cancellationToken);
+                        state = state with { Configuration = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output)
+                            ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output) ? null : "configuration-required" };
+                    }
+                    if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.GitIdentity)
                     {
                         var name = await _run(executable, ["config", "--get", "user.name"], cancellationToken);
                         var email = await _run(executable, ["config", "--get", "user.email"], cancellationToken);
@@ -128,7 +153,7 @@ public sealed class NodeCapabilityDiscovery
                         state = state with { Authentication = auth.ExitCode == 0 ? RequirementState.Satisfied : RequirementState.Required,
                             DiagnosticCode = auth.ExitCode == 0 ? null : "authentication-required" };
                     }
-                    if (version.ExitCode == 0)
+                    if (state.Installation == InstallationState.Installed)
                         state = state with { Update = await DetectUpdateAsync(definition.Id, state.DetectedVersion, cancellationToken) };
                 }
                 catch (System.ComponentModel.Win32Exception)
@@ -190,9 +215,9 @@ public sealed class NodeCapabilityDiscovery
 
     internal async Task<bool> VerifyManagedInstallationAsync(CapabilityState state, CancellationToken token)
     {
-        var result = await _run(ToolProvisioningProviders.ManagedExecutable(state.Id), ["--version"], token);
-        var match = Regex.Match(result.Output, @"(?<![\w])v?(\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?)(?![\w])");
-        return result.ExitCode == 0 && match.Success && match.Groups[1].Value == state.DetectedVersion;
+        var result = await _run(ToolProvisioningProviders.ManagedExecutable(state.Id), ToolProvisioningProviders.VersionArguments(state.Id), token);
+        var version = ToolProvisioningProviders.ParseVersion(state.Id, result.Output);
+        return result.ExitCode == 0 && version is not null && version == state.DetectedVersion;
     }
 
     private static async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
