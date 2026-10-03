@@ -15,12 +15,19 @@ The existing root help alias `h` remains supported.
 | `register` | Enroll using `--token-stdin` or the existing `--token` option. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. Registration does not establish execution readiness. |
 | `provision status` | Inspect capability state, typed authentication dependencies and local action policy. |
 | `provision <operation> <capability-id>` | Run an allowlisted typed operation under node-local provisioning policy. Package changes require `--allow-elevation` as well as policy permission. `verify-repository-access` requires `--repository owner/repository`. |
+| `credential status`, `credential check/login/logout <provider>` | Observe shared node-local credential state or run typed GitHub/Codex authentication under the same local policy as provisioning. Login publishes a transient browser/device challenge. |
 
 These commands accept `--json` for automation. Successful observations and
 operation results retain their existing versioned contracts. Adapter errors emit
 one JSON object with `contractVersion: 1`, `status: "failed"` and a bounded,
 redacted `diagnostic` containing `code` and `message`. Provisioning progress is
 written separately to stderr. No registration token is returned in output.
+Human provisioning and credential failures include the shared safe failure
+description (and process exit code when available), matching JSON `failureDetail`.
+After `provision prepare-authentication github-cli`, use
+`provision login github-cli --timeout-seconds 300` as the Worker service account
+to complete the typed device flow; successful login still does not prove
+repository authorization or execution readiness.
 
 Configuration defaults to `/etc/codex-worker/worker.yml` on Linux and
 `~/.codex-worker/worker.yml` elsewhere. Use `--config <path>` to select another
@@ -37,6 +44,10 @@ deadline and reconciliation behavior. Local administration exits 0 on completed
 observations/success, 2 on invalid arguments or operational failure, and 130 on
 cancellation or provisioning/registration timeout. Retained enrollment credentials
 and interrupted provisioning state should be inspected before retrying mutations.
+Cancelled provisioning preserves the terminal report after the executor's bounded
+reconciliation; it does not start additional capability discovery for presentation.
+The optional result capability may therefore be absent. Observe fresh state with
+`provision status` before deciding whether to retry.
 
 The local status contract includes the validated stable `registration.workerId`,
 `credentialState` (`persisted`, `environment`, `missing`, `invalid`, `unreadable`,
@@ -99,3 +110,7 @@ The [19.9 local E2E report](worker-local-e2e-19.9.md) records the isolated
 executable campaign, recovery fixes, and remaining disposable-host acceptance
 checks. Run `tests/worker-local-e2e.py` against a built Worker apphost to repeat
 the campaign without modifying installed services or credentials.
+
+The [19.10 integration review](worker-administration-integration-review-19.10.md)
+records cross-provider consistency, integration fixes and the ownership contracts
+to preserve when adding secure remote transport.

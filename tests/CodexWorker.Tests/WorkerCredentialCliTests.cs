@@ -11,6 +11,23 @@ public sealed class WorkerCredentialCliTests
     private const string PrivateOutput = "private-provider-token";
 
     [Theory]
+    [InlineData("github-cli")]
+    [InlineData("codex-cli")]
+    public async Task HumanFailuresExplainTheSharedSafeFailureCode(string provider)
+    {
+        var failure = new ProvisioningFailureDetail(ProvisioningFailureCode.ProcessExited, 7);
+        var service = new NodeCredentialAdministration(Discovery(false), (_, _, _) =>
+            Task.FromResult(new ProvisioningCommandReport(ProvisioningCommandStatus.Failed,
+                ProvisioningDiagnostic.ProcessFailed, FailureDetail: failure)));
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        Assert.Equal(ProcessExitCodes.StartupFailure, await new WorkerCredentialCli(service, NodeId, output, error)
+            .RunAsync(WorkerCredentialCli.Parse(["check", provider])));
+        Assert.Contains(failure.Description, output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(PrivateOutput, output.ToString() + error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task StatusSeparatesInstallationAuthenticationDependenciesAndReadinessWithoutSecrets(bool dockerDaemonAvailable)

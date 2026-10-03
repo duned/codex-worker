@@ -197,8 +197,11 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
                 authorization.Reason ?? "Local provisioning policy denied this operation.", authorization.Remediation);
 
         var report = await WorkerProvisioning.ExecuteLocalAsync(request, _policy, _discovery, cancellationToken, progress, _executor);
-        var state = (await _discovery.GetAsync(cancellationToken: CancellationToken.None))
-            .FirstOrDefault(candidate => candidate.Id == request.CapabilityId);
+        // The executor already performs bounded reconciliation after interruption.
+        // Preserve its terminal report without starting observation I/O on shutdown.
+        var state = cancellationToken.IsCancellationRequested ? null :
+            (await _discovery.GetAsync(cancellationToken: cancellationToken))
+                .FirstOrDefault(candidate => candidate.Id == request.CapabilityId);
         var reason = report.Diagnostic switch
         {
             ProvisioningDiagnostic.Unsupported when IsPrivileged(request.Action) =>

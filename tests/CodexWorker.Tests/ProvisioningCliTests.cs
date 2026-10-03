@@ -7,6 +7,53 @@ using CodexWorker;
 public sealed class ProvisioningCliTests
 {
     [Theory]
+    [InlineData(ProvisioningFailureCode.ElevationDenied)]
+    [InlineData(ProvisioningFailureCode.PackageUnavailable)]
+    [InlineData(ProvisioningFailureCode.ProcessExited)]
+    public void HumanAndJsonOutputRetainSharedSafeFailureDetails(ProvisioningFailureCode code)
+    {
+        var failure = new ProvisioningFailureDetail(code, code == ProvisioningFailureCode.ProcessExited ? 7 : null);
+        var result = new WorkerProvisioningResult("install", "failed", ProvisioningDiagnostic.ProcessFailed,
+            "git", ProvisioningCommandAction.Install, Report: new(ProvisioningCommandStatus.Failed,
+                ProvisioningDiagnostic.ProcessFailed, FailureDetail: failure));
+        using var output = new StringWriter();
+        ProvisioningCli.Write(result, json: false, output);
+        Assert.Contains(failure.Description, output.ToString(), StringComparison.Ordinal);
+        output.GetStringBuilder().Clear();
+        ProvisioningCli.Write(result, json: true, output);
+        using var json = System.Text.Json.JsonDocument.Parse(output.ToString());
+        Assert.Equal(code.ToString(), json.RootElement.GetProperty("report").GetProperty("failureDetail").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task CancelledProvisioningRetainsTerminalReportWithoutCollectingPresentationState()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var uncancellableProbes = 0;
+        var discovery = new NodeCapabilityDiscovery((_, _, token) =>
+        {
+            if (!token.CanBeCanceled) uncancellableProbes++;
+            return Task.FromResult((0, "1.0.0"));
+        });
+        var executor = new NodeProvisioningCommandExecutor(discovery, login: (_, token) =>
+        {
+            cancellation.Cancel();
+            token.ThrowIfCancellationRequested();
+            return Task.FromResult(0);
+        });
+        var service = new WorkerProvisioningAdministrationService(new ProvisioningPolicy
+        {
+            Enabled = true, AllowCredentials = true, AllowNonPrivileged = true
+        }, discovery, "server", executor);
+        var result = await service.ExecuteAsync(new("codex-cli", ProvisioningCommandAction.Login),
+            cancellation.Token, (_, _) => Task.CompletedTask);
+        Assert.Equal(ProvisioningCommandStatus.Cancelled, result.Report?.Status);
+        Assert.Equal(ProvisioningDiagnostic.Cancelled, result.Diagnostic);
+        Assert.Null(result.Capability);
+        Assert.Equal(0, uncancellableProbes);
+    }
+
+    [Theory]
     [InlineData("5")]
     [InlineData("600")]
     public async Task ExplicitDeadlineReachesTheTypedAdministrationOperation(string seconds)
@@ -192,7 +239,7 @@ public sealed class ProvisioningCliTests
     }
 
     [Fact]
-    public void SuccessfulGitHubPreparationPrintsTheNodeLocalTerminalHandoff()
+    public void SuccessfulGitHubPreparationPrintsTheTypedDeviceLoginHandoff()
     {
         var result = new WorkerProvisioningResult("prepare-authentication", "succeeded", ProvisioningDiagnostic.Completed,
             "github-cli", ProvisioningCommandAction.PrepareAuthentication);
@@ -205,9 +252,9 @@ public sealed class ProvisioningCliTests
         }
         finally { Console.SetOut(originalOutput); }
 
-        Assert.Contains("terminal on this node as the Worker service account", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("GH_CONFIG_DIR=\"$HOME/.local/share/codex-provisioning/github\"", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("gh auth login --hostname github.com", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("as the Worker service account", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("codex-worker provision login github-cli --timeout-seconds 300", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("one-time code", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("check-authentication github-cli", output.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("token", output.ToString(), StringComparison.OrdinalIgnoreCase);
     }

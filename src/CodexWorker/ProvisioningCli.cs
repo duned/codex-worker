@@ -119,23 +119,24 @@ public static class ProvisioningCli
         return service.ExecuteAsync(operation, cancellationToken, progress);
     }
 
-    public static void Write(WorkerProvisioningResult result, bool json)
+    public static void Write(WorkerProvisioningResult result, bool json, TextWriter? writer = null)
     {
         ArgumentNullException.ThrowIfNull(result);
+        writer ??= Console.Out;
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+            writer.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
             return;
         }
 
         if (result.Capabilities is not null)
         {
-            Console.WriteLine("Local provisioning status:");
-            Console.WriteLine("Node authentication is the Codex/GitHub CLI state observed in the service-account environment; it does not report provider-side permissions, Worker registration, credential delivery, or project scheduling authorization.");
+            writer.WriteLine("Local provisioning status:");
+            writer.WriteLine("Node authentication is the Codex/GitHub CLI state observed in the service-account environment; it does not report provider-side permissions, Worker registration, credential delivery, or project scheduling authorization.");
             foreach (var capability in result.Capabilities)
             {
                 var state = capability.State;
-                Console.WriteLine($"{capability.Id} ({capability.DisplayName}): installation={state.Installation.ToString().ToLowerInvariant()}, " +
+                writer.WriteLine($"{capability.Id} ({capability.DisplayName}): installation={state.Installation.ToString().ToLowerInvariant()}, " +
                     $"version={state.DetectedVersion ?? "unknown"}, update={state.Update.ToString().ToLowerInvariant()}, " +
                     $"node-authentication={DisplayRequirement(state.Authentication)}, node-configuration={DisplayRequirement(state.Configuration)}, " +
                     $"health={state.Health.ToString().ToLowerInvariant()}, " +
@@ -143,26 +144,26 @@ public static class ProvisioningCli
                 foreach (var action in capability.Actions)
                 {
                     var authorization = action.RequiresElevation ? " (requires --allow-elevation)" : string.Empty;
-                    Console.WriteLine($"  {action.Action}: {(action.Allowed ? "allowed" : "denied")}{authorization}" +
+                    writer.WriteLine($"  {action.Action}: {(action.Allowed ? "allowed" : "denied")}{authorization}" +
                         (action.Reason is null ? string.Empty : $" — {action.Reason}"));
-                    if (!action.Allowed && action.Remediation is not null) Console.WriteLine($"    Remediation: {action.Remediation}");
+                    if (!action.Allowed && action.Remediation is not null) writer.WriteLine($"    Remediation: {action.Remediation}");
                 }
             }
             return;
         }
 
-        Console.WriteLine($"{Capitalize(result.Command)} {result.CapabilityId}: {result.Status}.");
+        writer.WriteLine($"{Capitalize(result.Command)} {result.CapabilityId}: {result.Status}.");
         if (result.Status == "succeeded" && result.CapabilityId == "github-cli" &&
             result.Action == ProvisioningCommandAction.PrepareAuthentication)
         {
-            Console.WriteLine("Complete GitHub browser/device login in a terminal on this node as the Worker service account. Clear any inherited GitHub authentication variables first:");
-            Console.WriteLine("GH_CONFIG_DIR=\"$HOME/.local/share/codex-provisioning/github\" gh auth login --hostname github.com --git-protocol ssh --web --skip-ssh-key");
-            Console.WriteLine("Then run 'codex-worker provision check-authentication github-cli'. This checks node-local login only, not provider scopes or repository write access.");
+            writer.WriteLine("Run 'codex-worker provision login github-cli --timeout-seconds 300' as the Worker service account, then open the displayed device URL in a browser and enter the one-time code.");
+            writer.WriteLine("Then run 'codex-worker provision check-authentication github-cli'. This checks node-local login only, not provider scopes or repository write access.");
         }
-        if (result.Reason is not null) Console.WriteLine($"Reason: {result.Reason}");
-        if (result.Remediation is not null) Console.WriteLine($"Remediation: {result.Remediation}");
+        if (result.Report?.FailureDetail is { } failure) writer.WriteLine($"Failure: {failure.Description}");
+        if (result.Reason is not null) writer.WriteLine($"Reason: {result.Reason}");
+        if (result.Remediation is not null) writer.WriteLine($"Remediation: {result.Remediation}");
         if (result.Capability is { } capabilityState)
-            Console.WriteLine($"Current state: installation={capabilityState.Installation.ToString().ToLowerInvariant()}, " +
+            writer.WriteLine($"Current state: installation={capabilityState.Installation.ToString().ToLowerInvariant()}, " +
                 $"version={capabilityState.DetectedVersion ?? "unknown"}, update={capabilityState.Update.ToString().ToLowerInvariant()}, " +
                 $"node-authentication={DisplayRequirement(capabilityState.Authentication)}, " +
                 $"node-configuration={DisplayRequirement(capabilityState.Configuration)}, " +

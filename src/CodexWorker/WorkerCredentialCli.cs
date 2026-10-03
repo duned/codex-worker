@@ -42,6 +42,8 @@ public sealed class WorkerCredentialCli(NodeCredentialAdministration service, st
         else
         {
             await output.WriteLineAsync($"Credentials {result.Operation}: {result.Report.Status.ToString().ToLowerInvariant()} ({result.Report.Diagnostic}).");
+            if (result.Report.FailureDetail is { } failure)
+                await output.WriteLineAsync($"Failure: {failure.Description}");
             foreach (var credential in result.Credentials)
                 await output.WriteLineAsync($"{credential.CapabilityId}: installation={credential.Installation.ToString().ToLowerInvariant()}, " +
                     $"authentication={credential.Authentication?.ToString().ToLowerInvariant() ?? "not-required"}, " +
