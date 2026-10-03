@@ -16,8 +16,17 @@ public enum CapabilityHealth { Healthy, Degraded, Error }
 [JsonConverter(typeof(JsonStringEnumConverter<CapabilityOperationState>))]
 public enum CapabilityOperationState { Idle, Running, Failed }
 
+[JsonConverter(typeof(JsonStringEnumConverter<AuthenticationDependencyKind>))]
+public enum AuthenticationDependencyKind { GitHubCliLogin, CodexCliLogin }
+
+/// <summary>Required node-local authentication, independent of installation and repository authorization.
+/// An empty dependency list declares that the tool needs no authentication.</summary>
 public sealed record CapabilityDefinition(string Id, string DisplayName, string Executable,
-    bool RequiresAuthentication, bool RequiresConfiguration, IReadOnlyList<string> SupportedActions);
+    IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies, bool RequiresConfiguration,
+    IReadOnlyList<string> SupportedActions)
+{
+    public bool RequiresAuthentication => AuthenticationDependencies.Count > 0;
+}
 public sealed record CapabilityOperation(CapabilityOperationState State, string? Action = null, string? DiagnosticCode = null);
 /// <summary>Machine observations only. Diagnostics are codes, never process output or credential material.</summary>
 public sealed record CapabilityState(string Id, InstallationState Installation, string? DetectedVersion,
@@ -32,9 +41,9 @@ public static class CapabilityCatalog
 {
     public static IReadOnlyList<CapabilityDefinition> Definitions { get; } = Array.AsReadOnly<CapabilityDefinition>(
     [
-        new("git", "Git", "git", false, true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
-        new("github-cli", "GitHub CLI", "gh", true, false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]),
-        new("codex-cli", "Codex CLI", "codex", true, false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"])
+        new("git", "Git", "git", Array.Empty<AuthenticationDependencyKind>(), true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]),
+        new("github-cli", "GitHub CLI", "gh", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.GitHubCliLogin]), false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]),
+        new("codex-cli", "Codex CLI", "codex", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.CodexCliLogin]), false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"])
     ]);
 
     public static CapabilityState Unknown(CapabilityDefinition definition) => new(definition.Id,

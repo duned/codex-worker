@@ -153,6 +153,9 @@ public sealed class ProvisioningCliTests
         var capabilities = result.Capabilities ?? throw new InvalidOperationException("Status result did not include capabilities.");
         Assert.Equal(CapabilityCatalog.Definitions.Count, capabilities.Count);
         var git = Assert.Single(capabilities, item => item.Id == "git");
+        Assert.Empty(git.AuthenticationDependencies);
+        var github = Assert.Single(capabilities, item => item.Id == "github-cli");
+        Assert.Equal([AuthenticationDependencyKind.GitHubCliLogin], github.AuthenticationDependencies);
         Assert.Contains(git.Actions, action => action.Action == "install" && !action.Allowed && action.RequiresElevation);
         Assert.Contains(git.Actions, action => action.Action == "upgrade" && action.PolicyKey == "tool:git:update");
         Assert.Contains(git.Actions, action => action.Action == "uninstall");
@@ -181,6 +184,8 @@ public sealed class ProvisioningCliTests
         Assert.Contains("Node authentication is the Codex/GitHub CLI state observed in the service-account environment", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("github-cli (GitHub CLI):", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("node-authentication=required", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("authentication-dependencies=GitHubCliLogin", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("authentication-dependencies=none", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("codex-cli (Codex CLI):", output.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("provider-token-must-not-appear", output.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("credential-delivery", output.ToString(), StringComparison.OrdinalIgnoreCase);

@@ -25,15 +25,18 @@ public sealed class CapabilityInventoryTests
         var git = Assert.Single(inventory.Capabilities, capability => capability.Id == "git");
         Assert.Equal(InstallationState.Missing, git.Installation);
         Assert.Equal("tool-missing", git.DiagnosticCode);
+        Assert.Empty(git.AuthenticationDependencies);
         var github = Assert.Single(inventory.Capabilities, capability => capability.Id == "github-cli");
         Assert.Equal(InstallationState.Installed, github.Installation);
         Assert.Equal("2.3.4", github.DetectedVersion);
         Assert.Equal(RequirementState.Required, github.Authentication);
+        Assert.Equal([AuthenticationDependencyKind.GitHubCliLogin], github.AuthenticationDependencies);
         var codex = Assert.Single(inventory.Capabilities, capability => capability.Id == "codex-cli");
         Assert.Equal(InstallationState.Unknown, codex.Installation);
         Assert.Null(codex.DetectedVersion);
         Assert.Equal(UpdateState.Unknown, codex.Update);
         Assert.Equal(CapabilityHealth.Error, codex.Health);
+        Assert.Equal([AuthenticationDependencyKind.CodexCliLogin], codex.AuthenticationDependencies);
         Assert.Equal(1, inventory.ContractVersion);
         Assert.All(inventory.Capabilities, capability => Assert.Contains("refresh", capability.AvailableActions));
 
@@ -41,6 +44,8 @@ public sealed class CapabilityInventoryTests
         Assert.DoesNotContain("private-identity", json, StringComparison.Ordinal);
         Assert.DoesNotContain("private-key", json, StringComparison.Ordinal);
         Assert.Contains("diagnosticCode", json, StringComparison.Ordinal);
+        Assert.Contains("authenticationDependencies", json, StringComparison.Ordinal);
+        Assert.Contains("GitHubCliLogin", json, StringComparison.Ordinal);
     }
 
     [Fact]

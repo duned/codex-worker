@@ -15,7 +15,8 @@ public sealed record CapabilityInventoryItem(
     RequirementState? Configuration,
     CapabilityHealth Health,
     string? DiagnosticCode,
-    IReadOnlyList<string> AvailableActions);
+    IReadOnlyList<string> AvailableActions,
+    IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies);
 
 public static class CapabilityInventoryReporter
 {
@@ -32,7 +33,7 @@ public static class CapabilityInventoryReporter
             var capability = CapabilityCatalog.Describe(definition, state, connected: true);
             return new CapabilityInventoryItem(definition.Id, definition.DisplayName, state.Installation,
                 state.DetectedVersion, state.Update, state.Authentication, state.Configuration, state.Health,
-                state.DiagnosticCode, capability.AvailableActions);
+                state.DiagnosticCode, capability.AvailableActions, definition.AuthenticationDependencies);
         }).ToArray();
         return new(1, items);
     }
@@ -56,7 +57,11 @@ public static class CapabilityInventoryReporter
             var dimensions = new[] { authentication, configuration }.Where(value => value is not null);
             writer.WriteLine($"{capability.Id}: installation={capability.Installation.ToString().ToLowerInvariant()} {version} " +
                 $"update={capability.Update.ToString().ToLowerInvariant()} {string.Join(" ", dimensions)} " +
-                $"health={capability.Health.ToString().ToLowerInvariant()} diagnostic={capability.DiagnosticCode ?? "none"} actions={actions}");
+                $"health={capability.Health.ToString().ToLowerInvariant()} diagnostic={capability.DiagnosticCode ?? "none"} actions={actions} " +
+                $"authentication-dependencies={DisplayAuthenticationDependencies(capability.AuthenticationDependencies)}");
         }
     }
+
+    internal static string DisplayAuthenticationDependencies(IReadOnlyList<AuthenticationDependencyKind> dependencies) =>
+        dependencies.Count == 0 ? "none" : string.Join(",", dependencies);
 }

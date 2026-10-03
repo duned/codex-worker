@@ -2,7 +2,7 @@ namespace CodexWorker;
 
 using CodexProvisioning;
 
-/// <summary>Tracks execution readiness without making unavailable tools fatal to managed node liveness.</summary>
+/// <summary>Tracks execution readiness without making unavailable tools fatal to node liveness.</summary>
 internal sealed class ManagedCodexReadiness(IAgentAuthenticationProvider provider)
 {
     private CapabilityState? _lastObservation;

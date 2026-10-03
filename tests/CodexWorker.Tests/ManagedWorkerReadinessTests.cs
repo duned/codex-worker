@@ -8,6 +8,46 @@ namespace CodexWorker.Tests;
 public sealed class ManagedWorkerReadinessTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StandaloneWithoutProjectsRemainsAliveWhenToolsOrPreflightAreUnavailable(bool installed)
+    {
+        using var temporary = new TemporaryDirectory();
+        using var stop = new CancellationTokenSource();
+        var provider = new TestProvider();
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => installed
+            ? Task.FromResult((0, "1.0.0"))
+            : Task.FromException<(int, string)>(new FileNotFoundException()));
+        var capabilities = new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(127, "", "")));
+        using var output = new StopOnStartedWriter(stop);
+        var configuration = new GlobalWorkerConfiguration
+        {
+            Projects = new() { Ownership = "standalone", Directory = temporary.Path },
+            Api = new() { Enabled = false }
+        };
+        var projects = ProjectConfigurationDiscovery.LoadForWorker(configuration);
+        Assert.Empty(projects);
+        var host = new WorkerHost(configuration, projects, new WorkerConsole(output, interactive: false),
+            registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
+            agentAuthentication: provider);
+
+        await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.True(stop.IsCancellationRequested);
+        Assert.Contains("Worker started.", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(installed ? 1 : 0, provider.Calls);
+    }
+
+    private sealed class StopOnStartedWriter(CancellationTokenSource stop) : StringWriter
+    {
+        public override void Write(string? value)
+        {
+            base.Write(value);
+            if (value?.Contains("Worker started.", StringComparison.Ordinal) == true) stop.Cancel();
+        }
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(true, true)]

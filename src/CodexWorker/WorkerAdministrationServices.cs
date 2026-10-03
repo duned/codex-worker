@@ -133,12 +133,17 @@ public sealed record WorkerProvisioningActionAvailability(string Action, string 
 public sealed record WorkerProvisioningOperation(string CapabilityId, ProvisioningCommandAction Action,
     bool AllowElevation = false, string? Repository = null, int TimeoutSeconds = 120);
 public sealed record WorkerProvisioningStatusCapability(string Id, string DisplayName, CapabilityState State,
-    IReadOnlyList<WorkerProvisioningActionAvailability> Actions);
+    IReadOnlyList<WorkerProvisioningActionAvailability> Actions,
+    IReadOnlyList<AuthenticationDependencyKind> AuthenticationDependencies);
 public sealed record WorkerProvisioningResult(string Command, string Status, ProvisioningDiagnostic Diagnostic,
     string? CapabilityId = null, ProvisioningCommandAction? Action = null, string? Reason = null,
     string? Remediation = null, CapabilityState? Capability = null,
     IReadOnlyList<WorkerProvisioningStatusCapability>? Capabilities = null, ProvisioningCommandReport? Report = null,
-    int ContractVersion = 1);
+    int ContractVersion = 1)
+{
+    public IReadOnlyList<AuthenticationDependencyKind>? AuthenticationDependencies =>
+        CapabilityCatalog.Definitions.FirstOrDefault(definition => definition.Id == CapabilityId)?.AuthenticationDependencies;
+}
 
 /// <summary>Applies node-local provisioning policy and invokes the shared typed provisioning executor.</summary>
 public sealed class WorkerProvisioningAdministrationService : IWorkerProvisioningAdministrationService
@@ -146,8 +151,10 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
     private readonly ProvisioningPolicy _policy;
     private readonly NodeCapabilityDiscovery _discovery;
     private readonly string _nodeId;
+    private readonly NodeProvisioningCommandExecutor _executor;
 
-    public WorkerProvisioningAdministrationService(ProvisioningPolicy policy, NodeCapabilityDiscovery discovery, string nodeId)
+    public WorkerProvisioningAdministrationService(ProvisioningPolicy policy, NodeCapabilityDiscovery discovery, string nodeId,
+        NodeProvisioningCommandExecutor? executor = null)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _discovery = discovery ?? throw new ArgumentNullException(nameof(discovery));
@@ -155,6 +162,7 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
         if (nodeId != "server" && !Guid.TryParseExact(nodeId, "N", out _))
             throw new ArgumentException("Worker identity must be a 32-character identifier.", nameof(nodeId));
         _nodeId = nodeId;
+        _executor = executor ?? new NodeProvisioningCommandExecutor(discovery);
     }
 
     public async Task<WorkerProvisioningResult> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -165,7 +173,8 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
             var state = states.FirstOrDefault(candidate => candidate.Id == definition.Id) ?? CapabilityCatalog.Unknown(definition);
             var actions = definition.SupportedActions.Select(ToAction).Where(action => action.HasValue)
                 .Select(action => ActionAvailability(definition.Id, action.GetValueOrDefault())).ToArray();
-            return new WorkerProvisioningStatusCapability(definition.Id, definition.DisplayName, state, actions);
+            return new WorkerProvisioningStatusCapability(definition.Id, definition.DisplayName, state, actions,
+                definition.AuthenticationDependencies);
         }).ToArray();
         return new("status", "succeeded", ProvisioningDiagnostic.Completed, Capabilities: capabilities);
     }
@@ -187,7 +196,7 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
             return Failed(request, ProvisioningDiagnostic.Denied,
                 authorization.Reason ?? "Local provisioning policy denied this operation.", authorization.Remediation);
 
-        var report = await WorkerProvisioning.ExecuteLocalAsync(request, _policy, _discovery, cancellationToken, progress);
+        var report = await WorkerProvisioning.ExecuteLocalAsync(request, _policy, _discovery, cancellationToken, progress, _executor);
         var state = (await _discovery.GetAsync(cancellationToken: CancellationToken.None))
             .FirstOrDefault(candidate => candidate.Id == request.CapabilityId);
         var reason = report.Diagnostic switch

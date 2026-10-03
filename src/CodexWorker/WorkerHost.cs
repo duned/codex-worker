@@ -77,8 +77,6 @@ public sealed class WorkerHost
         });
         try
         {
-            if (configuredProjects.Count == 0 && _global.Projects.Ownership != "managed")
-                throw new InvalidDataException("At least one project must be configured in standalone mode.");
             discoveredCapabilities = await _registration.CapabilityDiscovery.GetCachedAsync(ct);
             heartbeatCapabilities = discoveredCapabilities;
             if (managedConfiguration?.HasCachedSnapshot == true)
@@ -213,11 +211,19 @@ public sealed class WorkerHost
                     !unavailableNames.Contains(project.Configuration.Project.Name)).ToList();
                 if (!managed && configuredProjects.Count > 0 && healthyRuntimes.Count == 0)
                 {
-                    var failure = startupResult.UnavailableProjects[0];
-                    var message = failure.Reason.StartsWith("read-only startup validation failed:", StringComparison.Ordinal)
-                        ? $"Project configuration '{failure.Path}' failed read-only startup validation: {failure.Reason["read-only startup validation failed:".Length..].Trim()}"
-                        : $"All configured projects are unavailable; '{failure.Name}' could not start: {failure.Reason}";
-                    throw new WorkerInfrastructureException(message);
+                    var observations = await _registration.InventoryDiscovery.GetAsync(cancellationToken: token);
+                    var missingProjectTool = observations.Any(state => state.Id is "git" or "github-cli" &&
+                        state.Installation == InstallationState.Missing);
+                    // Missing tools leave projects unavailable until their normal safety checks
+                    // can run. An absent checkout is still a standalone configuration failure.
+                    if (!missingProjectTool || configuredProjects.Any(project => !Directory.Exists(project.Configuration.Project.Directory)))
+                    {
+                        var failure = startupResult.UnavailableProjects[0];
+                        var message = failure.Reason.StartsWith("read-only startup validation failed:", StringComparison.Ordinal)
+                            ? $"Project configuration '{failure.Path}' failed read-only startup validation: {failure.Reason["read-only startup validation failed:".Length..].Trim()}"
+                            : $"All configured projects are unavailable; '{failure.Name}' could not start: {failure.Reason}";
+                        throw new WorkerInfrastructureException(message);
+                    }
                 }
                 foreach (var project in healthyRuntimes)
                     if (runtimeReadModel.Registry.Status().Any(state => state.Name == project.Configuration.Project.Name &&
@@ -251,14 +257,7 @@ public sealed class WorkerHost
             IAgentAuthenticationProvider agentAuthentication = _agentAuthentication ?? new CodexAgentAuthenticationProvider(
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
             var readiness = new ManagedCodexReadiness(agentAuthentication);
-            var agentReady = managed
-                ? await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct)
-                : await ValidateStandaloneAgentAsync(ct);
-            async Task<bool> ValidateStandaloneAgentAsync(CancellationToken token)
-            {
-                await agentAuthentication.ValidateAsync(token);
-                return true;
-            }
+            var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
             async Task PublishReadinessAsync(CancellationToken token)
             {
                 heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider").ToArray();
@@ -308,10 +307,8 @@ public sealed class WorkerHost
                     group.First().Configuration.Worker.MaxParallelTasks)));
             ReportCapacity();
             var idleHeartbeat = new IdleWorkerHeartbeat(_timeProvider.GetUtcNow());
-            var projectObservations = managed
-                ? (await _registration.InventoryDiscovery.GetAsync(cancellationToken: ct))
-                    .Select(state => state with { DetectedAtUtc = null }).ToArray()
-                : [];
+            var projectObservations = (await _registration.InventoryDiscovery.GetAsync(cancellationToken: ct))
+                .Select(state => state with { DetectedAtUtc = null }).ToArray();
             while (!ct.IsCancellationRequested)
             {
                 var runtimeVersion = runtimeReadModel.Registry.Version;
@@ -434,7 +431,7 @@ public sealed class WorkerHost
                         continue;
                     }
                 }
-                if (managed && active.Count == 0)
+                if (active.Count == 0)
                 {
                     var observations = (await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken))
                         .Select(state => state with { DetectedAtUtc = null }).ToArray();
@@ -449,7 +446,7 @@ public sealed class WorkerHost
                     agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
                     await PublishReadinessAsync(executionToken);
                 }
-                while ((!managed || agentReady && managedConfiguration?.Status.SynchronizationStatus != "error") &&
+                while (agentReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
                     !ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
                     if (_global.Projects.Ownership == "managed")

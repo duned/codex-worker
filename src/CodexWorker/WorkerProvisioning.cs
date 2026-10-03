@@ -41,12 +41,14 @@ public static class WorkerProvisioning
 
     public static async Task<ProvisioningCommandReport> ExecuteLocalAsync(ProvisioningCommandRequest request,
         ProvisioningPolicy policy, NodeCapabilityDiscovery discovery, CancellationToken token,
-        Func<ProvisioningCommandReport, CancellationToken, Task>? reportProgress = null)
+        Func<ProvisioningCommandReport, CancellationToken, Task>? reportProgress = null,
+        NodeProvisioningCommandExecutor? executor = null)
     {
         if (!ProvisioningCommandProtocol.Valid(request)) throw new InvalidDataException("Invalid provisioning request.");
         var now = DateTimeOffset.UtcNow;
         var command = new ProvisioningCommand(Guid.NewGuid().ToString("N"), request, now,
             ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing, now, now.AddSeconds(request.TimeoutSeconds));
-        return await new NodeProvisioningCommandExecutor(discovery).ExecuteAsync(command, Permitted(request, policy), token, reportProgress);
+        return await (executor ?? new NodeProvisioningCommandExecutor(discovery))
+            .ExecuteAsync(command, Permitted(request, policy), token, reportProgress);
     }
 }

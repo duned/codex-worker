@@ -188,7 +188,7 @@ public sealed class ProjectsSettings
 public static class ProjectConfigurationDiscovery
 {
     public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadForWorker(GlobalWorkerConfiguration global) =>
-        Load(global.Projects.Directory, allowEmpty: global.Server.Enabled && global.Projects.Ownership == "managed");
+        Load(global.Projects.Directory, allowEmpty: true);
 
     public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory, bool allowEmpty = false,
         bool validateExecutionResources = true)

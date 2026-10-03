@@ -138,7 +138,8 @@ public static class ProvisioningCli
                 Console.WriteLine($"{capability.Id} ({capability.DisplayName}): installation={state.Installation.ToString().ToLowerInvariant()}, " +
                     $"version={state.DetectedVersion ?? "unknown"}, update={state.Update.ToString().ToLowerInvariant()}, " +
                     $"node-authentication={DisplayRequirement(state.Authentication)}, node-configuration={DisplayRequirement(state.Configuration)}, " +
-                    $"health={state.Health.ToString().ToLowerInvariant()}");
+                    $"health={state.Health.ToString().ToLowerInvariant()}, " +
+                    $"authentication-dependencies={CapabilityInventoryReporter.DisplayAuthenticationDependencies(capability.AuthenticationDependencies)}");
                 foreach (var action in capability.Actions)
                 {
                     var authorization = action.RequiresElevation ? " (requires --allow-elevation)" : string.Empty;
@@ -165,7 +166,8 @@ public static class ProvisioningCli
                 $"version={capabilityState.DetectedVersion ?? "unknown"}, update={capabilityState.Update.ToString().ToLowerInvariant()}, " +
                 $"node-authentication={DisplayRequirement(capabilityState.Authentication)}, " +
                 $"node-configuration={DisplayRequirement(capabilityState.Configuration)}, " +
-                $"health={capabilityState.Health.ToString().ToLowerInvariant()}");
+                $"health={capabilityState.Health.ToString().ToLowerInvariant()}, " +
+                $"authentication-dependencies={CapabilityInventoryReporter.DisplayAuthenticationDependencies(result.AuthenticationDependencies ?? [])}");
     }
 
     private static string DisplayRequirement(RequirementState? state) => state?.ToString().ToLowerInvariant() ?? "not-required";
