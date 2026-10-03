@@ -24,7 +24,7 @@ public sealed class WorkerStatusTests
         Assert.Equal(3, status.Capacity.Maximum);
         Assert.Null(status.Capacity.Active);
         Assert.Equal("not-checked", status.Registration.ServerConnectivity);
-        Assert.Equal("not-running", status.Operation.Lifecycle);
+        Assert.Equal("unknown", status.Operation.Lifecycle);
         Assert.Equal("server-dependent-unverified", status.Operation.Readiness);
         Assert.True(status.Provisioning.Enabled);
         Assert.Contains(status.Capabilities, capability => capability.Name == "git" && capability.State == "available");
@@ -44,7 +44,7 @@ public sealed class WorkerStatusTests
         using var document = JsonDocument.Parse(serialized);
         Assert.Equal(1, document.RootElement.GetProperty("contractVersion").GetInt32());
         Assert.Equal("invalid", document.RootElement.GetProperty("configuration").GetProperty("validity").GetString());
-        Assert.Equal("not-running", document.RootElement.GetProperty("operation").GetProperty("lifecycle").GetString());
+        Assert.Equal("unknown", document.RootElement.GetProperty("operation").GetProperty("lifecycle").GetString());
     }
 
     [Fact]

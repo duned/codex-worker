@@ -81,7 +81,7 @@ public static class WorkerStatusReporter
                 configuration is null ? "unknown" : configuration.Server.Enabled ? "configured" : "disabled",
                 configuration is null ? "unknown" : configuration.Server.Enabled ? "not-checked" : "not-applicable",
                 identityPath),
-            new WorkerStatusOperation("not-running", !locallyReady ? "not-ready" :
+            new WorkerStatusOperation("unknown", !locallyReady ? "not-ready" :
                 configuration?.Projects.Ownership == "managed" ? "server-dependent-unverified" : "local-prerequisites-present", "local-observation-only"),
             new WorkerStatusCapacity(configuration?.Worker.MaxParallelTasks, null, "active-count-not-available-outside-running-worker"),
             new WorkerStatusProvisioning(provisioning?.Enabled ?? false, provisioning?.AllowNonPrivileged ?? false,
@@ -119,7 +119,7 @@ public static class WorkerStatusReporter
     private static string DiagnosticText(string code) => code switch
     {
         "configuration-not-found" => "Configuration file was not found; pass --config with a valid worker configuration path.",
-        "configuration-invalid" => "Configuration could not be validated; run 'codex-worker config' for details.",
+        "configuration-invalid" => "Configuration could not be validated; run 'codex-worker config validate' for details.",
         "worker-identity-missing" => "Managed mode has no local Worker identity file; register this Worker or restore its identity before starting it.",
         "server-state-unverified" => "Local tools are present; Server connectivity, managed configuration, and execution readiness were not checked.",
         "git-unavailable" => "Git is unavailable; install Git and ensure it is on PATH.",

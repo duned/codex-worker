@@ -56,6 +56,19 @@ public sealed class CommandLineTests
             WorkerCommandLine.DefaultConfigurationPath);
     }
 
+    [Theory]
+    [InlineData("status")]
+    [InlineData("diagnostics")]
+    [InlineData("register")]
+    [InlineData("provision")]
+    public void ConfigurationOptionsRejectMissingAndRepeatedPaths(string command)
+    {
+        Assert.Throws<ArgumentException>(() => WorkerCommandLine.Parse([command, "--config"]));
+        Assert.Throws<ArgumentException>(() => WorkerCommandLine.Parse([command, "--config", ""]));
+        Assert.Throws<ArgumentException>(() => WorkerCommandLine.Parse([command, "--config", "--json"]));
+        Assert.Throws<ArgumentException>(() => WorkerCommandLine.Parse([command, "--config", "first.yml", "--config", "second.yml"]));
+    }
+
     [Fact]
     public async Task RunConfigOptionUsesTheExecutionCommandWhilePositionalConfigIsRejected()
     {
@@ -82,6 +95,48 @@ public sealed class CommandLineTests
 
         Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
         Assert.Contains(expectedHelp, output);
+    }
+
+    [Theory]
+    [InlineData("config", "show")]
+    [InlineData("config", "validate")]
+    [InlineData("config", "set")]
+    [InlineData("capabilities", "list")]
+    [InlineData("capabilities", "refresh")]
+    [InlineData("provision", "status")]
+    [InlineData("provision", "install")]
+    [InlineData("provision", "login")]
+    [InlineData("provision", "verify-repository-access")]
+    public async Task NestedHelpIsReadOnlyAndUsesLeafUsage(string command, string operation)
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"help-{Guid.NewGuid():N}", "worker.yml");
+        var (exitCode, output) = await RunAsync([command, operation, "--config", missing, "--help"]);
+
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        Assert.Contains($"Usage: codex-worker {command} {operation}", output);
+        Assert.Contains("--json", output);
+        Assert.False(Directory.Exists(Path.GetDirectoryName(missing)));
+    }
+
+    [Fact]
+    public async Task DiagnosticsHelpDescribesObservationScopeAndLifecycleHelpersRemainDiscoverable()
+    {
+        var (exitCode, output) = await RunAsync(["diagnostics", "--help"]);
+        Assert.Equal(ProcessExitCodes.Success, exitCode);
+        Assert.Contains("Usage: codex-worker diagnostics", output);
+        Assert.Contains("unknown", output);
+        var (_, rootHelp) = await RunAsync(["--help"]);
+        Assert.Contains("cw restart (rs)", rootHelp);
+        Assert.Contains("update --help", rootHelp);
+    }
+
+    [Fact]
+    public async Task InvalidJsonConfigurationOptionReturnsOneStructuredFailure()
+    {
+        var (exitCode, output) = await RunAsync(["status", "--config", "--json"]);
+        Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
+        using var result = System.Text.Json.JsonDocument.Parse(output);
+        Assert.Equal("invalid-arguments", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
     }
 
     [Theory]

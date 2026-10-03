@@ -14,7 +14,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         var json = commandLine.Arguments.Count == 1 && commandLine.Arguments[0] == "--json";
         if (commandLine.Arguments.Count != (json ? 1 : 0))
         {
-            output.InfrastructureFailure("Unexpected status arguments. Use 'codex-worker status --help' for usage.");
+            WorkerCliOutput.Failure(commandLine, output, _writer, "invalid-arguments", $"Unexpected arguments. Use 'codex-worker {commandLine.Command} --help' for usage.");
             return ProcessExitCodes.StartupFailure;
         }
         try
@@ -27,18 +27,19 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
         {
-            output.InfrastructureFailure($"Status collection failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            WorkerCliOutput.Failure(commandLine, output, _writer, "status-collection-failed", $"Status collection failed: {ex.Message}");
             return ProcessExitCodes.StartupFailure;
         }
     }
 
     public int AdministerConfiguration(WorkerCommandLine commandLine)
     {
-        var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
         var arguments = commandLine.Arguments;
+        if (arguments.Count == 1 && arguments[0] == "--json") arguments = ["show", "--json"];
         var operation = arguments.Count == 0 ? "show" : arguments[0];
         try
         {
+            var path = WorkerConfigurationAdministration.ResolvePath(commandLine.ConfigurationPath);
             switch (operation)
             {
                 case "show":
@@ -100,7 +101,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            output.InfrastructureFailure($"Configuration administration failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            WorkerCliOutput.Failure(commandLine, output, _writer, "configuration-administration-failed", $"Configuration administration failed: {ex.Message}");
             return ProcessExitCodes.StartupFailure;
         }
     }
@@ -117,7 +118,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
             if (arguments[index] == "--json" && !json) json = true;
             else
             {
-                output.InfrastructureFailure("Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
+                WorkerCliOutput.Failure(commandLine, output, _writer, "invalid-arguments", "Unexpected capabilities arguments. Use 'codex-worker capabilities --help' for usage.");
                 return ProcessExitCodes.StartupFailure;
             }
         }
@@ -131,7 +132,7 @@ public sealed class WorkerAdministrationCli(IWorkerStatusService statusService,
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or InvalidDataException)
         {
-            output.InfrastructureFailure($"Capability discovery failed: {FailureDiagnosticRedactor.Redact(ex.Message)}");
+            WorkerCliOutput.Failure(commandLine, output, _writer, "capability-discovery-failed", $"Capability discovery failed: {ex.Message}");
             return ProcessExitCodes.StartupFailure;
         }
     }

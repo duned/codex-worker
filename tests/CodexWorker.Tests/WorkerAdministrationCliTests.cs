@@ -6,6 +6,91 @@ using CodexWorker;
 public sealed class WorkerAdministrationCliTests
 {
     [Fact]
+    public async Task DiagnosticsUsesStatusContractAndHumanOutputIncludesActionableDiagnostics()
+    {
+        var status = new StubStatusService();
+        var stdout = new StringWriter();
+        var cli = new WorkerAdministrationCli(status, new StubConfigurationService(), new StubCapabilityService(),
+            new WorkerConsole(stdout, interactive: false), stdout);
+        Assert.Equal(ProcessExitCodes.Success, await cli.ShowStatusAsync(new("diagnostics", "worker.yml", ["--json"])));
+        using (var json = System.Text.Json.JsonDocument.Parse(stdout.ToString()))
+        {
+            Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+            Assert.Equal("unknown", json.RootElement.GetProperty("operation").GetProperty("lifecycle").GetString());
+        }
+        stdout.GetStringBuilder().Clear();
+        Assert.Equal(ProcessExitCodes.Success, await cli.ShowStatusAsync(new("diagnostics", "worker.yml", [])));
+        Assert.Contains("Configuration:", stdout.ToString());
+        Assert.Contains("Lifecycle: unknown", stdout.ToString());
+        Assert.Contains("install Codex", stdout.ToString());
+    }
+
+    [Fact]
+    public void ConfigJsonShorthandUsesTheShowService()
+    {
+        var configuration = new StubConfigurationService();
+        var stdout = new StringWriter();
+        var cli = new WorkerAdministrationCli(new StubStatusService(), configuration, new StubCapabilityService(),
+            new WorkerConsole(stdout, interactive: false), stdout);
+        Assert.Equal(ProcessExitCodes.Success, cli.AdministerConfiguration(new("config", "worker.yml", ["--json"])));
+        Assert.Equal(Path.GetFullPath("worker.yml"), configuration.ShownPath);
+        using var json = System.Text.Json.JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("capabilities")]
+    [InlineData("config")]
+    public async Task RepeatedJsonOptionsReturnStructuredFailureWithoutCallingServices(string command)
+    {
+        var status = new StubStatusService();
+        var configuration = new StubConfigurationService();
+        var capabilities = new StubCapabilityService();
+        var stdout = new StringWriter();
+        var stderr = new StringWriter();
+        var cli = new WorkerAdministrationCli(status, configuration, capabilities,
+            new WorkerConsole(stdout, interactive: false, errorWriter: stderr), stdout);
+        var line = new WorkerCommandLine(command, "worker.yml", ["--json", "--json"]);
+        var exitCode = command switch
+        {
+            "status" => await cli.ShowStatusAsync(line),
+            "config" => cli.AdministerConfiguration(line),
+            _ => await cli.ShowCapabilitiesAsync(line)
+        };
+        Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
+        Assert.Null(status.Path);
+        Assert.Null(configuration.ShownPath);
+        Assert.Null(capabilities.Request.Path);
+        using var json = System.Text.Json.JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("failed", json.RootElement.GetProperty("status").GetString());
+        Assert.Equal("", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task StatusServiceCancellationIsPropagatedWithTheCallerToken()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var status = new StubStatusService { Failure = new OperationCanceledException(cancellation.Token) };
+        var cli = new WorkerAdministrationCli(status, new StubConfigurationService(), new StubCapabilityService(),
+            new WorkerConsole(new StringWriter(), interactive: false));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cli.ShowStatusAsync(new("status", "worker.yml", []), cancellation.Token));
+        Assert.Equal(cancellation.Token, status.Token);
+    }
+
+    [Fact]
+    public async Task StatusCollectionFailureIsStructuredWhenJsonIsRequested()
+    {
+        var stdout = new StringWriter();
+        var status = new StubStatusService { Failure = new IOException("status unavailable") };
+        var cli = new WorkerAdministrationCli(status, new StubConfigurationService(), new StubCapabilityService(),
+            new WorkerConsole(stdout, interactive: false), stdout);
+        Assert.Equal(ProcessExitCodes.StartupFailure, await cli.ShowStatusAsync(new("status", "worker.yml", ["--json"])));
+        using var result = System.Text.Json.JsonDocument.Parse(stdout.ToString());
+        Assert.Equal("status-collection-failed", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task LocalCommandAdaptersUseAdministrationServiceContracts()
     {
         var status = new StubStatusService();
@@ -87,13 +172,15 @@ public sealed class WorkerAdministrationCliTests
     {
         public string? Path { get; private set; }
         public Exception? Failure { get; init; }
+        public CancellationToken Token { get; private set; }
         public Task<WorkerStatusDocument> GetStatusAsync(string configurationPath, CancellationToken cancellationToken = default)
         {
             Path = configurationPath;
+            Token = cancellationToken;
             if (Failure is { } failure) return Task.FromException<WorkerStatusDocument>(failure);
             return Task.FromResult(new WorkerStatusDocument(1, "test", "test", new("valid", configurationPath, 0, "standalone", "disabled", null),
-                new("standalone", "disabled", "not-applicable", null), new("not-running", "ready", "local"),
-                new(null, null, "local"), new(false, false, false, 0, 0), [], []));
+                new("standalone", "disabled", "not-applicable", null), new("unknown", "ready", "local"),
+                new(null, null, "local"), new(false, false, false, 0, 0), [], ["codex-cli-unavailable"]));
         }
     }
 

@@ -4,7 +4,7 @@ using System.Text.Json;
 using CodexProvisioning;
 
 public sealed record ProvisioningCliCommand(bool IsStatus, string Verb, string? CapabilityId = null,
-    ProvisioningCommandAction? Action = null, bool AllowElevation = false, bool Json = false, string? Repository = null);
+    ProvisioningCommandAction? Action = null, bool AllowElevation = false, bool Json = false, string? Repository = null, int TimeoutSeconds = 120);
 
 /// <summary>Console adapter for typed Worker provisioning administration.</summary>
 public static class ProvisioningCli
@@ -26,6 +26,29 @@ public static class ProvisioningCli
             ["verify-repository-access"] = ProvisioningCommandAction.VerifyRepositoryAccess,
             ["login"] = ProvisioningCommandAction.Login
         };
+
+    public static bool IsVerb(string? verb) => verb is not null &&
+        (verb.Equals("status", StringComparison.OrdinalIgnoreCase) || Verbs.ContainsKey(verb));
+
+    public static void WriteHelp(string verb, TextWriter writer)
+    {
+        if (verb.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            writer.WriteLine("Usage: codex-worker provision status [--config <path>] [--json]");
+            writer.WriteLine("Read local capability state and action policy without running a provisioning mutation.");
+            return;
+        }
+        if (!Verbs.TryGetValue(verb, out var action)) throw Usage("Unknown provisioning operation.");
+        var canonical = WorkerProvisioningAdministrationService.DisplayAction(action);
+        var elevation = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        writer.WriteLine($"Usage: codex-worker provision {canonical} <capability-id> [--config <path>] [--json] [--timeout-seconds 5..600]" +
+            (elevation ? " --allow-elevation" : "") +
+            (action == ProvisioningCommandAction.VerifyRepositoryAccess ? " --repository <owner/repository>" : ""));
+        writer.WriteLine("Capability IDs: " + string.Join(", ", CapabilityCatalog.Definitions.Select(item => item.Id)));
+        writer.WriteLine("Runs a typed local operation subject to Worker provisioning policy. Default deadline: 120 seconds.");
+        if (elevation) writer.WriteLine("Elevation is opt-in and must also be allowed by node-local policy.");
+        writer.WriteLine("Cancellation stops the operation; inspect capability state before retrying a mutation.");
+    }
 
     public static ProvisioningCliCommand Parse(IReadOnlyList<string> arguments)
     {
@@ -49,6 +72,7 @@ public static class ProvisioningCli
         var allowElevation = false;
         var json = false;
         string? repository = null;
+        int? timeoutSeconds = null;
         for (var index = 2; index < arguments.Count; index++)
         {
             switch (arguments[index])
@@ -58,6 +82,11 @@ public static class ProvisioningCli
                     break;
                 case "--json" when !json:
                     json = true;
+                    break;
+                case "--timeout-seconds" when timeoutSeconds is null:
+                    if (index + 1 >= arguments.Count || !int.TryParse(arguments[++index], out var timeout) || timeout is < 5 or > 600)
+                        throw Usage("--timeout-seconds requires an integer from 5 to 600.");
+                    timeoutSeconds = timeout;
                     break;
                 case "--repository" when repository is null && index + 1 < arguments.Count:
                     repository = arguments[++index];
@@ -75,7 +104,7 @@ public static class ProvisioningCli
             throw Usage("--repository must be a repository name in owner/repository form.");
 
         return new(false, WorkerProvisioningAdministrationService.DisplayAction(action), definition.Id, action,
-            allowElevation, json, repository);
+            allowElevation, json, repository, timeoutSeconds ?? 120);
     }
 
     public static Task<WorkerProvisioningResult> ExecuteAsync(ProvisioningCliCommand command,
@@ -86,7 +115,7 @@ public static class ProvisioningCli
         ArgumentNullException.ThrowIfNull(service);
         if (command.IsStatus) return service.GetStatusAsync(cancellationToken);
         var operation = new WorkerProvisioningOperation(command.CapabilityId ?? throw new InvalidOperationException("A capability id is required."),
-            command.Action ?? throw new InvalidOperationException("A provisioning action is required."), command.AllowElevation, command.Repository);
+            command.Action ?? throw new InvalidOperationException("A provisioning action is required."), command.AllowElevation, command.Repository, command.TimeoutSeconds);
         return service.ExecuteAsync(operation, cancellationToken, progress);
     }
 

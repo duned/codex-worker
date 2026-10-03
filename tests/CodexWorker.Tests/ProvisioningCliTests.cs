@@ -7,6 +7,51 @@ using CodexWorker;
 public sealed class ProvisioningCliTests
 {
     [Theory]
+    [InlineData("5")]
+    [InlineData("600")]
+    public async Task ExplicitDeadlineReachesTheTypedAdministrationOperation(string seconds)
+    {
+        var command = ProvisioningCli.Parse(["detect", "git", "--timeout-seconds", seconds, "--json"]);
+        var service = new DeadlineService();
+        await ProvisioningCli.ExecuteAsync(command, service, CancellationToken.None);
+        Assert.Equal(int.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture), service.Operation?.TimeoutSeconds);
+        Assert.Equal(120, ProvisioningCli.Parse(["detect", "git"]).TimeoutSeconds);
+    }
+
+    [Theory]
+    [InlineData("4")]
+    [InlineData("601")]
+    [InlineData("invalid")]
+    [InlineData("--json")]
+    public void InvalidDeadlinesAreRejectedWithUsage(string value)
+    {
+        var failure = Assert.Throws<ArgumentException>(() => ProvisioningCli.Parse(["detect", "git", "--timeout-seconds", value]));
+        Assert.Contains("5 to 600", failure.Message);
+        Assert.Contains("codex-worker provision --help", failure.Message);
+    }
+
+    [Fact]
+    public void MissingAndRepeatedDeadlinesAreRejected()
+    {
+        Assert.Throws<ArgumentException>(() => ProvisioningCli.Parse(["detect", "git", "--timeout-seconds"]));
+        Assert.Throws<ArgumentException>(() => ProvisioningCli.Parse(["detect", "git", "--timeout-seconds", "5", "--timeout-seconds", "5"]));
+        Assert.Throws<ArgumentException>(() => ProvisioningCli.Parse(["status", "--timeout-seconds", "5"]));
+    }
+
+    private sealed class DeadlineService : IWorkerProvisioningAdministrationService
+    {
+        public WorkerProvisioningOperation? Operation { get; private set; }
+        public Task<WorkerProvisioningResult> GetStatusAsync(CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Status was not requested.");
+        public Task<WorkerProvisioningResult> ExecuteAsync(WorkerProvisioningOperation operation,
+            CancellationToken cancellationToken = default, Func<ProvisioningCommandReport, CancellationToken, Task>? progress = null)
+        {
+            Operation = operation;
+            return Task.FromResult(new WorkerProvisioningResult("detect", "succeeded", ProvisioningDiagnostic.Completed));
+        }
+    }
+
+    [Theory]
     [InlineData("install", ProvisioningCommandAction.Install)]
     [InlineData("upgrade", ProvisioningCommandAction.Update)]
     [InlineData("uninstall", ProvisioningCommandAction.Uninstall)]

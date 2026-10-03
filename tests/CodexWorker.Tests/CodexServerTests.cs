@@ -755,9 +755,8 @@ public sealed class CodexServerTests
             async Task<int> Register(string value, string path)
             {
                 using var input = new StringReader(value + "\r\n");
-                Console.SetIn(input);
-                return await CodexWorker.Program.Main(["register", "--server", url, "--token-stdin",
-                    "--capacity", "2", "--identity-file", path]);
+                return await CodexWorker.Program.RunAsync(["register", "--server", url, "--token-stdin",
+                    "--capacity", "2", "--identity-file", path], CancellationToken.None, input);
             }
 
             // Reproduce the old documented command's separate database: its fresh
