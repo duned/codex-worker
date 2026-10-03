@@ -178,6 +178,15 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
     public async Task<ManagedGitHubIssue?> GetIssueAsync(CentralProject project, int issueNumber,
         CancellationToken cancellationToken = default)
     {
+        var issue = await ReadIssueFieldsAsync(project, issueNumber, cancellationToken);
+        if (issue is null) return null;
+        var blockers = await ReadBlockingIssuesAsync(project.Repository, issueNumber, cancellationToken);
+        return Evaluate(project, issue, blockers);
+    }
+
+    private async Task<IssueFields?> ReadIssueFieldsAsync(CentralProject project, int issueNumber,
+        CancellationToken cancellationToken)
+    {
         ValidateProject(project);
         if (issueNumber <= 0) throw new InvalidDataException("Issue number must be positive.");
         var number = issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -205,8 +214,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
             var issue = ReadIssue(document.RootElement, project.Repository);
             if (issue.Number != issueNumber)
                 throw new JsonException("GitHub returned a different Issue number.");
-            var blockers = await ReadBlockingIssuesAsync(project.Repository, issueNumber, cancellationToken);
-            return Evaluate(project, issue, blockers);
+            return issue;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (GitHubReadUnavailableException) { throw; }
@@ -222,23 +230,22 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
     {
         ValidateProject(project);
         if (issueNumber <= 0) throw new InvalidDataException("Issue number must be positive.");
-        var issue = await GetIssueAsync(project, issueNumber, cancellationToken);
+        var issue = await ReadIssueFieldsAsync(project, issueNumber, cancellationToken);
         if (issue is null) return null;
 
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         try
         {
-            var parent = await ReadParentIssueAsync(project.Repository, issueNumber, linked.Token);
-            var subIssues = await ReadRelationshipIssuesAsync(project.Repository,
+            var parent = await ReadParentIssueAsync(project, issueNumber, linked.Token);
+            var blockedBy = await ReadRelationshipIssuesAsync(project,
+                $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocked_by", linked.Token);
+            var subIssues = await ReadRelationshipIssuesAsync(project,
                 $"repos/{project.Repository}/issues/{issueNumber}/sub_issues", linked.Token);
-            var blocking = await ReadRelationshipIssuesAsync(project.Repository,
+            var blocking = await ReadRelationshipIssuesAsync(project,
                 $"repos/{project.Repository}/issues/{issueNumber}/dependencies/blocking", linked.Token);
-            return new(1, project.Repository, issueNumber,
-                new GitHubRelationshipIssue(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url)
-                { Labels = issue.Labels }, parent, subIssues,
-                issue.BlockedBy.Select(item => new GitHubRelationshipIssue(item.Number, item.Title, item.State, item.Url)).ToArray(),
-                blocking);
+            return new(1, project.Repository, issueNumber, ToRelationshipIssue(issue), parent, subIssues,
+                blockedBy, blocking);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
@@ -248,42 +255,50 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         }
     }
 
-    private async Task<GitHubRelationshipIssue?> ReadParentIssueAsync(string repository, int issueNumber,
+    private async Task<GitHubRelationshipIssue?> ReadParentIssueAsync(CentralProject project, int issueNumber,
         CancellationToken cancellationToken)
     {
-        var arguments = new[] { "api", $"repos/{repository}/issues/{issueNumber}/parent" };
-        GitHubReadCommandResult result;
-        try { result = await _run(arguments, cancellationToken); }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
-        {
-            throw new GitHubReadUnavailableException(repository,
-                $"GitHub relationship read access is unavailable for repository '{repository}'. Check Server service-account authentication and repository read access.",
-                "read-unavailable", exception);
-        }
-        if (result.ExitCode != 0)
-        {
-            // The Issue was already read successfully; this endpoint uses 404 for no parent.
-            if (System.Text.RegularExpressions.Regex.IsMatch(result.StandardError, @"\bHTTP 404\b",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase) || IsNotFound(result.StandardError)) return null;
-            throw CreateReadFailure(repository, result, "GitHub parent relationship read");
-        }
+        // REST uses an ambiguous 404 for both absent parents and inaccessible resources.
+        // GraphQL exposes absence as null while keeping Issue visibility and API errors distinct.
+        const string query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number parent{number url}}}}";
+        var repositoryParts = project.Repository.Split('/');
+        var result = await RunReadAsync(project.Repository, ["api", "graphql", "-f", $"query={query}",
+            "-f", $"owner={repositoryParts[0]}", "-f", $"name={repositoryParts[1]}", "-F",
+            $"number={issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)}"], cancellationToken);
         try
         {
             using var document = JsonDocument.Parse(result.StandardOutput);
-            return document.RootElement.ValueKind == JsonValueKind.Null ? null :
-                ReadRelationshipIssue(document.RootElement, repository);
+            var root = document.RootElement;
+            if (root.TryGetProperty("errors", out var errors) &&
+                (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0))
+                throw new JsonException("GitHub returned GraphQL errors.");
+            var issue = root.GetProperty("data").GetProperty("repository").GetProperty("issue");
+            if (issue.GetProperty("number").GetInt32() != issueNumber)
+                throw new JsonException("GitHub returned a different Issue number.");
+            var parent = issue.GetProperty("parent");
+            if (parent.ValueKind == JsonValueKind.Null) return null;
+            var parentNumber = parent.GetProperty("number").GetInt32();
+            if (parentNumber <= 0 || !ValidIssueUrl(RequiredString(parent, "url"), project.Repository, parentNumber))
+                throw new JsonException("GitHub parent did not match the selected repository.");
+            var fields = await ReadIssueFieldsAsync(project, parentNumber, cancellationToken)
+                ?? throw new JsonException("GitHub parent Issue is not visible.");
+            return ToRelationshipIssue(fields);
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
-            throw new GitHubReadUnavailableException(repository,
-                $"GitHub parent relationship results could not be parsed for repository '{repository}'.", "invalid-relationships", exception);
+            throw new GitHubReadUnavailableException(project.Repository,
+                $"GitHub parent relationship results could not be parsed for repository '{project.Repository}'. Check Issue visibility, Server service-account authentication and API support.",
+                "invalid-relationships", exception);
         }
     }
 
-    private async Task<IReadOnlyList<GitHubRelationshipIssue>> ReadRelationshipIssuesAsync(string repository, string endpoint,
+    private static GitHubRelationshipIssue ToRelationshipIssue(IssueFields issue) =>
+        new(issue.Number, issue.Title, issue.State.ToLowerInvariant(), issue.Url) { Labels = issue.Labels };
+
+    private async Task<IReadOnlyList<GitHubRelationshipIssue>> ReadRelationshipIssuesAsync(CentralProject project, string endpoint,
         CancellationToken cancellationToken)
     {
+        var repository = project.Repository;
         var result = await RunReadAsync(repository, ["api", "--method", "GET", "--paginate", "-F", "per_page=100", endpoint], cancellationToken);
         try
         {
@@ -293,7 +308,14 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
                 if (page.ValueKind != JsonValueKind.Array) throw new JsonException("GitHub relationship page was not an array.");
                 foreach (var item in page.EnumerateArray())
                 {
-                    relationships.Add(ReadRelationshipIssue(item, repository));
+                    var related = ReadRelationshipIssue(item, repository);
+                    if (!item.TryGetProperty("labels", out _))
+                    {
+                        var fields = await ReadIssueFieldsAsync(project, related.Number, cancellationToken)
+                            ?? throw new JsonException("GitHub related Issue is not visible.");
+                        related = ToRelationshipIssue(fields);
+                    }
+                    relationships.Add(related);
                     if (relationships.Count > 2500) throw new JsonException("GitHub returned too many Issue relationships.");
                 }
             }
@@ -314,8 +336,10 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
         var url = RequiredString(item, "html_url");
         if (number <= 0 || state is not ("open" or "closed") || !ValidIssueUrl(url, repository, number))
             throw new JsonException("GitHub relationship fields did not match the selected repository.");
-        var labels = item.TryGetProperty("labels", out var labelArray) && labelArray.ValueKind == JsonValueKind.Array
-            ? labelArray.EnumerateArray().Select(label => RequiredString(label, "name")).ToArray()
+        var labels = item.TryGetProperty("labels", out var labelArray)
+            ? labelArray.ValueKind == JsonValueKind.Array
+                ? labelArray.EnumerateArray().Select(label => RequiredString(label, "name")).ToArray()
+                : throw new JsonException("GitHub relationship labels were invalid.")
             : Array.Empty<string>();
         return new GitHubRelationshipIssue(number, title, state, url) { Labels = labels };
     }
@@ -346,7 +370,7 @@ public sealed class ServerGitHubReadService : IServerGitHubReadService
             }
             return blockers;
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         {
             throw new GitHubReadUnavailableException(repository,
                 $"GitHub Issue dependency results could not be parsed for repository '{repository}'.", "invalid-dependencies", exception);

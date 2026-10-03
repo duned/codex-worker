@@ -22,7 +22,7 @@ public sealed class ServerGitHubAdministrationTests
             commands.Add(arguments);
             // gh api fields imply POST unless GET is explicit. Simulate the API
             // rejecting that method, even when the caller has healthy authentication.
-            if (arguments[0] == "api" && arguments.Contains("-F") && !arguments.Contains("GET"))
+            if (arguments[0] == "api" && arguments.Contains("-F") && !arguments.Contains("graphql") && !arguments.Contains("GET"))
                 return Task.FromResult(new GitHubReadCommandResult(1, "", "gh: Not Found (HTTP 404)"));
             if (arguments.SequenceEqual(["auth", "status", "--hostname", "github.com"]))
                 return Task.FromResult(new GitHubReadCommandResult(0, "", ""));
@@ -33,14 +33,20 @@ public sealed class ServerGitHubAdministrationTests
                     [{"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}]}]
                     """.Replace("\"OPEN\"", $"\"{issueState}\"", StringComparison.Ordinal), ""));
             if (arguments[0] == "issue" && arguments[1] == "view")
-                return Task.FromResult(new GitHubReadCommandResult(0, """
-                    {"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}]}
-                    """.Replace("\"OPEN\"", $"\"{issueState}\"", StringComparison.Ordinal), ""));
-            if (arguments[0] == "api" && arguments.Contains("repos/team/project/issues/7/dependencies/blocked_by"))
-                return Task.FromResult(new GitHubReadCommandResult(0, "[{\"number\":3,\"title\":\"Prerequisite\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/3\"}]\n", ""));
-            if (arguments.Contains("repos/team/project/issues/7/parent"))
+            {
+                var number = int.Parse(arguments[2], System.Globalization.CultureInfo.InvariantCulture);
+                return Task.FromResult(new GitHubReadCommandResult(0, JsonSerializer.Serialize(new
+                {
+                    number, title = "Build it", body = "Details", state = issueState,
+                    createdAt = "2026-09-01T00:00:00Z", updatedAt = "2026-09-02T00:00:00Z",
+                    url = $"https://github.com/team/project/issues/{number}", labels = new[] { new { name = "ready" } }
+                }), ""));
+            }
+            if (arguments.Contains("graphql"))
                 return Task.FromResult(new GitHubReadCommandResult(0,
-                    "{\"number\":2,\"title\":\"Parent\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/2\"}", ""));
+                    "{\"data\":{\"repository\":{\"issue\":{\"number\":7,\"parent\":{\"number\":2,\"url\":\"https://github.com/team/project/issues/2\"}}}}}", ""));
+            if (arguments[0] == "api" && arguments.Contains("repos/team/project/issues/7/dependencies/blocked_by"))
+                return Task.FromResult(new GitHubReadCommandResult(0, "[{\"number\":3,\"title\":\"Prerequisite\",\"state\":\"open\",\"html_url\":\"https://github.com/team/project/issues/3\",\"labels\":[{\"name\":\"done\"}]}]\n", ""));
             if (arguments.Contains("repos/team/project/issues/7/sub_issues"))
                 return Task.FromResult(new GitHubReadCommandResult(0,
                     "[{\"number\":8,\"title\":\"Child\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/8\",\"labels\":[{\"name\":\"ready\"}]}]", ""));
@@ -74,10 +80,15 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(3, Assert.Single(detail.BlockedBy).Number);
         var relationshipResult = Assert.IsType<GitHubIssueRelationships>(relationships);
         Assert.Equal(1, relationshipResult.ContractVersion);
-        Assert.Equal(2, relationshipResult.Parent!.Number);
+        Assert.Equal(2, Assert.IsType<GitHubRelationshipIssue>(relationshipResult.Parent).Number);
         Assert.Equal(8, Assert.Single(relationshipResult.SubIssues).Number);
         Assert.Equal("ready", Assert.Single(relationshipResult.SubIssues[0].Labels));
         Assert.Equal(3, Assert.Single(relationshipResult.BlockedBy).Number);
+        Assert.Equal("done", Assert.Single(relationshipResult.BlockedBy[0].Labels));
+        Assert.Equal("ready", Assert.Single(relationshipResult.Blocking[0].Labels));
+        Assert.Equal("ready", Assert.Single(Assert.IsType<GitHubRelationshipIssue>(relationshipResult.Parent).Labels));
+        using var relationshipJson = JsonDocument.Parse(JsonSerializer.Serialize(relationshipResult, JsonSerializerOptions.Web));
+        Assert.Equal("done", relationshipJson.RootElement.GetProperty("blockedBy")[0].GetProperty("labels")[0].GetString());
         Assert.Equal(9, Assert.Single(relationshipResult.Blocking).Number);
         Assert.NotNull(graph);
         Assert.Contains(graph.Nodes, node => node.Number == 7 && node.State == issueState.ToLowerInvariant());
@@ -89,22 +100,15 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain(commands, command => command.Contains("permissions", StringComparer.Ordinal));
     }
 
-    [Theory]
-    [InlineData(1, "gh: No parent issue found (HTTP 404)", "")]
-    [InlineData(1, "gh: Not Found (HTTP 404)", "")]
-    [InlineData(0, "", "null")]
-    public async Task GraphAcceptsRootWithoutParent(int exitCode, string error, string output)
+    [Fact]
+    public async Task RelationshipsAndGraphAcceptRootWithoutParent()
     {
-        var service = new ServerGitHubReadService((arguments, _) =>
-        {
-            if (arguments[0] == "issue")
-                return Task.FromResult(new GitHubReadCommandResult(0, """
-                    {"number":7,"title":"Root","body":"","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[]}
-                    """, ""));
-            return Task.FromResult(arguments.Contains("repos/team/project/issues/7/parent")
-                ? new GitHubReadCommandResult(exitCode, output, error)
-                : new GitHubReadCommandResult(0, "[]", ""));
-        });
+        var service = RelationshipReadService();
+        var relationships = await service.GetIssueRelationshipsAsync(Project(), 7);
+        Assert.NotNull(relationships);
+        Assert.Null(relationships.Parent);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(relationships, JsonSerializerOptions.Web));
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("parent").ValueKind);
         var graph = await GitHubIssueGraphBuilder.BuildAsync(7,
             (number, token) => service.GetIssueRelationshipsAsync(Project(), number, token));
         Assert.NotNull(graph);
@@ -112,6 +116,135 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(graph.Edges);
         Assert.False(graph.IsTruncated);
     }
+
+    [Theory]
+    [InlineData("{\"data\":{\"repository\":null}}")]
+    [InlineData("{\"data\":{\"repository\":{\"issue\":null}}}")]
+    [InlineData("{\"data\":{\"repository\":{\"issue\":{\"number\":7,\"parent\":null}}},\"errors\":[{\"message\":\"private-token\"}]}")]
+    [InlineData("{\"data\":{\"repository\":{\"issue\":{\"number\":8,\"parent\":null}}}}")]
+    public async Task ParentAbsenceRequiresVisibleIssueAndSuccessfulResponse(string output)
+    {
+        var service = RelationshipReadService(new(0, output, ""));
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.GetIssueRelationshipsAsync(Project(), 7));
+        Assert.Equal("invalid-relationships", exception.Code);
+        Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(404)]
+    [InlineData(410)]
+    [InlineData(500)]
+    public async Task ParentApiFailuresAreNotAbsence(int status)
+    {
+        var service = RelationshipReadService(new(1, "", $"gh: request failed (HTTP {status}) private-token"));
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.GetIssueRelationshipsAsync(Project(), 7));
+        Assert.Equal("read-failed", exception.Code);
+        Assert.Contains($"HTTP status {status}", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CliAndSubIssueAdministrationUseOptionalParentReads()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "optional-parent.db");
+        var registry = new SqliteRegistryStore(database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition());
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, RelationshipReadService(), issueWriter: writer);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var cli = new ServerAdministrationCli(new ServerConfigurationAdministrationService(),
+            new StubGitHubAdministrationFactory(service), output, error);
+        var configuration = new[] { $"--Server:DataDirectory={temporary.Path}", $"--Server:DatabasePath={database}" };
+        Assert.Equal(ServerAdministrationExitCodes.Success,
+            await cli.RunAsync(["github", "relationships", project.Id, "7", .. configuration]));
+        Assert.Contains("Parent: none", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(error.ToString());
+        var cleared = await service.SetIssueParentAsync(project.Id, 7, new(null));
+        Assert.False(cleared.Changed);
+        var preview = await service.SetIssueParentForChildrenAsync(project.Id, 8, new([7], PreviewOnly: true));
+        Assert.Equal("preview", Assert.Single(preview.Items).Status);
+        Assert.Empty(writer.Operations);
+        var added = await service.SetIssueParentForChildrenAsync(project.Id, 8, new([7]));
+        Assert.Equal("changed", Assert.Single(added.Items).Status);
+        Assert.Equal("parent:add:8:7", Assert.Single(writer.Operations));
+    }
+
+    [Theory]
+    [InlineData("", "done")]
+    [InlineData(",\"labels\":[]", null)]
+    [InlineData(",\"labels\":[{\"name\":\"ready\"}]", "ready")]
+    public async Task RelationshipLabelsDistinguishMissingMetadataFromEmptyLabels(string labelField, string? expectedLabel)
+    {
+        var payload = "[{\"number\":9,\"title\":\"Blocker\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/9\"" + labelField + "}]";
+        var service = RelationshipReadService(blockedByOutput: payload);
+        var relationships = await service.GetIssueRelationshipsAsync(Project(), 7);
+        Assert.NotNull(relationships);
+        var blocker = Assert.Single(relationships.BlockedBy);
+        if (expectedLabel is null) Assert.Empty(blocker.Labels);
+        else Assert.Equal(expectedLabel, Assert.Single(blocker.Labels));
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(relationships, JsonSerializerOptions.Web));
+        var labels = json.RootElement.GetProperty("blockedBy")[0].GetProperty("labels");
+        Assert.Equal(expectedLabel is null ? 0 : 1, labels.GetArrayLength());
+        if (expectedLabel is not null) Assert.Equal(expectedLabel, labels[0].GetString());
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("[{}]")]
+    public async Task InvalidRelationshipLabelsAreNotReportedAsEmpty(string labels)
+    {
+        var payload = "[{\"number\":9,\"title\":\"Blocker\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/9\",\"labels\":" + labels + "}]";
+        var service = RelationshipReadService(blockedByOutput: payload);
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.GetIssueRelationshipsAsync(Project(), 7));
+        Assert.Equal("invalid-relationships", exception.Code);
+    }
+
+    [Fact]
+    public async Task MissingRelatedMetadataFailsRatherThanReturningEmptyLabels()
+    {
+        const string payload = "[{\"number\":9,\"title\":\"Blocker\",\"state\":\"closed\",\"html_url\":\"https://github.com/team/project/issues/9\"}]";
+        var service = RelationshipReadService(blockedByOutput: payload,
+            relatedIssueResult: new(1, "", "gh: Not Found (HTTP 404) private-token"));
+        var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.GetIssueRelationshipsAsync(Project(), 7));
+        Assert.Equal("invalid-relationships", exception.Code);
+        Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    private static ServerGitHubReadService RelationshipReadService(GitHubReadCommandResult? parentResult = null,
+        string? blockedByOutput = null, GitHubReadCommandResult? relatedIssueResult = null) =>
+        new((arguments, _) =>
+        {
+            if (arguments[0] == "issue")
+            {
+                var number = int.Parse(arguments[2], System.Globalization.CultureInfo.InvariantCulture);
+                if (number == 9 && relatedIssueResult is not null) return Task.FromResult(relatedIssueResult);
+                return Task.FromResult(new GitHubReadCommandResult(0, JsonSerializer.Serialize(new
+                {
+                    number, title = "Issue", body = "", state = "OPEN", createdAt = "2026-09-01T00:00:00Z",
+                    updatedAt = "2026-09-02T00:00:00Z", url = $"https://github.com/team/project/issues/{number}",
+                    labels = number == 9 ? new[] { new { name = "done" } } : []
+                }), ""));
+            }
+            if (arguments.Contains("graphql"))
+            {
+                Assert.Contains("owner=team", arguments);
+                Assert.Contains("name=project", arguments);
+                return Task.FromResult(parentResult ?? new(0,
+                    "{\"data\":{\"repository\":{\"issue\":{\"number\":7,\"parent\":null}}}}", ""));
+            }
+            if (blockedByOutput is not null && arguments.Contains("repos/team/project/issues/7/dependencies/blocked_by"))
+                return Task.FromResult(new GitHubReadCommandResult(0, blockedByOutput, ""));
+            // The legacy parent endpoint would return an ambiguous 404; it must not be used.
+            if (arguments.Any(argument => argument.EndsWith("/parent", StringComparison.Ordinal)))
+                return Task.FromResult(new GitHubReadCommandResult(1, "", "gh: Not Found (HTTP 404)"));
+            return Task.FromResult(new GitHubReadCommandResult(0, "[]", ""));
+        });
 
     [Theory]
     [InlineData("parent")]
@@ -126,10 +259,10 @@ public sealed class ServerGitHubAdministrationTests
                 return Task.FromResult(new GitHubReadCommandResult(0, """
                     {"number":7,"title":"Root","body":"","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[]}
                     """, ""));
-            if (arguments.Contains($"repos/team/project/issues/7/{endpoint}"))
+            if (endpoint == "parent" && arguments.Contains("graphql") || arguments.Contains($"repos/team/project/issues/7/{endpoint}"))
                 return Task.FromResult(new GitHubReadCommandResult(1, "", "gh: Bad credentials (HTTP 401) token=secret"));
             return Task.FromResult(new GitHubReadCommandResult(0,
-                arguments.Contains("repos/team/project/issues/7/parent") ? "null" : "[]", ""));
+                arguments.Contains("graphql") ? "{\"data\":{\"repository\":{\"issue\":{\"number\":7,\"parent\":null}}}}" : "[]", ""));
         });
         var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() =>
             service.GetIssueRelationshipsAsync(Project(), 7));
