@@ -6,6 +6,22 @@ namespace CodexWorker.Tests;
 public sealed class WorkerStatusTests
 {
     [Fact]
+    public async Task EmptyStandaloneConfigurationIsValidWhilePreparingExecutionDependencies()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+
+        Assert.Equal("valid", status.Configuration.Validity);
+        Assert.Equal(0, status.Configuration.ProjectCount);
+        Assert.Equal("not-ready", status.Operation.Readiness);
+        Assert.DoesNotContain("configuration-invalid", status.Diagnostics);
+        Assert.Contains("codex-cli-unavailable", status.Diagnostics);
+    }
+
+    [Fact]
     public async Task StatusReportsValidManagedConfigurationAndLocalDependencySummary()
     {
         using var fixture = new StatusFixture();

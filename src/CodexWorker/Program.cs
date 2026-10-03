@@ -164,7 +164,10 @@ public static class Program
         {
             var command = ProvisioningCli.Parse(commandLine.Arguments);
             var configuration = GlobalWorkerConfiguration.Load(commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath);
-            var identity = await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+            // Observations must work before enrollment and without write access to node state.
+            // Status never sends a provisioning request, so it needs no durable identity.
+            var identity = command.IsStatus ? Guid.Empty.ToString("N") :
+                await WorkerIdentity.LoadOrCreateAsync(configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
             if (!command.IsStatus)
                 Console.Error.WriteLine($"Running {command.Verb} for {command.CapabilityId}...");
             var service = new WorkerProvisioningAdministrationService(configuration.Worker.Provisioning,

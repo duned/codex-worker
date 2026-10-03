@@ -45,7 +45,7 @@ public static class WorkerStatusReporter
         {
             configuration = GlobalWorkerConfiguration.Load(fullPath);
             projects = ProjectConfigurationDiscovery.Load(configuration.Projects.Directory,
-                allowEmpty: configuration.Server.Enabled && configuration.Projects.Ownership == "managed",
+                allowEmpty: true,
                 validateExecutionResources: false);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)

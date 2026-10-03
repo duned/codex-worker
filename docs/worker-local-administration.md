@@ -94,3 +94,8 @@ shutdown lifecycle. For an installed Linux service use
 scheduling enable/drain/disable remains a Server operation. The existing
 `codex-worker update` command retains its own update/check/JSON conventions and
 installer activation/restart flow; see [self-update](self-update.md).
+
+The [19.9 local E2E report](worker-local-e2e-19.9.md) records the isolated
+executable campaign, recovery fixes, and remaining disposable-host acceptance
+checks. Run `tests/worker-local-e2e.py` against a built Worker apphost to repeat
+the campaign without modifying installed services or credentials.

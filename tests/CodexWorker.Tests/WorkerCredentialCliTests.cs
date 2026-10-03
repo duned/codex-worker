@@ -80,6 +80,44 @@ public sealed class WorkerCredentialCliTests
     }
 
     [Fact]
+    public async Task LoginAndLogoutRefreshCachedInventoryAndCredentialReadiness()
+    {
+        var authenticated = false;
+        var discovery = new NodeCapabilityDiscovery((_, arguments, _) =>
+            Task.FromResult(arguments.Contains("status")
+                ? (authenticated ? 0 : 1, "") : (0, "1.0.0")));
+        var executor = new NodeProvisioningCommandExecutor(discovery, (_, arguments, _) =>
+        {
+            if (arguments.Contains("logout")) authenticated = false;
+            return Task.FromResult(arguments.Contains("status") && !authenticated ? 1 : 0);
+        }, login: (_, _) =>
+        {
+            authenticated = true;
+            return Task.FromResult(0);
+        });
+        var service = Service(discovery, executor, AllowedPolicy());
+        var before = Assert.Single((await service.StatusAsync()).Credentials, item => item.CapabilityId == "codex-cli");
+        Assert.Equal(InstallationState.Installed, before.Installation);
+        Assert.Equal(RequirementState.Required, before.Authentication);
+        Assert.False(before.Ready);
+
+        foreach (var action in new[] { ProvisioningCommandAction.Login, ProvisioningCommandAction.Logout })
+        {
+            var result = await service.ExecuteAsync(new(NodeId, "codex-cli", action),
+                progress: (_, _) => Task.CompletedTask);
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, result.Report.Status);
+            var credential = Assert.Single(result.Credentials, item => item.CapabilityId == "codex-cli");
+            var expected = action == ProvisioningCommandAction.Login;
+            Assert.Equal(expected, credential.Ready);
+            Assert.Equal(expected ? RequirementState.Satisfied : RequirementState.Required, credential.Authentication);
+            var inventory = await CapabilityInventoryReporter.CreateAsync(discovery);
+            var capability = Assert.Single(inventory.Capabilities, item => item.Id == "codex-cli");
+            Assert.Equal(expected, capability.Readiness.Available);
+            Assert.Equal(credential.Authentication, capability.Authentication);
+        }
+    }
+
+    [Fact]
     public async Task LocalPolicyDeniesLoginWithoutLaunchingProvider()
     {
         var discovery = Discovery(false);
