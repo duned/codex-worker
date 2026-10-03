@@ -10,10 +10,12 @@ public sealed class WorkerCredentialCliTests
     private const string NodeId = "12345678901234567890123456789012";
     private const string PrivateOutput = "private-provider-token";
 
-    [Fact]
-    public async Task StatusSeparatesInstallationAuthenticationDependenciesAndReadinessWithoutSecrets()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StatusSeparatesInstallationAuthenticationDependenciesAndReadinessWithoutSecrets(bool dockerDaemonAvailable)
     {
-        var discovery = Discovery(authenticated: false);
+        var discovery = Discovery(authenticated: false, dockerDaemonAvailable);
         var service = new NodeCredentialAdministration(discovery, (_, _, _) =>
             throw new InvalidOperationException("Status must not execute a command."));
         var result = await service.StatusAsync();
@@ -21,12 +23,23 @@ public sealed class WorkerCredentialCliTests
         Assert.Empty(git.AuthenticationDependencies);
         Assert.Null(git.Authentication);
         Assert.True(git.Ready);
-        foreach (var item in result.Credentials.Where(item => item.CapabilityId != "git"))
+        Assert.Equal(6, result.Credentials.Count);
+        foreach (var id in new[] { "github-cli", "codex-cli" })
         {
+            var item = Assert.Single(result.Credentials, item => item.CapabilityId == id);
             Assert.Equal(InstallationState.Installed, item.Installation);
             Assert.Equal(RequirementState.Required, item.Authentication);
-            Assert.Single(item.AuthenticationDependencies);
+            Assert.Equal(id == "github-cli" ? AuthenticationDependencyKind.GitHubCliLogin : AuthenticationDependencyKind.CodexCliLogin,
+                Assert.Single(item.AuthenticationDependencies));
             Assert.False(item.Ready);
+        }
+        foreach (var id in new[] { "dotnet-sdk", "dotnet-runtime", "docker" })
+        {
+            var item = Assert.Single(result.Credentials, item => item.CapabilityId == id);
+            Assert.Equal(InstallationState.Installed, item.Installation);
+            Assert.Null(item.Authentication);
+            Assert.Empty(item.AuthenticationDependencies);
+            Assert.Equal(id != "docker" || dockerDaemonAvailable, item.Ready);
         }
         Assert.DoesNotContain(PrivateOutput, JsonSerializer.Serialize(result), StringComparison.Ordinal);
     }
@@ -174,9 +187,16 @@ public sealed class WorkerCredentialCliTests
         Assert.False(published);
     }
 
-    private static NodeCapabilityDiscovery Discovery(bool authenticated) => new((_, arguments, _) =>
-        Task.FromResult((arguments.Contains("status") && !authenticated ? 1 : 0,
-            arguments.Contains("--version") ? "1.0.0" : PrivateOutput)));
+    private static NodeCapabilityDiscovery Discovery(bool authenticated, bool dockerDaemonAvailable = true) => new((_, arguments, _) =>
+        Task.FromResult(arguments[0] switch
+        {
+            "--list-sdks" => (0, "10.0.100 [/usr/share/dotnet/sdk]"),
+            "--list-runtimes" => (0, "Microsoft.NETCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.NETCore.App]\n" +
+                "Microsoft.AspNetCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.AspNetCore.App]"),
+            "info" => dockerDaemonAvailable ? (0, "27.0.0") : (1, PrivateOutput),
+            _ => (arguments.Contains("status") && !authenticated ? 1 : 0,
+                arguments.Contains("--version") ? "1.0.0" : PrivateOutput)
+        }));
 
     private static ProvisioningPolicy AllowedPolicy() => new() { Enabled = true, AllowCredentials = true, AllowNonPrivileged = true };
 
