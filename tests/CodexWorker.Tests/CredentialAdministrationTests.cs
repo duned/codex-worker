@@ -1,5 +1,6 @@
 namespace CodexWorker.Tests;
 
+using CodexProvisioning;
 using System.Text.Json;
 using CodexServer;
 

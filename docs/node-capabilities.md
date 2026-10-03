@@ -314,3 +314,45 @@ are read-only actions (still subject to denied-action policy). Server mutations
 require `enable_local_provisioning`; package changes additionally require local
 elevation permission. Deadlines, cancellation, at-most-once dispatch and
 uncertain-operation reconciliation follow the existing provisioning contracts.
+
+## Shared local implementation and host boundaries
+
+`src/Shared` (`CodexProvisioning`) contains the local capability discovery,
+allowlisted tool plans, provisioning command executor, GitHub/SSH setup, and
+Codex/GitHub device-login handlers used by both hosts. A provisioning operation
+executes under the account and paths of the host receiving it. Shared command
+reports carry normal completion, bounded failure details, and validated
+`LoginInstructions` (verification URL and one-time device code); they never carry
+raw authentication process output. The executor refreshes local discovery after
+operations, so subsequent inventory reflects authentication changes.
+
+The encrypted `SqliteCredentialStore`, secret inputs, redaction, and
+`CredentialDeliveryResponse` also live in `CodexProvisioning`. The store takes
+its database path, encryption key, and optional clock from its composing host;
+it does not read Server configuration or environment variables. Server wiring
+continues to supply `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY`. Existing database
+schemas, encryption format, and credential delivery JSON remain unchanged.
+Sharing the implementation does not transfer ownership of the central credential
+registry to Workers: Server retains credential metadata, assignment checks,
+delivery authorization, and lifecycle administration. Workers retrieve only
+authorized assigned secrets; node-private CLI credentials and SSH keys remain
+on the node.
+
+`GitHubTokenAuthentication` owns validation and the product-defined token login
+command for either host. Its process adapter supplies the local execution
+context, enforces the supplied timeout, passes the token through standard input,
+and returns only an exit code. The Worker authentication adapter retains
+repository selection, credential retrieval, repository readiness checks, and
+repository-local Git mutation through `GitRepository`. Token login and device
+login are distinct credential inputs; both use the same node-local GitHub
+context, rather than introducing another host-specific authentication store.
+Standalone Worker calls retain their existing CLI context when managed setup
+has not been prepared; Server GitHub administration requires managed setup.
+These differences are intentional local-context and ownership boundaries.
+
+Server command persistence/API/CLI and Worker local policy/CLI/reporting remain
+host adapters around these shared services. No additional Server-to-Worker
+transport or permission bypass is introduced by this sharing. A future typed
+remote administration adapter can invoke the same local executor and return its
+reports, including device-login progress, without relocating authentication or
+private material to Server.

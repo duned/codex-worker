@@ -67,10 +67,6 @@ public sealed record WorkerExecutionReportContract(string WorkerId, string Assig
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
     string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
 public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generation);
-public sealed record WorkerCredentialContract(string Id, string Provider, string Type, long Version, string Secret)
-{
-    public override string ToString() => $"WorkerCredentialContract {{ Id = {Id}, Provider = {Provider}, Type = {Type}, Version = {Version}, Secret = [redacted] }}";
-}
 
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
@@ -455,7 +451,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         finally { if (httpClient is null) client.Dispose(); }
     }
 
-    public async Task<WorkerCredentialContract?> RetrieveCredentialAsync(WorkerServerSettings settings, string credentialId,
+    public async Task<CredentialDeliveryResponse?> RetrieveCredentialAsync(WorkerServerSettings settings, string credentialId,
         CancellationToken cancellationToken)
     {
         if (!settings.Enabled) throw new InvalidOperationException("Credential delivery requires managed Server mode.");
@@ -471,7 +467,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
             if (!response.IsSuccessStatusCode) throw new HttpRequestException($"Codex Server credential retrieval failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
-            var credential = await response.Content.ReadFromJsonAsync<WorkerCredentialContract>(cancellationToken: cancellationToken)
+            var credential = await response.Content.ReadFromJsonAsync<CredentialDeliveryResponse>(cancellationToken: cancellationToken)
                 ?? throw new InvalidDataException("Codex Server returned an empty credential response.");
             if (credential.Id != credentialId || credential.Version < 1 || string.IsNullOrEmpty(credential.Secret))
                 throw new InvalidDataException("Codex Server returned an invalid credential response.");

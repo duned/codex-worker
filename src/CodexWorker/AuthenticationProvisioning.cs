@@ -1,16 +1,18 @@
 namespace CodexWorker;
 
+using CodexProvisioning;
+
 /// <summary>Materializes an assigned GitHub token through gh and optional repository-local Git configuration.</summary>
 public sealed class GitHubAuthenticationProvisioner : IAuthenticationActionExecutor
 {
-    private readonly Func<string, IEnumerable<string>, string, TimeSpan, CancellationToken, string?, Task<ProcessResult>> _run;
+    private readonly GitHubTokenAuthentication _authentication;
     private readonly Func<string, GitHubClient?> _githubForRepository;
     private readonly Func<string, GitRepository?> _gitForRepository;
-    private readonly Func<string, CancellationToken, Task<WorkerCredentialContract?>> _retrieveCredential;
+    private readonly Func<string, CancellationToken, Task<CredentialDeliveryResponse?>> _retrieveCredential;
 
     public GitHubAuthenticationProvisioner(ProcessRunner runner, Func<string, GitHubClient?> githubForRepository,
         Func<string, GitRepository?> gitForRepository,
-        Func<string, CancellationToken, Task<WorkerCredentialContract?>> retrieveCredential)
+        Func<string, CancellationToken, Task<CredentialDeliveryResponse?>> retrieveCredential)
         : this(async (executable, arguments, directory, timeout, cancellationToken, input) =>
                 await runner.RunAsync(executable, arguments, directory, timeout, cancellationToken,
                     environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(cancellationToken), standardInput: input),
@@ -20,9 +22,10 @@ public sealed class GitHubAuthenticationProvisioner : IAuthenticationActionExecu
         Func<string, IEnumerable<string>, string, TimeSpan, CancellationToken, string?, Task<ProcessResult>> run,
         Func<string, GitHubClient?> githubForRepository,
         Func<string, GitRepository?> gitForRepository,
-        Func<string, CancellationToken, Task<WorkerCredentialContract?>> retrieveCredential)
+        Func<string, CancellationToken, Task<CredentialDeliveryResponse?>> retrieveCredential)
     {
-        _run = run;
+        _authentication = new GitHubTokenAuthentication(async (executable, arguments, input, timeout, token) =>
+            (await run(executable, arguments, Environment.CurrentDirectory, timeout, token, input)).ExitCode);
         _githubForRepository = githubForRepository;
         _gitForRepository = gitForRepository;
         _retrieveCredential = retrieveCredential;
@@ -35,25 +38,21 @@ public sealed class GitHubAuthenticationProvisioner : IAuthenticationActionExecu
 
         var github = _githubForRepository(action.Scope);
         if (github is null) return Failure("repository scope is not configured on this Worker");
-        if (action.Name == "git-https" && _gitForRepository(action.Scope) is null)
+        var git = action.Name == "git-https" ? _gitForRepository(action.Scope) : null;
+        if (action.Name == "git-https" && git is null)
             return Failure("repository scope is not configured on this Worker");
 
-        WorkerCredentialContract? credential;
+        CredentialDeliveryResponse? credential;
         try { credential = await _retrieveCredential(action.CredentialId, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception) { return Failure("assigned credential could not be retrieved"); }
         if (credential is null) return Failure("assigned credential is unavailable");
-        if (credential.Id != action.CredentialId || credential.Version < 1 || string.IsNullOrEmpty(credential.Secret) ||
-            string.IsNullOrWhiteSpace(credential.Provider) || string.IsNullOrWhiteSpace(credential.Type) ||
-            !credential.Provider.Equals("github", StringComparison.OrdinalIgnoreCase) ||
-            credential.Type.ToLowerInvariant() is not ("api-token" or "personal-access-token" or "token"))
-            return Failure("credential provider or type is not supported by the GitHub authentication handler");
-
         try
         {
-            var login = await _run("gh", ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"],
-                Environment.CurrentDirectory, TimeSpan.FromSeconds(30), cancellationToken, credential.Secret + "\n");
-            if (login.ExitCode != ProcessExitCodes.Success)
+            var login = await _authentication.AuthenticateAsync(action.CredentialId, credential, cancellationToken);
+            if (login.Diagnostic == ProvisioningDiagnostic.Unsupported)
+                return Failure("credential provider or type is not supported by the GitHub authentication handler");
+            if (login.Status != ProvisioningCommandStatus.Succeeded)
                 return Failure("GitHub CLI rejected the assigned credential");
 
             if (action.Name == "github-api")
@@ -62,7 +61,7 @@ public sealed class GitHubAuthenticationProvisioner : IAuthenticationActionExecu
                 return new DependencyInstallResult(true, true, false, Message: "GitHub API authentication was provisioned and verified for the scoped repository.");
             }
 
-            await _gitForRepository(action.Scope)!.ConfigureHttpsCredentialHelperAsync(cancellationToken);
+            await (git ?? throw new InvalidOperationException("Repository scope is unavailable.")).ConfigureHttpsCredentialHelperAsync(cancellationToken);
             return new DependencyInstallResult(true, true, false, Message: "Repository-local Git HTTPS authentication was provisioned and verified.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }

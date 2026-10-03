@@ -60,7 +60,7 @@ public static class ServerApplication
         builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
-        builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath));
+        builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton<NodeProvisioningCommandExecutor>();

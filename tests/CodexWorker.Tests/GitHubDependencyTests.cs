@@ -1,3 +1,4 @@
+using CodexProvisioning;
 using System.Text.Json;
 using CodexWorker;
 
@@ -190,7 +191,7 @@ public sealed class GitHubDependencyTests
             },
             repository => repository == "team/repo" ? github : null,
             _ => null,
-            (_, _) => Task.FromResult<WorkerCredentialContract?>(new WorkerCredentialContract("credential-id", "github", "api-token", 1, secret)));
+            (_, _) => Task.FromResult<CredentialDeliveryResponse?>(new CredentialDeliveryResponse("credential-id", "github", "api-token", 1, secret)));
 
         var result = await provisioner.ExecuteAsync(new ProvisioningActionContract("auth", "authentication", "github-api",
             Operation: "provision", CredentialId: "credential-id", Scope: "team/repo"), CancellationToken.None);

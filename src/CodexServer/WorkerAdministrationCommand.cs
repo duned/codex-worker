@@ -1,5 +1,6 @@
 namespace CodexServer;
 
+using CodexProvisioning;
 using Microsoft.Extensions.Configuration;
 
 internal static class WorkerAdministrationCommand
@@ -70,7 +71,7 @@ internal static class WorkerAdministrationCommand
             }
             return;
         }
-        var credentials = new SqliteCredentialStore(database);
+        var credentials = new SqliteCredentialStore(database, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY"));
         await registry.InitializeAsync(cancellationToken);
         await credentials.InitializeAsync(cancellationToken);
         var workerId = args[2];

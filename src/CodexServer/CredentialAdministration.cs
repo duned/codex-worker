@@ -1,5 +1,6 @@
 namespace CodexServer;
 
+using CodexProvisioning;
 using System.Text;
 using System.Text.Json;
 
@@ -30,7 +31,7 @@ public sealed class LocalServerCredentialAdministrationServiceFactory : IServerC
             new SqliteRegistryStore(database, configuration.WorkerStaleAfterSeconds,
                 leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
                 leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds),
-            new SqliteCredentialStore(database));
+            new SqliteCredentialStore(database, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
     }
 }
 

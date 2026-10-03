@@ -1,3 +1,4 @@
+using CodexProvisioning;
 using CodexWorker;
 
 namespace CodexWorker.Tests;
@@ -85,7 +86,7 @@ public sealed class AuthenticationReadinessTests
             },
             repository => repository == "team/repo" ? github : null,
             _ => null,
-            (_, _) => Task.FromResult<WorkerCredentialContract?>(new WorkerCredentialContract(
+            (_, _) => Task.FromResult<CredentialDeliveryResponse?>(new CredentialDeliveryResponse(
                 "credential-id", "github", "api-token", 1, secret)));
         var action = new ProvisioningActionContract("api-auth", "authentication", "github-api", Operation: "provision",
             CredentialId: "credential-id", Scope: "team/repo");
