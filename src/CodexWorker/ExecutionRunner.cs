@@ -134,10 +134,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }
 
             await git.VerifyCodexStateAsync(ct);
+            if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
             await TransitionAsync(execution, ExecutionState.Integrating, ct);
             await _repositoryGate.WaitAsync(ct);
             GitIntegrationResult integration;
-            var postRebaseAttempt = 0;
             try
             {
                 // Managed execution cancellation is also the local signal that lease ownership
@@ -158,14 +158,15 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 try
                 {
                     integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
-                        token => ValidateAfterRebaseAsync(context, ++postRebaseAttempt, token),
+                        token => ValidateAfterRebaseAsync(context, repairs, token),
                         async (details, token) =>
                         {
                             var resolution = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
                                 () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile,
                                     issue, details, token), x => x.Status, x => x.Status == "success", ct: token);
                             return resolution.Status == "success";
-                        }, ct),
+                        }, (details, token) => RepairIntegrationAsync(context, executionCodex, implementationSummary, repairs, details, token),
+                        ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
                 catch (GitIntegrationConflictException ex)
@@ -173,11 +174,14 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     var recovery = await git.PreserveIntegrationConflictAsync(ct);
                     var report = new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message,
                         FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration conflict", RecoveryBranch: recovery?.Branch,
-                        WorkspacePreserved: recovery is not null, RetryAvailable: false,
+                        WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
+                        FinalValidationFailure: (ex as PostRebaseValidationException)?.Failure?.Command,
+                        FinalValidationDiagnostics: (ex as PostRebaseValidationException)?.Failure?.ToSummary(),
+                        FinalValidationExitCode: (ex as PostRebaseValidationException)?.Failure?.ExitCode,
                         SecretValues: config.Environment.Variables.Values.ToArray());
                     await SaveHistoryAsync(CreateEntry(execution, report, null, ex.Message) with
                     {
-                        ValidationOutcome = ex is PostRebaseValidationException ? "failed: post-rebase validation (2 attempts)" : "passed",
+                        ValidationOutcome = ex is PostRebaseValidationException ? report.PostRebaseValidationOutcome : "passed",
                         CommitSha = recovery?.BaseCommit,
                         IntegrationBranch = execution.BaseBranch,
                         RecoveryState = recovery is null ? "integration-conflict-unavailable" : "integration-conflict",
@@ -190,7 +194,6 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 }
             }
             finally { _repositoryGate.Release(); }
-            if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
                 new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
         }
@@ -236,6 +239,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }
         }
         finally { _repositoryGate.Release(); }
+        var repairs = new List<ValidationRepairRecord>();
         await TransitionAsync(execution, ExecutionState.Integrating, ct);
         await _repositoryGate.WaitAsync(ct);
         try
@@ -244,18 +248,18 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
                 return new IssueProcessingResult(IssueOutcomeKind.Superseded,
                     new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} was superseded because the Issue is closed or a later attempt completed.", []));
-            var postRebaseAttempt = 0;
             var integration = await output.RunProgressAsync(TaskLabel(issue, "Integration recovery", execution), () =>
                 git.CommitAndIntegrateAsync(issue,
-                    token => ValidateAfterRebaseAsync(context, ++postRebaseAttempt, token),
+                    token => ValidateAfterRebaseAsync(context, repairs, token),
                     async (details, token) =>
                     {
                         var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
                             () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
                             x => x.Status, x => x.Status == "success", ct: token);
                         return resolved.Status == "success";
-                    }, ct), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
-            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.", [], Integration: integration);
+                    }, (details, token) => RepairIntegrationAsync(context, executionCodex, source.ImplementationSummary, repairs, details, token),
+                    ct, token => EnsureIntegrationAuthorityAsync(execution, token)), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
+            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.", repairs, Integration: integration);
             if (history is not null) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded, report);
         }
@@ -265,13 +269,16 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (history is not null && recovery is not null)
                 await history.UpdateIntegrationRecoverySnapshotAsync(source.ExecutionId, recovery.BaseCommit,
                     recovery.StatusSummary, DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays), ct);
-            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} did not complete.", [],
+            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} did not complete.", repairs,
                 Failure: ex.Message, FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration recovery conflict", RecoveryBranch: recovery?.Branch,
                 WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
+                FinalValidationFailure: (ex as PostRebaseValidationException)?.Failure?.Command,
+                FinalValidationDiagnostics: (ex as PostRebaseValidationException)?.Failure?.ToSummary(),
+                FinalValidationExitCode: (ex as PostRebaseValidationException)?.Failure?.ExitCode,
                 SecretValues: config.Environment.Variables.Values.ToArray());
             await SaveHistoryAsync(CreateEntry(execution, report, null, ex.Message) with
             {
-                ValidationOutcome = ex is PostRebaseValidationException ? "failed: post-rebase validation (2 attempts)" : "not run: integration recovery conflict",
+                ValidationOutcome = ex is PostRebaseValidationException ? report.PostRebaseValidationOutcome : "not run: integration recovery conflict",
                 CommitSha = recovery?.BaseCommit,
                 IntegrationBranch = config.Git.BaseBranch,
                 RecoveryState = recovery is null ? "integration-conflict-unavailable" : "integration-conflict",
@@ -284,14 +291,49 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         finally { _repositoryGate.Release(); }
     }
 
-    private async Task<ValidationResult> ValidateAfterRebaseAsync(ExecutionContext context, int attempt, CancellationToken ct)
+    private async Task EnsureIntegrationAuthorityAsync(WorkerExecution execution, CancellationToken ct)
     {
-        var result = await output.RunProgressAsync(TaskLabel(context.Issue, $"Validation after rebase · attempt {attempt}/2", context.Execution),
+        ct.ThrowIfCancellationRequested();
+        if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
+            throw new WorkerInfrastructureException("Integration authority was lost; the execution workspace is preserved for reconciliation.");
+    }
+
+    private async Task<IntegrationRepairResult> RepairIntegrationAsync(ExecutionContext context, ICodexExecutor executionCodex,
+        string? implementationSummary, List<ValidationRepairRecord> repairs, IntegrationRepairContext details, CancellationToken ct)
+    {
+        var attempt = repairs.Count(repair => repair.IntegrationRepair) + 1;
+        if (attempt > config.Validation.MaxFixAttempts) return new IntegrationRepairResult(false, false);
+        await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+        var outcome = await output.RunProgressAsync(TaskLabel(context.Issue,
+            $"Integration repair {attempt}/{config.Validation.MaxFixAttempts}", context.Execution), () =>
+            executionCodex.RepairIntegrationAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, context.Issue,
+                details, implementationSummary, config.Validation.Commands, attempt, config.Validation.MaxFixAttempts, ct),
+            x => x.Status, x => x.Status == "success", warning: x => x.Status == "blocked", ct: ct);
+        var summary = FailureDiagnosticRedactor.Redact(outcome.Summary +
+            (outcome.Question is null ? "" : $"\n{outcome.Question}"), config.Environment.Variables.Values.ToArray());
+        repairs.Add(new ValidationRepairRecord(details.Failure.Command, attempt, config.Validation.MaxFixAttempts,
+            summary, false, details.Failure.ToSummary(), IntegrationRepair: true));
+        await SaveHistoryAsync(CreateEntry(context.Execution, new IssueExecutionReport(implementationSummary, repairs), null, null)
+            with { ValidationOutcome = $"integration repair {attempt}/{config.Validation.MaxFixAttempts}" }, ct);
+        return new IntegrationRepairResult(true, outcome.Status == "success");
+    }
+
+    private async Task<ValidationResult> ValidateAfterRebaseAsync(ExecutionContext context,
+        List<ValidationRepairRecord> repairs, CancellationToken ct)
+    {
+        var integrationRepair = repairs.LastOrDefault(repair => repair.IntegrationRepair);
+        var stage = integrationRepair is null ? "Validation after rebase" : "Validation after integration repair";
+        var result = await output.RunProgressAsync(TaskLabel(context.Issue, stage, context.Execution),
             () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
-            x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);
+            x => x.Succeeded ? (integrationRepair is null ? "passed" : "integration repair succeeded") : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);
+        if (integrationRepair is not null)
+            repairs[^1] = integrationRepair with { PassedAfterRepair = result.Succeeded,
+                ValidationAfterRepair = result.Failure?.ToSummary() };
         if (!result.Succeeded)
-            output.FailureReason(context.Execution.ExecutionId, $"Post-rebase validation attempt {attempt}/2",
+            output.FailureReason(context.Execution.ExecutionId, $"{stage} failed",
                 result.Failure!.ToSummary(), config.Environment.Variables.Values.ToArray());
+        await SaveHistoryAsync(CreateEntry(context.Execution, new IssueExecutionReport(null, repairs), null, null)
+            with { ValidationOutcome = result.Succeeded ? "passed" : $"failed: {stage.ToLowerInvariant()}" }, ct);
         return result;
     }
 
@@ -378,7 +420,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             execution.IsTerminal ? DateTimeOffset.UtcNow : null, execution.State.ToString(),
             execution.IsTerminal ? (long)(duration ?? (DateTimeOffset.UtcNow - execution.StartedAtUtc)).TotalMilliseconds : null,
             report?.ImplementationSummary,
-            report?.FailureCategory == "Post-rebase validation failed" ? "failed: post-rebase validation (2 attempts)" :
+            report?.FailureCategory == "Post-rebase validation failed" ? report.PostRebaseValidationOutcome :
             report?.Integration is not null || report?.FailureCategory == "Integration conflict" ? "passed" : report?.FinalValidationFailure is not null ? $"failed: {report.FinalValidationFailure}" :
                 report is { ValidationRepairs.Count: > 0 } ? "failed or interrupted" : null,
             report?.ValidationRepairs.Count ?? 0, report?.ValidationRepairs ?? [],

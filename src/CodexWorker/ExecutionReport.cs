@@ -2,7 +2,7 @@ namespace CodexWorker;
 
 public sealed record ValidationRepairRecord(string FailedCommand, int Attempt, int MaximumAttempts,
     string? RepairSummary, bool PassedAfterRepair, string? ValidationBeforeRepair = null,
-    string? ValidationAfterRepair = null);
+    string? ValidationAfterRepair = null, bool IntegrationRepair = false);
 
 public sealed record IssueExecutionReport(string? ImplementationSummary,
     IReadOnlyList<ValidationRepairRecord> ValidationRepairs,
@@ -25,6 +25,10 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? EffectiveModel = null,
     string? EffectiveEffort = null)
 {
+    public string PostRebaseValidationOutcome => ValidationRepairs.Any(repair => repair.IntegrationRepair)
+        ? $"failed: post-rebase validation ({ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s))"
+        : "failed: post-rebase validation (2 attempts)";
+
     public string ToMarkdown(IssueOutcomeKind kind)
     {
         var sections = new List<string>();
@@ -59,14 +63,15 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
 
         if (!string.IsNullOrWhiteSpace(ImplementationSummary))
             sections.Add($"### {(kind == IssueOutcomeKind.Succeeded ? "Implementation" : "Implementation attempt")}\n\n{ImplementationSummary}");
-        if (ValidationRepairs.Count > 0 || FinalValidationFailure is not null)
+        var implementationRepairs = ValidationRepairs.Where(repair => !repair.IntegrationRepair).ToArray();
+        if (implementationRepairs.Length > 0 || FinalValidationFailure is not null && kind != IssueOutcomeKind.IntegrationConflict)
         {
             var validation = new List<string> { "### Validation & repairs" };
-            if (ValidationRepairs.Count > 0)
-                validation.Add($"Initial validation failed: `{ValidationRepairs[0].FailedCommand}`.");
+            if (implementationRepairs.Length > 0)
+                validation.Add($"Initial validation failed: `{implementationRepairs[0].FailedCommand}`.");
             else if (FinalValidationFailure is not null)
                 validation.Add($"Initial validation failed: `{FinalValidationFailure}`.");
-            foreach (var repair in ValidationRepairs)
+            foreach (var repair in implementationRepairs)
             {
                 validation.Add($"#### Repair {repair.Attempt}/{repair.MaximumAttempts}");
                 if (kind == IssueOutcomeKind.Failed && !string.IsNullOrWhiteSpace(repair.ValidationBeforeRepair))
@@ -80,7 +85,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             }
             if (FinalValidationFailure is not null)
             {
-                validation.Add($"Validation failed after {(ValidationRepairs.Count == 0 ? "no repair attempts" : $"{ValidationRepairs.Count} repair attempt(s)")}: `{FinalValidationFailure}`.");
+                validation.Add($"Validation failed after {(implementationRepairs.Length == 0 ? "no repair attempts" : $"{implementationRepairs.Length} repair attempt(s)")}: `{FinalValidationFailure}`.");
                 validation.Add($"Final validation command: `{FinalValidationFailure}` (exit {FinalValidationExitCode?.ToString() ?? "unavailable; timed out"}).");
                 if (!string.IsNullOrWhiteSpace(FinalValidationDiagnostics))
                     validation.Add("Remaining problems:\n" + string.Join("\n", FinalValidationDiagnostics.Split('\n').Select(line => $"- {line}")));
@@ -88,6 +93,25 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             sections.Add(string.Join("\n\n", validation));
         }
         else if (kind == IssueOutcomeKind.Succeeded) sections.Add("### Validation\n\nValidation passed successfully.");
+
+        var integrationRepairs = ValidationRepairs.Where(repair => repair.IntegrationRepair).ToArray();
+        if (integrationRepairs.Length > 0)
+        {
+            var reconciliation = new List<string> { "### Integration repairs",
+                $"Initial validation passed before integration. Post-rebase validation required {integrationRepairs.Length} integration repair attempt(s)." };
+            foreach (var repair in integrationRepairs)
+            {
+                reconciliation.Add($"#### Integration repair {repair.Attempt}/{repair.MaximumAttempts}");
+                if (!string.IsNullOrWhiteSpace(repair.RepairSummary)) reconciliation.Add(repair.RepairSummary);
+                reconciliation.Add(repair.PassedAfterRepair ? "Authoritative validation passed after integration repair." :
+                    $"Validation did not pass after this repair: `{repair.FailedCommand}`.");
+            }
+            reconciliation.Add(kind == IssueOutcomeKind.Succeeded ? "Integration repair succeeded; the Issue integrated." :
+                "Integration stopped; the implementation is preserved for verified integration recovery.");
+            sections.Add(string.Join("\n\n", reconciliation));
+        }
+        if (kind == IssueOutcomeKind.IntegrationConflict && FinalValidationDiagnostics is not null)
+            sections.Add($"### Final validation failure\n\n{FinalValidationDiagnostics}");
 
         if (kind == IssueOutcomeKind.Succeeded)
         {

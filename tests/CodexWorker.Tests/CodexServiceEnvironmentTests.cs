@@ -6,7 +6,7 @@ namespace CodexWorker.Tests;
 public sealed class CodexServiceEnvironmentTests
 {
     [Fact]
-    public async Task ExecutionProfileControlsImplementationRepairAndConflictInvocationArguments()
+    public async Task ExecutionProfileControlsImplementationRepairIntegrationRepairAndConflictInvocations()
     {
         if (OperatingSystem.IsWindows()) return;
         var directory = CreateDirectory();
@@ -17,10 +17,13 @@ public sealed class CodexServiceEnvironmentTests
             await File.WriteAllTextAsync(executable, """
                 #!/bin/sh
                 printf '%s\n' "$@" >> "$0.args"
+                use_stdin=false
                 while [ "$#" -gt 0 ]; do
                   if [ "$1" = --output-last-message ]; then shift; output=$1; fi
+                  if [ "$1" = - ]; then use_stdin=true; fi
                   shift
                 done
+                if [ "$use_stdin" = true ]; then cat > "$0.prompt"; fi
                 printf '%s' '{"status":"success","summary":"Done","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}' > "$output"
                 """);
             File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -35,9 +38,17 @@ public sealed class CodexServiceEnvironmentTests
             await scoped.RepairAsync(directory, instructions, issue,
                 new ValidationFailure(1, "check", 1, "failed", "", false), 1, 2, CancellationToken.None);
             await scoped.ResolveIntegrationConflictAsync(directory, instructions, issue, "Conflict details", CancellationToken.None);
+            var largeDiagnostic = "first actionable failure\n" + new string('a', 160_000) + "\nlast actionable failure";
+            var repairContext = new IntegrationRepairContext(new ValidationFailure(1, "check", 1, largeDiagnostic, "stderr detail", false),
+                "main", "original-base", "implementation", "integrated-base", "rebased-source");
+            await scoped.RepairIntegrationAsync(directory, instructions, issue, repairContext, "Implemented", ["check"], 1, 2, CancellationToken.None);
+            var deliveredPrompt = await File.ReadAllTextAsync(executable + ".prompt");
+            Assert.Contains(largeDiagnostic, deliveredPrompt);
+            Assert.Contains("Effective Codex model: task-model; reasoning effort: low", deliveredPrompt);
+            Assert.Contains("rebased-source", deliveredPrompt);
             var arguments = await File.ReadAllLinesAsync(executable + ".args");
-            Assert.Equal(3, arguments.Count(argument => argument == "task-model"));
-            Assert.Equal(3, arguments.Count(argument => argument == "model_reasoning_effort=\"low\""));
+            Assert.Equal(4, arguments.Count(argument => argument == "task-model"));
+            Assert.Equal(4, arguments.Count(argument => argument == "model_reasoning_effort=\"low\""));
             Assert.DoesNotContain("project-model", arguments);
             Assert.Equal("project-model", defaults.Model);
             Assert.Equal("high", defaults.ReasoningEffort);

@@ -285,7 +285,7 @@ public sealed class OperabilityTests
         using var client = new HttpClient(handler);
         using var telegram = new TelegramNotifier(true, "token", "chat", client, new WorkerConsole(new StringWriter(), false));
         await telegram.SuccessAsync("Example", "owner/repo", new GitHubIssue(3, "Add config", "", DateTimeOffset.UtcNow),
-            TimeSpan.FromSeconds(77), "Committed as `abcdef123456`. Merged into `main`. Preserved on origin as `completed/3`.\n\nCodex summary: Added the uptime endpoint with focused coverage.", CancellationToken.None);
+            TimeSpan.FromSeconds(77), "Committed as `abcdef123456`. Merged into `main`. Preserved on origin as `completed/3`.\n\nIntegration repair succeeded after 2 attempt(s).\n\nCodex summary: Added the uptime endpoint with focused coverage.", CancellationToken.None);
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Contains("Duración: 01:17", message);
@@ -293,6 +293,7 @@ public sealed class OperabilityTests
         Assert.Contains("Integrada en: main", message);
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
         Assert.Contains("Rama completada preservada: completed/3", message);
+        Assert.Contains("Reparación de integración completada · intentos: 2", message);
         Assert.StartsWith($"✅ <a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>\nEXAMPLE · TAREA COMPLETADA · CW {ApplicationVersion.Display}", message);
         Assert.DoesNotContain("════════════", message);
     }

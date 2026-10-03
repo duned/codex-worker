@@ -66,6 +66,12 @@ public interface IGitRepository : IDisposable
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
         Func<string, CancellationToken, Task<bool>> resolveConflict, CancellationToken ct) =>
         CommitAndIntegrateAsync(issue, validateAfterRebase, ct);
+    Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
+        Func<string, CancellationToken, Task<bool>> resolveConflict,
+        Func<IntegrationRepairContext, CancellationToken, Task<IntegrationRepairResult>> repairIntegration,
+        CancellationToken ct, Func<CancellationToken, Task>? ensureAuthority = null) =>
+        CommitAndIntegrateAsync(issue, validateAfterRebase, resolveConflict, ct);
 }
 
 public interface ICodexExecutor
@@ -76,6 +82,10 @@ public interface ICodexExecutor
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunAsync(projectDirectory, instructionsFile, issue, ct);
     Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
         ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct);
+    Task<CodexOutcome> RepairIntegrationAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        IntegrationRepairContext context, string? implementationSummary, IReadOnlyList<string> validationCommands,
+        int attempt, int maximumAttempts, CancellationToken ct) =>
+        Task.FromResult(new CodexOutcome("failed", "Integration repair is unavailable.", [], false, null));
     Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
         GitHubIssue issue, string conflictDetails, CancellationToken ct) =>
         Task.FromResult(new CodexOutcome("failed", "Integration conflict resolution is unavailable.", [], false, null));

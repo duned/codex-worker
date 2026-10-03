@@ -44,6 +44,8 @@ codex:
 
 validation:
   timeoutSeconds: 900
+  # Separate bounded budgets for initial validation repair and integration repair.
+  # Set to 0 to disable Codex repairs; authoritative validation still runs.
   maxFixAttempts: 2
   commands:
     - dotnet test

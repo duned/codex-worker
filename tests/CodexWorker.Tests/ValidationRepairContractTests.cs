@@ -5,6 +5,39 @@ namespace CodexWorker.Tests;
 public sealed class ValidationRepairContractTests
 {
     [Fact]
+    public void IntegrationRepairPromptIncludesCombinedSourceContextAndCompleteRedactedDiagnostics()
+    {
+        var failure = new ValidationFailure(2, "dotnet test", 1,
+            "first actionable error\n" + new string('a', 7000) + "\nExpected: Installed\nActual: Missing\nprivate-value",
+            "stderr detail", false, ["private-value"]);
+        var context = new IntegrationRepairContext(failure, "main", "original-base", "implementation-tip", "new-base", "rebased-tip");
+        var prompt = CodexExecutor.BuildIntegrationRepairPrompt("Project instructions", "AGENTS.md",
+            new GitHubIssue(42, "Original title", "Original goal", DateTimeOffset.UnixEpoch), context,
+            "Implemented the provider", ["dotnet build", "dotnet test"],
+            new CodexSettings { Model = "effective-model", ReasoningEffort = "high" }, 1, 2);
+
+        Assert.Contains("Integration repair 1/2", prompt);
+        Assert.Contains("Initial authoritative validation passed before integration", prompt);
+        Assert.Contains("CURRENT rebased source", prompt);
+        Assert.Contains("integrated architecture", prompt);
+        Assert.Contains("genuinely", prompt);
+        Assert.Contains("Do not weaken validation, skip tests, or merely make tests green", prompt);
+        Assert.Contains("original-base", prompt);
+        Assert.Contains("implementation-tip", prompt);
+        Assert.Contains("new-base", prompt);
+        Assert.Contains("rebased-tip", prompt);
+        Assert.Contains("Original goal", prompt);
+        Assert.Contains("Implemented the provider", prompt);
+        Assert.Contains("effective-model", prompt);
+        Assert.Contains("reasoning effort: high", prompt);
+        Assert.Contains("dotnet build\ndotnet test", prompt.Replace("\r", ""));
+        Assert.Contains("first actionable error", prompt);
+        Assert.Contains("Expected: Installed", prompt);
+        Assert.Contains("stderr detail", prompt);
+        Assert.DoesNotContain("private-value", prompt);
+    }
+
+    [Fact]
     public void RepairPromptIncludesIssueInstructionsFailureAndAttemptContext()
     {
         var issue = new GitHubIssue(42, "Original title", "Original body", DateTimeOffset.UnixEpoch);

@@ -101,6 +101,17 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         return await RunStructuredAsync(projectDirectory, prompt, ct);
     }
 
+    public async Task<CodexOutcome> RepairIntegrationAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        IntegrationRepairContext context, string? implementationSummary, IReadOnlyList<string> validationCommands,
+        int attempt, int maximumAttempts, CancellationToken ct)
+    {
+        var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
+        var prompt = BuildIntegrationRepairPrompt(instructions, instructionsFile, issue, context, implementationSummary,
+            validationCommands, settings, attempt, maximumAttempts);
+        // Complete captured validation output can exceed a platform's per-argument limit.
+        return await RunStructuredAsync(projectDirectory, prompt, ct, useStandardInput: true);
+    }
+
     public async Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
         GitHubIssue issue, string conflictDetails, CancellationToken ct)
     {
@@ -180,20 +191,22 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         }
     }
 
-    private async Task<CodexOutcome> RunStructuredAsync(string projectDirectory, string prompt, CancellationToken ct)
+    private async Task<CodexOutcome> RunStructuredAsync(string projectDirectory, string prompt, CancellationToken ct,
+        bool useStandardInput = false)
     {
         var schemaPath = Path.Combine(Path.GetTempPath(), $"codex-worker-schema-{Guid.NewGuid():N}.json");
         var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-output-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(schemaPath, OutputSchema, ct);
         try
         {
-            var args = BuildArguments(settings, schemaPath, outputPath, prompt);
+            var args = BuildArguments(settings, schemaPath, outputPath, useStandardInput ? "-" : prompt);
             var environment = CodexEnvironment.Create(projectEnvironment);
             ProcessResult result;
             try
             {
                 result = await runner.RunAsync(Executable, args, projectDirectory,
-                    TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables);
+                    TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables,
+                    standardInput: useStandardInput ? prompt : null);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -306,7 +319,37 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         {issue.Body}
 
         # Authoritative validation failure
-        {failure.ToRepairDiagnostics()}
+        {FailureDiagnosticRedactor.Redact(failure.ToRepairDiagnostics(), failure.SecretValues)}
+        """;
+
+    internal static string BuildIntegrationRepairPrompt(string projectInstructions, string instructionsFile, GitHubIssue issue,
+        IntegrationRepairContext context, string? implementationSummary, IReadOnlyList<string> validationCommands,
+        CodexSettings settings, int attempt, int maximumAttempts) => $"""
+        {BuildRepairPrompt(projectInstructions, instructionsFile, issue, context.Failure, attempt, maximumAttempts)}
+
+        # Integration repair {attempt}/{maximumAttempts}
+        Initial authoritative validation passed before integration. The configured base branch `{context.BaseBranch}`
+        advanced and the Worker rebased/reconciled the completed implementation onto it. Validation of the combined
+        source now fails. Inspect the CURRENT rebased source and reconcile the Issue implementation with the current
+        integrated architecture. Preserve unrelated newer changes and the original Issue goal. Do not rerun implementation.
+        Tests are specifications and evidence, not obstacles to bypass. Determine whether production code, a genuinely
+        obsolete test expectation, or both need to change. Do not weaken validation, skip tests, or merely make tests green.
+        If the changes cannot be safely reconciled, return failed or blocked with actionable reasons.
+        Edit only this execution worktree. The Worker owns repair commits, revalidation and further rebases if the base advances again.
+
+        Effective Codex model: {settings.Model ?? "CLI default"}; reasoning effort: {settings.ReasoningEffort}.
+        Original execution base/recovery tip: {context.OriginalBaseCommit}
+        Implementation commit before reconciliation: {context.ImplementationCommit}
+        Integrated base commit: {context.IntegratedBaseCommit}
+        Current rebased implementation commit: {context.RebasedCommit}
+        Implementation already produced:
+        {implementationSummary ?? "Inspect the implementation commit and its delta in this worktree."}
+
+        # Full authoritative validation sequence
+        {string.Join("\n", validationCommands)}
+
+        # Complete captured failure diagnostics
+        {FailureDiagnosticRedactor.Redact(context.Failure.ToRepairDiagnostics(int.MaxValue), context.Failure.SecretValues)}
         """;
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { /* temp cleanup is best effort */ } }

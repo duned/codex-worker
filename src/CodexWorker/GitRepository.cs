@@ -5,10 +5,16 @@ namespace CodexWorker;
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary);
+public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
+    string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
+public sealed record IntegrationRepairResult(bool Attempted, bool Completed);
 public class GitIntegrationConflictException(string message) : Exception(message);
 
-/// <summary>Validation exhausted its bounded retry on a preserved implementation commit.</summary>
-public sealed class PostRebaseValidationException(string message) : GitIntegrationConflictException(message);
+/// <summary>Post-rebase validation could not be repaired on a preserved implementation.</summary>
+public sealed class PostRebaseValidationException(string message, ValidationFailure? failure = null) : GitIntegrationConflictException(message)
+{
+    public ValidationFailure? Failure { get; } = failure;
+}
 
 public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
@@ -547,6 +553,13 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
         Func<string, CancellationToken, Task<bool>> resolveConflict, CancellationToken ct)
+        => await CommitAndIntegrateAsync(issue, validateAfterRebase, resolveConflict, (_, _) => Task.FromResult(new IntegrationRepairResult(false, false)), ct);
+
+    public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
+        Func<string, CancellationToken, Task<bool>> resolveConflict,
+        Func<IntegrationRepairContext, CancellationToken, Task<IntegrationRepairResult>> repairIntegration,
+        CancellationToken ct, Func<CancellationToken, Task>? ensureAuthority = null)
     {
         try
         {
@@ -574,20 +587,40 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             var commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             if (settings.AutoMerge)
             {
-                await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
-                await GitAsync(["switch", "--", settings.BaseBranch], ct);
-                await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
-                var featureContainsBase = await GitAtAsync(ExecutionDirectory,
-                    ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
-                if (featureContainsBase.ExitCode != 0)
+                var implementationCommit = commit;
+                // A remote integrator may advance the base while Codex is repairing. Refresh
+                // before fast-forwarding and reconcile again, with a bounded handoff count.
+                for (var handoff = 1; ; handoff++)
                 {
-                    await RebaseForIntegrationAsync(issue.Number, resolveConflict, ct);
-                    await ValidateRebasedSourceAsync(issue.Number, validateAfterRebase, ct);
+                    ct.ThrowIfCancellationRequested();
+                    if (ensureAuthority is not null) await ensureAuthority(ct);
+                    await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
+                    await GitAsync(["switch", "--", settings.BaseBranch], ct);
+                    await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
+                    var featureContainsBase = await GitAtAsync(ExecutionDirectory,
+                        ["merge-base", "--is-ancestor", settings.BaseBranch, $"refs/heads/{_featureBranch}"], ct, [0, 1]);
+                    if (featureContainsBase.ExitCode != 0)
+                    {
+                        await RebaseForIntegrationAsync(issue.Number, resolveConflict, ct);
+                        await ValidateRebasedSourceAsync(issue.Number, implementationCommit, validateAfterRebase, repairIntegration, ct);
+                    }
+                    else if (_forcePostRebaseValidation)
+                    {
+                        await ValidateRebasedSourceAsync(issue.Number, implementationCommit, validateAfterRebase, repairIntegration, ct);
+                    }
+                    _forcePostRebaseValidation = false;
+                    ct.ThrowIfCancellationRequested();
+                    if (ensureAuthority is not null) await ensureAuthority(ct);
+                    await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
+                    var localBase = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
+                    var remoteBase = (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
+                    var containsCurrentBase = await GitAtAsync(ExecutionDirectory,
+                        ["merge-base", "--is-ancestor", localBase, "HEAD"], ct, [0, 1]);
+                    if (localBase == remoteBase && containsCurrentBase.ExitCode == 0) break;
+                    if (handoff >= 5)
+                        throw new GitIntegrationConflictException($"The integration base kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
                 }
-                else if (_forcePostRebaseValidation)
-                {
-                    await ValidateRebasedSourceAsync(issue.Number, validateAfterRebase, ct);
-                }
+                commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
                 if (settings.PushCompletedBranch)
@@ -630,13 +663,18 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git commit/integration for Issue #{issue.Number} failed; checkout state is preserved for diagnosis: {ex.Message}", ex); }
     }
 
-    private async Task ValidateRebasedSourceAsync(int issueNumber,
-        Func<CancellationToken, Task<ValidationResult>> validate, CancellationToken ct)
+    private async Task ValidateRebasedSourceAsync(int issueNumber, string implementationCommit,
+        Func<CancellationToken, Task<ValidationResult>> validate,
+        Func<IntegrationRepairContext, CancellationToken, Task<IntegrationRepairResult>> repair, CancellationToken ct)
     {
         var head = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
         var diagnostics = new List<string>();
-        for (var attempt = 1; attempt <= 2; attempt++)
+        var attempt = 0;
+        var repairing = false;
+        var incompleteRepair = false;
+        while (true)
         {
+            attempt++;
             await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
             await EnsureWorktreeOwnedAsync(ct);
             var current = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
@@ -645,15 +683,45 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 throw new WorkerInfrastructureException("Rebased validation source changed; integration stopped and workspace preserved for inspection.");
             var result = await validate(ct);
             // Verify again even after success: validation must not mutate the source being integrated.
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
             current = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
             if (current != head || !string.IsNullOrWhiteSpace(status))
                 throw new WorkerInfrastructureException("Rebased validation source changed; integration stopped and workspace preserved for inspection.");
-            if (result.Succeeded) return;
-            diagnostics.Add($"Attempt {attempt}/2: {result.Failure!.ToSummary()}");
+            if (result.Succeeded)
+            {
+                if (incompleteRepair)
+                    throw new GitIntegrationConflictException($"Codex could not safely complete integration repair for Issue #{issueNumber}, although validation passed. The implementation and repair edits were preserved.");
+                return;
+            }
+            var failure = result.Failure ?? throw new WorkerInfrastructureException("Failed validation has no diagnostics.");
+            diagnostics.Add($"{(repairing ? "Validation after integration repair" : $"Attempt {attempt}/2")}: {failure.ToSummary()}");
+            if (!repairing && attempt < 2) continue;
+
+            var baseCommit = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
+            var context = new IntegrationRepairContext(failure, settings.BaseBranch,
+                _startingCommit ?? throw new WorkerInfrastructureException("Integration has no starting commit."),
+                implementationCommit, baseCommit, head);
+            var repaired = incompleteRepair ? new IntegrationRepairResult(false, false) : await repair(context, ct);
+            if (!repaired.Attempted)
+                throw new PostRebaseValidationException($"Validation after rebase failed for Issue #{issueNumber}; integration repair was unavailable, incomplete or exhausted. Integration stopped and the implementation was preserved.\n\n" +
+                    string.Join("\n\n", diagnostics), failure);
+            await EnsureBranchAsync(_featureBranch, ct, ExecutionDirectory);
+            await EnsureWorktreeOwnedAsync(ct);
+            current = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            if (current != head || !string.IsNullOrWhiteSpace((await GitAtAsync(ExecutionDirectory, ["ls-files", "-u"], ct)).StandardOutput))
+                throw new WorkerInfrastructureException("Codex integration repair changed Git history or left unresolved index entries; workspace preserved for inspection.");
+            // Commit even an incomplete repair's useful edits so verified integration recovery
+            // can reuse the clean owned worktree. The original implementation remains in ancestry.
+            await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
+            var staged = await GitAtAsync(ExecutionDirectory, ["diff", "--cached", "--quiet"], ct, [0, 1]);
+            if (staged.ExitCode != 0)
+                await GitAtAsync(ExecutionDirectory, ["commit", "-m", $"Reconcile integration for #{issueNumber}"], ct);
+            head = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            incompleteRepair = !repaired.Completed;
+            repairing = true;
         }
-        throw new PostRebaseValidationException($"Validation after rebase failed twice for Issue #{issueNumber}; integration stopped and the implementation was preserved.\n\n" +
-            string.Join("\n\n", diagnostics));
     }
 
     private async Task RebaseForIntegrationAsync(int issueNumber, CancellationToken ct) =>
@@ -684,7 +752,10 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 if (continued.ExitCode == 0) return;
                 var unresolved = (await GitAtAsync(ExecutionDirectory, ["ls-files", "-u"], ct)).StandardOutput;
                 if (!string.IsNullOrWhiteSpace(unresolved))
-                    throw new GitIntegrationConflictException($"Integration conflict for Issue #{issueNumber}; Codex resolution left conflicts unresolved. The implementation worktree was preserved. {Tail(continued.StandardError)}");
+                    // A repair adds another Worker-owned commit. Continuing the first resolved
+                    // conflict may encounter a conflict in that later commit. Abort through the
+                    // verified recovery path below, retaining the whole implementation lineage.
+                    detail = $"Codex resolution left conflicts unresolved. {Tail(continued.StandardError)}";
 
                 // Git can report a nonzero continuation result after it has already finished
                 // applying the commit. Treat it as complete only when the rebase state is gone

@@ -303,7 +303,7 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
-    public async Task FastForwardFailureDoesNotFallBackToMergeCommit()
+    public async Task BaseAdvanceDuringValidationReconcilesAgainWithoutMergeCommit()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
@@ -312,18 +312,24 @@ public sealed class GitWorktreeTests
         await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
         await fixture.AdvanceBaseAsync();
 
-        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue, async _ =>
+        var advanced = false;
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue, async _ =>
         {
             // Simulate another base update after the integration fetch/rebase but before the fast-forward.
-            await fixture.AdvanceBaseAsync("raced-base.txt", "base changed during integration");
+            if (!advanced)
+            {
+                advanced = true;
+                await fixture.AdvanceBaseAsync("raced-base.txt", "base changed during integration");
+            }
             return ValidationResult.Success;
-        }, CancellationToken.None));
+        }, CancellationToken.None);
+        Assert.True(result.HasChanges);
 
         Assert.Equal("base changed during integration", await fixture.Git("show", "main:raced-base.txt"));
-        Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
+        Assert.Equal("implementation", await fixture.Git("show", "main:implemented.txt"));
         var parents = (await fixture.Git("rev-list", "--parents", "-n", "1", "main")).Split(' ', StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(2, parents.Length);
-        Assert.True(Directory.Exists(git.ExecutionDirectory));
+
     }
 
     [Fact]
@@ -827,7 +833,7 @@ public sealed class GitWorktreeTests
             Git = settings,
             GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done", FailedLabel = "failed", BlockedLabel = "blocked" },
             Codex = new CodexSettings { InstructionsFile = "unused" },
-            Validation = new ValidationSettings { Commands = ["local-check"] },
+            Validation = new ValidationSettings { Commands = ["local-check"], MaxFixAttempts = 0 },
             Worker = new WorkerSettings { MaxParallelTasks = 2 }
         };
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../history.db"));
@@ -867,8 +873,7 @@ public sealed class GitWorktreeTests
         Assert.Equal(2, validation.RebasedHeads.Count);
         Assert.Equal(validation.RebasedHeads[0], validation.RebasedHeads[1]);
         Assert.All(validation.RebasedParents, parent => Assert.Equal(validation.FirstIntegratedHead, parent));
-        Assert.Contains("attempt 1/2", output.ToString());
-        Assert.Contains("attempt 2/2", output.ToString());
+        Assert.Contains("Validation after rebase", output.ToString());
         if (!retrySucceeds)
         {
             Assert.True(result.Report.WorkspacePreserved);
@@ -950,6 +955,407 @@ public sealed class GitWorktreeTests
         Assert.Equal(interrupted.FeatureBranch, await fixture.GitAt(preserved, "branch", "--show-current"));
     }
 
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public async Task ParallelSemanticIncompatibilityUsesBoundedRepairAndPreservesCurrentBase(
+        bool obsoleteExpectation, bool exhausted, bool advanceDuringRepair)
+    {
+        // Model the provisioning/status concurrency pattern: A adds an installed provider;
+        // B separates installation status from authentication/readiness. Both start on B0.
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = new GitSettings { AutoMerge = true },
+            GitHub = new GitHubSettings { ReadyLabel = "ready" },
+            Codex = new CodexSettings { InstructionsFile = "unused", Model = "configured-model", ReasoningEffort = "high" },
+            Validation = new ValidationSettings { Commands = ["verify status contract"], MaxFixAttempts = 2 }
+        };
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../semantic-history.db"));
+        using var logs = new StringWriter();
+        using var errors = new StringWriter();
+        var console = new WorkerConsole(logs, false, errors);
+        using var telegram = new TelegramNotifier(false, console);
+        var github = new ConcurrentGitHub(fixture.Issue);
+        var codex = new SemanticCodex(fixture, obsoleteExpectation, exhausted, advanceDuringRepair);
+        var validation = new SemanticValidation(fixture, obsoleteExpectation);
+        var worker = new Worker(config, github, git, codex, validation, telegram, console, history);
+        var registry = new ProjectRuntimeRegistry([("sample.yml", config)], new RuntimeEventLog());
+
+        Assert.True(registry.TryReserve("sample"));
+        var executionA = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(executionA);
+        await validation.InitialPassed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(registry.TryReserve("sample"));
+        var executionB = await worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(executionB);
+        var integratedB = await executionB;
+        Assert.NotNull(integratedB);
+        Assert.Equal(IssueOutcomeKind.Succeeded, integratedB.Kind);
+        registry.Release("sample");
+        Assert.Equal(codex.StartingHeads[17], codex.StartingHeads[18]);
+        var baseAfterB = await fixture.Git("rev-parse", "main");
+        validation.AllowIntegration.SetResult();
+        var result = await executionA;
+        Assert.NotNull(result);
+        registry.Release("sample");
+        Assert.Equal(0, registry.WorkerActiveExecutionCount);
+        Assert.Equal(exhausted ? IssueOutcomeKind.IntegrationConflict : IssueOutcomeKind.Succeeded, result.Kind);
+        Assert.Equal(exhausted ? 2 : 1, codex.RepairContexts.Count);
+        Assert.All(codex.RepairContexts, details =>
+        {
+            Assert.Equal(codex.StartingHeads[17], details.OriginalBaseCommit);
+            Assert.Equal(baseAfterB, details.IntegratedBaseCommit);
+            Assert.Contains("Expected:", details.Failure.StandardOutput);
+            Assert.Contains("Actual:", details.Failure.StandardOutput);
+        });
+        Assert.Equal(2 + codex.RepairContexts.Count + (advanceDuringRepair ? 1 : 0), validation.Failures + validation.PassedAfterRebase);
+        Assert.Contains("Validation after rebase", logs.ToString());
+        Assert.Contains("Integration repair 1/2", logs.ToString());
+        Assert.Contains("Validation after integration repair", logs.ToString());
+        Assert.DoesNotContain("infrastructure failure", errors.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.All(result.Report.ValidationRepairs, repair => Assert.True(repair.IntegrationRepair));
+        Assert.Contains("### Integration repairs", result.Summary);
+        Assert.Contains("Initial validation passed before integration", result.Summary);
+        Assert.Contains("installation", await fixture.Git("show", "main:status-contract.txt"));
+        Assert.Equal("B's unrelated work", await fixture.Git("show", "main:unrelated.txt"));
+        var entry = (await history.ReadAllAsync()).Single(row => row.IssueNumber == 17);
+        Assert.Equal(codex.RepairContexts.Count, entry.RepairCount);
+        Assert.All(entry.Repairs, repair => Assert.True(repair.IntegrationRepair));
+        Assert.Contains(github.Comments, comment => comment.Issue == 17 && comment.Body.Contains("### Integration repairs", StringComparison.Ordinal));
+
+        if (exhausted)
+        {
+            Assert.Equal(baseAfterB, await fixture.Git("rev-parse", "main"));
+            Assert.Equal("IntegrationConflict", entry.State);
+            Assert.Equal("integration-conflict", entry.RecoveryState);
+            Assert.Contains("2 integration repair attempt(s)", entry.ValidationOutcome);
+            Assert.NotEqual(codex.RepairContexts[0].RebasedCommit, codex.RepairContexts[1].RebasedCommit);
+            Assert.Contains("preserved repair attempt 1", codex.RepairContexts[1].Failure.StandardError);
+            Assert.Contains("preserved repair attempt 2", result.Report.FinalValidationDiagnostics);
+            Assert.True(result.Report.WorkspacePreserved);
+            Assert.True(result.Report.RetryAvailable);
+            Assert.Contains("Expected: Installed", result.Summary);
+            Assert.Contains("Actual: Missing", result.Summary);
+            Assert.Contains((17, config.GitHub.IntegrationConflictLabel), github.Labels);
+            var workspace = Path.Combine(fixture.WorktreeRoot, entry.ExecutionId.ToString("N"));
+            Assert.Equal("Installed", await File.ReadAllTextAsync(Path.Combine(workspace, "provider.txt")));
+            Assert.Equal("preserved repair attempt 2", await File.ReadAllTextAsync(Path.Combine(workspace, "repair-note.txt")));
+            Assert.Equal(string.Empty, await fixture.GitAt(workspace, "status", "--porcelain"));
+            Assert.Null(await git.ValidateIntegrationRecoveryAsync(entry, CancellationToken.None));
+
+            // Explicit recovery reuses the valuable implementation and performs new bounded
+            // integration repairs even when no further rebase is necessary.
+            codex.Exhausted = false;
+            github.RecoveryIssue = fixture.Issue;
+            var recovered = await worker.ProcessOneAsync(CancellationToken.None);
+            Assert.NotNull(recovered);
+            Assert.Equal(IssueOutcomeKind.Succeeded, recovered.Kind);
+            Assert.Single(recovered.Report.ValidationRepairs);
+            Assert.Equal(2, codex.ImplementationCalls);
+            Assert.Equal("Installed", await fixture.Git("show", "main:provider.txt"));
+            Assert.Equal("installation", await fixture.Git("show", "main:status-implementation.txt"));
+            Assert.Equal("B's unrelated work", await fixture.Git("show", "main:unrelated.txt"));
+            Assert.Equal("integration-recovered", (await history.ReadAllAsync()).Single(row => row.ExecutionId == entry.ExecutionId).RecoveryState);
+        }
+        else
+        {
+            Assert.True(result.Report.ValidationRepairs[0].PassedAfterRepair);
+            Assert.Equal("Installed", await fixture.Git("show", "main:provider.txt"));
+            Assert.Equal(obsoleteExpectation ? "Installed" : "specification", await fixture.Git("show", "main:expected-status.txt"));
+            Assert.Equal(obsoleteExpectation ? "contract" : "installation", await fixture.Git("show", "main:status-implementation.txt"));
+            Assert.NotNull(result.Report.Integration);
+            Assert.Equal(await fixture.Git("rev-parse", "main"), result.Report.Integration.CommitSha);
+            Assert.Equal("passed", entry.ValidationOutcome);
+            if (advanceDuringRepair)
+            {
+                Assert.Equal("new concurrent work", await fixture.Git("show", "main:during-repair.txt"));
+                Assert.Equal(2, validation.PassedAfterRebase);
+                Assert.NotNull(codex.AdvancedHead);
+                Assert.Contains(codex.AdvancedHead, await fixture.Git("rev-list", "main"));
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IncompleteIntegrationRepairIsRevalidatedAndRemainsRecoverable(bool validationPasses)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "implementation.txt"), "original valuable implementation");
+        await fixture.AdvanceBaseAsync();
+        var baseBefore = await fixture.Git("rev-parse", "main");
+        var validations = 0;
+        var repairs = 0;
+        var error = await Assert.ThrowsAnyAsync<GitIntegrationConflictException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(++validations == 3 && validationPasses ? ValidationResult.Success :
+                new ValidationResult(new ValidationFailure(1, "check", 1, "Expected: compatible", "Actual: incompatible", false))),
+            (_, _) => Task.FromResult(false), async (_, ct) =>
+            {
+                repairs++;
+                await File.WriteAllTextAsync(Path.Combine(workspace, "partial-repair.txt"), "useful incomplete repair", ct);
+                return new IntegrationRepairResult(true, false);
+            }, CancellationToken.None));
+
+        Assert.Equal(3, validations);
+        Assert.Equal(1, repairs);
+        Assert.Contains(validationPasses ? "although validation passed" : "incomplete or exhausted", error.Message);
+        Assert.Equal(baseBefore, await fixture.Git("rev-parse", "main"));
+        var recovery = await git.PreserveIntegrationConflictAsync(CancellationToken.None);
+        Assert.NotNull(recovery);
+        Assert.Equal("original valuable implementation", await fixture.GitAt(workspace, "show", "HEAD:implementation.txt"));
+        Assert.Equal("useful incomplete repair", await fixture.GitAt(workspace, "show", "HEAD:partial-repair.txt"));
+        Assert.Equal(string.Empty, await fixture.GitAt(workspace, "status", "--porcelain"));
+    }
+
+    [Theory]
+    [InlineData("history")]
+    [InlineData("validation")]
+    [InlineData("authority")]
+    [InlineData("infrastructure")]
+    public async Task IntegrationRepairDoesNotRelaxHistoryValidationAuthorityOrInfrastructureSafety(string violation)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "implementation.txt"), "implementation");
+        await fixture.AdvanceBaseAsync();
+        var baseBefore = await fixture.Git("rev-parse", "main");
+        var repaired = false;
+        var authoritative = true;
+        var error = await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            async ct =>
+            {
+                if (!repaired) return new ValidationResult(new ValidationFailure(1, "check", 1, "failed test", "", false));
+                if (violation == "validation") await File.WriteAllTextAsync(Path.Combine(workspace, "mutation.txt"), "validation changed source", ct);
+                return ValidationResult.Success;
+            }, (_, _) => Task.FromResult(false), async (_, ct) =>
+            {
+                if (violation == "infrastructure")
+                    throw new CodexExecutionInfrastructureException("Codex process failure", "Codex service failed");
+                await File.WriteAllTextAsync(Path.Combine(workspace, "repair.txt"), "repair", ct);
+                if (violation == "history")
+                {
+                    await fixture.GitAt(workspace, "add", "--all");
+                    await fixture.GitAt(workspace, "commit", "-m", "unauthorized Codex history mutation");
+                }
+                authoritative = violation != "authority";
+                repaired = true;
+                return new IntegrationRepairResult(true, true);
+            }, CancellationToken.None, _ => authoritative ? Task.CompletedTask :
+                throw new WorkerInfrastructureException("Integration authority was lost")));
+
+        Assert.Equal(baseBefore, await fixture.Git("rev-parse", "main"));
+        Assert.True(Directory.Exists(workspace));
+        if (violation == "infrastructure") Assert.IsType<CodexExecutionInfrastructureException>(error);
+        else Assert.Contains(violation == "history" ? "changed Git history" : violation == "validation" ? "source changed" : "authority was lost", error.Message);
+    }
+
+    [Fact]
+    public async Task CancellationDuringIntegrationRepairPreservesWorkAndNeverIntegrates()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "implementation.txt"), "original implementation");
+        await fixture.AdvanceBaseAsync();
+        var baseBefore = await fixture.Git("rev-parse", "main");
+        using var cancellation = new CancellationTokenSource();
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(new ValidationResult(new ValidationFailure(1, "check", 1, "failed test", "", false))),
+            (_, _) => Task.FromResult(false), async (_, ct) =>
+            {
+                await File.WriteAllTextAsync(Path.Combine(workspace, "partial-repair.txt"), "interrupted useful repair", ct);
+                cancellation.Cancel();
+                ct.ThrowIfCancellationRequested();
+                return new IntegrationRepairResult(true, true);
+            }, cancellation.Token));
+
+        Assert.True(WorkerShutdown.IsCancellation(error));
+        Assert.Equal(baseBefore, await fixture.Git("rev-parse", "main"));
+        Assert.Equal("original implementation", await fixture.GitAt(workspace, "show", "HEAD:implementation.txt"));
+        Assert.Equal("interrupted useful repair", await File.ReadAllTextAsync(Path.Combine(workspace, "partial-repair.txt")));
+    }
+
+    [Fact]
+    public async Task LaterRepairCommitConflictAbortsRebaseAndPreservesCompleteImplementation()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "first.txt"), "original implementation");
+        await fixture.AdvanceBaseAsync();
+        var repaired = false;
+        var advanced = false;
+        string? preservedHead = null;
+        string? currentBase = null;
+        var resolutions = 0;
+        var error = await Assert.ThrowsAsync<GitIntegrationConflictException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+            async _ =>
+            {
+                if (!repaired) return new ValidationResult(new ValidationFailure(1, "check", 1, "failed test", "", false));
+                if (!advanced)
+                {
+                    advanced = true;
+                    preservedHead = await fixture.GitAt(workspace, "rev-parse", "HEAD");
+                    await fixture.AdvanceBaseAsync("first.txt", "new base implementation");
+                    await fixture.AdvanceBaseAsync("second.txt", "new base behavior");
+                    currentBase = await fixture.Git("rev-parse", "main");
+                }
+                return ValidationResult.Success;
+            }, async (_, ct) =>
+            {
+                resolutions++;
+                await File.WriteAllTextAsync(Path.Combine(workspace, "first.txt"), "combined implementation", ct);
+                return true;
+            }, async (_, ct) =>
+            {
+                await File.WriteAllTextAsync(Path.Combine(workspace, "second.txt"), "semantic repair", ct);
+                repaired = true;
+                return new IntegrationRepairResult(true, true);
+            }, CancellationToken.None));
+
+        Assert.Equal(1, resolutions);
+        Assert.Contains("rebase was aborted", error.Message);
+        Assert.Contains("conflicts unresolved", error.Message);
+        Assert.Equal(currentBase, await fixture.Git("rev-parse", "main"));
+        Assert.Equal(preservedHead, await fixture.GitAt(workspace, "rev-parse", "HEAD"));
+        Assert.Equal("original implementation", await File.ReadAllTextAsync(Path.Combine(workspace, "first.txt")));
+        Assert.Equal("semantic repair", await File.ReadAllTextAsync(Path.Combine(workspace, "second.txt")));
+        Assert.NotNull(await git.PreserveIntegrationConflictAsync(CancellationToken.None));
+    }
+
+    private sealed class SemanticCodex(RepositoryFixture fixture, bool obsoleteExpectation, bool exhausted,
+        bool advanceDuringRepair) : ICodexExecutor
+    {
+        public bool Exhausted { get; set; } = exhausted;
+        public int ImplementationCalls { get; private set; }
+        public Dictionary<int, string> StartingHeads { get; } = [];
+        public List<IntegrationRepairContext> RepairContexts { get; } = [];
+        public string? AdvancedHead { get; private set; }
+        public ICodexExecutor WithProfile(CodexExecutionProfile profile)
+        {
+            Assert.Equal("configured-model", profile.Model);
+            Assert.Equal("high", profile.Effort);
+            return this;
+        }
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
+        {
+            ImplementationCalls++;
+            StartingHeads[issue.Number] = await fixture.GitAt(projectDirectory, "rev-parse", "HEAD");
+            if (issue.Number == 17)
+            {
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "provider.txt"), "Installed", ct);
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "status-implementation.txt"), obsoleteExpectation ? "contract" : "readiness", ct);
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "expected-status.txt"), obsoleteExpectation ? "Missing" : "specification", ct);
+            }
+            else
+            {
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "status-contract.txt"), "installation", ct);
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "unrelated.txt"), "B's unrelated work", ct);
+            }
+            return new CodexOutcome("success", "Implemented provider/status separation", [], false, null);
+        }
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
+            throw new InvalidOperationException("Initial validation passed; implementation repair is inappropriate.");
+        public async Task<CodexOutcome> RepairIntegrationAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            IntegrationRepairContext context, string? implementationSummary, IReadOnlyList<string> validationCommands,
+            int attempt, int maximumAttempts, CancellationToken ct)
+        {
+            RepairContexts.Add(context);
+            Assert.Equal(17, issue.Number);
+            Assert.Equal("Implement this request", issue.Body);
+            Assert.Equal("Implemented provider/status separation", implementationSummary);
+            Assert.Equal("verify status contract", Assert.Single(validationCommands));
+            Assert.Equal(2, maximumAttempts);
+            Assert.Equal(context.RebasedCommit, await fixture.GitAt(projectDirectory, "rev-parse", "HEAD"));
+            Assert.NotEqual(fixture.Checkout, projectDirectory);
+            Assert.Equal("installation", await File.ReadAllTextAsync(Path.Combine(projectDirectory, "status-contract.txt"), ct));
+            if (Exhausted)
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "repair-note.txt"), $"preserved repair attempt {attempt}", ct);
+            else if (obsoleteExpectation)
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "expected-status.txt"), "Installed", ct);
+            else
+                await File.WriteAllTextAsync(Path.Combine(projectDirectory, "status-implementation.txt"), "installation", ct);
+            if (advanceDuringRepair)
+            {
+                // Advance only origin using another checkout, as a remote Worker would. The
+                // canonical main remains unchanged until the integration refresh observes it.
+                var peer = Path.Combine(fixture.Checkout, "../peer");
+                await fixture.Git("clone", Path.Combine(fixture.Checkout, "../origin.git"), peer);
+                await fixture.GitAt(peer, "switch", "main");
+                await fixture.GitAt(peer, "config", "user.name", "Peer Worker");
+                await fixture.GitAt(peer, "config", "user.email", "peer@example.invalid");
+                await File.WriteAllTextAsync(Path.Combine(peer, "during-repair.txt"), "new concurrent work", ct);
+                await fixture.GitAt(peer, "add", "during-repair.txt");
+                await fixture.GitAt(peer, "commit", "-m", "concurrent update during repair");
+                await fixture.GitAt(peer, "push", "origin", "main");
+                AdvancedHead = await fixture.GitAt(peer, "rev-parse", "HEAD");
+            }
+            return new CodexOutcome("success", Exhausted ? "Could not yet reconcile status" : "Reconciled installation status with the current contract", [], false, null);
+        }
+    }
+
+    private sealed class SemanticValidation(RepositoryFixture fixture, bool obsoleteExpectation) : IValidationRunner
+    {
+        public TaskCompletionSource InitialPassed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource AllowIntegration { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Failures { get; private set; }
+        public int PassedAfterRebase { get; private set; }
+        private bool _initial = true;
+        public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+        {
+            if (!File.Exists(Path.Combine(directory, "provider.txt"))) return ValidationResult.Success;
+            var contractPath = Path.Combine(directory, "status-contract.txt");
+            var contract = File.Exists(contractPath) ? await File.ReadAllTextAsync(contractPath, ct) : "readiness";
+            var implementation = await File.ReadAllTextAsync(Path.Combine(directory, "status-implementation.txt"), ct);
+            var installed = await File.ReadAllTextAsync(Path.Combine(directory, "provider.txt"), ct);
+            var actual = (implementation == "contract" ? contract : implementation) == "installation" ? installed : "Missing";
+            var expected = obsoleteExpectation ? await File.ReadAllTextAsync(Path.Combine(directory, "expected-status.txt"), ct) :
+                contract == "installation" ? installed : "Missing";
+            if (actual != expected)
+            {
+                Failures++;
+                var notePath = Path.Combine(directory, "repair-note.txt");
+                var remaining = File.Exists(notePath) ? $"Remaining incompatibility after: {await File.ReadAllTextAsync(notePath, ct)}" : "";
+                return new ValidationResult(new ValidationFailure(1, Assert.Single(commands), 1,
+                    $"Status separates installation from readiness\nExpected: {expected}\nActual: {actual}", remaining, false));
+            }
+            if (_initial)
+            {
+                _initial = false;
+                Assert.False(File.Exists(contractPath));
+                InitialPassed.SetResult();
+                await AllowIntegration.Task.WaitAsync(ct);
+            }
+            else
+            {
+                Assert.Contains("installation", await File.ReadAllTextAsync(contractPath, ct));
+                Assert.Equal(await fixture.GitAt(directory, "rev-parse", "HEAD"), await fixture.GitAt(directory, "rev-parse", "refs/heads/feature/example-task-17"));
+                PassedAfterRebase++;
+            }
+            return ValidationResult.Success;
+        }
+    }
+
     private sealed class ImmediateValidation : IValidationRunner
     {
         public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct) =>
@@ -975,11 +1381,21 @@ public sealed class GitWorktreeTests
     {
         private int _number = 16;
         public List<(int Issue, string Label)> Labels { get; } = [];
-        public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
-            Task.FromResult<GitHubIssue?>(label == "ready" ? template with { Number = ++_number } : null);
+        public List<(int Issue, string Body)> Comments { get; } = [];
+        public GitHubIssue? RecoveryIssue { get; set; }
+        public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
+        {
+            if (label == "codex-integration-recovery" && RecoveryIssue is { } recovery)
+            {
+                RecoveryIssue = null;
+                return Task.FromResult<GitHubIssue?>(recovery);
+            }
+            return Task.FromResult<GitHubIssue?>(label == "ready" ? template with { Number = ++_number } : null);
+        }
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
         { Labels.Add((issueNumber, add)); return Task.CompletedTask; }
-        public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) => Task.CompletedTask;
+        public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
+        { Comments.Add((issueNumber, comment)); return Task.CompletedTask; }
         public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
     }
 
