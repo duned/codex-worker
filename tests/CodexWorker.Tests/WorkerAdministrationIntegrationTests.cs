@@ -12,6 +12,48 @@ public sealed class WorkerAdministrationIntegrationTests
     [InlineData("dotnet-sdk")]
     [InlineData("dotnet-runtime")]
     [InlineData("docker")]
+    public async Task UpdateLookupPermissionFailurePreservesReadinessAcrossAdministrationViews(string id)
+    {
+        var discovery = new NodeCapabilityDiscovery((tool, arguments, _) =>
+        {
+            if (tool is "/usr/bin/apt-cache" or "/usr/bin/npm")
+                return Task.FromException<(int, string)>(new UnauthorizedAccessException("private-output"));
+            return Task.FromResult((0, arguments[0] switch
+            {
+                "--list-sdks" => "10.0.100 [/sdk]",
+                "--list-runtimes" => "Microsoft.NETCore.App 10.0.100 [/runtime]\nMicrosoft.AspNetCore.App 10.0.100 [/runtime]",
+                _ => "10.0.100"
+            }));
+        });
+        var credentials = new NodeCredentialAdministration(discovery, (_, _, _) =>
+            throw new InvalidOperationException("Observation must not execute provisioning."));
+        var provisioning = new WorkerProvisioningAdministrationService(new ProvisioningPolicy(), discovery, "server");
+
+        var capability = Assert.Single((await CapabilityInventoryReporter.CreateAsync(discovery)).Capabilities,
+            item => item.Id == id);
+        var credential = Assert.Single((await credentials.StatusAsync()).Credentials, item => item.CapabilityId == id);
+        var status = await provisioning.GetStatusAsync();
+        Assert.NotNull(status.Capabilities);
+        var provisioned = Assert.Single(status.Capabilities, item => item.Id == id);
+
+        Assert.Equal(InstallationState.Installed, capability.Installation);
+        Assert.Equal(UpdateState.Unknown, capability.Update);
+        Assert.Equal(CapabilityHealth.Healthy, capability.Health);
+        Assert.Null(capability.DiagnosticCode);
+        Assert.True(capability.Readiness.Available);
+        Assert.True(credential.Ready);
+        Assert.Equal(capability.Authentication, credential.Authentication);
+        Assert.True(CapabilityCatalog.Ready([provisioned.State]));
+        Assert.True(CapabilityCatalog.ExecutionReadiness(await discovery.GetAsync()).Available);
+    }
+
+    [Theory]
+    [InlineData("git")]
+    [InlineData("github-cli")]
+    [InlineData("codex-cli")]
+    [InlineData("dotnet-sdk")]
+    [InlineData("dotnet-runtime")]
+    [InlineData("docker")]
     public async Task AdministrationViewsAgreeAcrossProviderStateTransitions(string id)
     {
         var installed = false;

@@ -244,7 +244,7 @@ public sealed class NodeCapabilityDiscovery
             return Version.TryParse(version, out var installedVersion) && Version.TryParse(candidateVersion, out var availableVersion)
                 ? availableVersion > installedVersion ? UpdateState.Available : UpdateState.Current : UpdateState.Unknown;
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or TimeoutException or InvalidOperationException ||
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or TimeoutException or InvalidOperationException ||
             ex is OperationCanceledException && !token.IsCancellationRequested)
         {
             // An unavailable package index does not invalidate installation/authentication facts.

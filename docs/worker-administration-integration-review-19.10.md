@@ -71,3 +71,43 @@ Later secure Server ↔ Worker administration should preserve these boundaries:
 The disposable-host package/login/service acceptance items in the 19.9 report
 remain unrun here. No new transport, credential store, scheduling mechanism,
 automatic recovery replay or product version is introduced by this review.
+
+## Parent integration review (Issue #176)
+
+The final parent review checked the completed local administration adapters,
+configuration and identity observation, shared provisioning/credential handlers,
+provider dependency metadata, host readiness gates and execution/recovery
+boundaries against the conclusions above. Shared core behavior remains in
+`CodexProvisioning`; Server retains registry and central credential ownership,
+and Worker retains node-local policy, authentication and execution ownership.
+Local CLI observations do not grant execution or managed scheduling authority.
+
+One further readiness inconsistency was corrected: an update candidate lookup
+that throws `UnauthorizedAccessException` previously marked the entire capability
+as unhealthy, even after installation and authentication/configuration probes
+succeeded. The shared discovery now reports update availability as unknown and
+preserves those successful observations, as it already does for other expected
+candidate lookup failures. Caller cancellation still propagates. Six focused
+cross-provider regressions verify capability inventory, provisioning status and
+credential readiness agree for Git, GitHub CLI, Codex CLI, .NET SDK/runtime and
+Docker. This does not weaken installation, login, configuration, repository access
+or Codex execution preflight requirements.
+
+Parent self-validation on .NET SDK 10.0.112:
+
+- The complete solution compiled without compiler/analyzer warnings and passed
+  all 1,054 tests, with no skips, including the six new regression cases.
+- All six dashboard suites, installer/uninstaller checks, Worker installer
+  lifecycle checks and the `cw` suite passed.
+- The isolated Python campaign passed against this checkout's framework-dependent
+  Debug apphost, including enrollment, degraded control API liveness, zero active
+  execution, graceful shutdown and restart with retained local state.
+- Initial restore could not reach NuGet.org; restore succeeded using a temporary
+  copy of the existing local package cache. Initial VSTest and Python fixture
+  runs could not open local sockets in the sandbox; both completed successfully
+  with socket access enabled. Whitespace/diff review passed.
+
+These are local self-validation results. The Worker will run its configured
+authoritative checks separately. Live package installation, real provider login,
+and clean-host systemd acceptance remain unrun as described in the 19.9 report;
+the isolated campaign does not certify those operations.
