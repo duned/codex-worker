@@ -1659,6 +1659,103 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task RecoveryAssignmentsAreNodeBoundIdempotentAndExhaustedBaseDoesNotRearmAfterRestart()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
+        var path = Path.Combine(temporary.Path, "integration-recovery.db");
+        var store = new SqliteRegistryStore(path, timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery project", "team/recovery", "main", "", []));
+        var owner = Guid.NewGuid().ToString("N");
+        var competitor = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        foreach (var workerId in new[] { owner, competitor })
+        {
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, capabilities));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 2, capabilities, []));
+        }
+        var queued = await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "17")));
+        var request = new WorkerAssignmentRequest(owner, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var initial = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(initial);
+        var localId = Guid.NewGuid().ToString();
+        await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(owner, initial.AssignmentId, localId,
+            "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: initial.Lease!.Generation));
+        request = request with { IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('a', 40))] };
+        var rejected = await store.RequestAssignmentAsync(request with { WorkerId = competitor });
+        Assert.False(rejected.HasWork);
+        Assert.Contains("local execution identity", rejected.IntegrationRecoveryRejections?[localId]);
+        var recovery = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(recovery);
+        Assert.Equal(localId, recovery.Metadata["integrationRecoveryExecutionId"]);
+        Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
+        await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "17"))));
+        await store.ReportExecutionAsync(recovery.ServerExecutionId, new WorkerExecutionReport(owner, recovery.AssignmentId,
+            Guid.NewGuid().ToString(), "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: recovery.Lease!.Generation));
+        var restarted = new SqliteRegistryStore(path, timeProvider: clock);
+        await restarted.InitializeAsync();
+        Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        var changed = request with { IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('b', 40))] };
+        var rearmed = (await restarted.RequestAssignmentAsync(changed)).Assignment;
+        Assert.NotNull(rearmed);
+        Assert.NotEqual(recovery.ServerExecutionId, rearmed.ServerExecutionId);
+        Assert.Equal(3, (await restarted.GetExecutionAsync(rearmed.ServerExecutionId))?.AttemptNumber);
+        // A restart in recovery cannot enqueue a fresh implementation after lease expiry.
+        await restarted.ReportExecutionAsync(rearmed.ServerExecutionId, new WorkerExecutionReport(owner, rearmed.AssignmentId,
+            Guid.NewGuid().ToString(), "Running", Stage: "Preparing", Generation: rearmed.Lease!.Generation));
+        clock.Advance(TimeSpan.FromMinutes(16));
+        var rows = await restarted.GetExecutionsAsync();
+        Assert.DoesNotContain(rows, entry => entry.State == "Queued");
+        Assert.Equal("LeaseExpiredUncertain", rows.Single(entry => entry.Id == rearmed.ServerExecutionId).RecoveryState);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MissingOrCorruptRecoveryAssignmentMetadataPreservesReservationAndSchedulesOtherIssues(bool missing)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "corrupt-recovery.db");
+        var store = new SqliteRegistryStore(path);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery project", "team/recovery", "main", "", []));
+        var owner = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, owner, "worker", "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, owner, "1.0", "running", 0, 2, capabilities, []));
+        var original = await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "17")));
+        var request = new WorkerAssignmentRequest(owner, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var initial = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(initial);
+        var localId = Guid.NewGuid().ToString();
+        await store.ReportExecutionAsync(original.Id, new WorkerExecutionReport(owner, initial.AssignmentId, localId,
+            "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: initial.Lease!.Generation));
+        request = request with { IntegrationRecoveries = [new(project.Id, original.Id, localId, new string('a', 40))] };
+        var recovery = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(recovery);
+        await store.RejectManagedAssignmentAsync(recovery.ServerExecutionId, recovery.AssignmentId, owner,
+            new("unavailable", ["Simulated read interruption"], DateTimeOffset.UtcNow));
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = missing ? "DELETE FROM execution_metadata WHERE execution_id=$id" :
+                "UPDATE execution_metadata SET metadata_json='{invalid' WHERE execution_id=$id";
+            command.Parameters.AddWithValue("$id", recovery.ServerExecutionId);
+            await command.ExecuteNonQueryAsync();
+        }
+        var other = await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "18")));
+        var next = (await store.RequestAssignmentAsync(request)).Assignment;
+        Assert.Equal(other.Id, next?.ServerExecutionId);
+        var retained = await store.GetExecutionAsync(recovery.ServerExecutionId);
+        Assert.NotNull(retained);
+        Assert.Equal("Queued", retained.State);
+        Assert.Equal("blocked", retained.ManagedEligibilityState);
+        Assert.Contains("ownership metadata", Assert.Single(retained.ManagedEligibilityReasons!));
+    }
+
+    [Fact]
     public async Task WorkerSchedulingPolicyPersistsAndDrainPreservesActiveLeaseAndLifecycleObservations()
     {
         using var temporary = new TemporaryDirectory();

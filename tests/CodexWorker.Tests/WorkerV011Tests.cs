@@ -964,7 +964,7 @@ public sealed class WorkerV011Tests
 
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.RunAsync(h.Cancellation.Token));
 
-        Assert.Equal(2, h.GitHub.FindCalls);
+        Assert.Equal(3, h.GitHub.FindCalls);
         Assert.Contains("ready->working", h.GitHub.Labels);
         Assert.DoesNotContain("working->failed", h.GitHub.Labels);
         Assert.Equal(0, h.Git.Cleanups);
@@ -1360,6 +1360,230 @@ public sealed class WorkerV011Tests
         Assert.Equal("low", Assert.Single(h.Codex.Profiles).Effort);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ConflictIsAutomaticallyDiscoveredDuringPollingAndAfterRestart(bool restart)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.CancelWhenEmpty = false;
+        h.GitHub.ReadyIssueCount = 0;
+        Assert.Null(await h.ProcessOneAsync());
+        var source = PreservedConflict();
+        await history.CreateAsync(source);
+        using var restarted = new Harness(history: history);
+        var runtime = restart ? restarted : h;
+        runtime.GitHub.CancelWhenEmpty = false;
+        runtime.GitHub.ReadyIssueCount = 0;
+        runtime.GitHub.ReturnConflictIssue = true;
+        var result = await runtime.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        Assert.Equal(1, runtime.Git.RecoveryStarted);
+        Assert.Equal(0, runtime.Git.Started);
+        Assert.Null(runtime.Codex.InitialDirectory);
+        var recovered = (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != source.ExecutionId);
+        Assert.Equal(source.ExecutionId, recovered.RetryOfExecutionId);
+        Assert.True(recovered.Resumed);
+        Assert.Contains("without rerunning implementation", result!.Summary);
+        Assert.Contains(runtime.OperationalMessages, message => message.Contains("Integration recovery claimed", StringComparison.Ordinal));
+        Assert.Null((await history.ReadAllAsync()).Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
+    }
+
+    [Fact]
+    public async Task ExhaustedAutomaticRecoveryRemainsPreservedAcrossPollsAndRestartAndRearmsOnChangedBase()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var source = PreservedConflict();
+        await history.CreateAsync(source);
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnConflictIssue = true;
+        h.GitHub.ReadyIssueCount = 0;
+        h.GitHub.CancelWhenEmpty = false;
+        h.Git.Recovery = new(source.FeatureBranch, "repaired-head", "preserved implementation", "current-main");
+        h.Git.IntegrationFailure = new PostRebaseValidationException("bounded repair exhausted");
+        Assert.Equal(IssueOutcomeKind.IntegrationConflict, (await h.ProcessOneAsync())?.Kind);
+        Assert.Null(await h.ProcessOneAsync());
+        Assert.Equal(1, h.Git.RecoveryStarted);
+        using var restarted = new Harness(history: history);
+        restarted.GitHub.ReturnConflictIssue = true;
+        restarted.GitHub.ReadyIssueCount = 0;
+        restarted.GitHub.CancelWhenEmpty = false;
+        Assert.Null(await restarted.ProcessOneAsync());
+        Assert.Equal(0, restarted.Git.RecoveryStarted);
+        restarted.Git.IntegrationBase = "new-main";
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await restarted.ProcessOneAsync())?.Kind);
+        Assert.Equal(1, restarted.Git.RecoveryStarted);
+        Assert.Equal("repaired-head", restarted.Git.LastRetryOf?.RecoveryBaseCommit);
+        Assert.Null(restarted.Codex.InitialDirectory);
+    }
+
+    [Fact]
+    public async Task OperatorRecoveryLabelRearmsAnUnchangedExhaustedBase()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        await history.CreateAsync(PreservedConflict() with { IntegrationRecoveryAttemptBase = "current-main" });
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+        h.GitHub.ReadyIssueCount = 0;
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Equal(1, h.Git.RecoveryStarted);
+    }
+
+    [Fact]
+    public async Task UnsafeConflictReportsReasonAndDoesNotBlockUnrelatedImplementation()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var source = PreservedConflict();
+        await history.CreateAsync(source);
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnConflictIssue = true;
+        h.Git.RecoveryRejection = "persisted workspace commit does not match";
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.ReturnDistinctIssues = true;
+        // The first ready Issue is the conflict and is explicitly excluded by the fake queue.
+        h.GitHub.ExcludeReadyIssue = 17;
+        var result = await h.ProcessOneAsync();
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.Equal(1, h.Git.Started);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("persisted workspace commit does not match", StringComparison.Ordinal));
+        Assert.Equal("integration-conflict", (await history.ReadAllAsync()).Single(entry => entry.ExecutionId == source.ExecutionId).RecoveryState);
+    }
+
+    [Fact]
+    public async Task ConflictLabelWithoutHistoryNeverStartsImplementation()
+    {
+        using var h = new Harness();
+        h.GitHub.ReturnConflictIssue = true;
+        h.GitHub.ReadyIssueCount = 0;
+        Assert.Null(await h.ProcessOneAsync());
+        Assert.Equal(0, h.Git.Started);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("no recoverable integration-conflict execution history", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RestartReconcilesCleanClaimButPreservesUncertainWorkspace(bool unsafeWorkspace)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var source = PreservedConflict();
+        await history.CreateAsync(source);
+        var attempt = source with { ExecutionId = Guid.NewGuid(), State = "Integrating", CompletedAtUtc = null,
+            RecoveryState = null, RetryOfExecutionId = source.ExecutionId, AttemptNumber = 2 };
+        Assert.True(await history.TryClaimIntegrationRecoveryAsync(source, attempt, "current-main", false));
+        using var restarted = new Harness(history: history);
+        restarted.Git.RecoveryRejection = unsafeWorkspace ? "unfinished Git operation" : null;
+        await restarted.Worker.ReconcileIntegrationRecoveryAsync(CancellationToken.None);
+        var rows = await history.ReadAllAsync();
+        Assert.Equal("current-main", rows.Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryAttemptBase);
+        if (unsafeWorkspace)
+        {
+            Assert.Equal(attempt.ExecutionId, rows.Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
+            Assert.Contains(restarted.GitHub.Comments, comment => comment.Contains("unfinished Git operation", StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.Null(rows.Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
+            Assert.Equal("Cancelled", rows.Single(entry => entry.ExecutionId == attempt.ExecutionId).State);
+            Assert.Contains("working->codex-integration-conflict", restarted.GitHub.Labels);
+            restarted.GitHub.ReturnConflictIssue = true;
+            restarted.GitHub.CancelWhenEmpty = false;
+            restarted.GitHub.ReadyIssueCount = 0;
+            Assert.Null(await restarted.ProcessOneAsync());
+        }
+    }
+
+    [Fact]
+    public async Task RecoveryClaimReservesCapacityAndCannotBeDoubleScheduledOrReimplemented()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        await history.CreateAsync(PreservedConflict());
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnConflictIssue = true;
+        h.GitHub.CancelWhenEmpty = false;
+        h.GitHub.ReadyIssueCount = 0;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Git.IntegrationAction = async () => { entered.SetResult(); await release.Task; };
+        var registry = new ProjectRuntimeRegistry([("project.yml", h.Worker.Configuration)], new RuntimeEventLog());
+        Assert.True(registry.TryReserve("Test Project"));
+        var first = await h.Worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(first);
+        await entered.Task;
+        Assert.Equal(1, registry.WorkerActiveExecutionCount);
+        using var competitor = new Harness(history: history);
+        competitor.GitHub.ReturnConflictIssue = true;
+        competitor.GitHub.IssueLabels = ["ready"];
+        competitor.GitHub.CancelWhenEmpty = false;
+        Assert.Null(await competitor.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.Equal(0, competitor.Git.Started);
+        release.SetResult();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await first)!.Kind);
+        registry.Release("Test Project");
+        Assert.Equal(0, registry.WorkerActiveExecutionCount);
+    }
+
+    [Fact]
+    public async Task ManagedRecoveryAssignmentContinuesPreservedImplementationWithLeaseLineageAndFrozenProfile()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var source = PreservedConflict() with { ServerExecutionId = Guid.NewGuid().ToString("N"), EffectiveEffort = "low", EffectiveModel = "original-model", OriginalIssueBody = "Original Issue intent" };
+        await history.CreateAsync(source);
+        using var h = new Harness(history: history);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\nmodel: edited-model\neffort: xhigh" };
+        var candidates = await h.Worker.DiscoverManagedIntegrationRecoveriesAsync("project", CancellationToken.None);
+        Assert.Equal(source.ExecutionId.ToString(), Assert.Single(candidates).WorkerExecutionId);
+        var now = DateTimeOffset.UtcNow;
+        var assignment = new WorkerAssignmentContract("recovery-assignment", "server-recovery",
+            new("project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new("github-issue", "17"), "worker", new Dictionary<string, string>
+            { ["integrationRecoveryExecutionId"] = source.ExecutionId.ToString(), ["originalServerExecutionId"] = source.ServerExecutionId },
+            new("server-recovery", "worker", 2, now, now.AddMinutes(5), "Active"));
+        var task = await h.Worker.ClaimAssignedAsync(assignment, CancellationToken.None);
+        Assert.NotNull(task);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await task)?.Kind);
+        Assert.Equal(new CodexExecutionProfile("original-model", "low"), Assert.Single(h.Codex.Profiles));
+        Assert.Null(h.Codex.InitialDirectory);
+        var attempt = (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != source.ExecutionId);
+        Assert.Equal(source.ExecutionId, attempt.RetryOfExecutionId);
+        Assert.Equal("server-recovery", attempt.ServerExecutionId);
+        Assert.Equal(2, attempt.OwnershipGeneration);
+        Assert.Equal("Original Issue intent", attempt.OriginalIssueBody);
+    }
+
+    [Fact]
+    public async Task ConflictFromNormalImplementationRetryRecoversItsOwnWorkspaceRatherThanEarlierFailedWork()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var previous = PreservedConflict() with { State = "Failed", RecoveryState = "recoverable" };
+        var source = PreservedConflict() with { AttemptNumber = 2, FeatureBranch = "feature/example-task-17-retry-2",
+            RetryOfExecutionId = previous.ExecutionId, StartedAtUtc = DateTimeOffset.UtcNow };
+        await history.CreateAsync(previous);
+        await history.CreateAsync(source);
+        using var h = new Harness(history: history);
+        h.GitHub.ReturnConflictIssue = true;
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Equal(source.ExecutionId, h.Git.LastRetryOf?.ExecutionId);
+        Assert.Equal(source.FeatureBranch, h.Git.LastRetryOf?.FeatureBranch);
+        Assert.Null(h.Codex.InitialDirectory);
+    }
+
+    private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
+        "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
+        "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
+        "integration conflict", "integration-conflict", "preserved-head", "preserved implementation", EffectiveEffort: "high");
+
     private static CodexOutcome Success(string summary) => new("success", summary, [], false, null);
 
     private sealed class Harness : IDisposable
@@ -1454,6 +1678,8 @@ public sealed class WorkerV011Tests
         public bool CancelDuringClaim { get; set; }
         public bool ReturnDistinctIssues { get; set; }
         public bool ReturnRecoveryIssueOnFirstQuery { get; set; }
+        public bool ReturnConflictIssue { get; set; }
+        public int? ExcludeReadyIssue { get; set; }
         public string ReadyLabel { get; set; } = "ready";
         public string RecoveryLabel { get; set; } = "codex-integration-recovery";
         public IReadOnlyList<string> IssueLabels { get; set; } = [];
@@ -1479,6 +1705,8 @@ public sealed class WorkerV011Tests
                 ReturnRecoveryIssueOnFirstQuery = false;
                 return Task.FromResult<GitHubIssue?>(Issue with { Labels = IssueLabels });
             }
+            if (label == "codex-integration-conflict" && ReturnConflictIssue && !excludedIssueNumbers.Contains(Issue.Number))
+                return Task.FromResult<GitHubIssue?>(Issue with { Labels = [label] });
             if (label != ReadyLabel) return Task.FromResult<GitHubIssue?>(null);
             if (CancelDuringQuery)
             {
@@ -1491,7 +1719,7 @@ public sealed class WorkerV011Tests
                 {
                     var number = Issue.Number + (ReturnDistinctIssues ? _returned : 0);
                     _returned++;
-                    if (!excludedIssueNumbers.Contains(number))
+                    if (!excludedIssueNumbers.Contains(number) && number != ExcludeReadyIssue)
                         return Task.FromResult<GitHubIssue?>(Issue with { Number = number, Labels = IssueLabels });
                 }
             }
@@ -1547,10 +1775,15 @@ public sealed class WorkerV011Tests
         { Started++; LastExecutionId = executionId; LastResume = resume; LastRetryOf = retryOf; LastAttemptNumber = attemptNumber;
             var failure = FailIssueNumber is null || issue.Number == FailIssueNumber ? StartFailure : null;
             return failure is null ? Task.CompletedTask : Task.FromException(failure); }
+        public string? IntegrationBase { get; set; } = "current-main";
+        public string? RecoveryRejection { get; set; }
+        public Func<Task>? IntegrationAction { get; set; }
+        public Task<string?> GetIntegrationBaseAsync(CancellationToken ct) => Task.FromResult(IntegrationBase);
+        public Task<GitRecoveryInfo?> PreserveIntegrationConflictAsync(CancellationToken ct) => Task.FromResult(Recovery);
         public Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
-        { RecoveryStarted++; return Task.CompletedTask; }
+        { RecoveryStarted++; LastRetryOf = source; return Task.CompletedTask; }
         public Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
-            Task.FromResult<string?>(null);
+            Task.FromResult(RecoveryRejection);
         private int _verifications;
         public Func<CancellationToken, Task>? VerifyAfterValidation { get; set; }
         public Task VerifyCodexStateAsync(CancellationToken ct) =>
@@ -1561,16 +1794,17 @@ public sealed class WorkerV011Tests
             if (Recovery is null) Cleanups++;
             return Task.FromResult(Recovery);
         }
-        public Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+        public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
             Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
         {
+            if (IntegrationAction is not null) await IntegrationAction();
             Integrations++;
             BeforeIntegration?.Invoke();
-            if (IntegrationException is not null) return Task.FromException<GitIntegrationResult>(IntegrationException);
-            if (IntegrationFailure is not null) return Task.FromException<GitIntegrationResult>(IntegrationFailure);
-            return Task.FromResult(new GitIntegrationResult(true,
+            if (IntegrationException is not null) throw IntegrationException;
+            if (IntegrationFailure is not null) throw IntegrationFailure;
+            return new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
-            "0123456789abcdef0123456789abcdef01234567", "main", "completed/17"));
+            "0123456789abcdef0123456789abcdef01234567", "main", "completed/17");
         }
     }
 

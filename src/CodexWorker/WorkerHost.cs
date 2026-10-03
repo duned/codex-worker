@@ -130,7 +130,7 @@ public sealed class WorkerHost
                 foreach (var entry in await history.ReadAllAsync(ct))
                 {
                     if (entry.ServerExecutionId is null || entry.AssignmentId is null || entry.OwnershipGeneration is null ||
-                        entry.State is not ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")) continue;
+                        entry.State is not ("Completed" or "Blocked" or "Failed" or "IntegrationConflict" or "InfrastructureFailure" or "Cancelled")) continue;
                     // A shutdown interruption leaves the last Server stage/lease intact so
                     // expiry reconciliation can fence retries and retain uncertain integration.
                     if (IsShutdownInterruption(entry)) continue;
@@ -470,9 +470,20 @@ public sealed class WorkerHost
                         // The Server may accept the assignment before a cancelled request returns.
                         // Treat interruption here as uncertain so shutdown preserves that state for inspection.
 
+                        var integrationRecoveries = new List<CodexProvisioning.IntegrationRecoveryCandidate>();
+                        foreach (var candidate in runtimes.Where(candidate => projectCapacities.ContainsKey(ServerProjectId(candidate.Configuration.Project.Name))))
+                            integrationRecoveries.AddRange(await candidate.Worker.DiscoverManagedIntegrationRecoveriesAsync(
+                                ServerProjectId(candidate.Configuration.Project.Name), executionToken));
                         var assignmentResponse = await _registration.RequestAssignmentAsync(_global.Server,
                             !runtimeReadModel.Registry.WorkerDraining, _global.Worker.MaxParallelTasks - active.Count,
-                            projectCapacities, executionToken);
+                            projectCapacities, executionToken, integrationRecoveries.Take(128).ToArray());
+                        foreach (var rejection in assignmentResponse.IntegrationRecoveryRejections ?? new Dictionary<string, string>())
+                        {
+                            if (!Guid.TryParse(rejection.Key, out var sourceId)) continue;
+                            var candidate = integrationRecoveries.FirstOrDefault(item => item.WorkerExecutionId == rejection.Key);
+                            var owner = runtimes.FirstOrDefault(item => candidate?.ProjectId == ServerProjectId(item.Configuration.Project.Name));
+                            if (owner is not null) await owner.Worker.ReportIntegrationRecoveryRejectionAsync(sourceId, rejection.Value, executionToken);
+                        }
                         if (!assignmentResponse.HasWork && assignmentResponse.Assignment is null) { break; }
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
                             throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
@@ -826,7 +837,8 @@ public sealed class WorkerHost
             var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
             foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                          item.Repository == project.Configuration.Project.Repository &&
-                         (item.RecoveryState is "recoverable" or "integration-conflict" or "cleanup-pending" or "missing")))
+                         (item.RecoveryState is "recoverable" or "integration-conflict" or "cleanup-pending" or "missing") &&
+                         item.State != "IntegrationConflict" && item.IntegrationRecoveryClaim is null))
             {
                 var expired = RecoveryRetentionPolicy.IsExpired(entry, retention, DateTimeOffset.UtcNow);
                 var cleanupPending = entry.RecoveryState == "cleanup-pending";

@@ -83,8 +83,9 @@ public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
     string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
-public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities);
-public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment);
+public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
+public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment,
+    IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null);
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
     WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata, ExecutionLease? Lease = null);
 
@@ -863,7 +864,10 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     {
         if (request is null || !Printable(request.WorkerId, 128) || request.AvailableCapacity is < 0 or > 8 ||
             request.ProjectCapacities is null || request.ProjectCapacities.Count > 128 ||
-            request.ProjectCapacities.Any(p => !Printable(p.Key, 80) || p.Value is < 0 or > 8))
+            request.ProjectCapacities.Any(p => !Printable(p.Key, 80) || p.Value is < 0 or > 8) ||
+            request.IntegrationRecoveries is { Count: > 128 } || request.IntegrationRecoveries?.Any(item => item is null ||
+                !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
+                !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
         if (!request.WorkerEnabled || request.AvailableCapacity == 0 || request.ProjectCapacities.Count == 0 || request.ProjectCapacities.All(p => p.Value == 0))
             return new(false, null);
@@ -918,6 +922,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var workerCapabilities = heartbeat.Capabilities ?? registration?.Capabilities ?? [];
         var projects = await ReadProjectsByIdAsync(command, cancellationToken);
 
+        var recoveryRejections = await QueueIntegrationRecoveriesAsync(command, request, projects, cancellationToken);
         var issueReservations = new Dictionary<(string ProjectId, string WorkType, string WorkId), string>();
         command.Parameters.Clear();
         command.CommandText = "SELECT id, project_id, work_reference_json FROM execution_requests WHERE state IN ('Queued','Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain') ORDER BY queue_order;";
@@ -939,21 +944,47 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
 
         command.Parameters.Clear();
-        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc FROM execution_requests WHERE state = 'Queued' AND managed_eligibility_state!='blocked' ORDER BY queue_order;";
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, workspace_recovery FROM execution_requests WHERE state = 'Queued' AND managed_eligibility_state!='blocked' ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var queued = new List<(string Id, string ProjectId, WorkReference Work, string Created)>();
+        var queued = new List<(string Id, string ProjectId, WorkReference Work, string Created, string? WorkspaceRecovery)>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var projectId = reader.GetString(1);
             if (!request.ProjectCapacities.TryGetValue(projectId, out var projectCapacity) || projectCapacity <= 0) continue;
             queued.Add((reader.GetString(0), projectId,
                 JsonSerializer.Deserialize<WorkReference>(reader.GetString(2), ProjectJson) ?? throw new InvalidDataException("Stored work reference is invalid."),
-                reader.GetString(3)));
+                reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
         }
         await reader.DisposeAsync();
         (string Id, string ProjectId, WorkReference Work, string Created)? candidate = null;
+        IReadOnlyDictionary<string, string>? recoveryMetadata = null;
         foreach (var queuedItem in queued)
         {
+            command.Parameters.Clear();
+            command.CommandText = "SELECT worker_id, metadata_json FROM execution_metadata WHERE execution_id=$id AND state='IntegrationRecovery';";
+            command.Parameters.AddWithValue("$id", queuedItem.Id);
+            await using (var metadataReader = await command.ExecuteReaderAsync(cancellationToken))
+            {
+                if (await metadataReader.ReadAsync(cancellationToken))
+                {
+                    if (metadataReader.GetString(0) != request.WorkerId) continue;
+                    try { recoveryMetadata = JsonSerializer.Deserialize<Dictionary<string, string>>(metadataReader.GetString(1)); }
+                    catch (JsonException) { recoveryMetadata = null; }
+                }
+                else recoveryMetadata = null;
+            }
+            if (queuedItem.WorkspaceRecovery == "PreservedIntegrationImplementation" &&
+                (recoveryMetadata is null || !recoveryMetadata.TryGetValue("integrationRecoveryExecutionId", out var localId) ||
+                    !Guid.TryParse(localId, out _) || !recoveryMetadata.TryGetValue("originalServerExecutionId", out var originalId) ||
+                    !Guid.TryParse(originalId, out _) || !recoveryMetadata.ContainsKey("integrationBase")))
+            {
+                command.Parameters.Clear();
+                command.CommandText = "UPDATE execution_requests SET managed_eligibility_state='blocked', managed_eligibility_reasons_json=$reason WHERE id=$id AND state='Queued';";
+                command.Parameters.AddWithValue("$id", queuedItem.Id);
+                command.Parameters.AddWithValue("$reason", JsonSerializer.Serialize(new[] { "Preserved integration recovery ownership metadata is missing or corrupt; human reconciliation is required." }));
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                continue;
+            }
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
                 !candidateProject.Enabled ||
                 !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities).IsEligible) continue;
@@ -976,7 +1007,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (candidate is null)
         {
             await transaction.CommitAsync(cancellationToken);
-            return new(false, null);
+            return new(false, null, recoveryRejections);
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -991,7 +1022,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
         {
             await transaction.CommitAsync(cancellationToken);
-            return new(false, null);
+            return new(false, null, recoveryRejections);
         }
         command.Parameters.Clear();
         command.CommandText = "SELECT COALESCE(MAX(generation), 0) + 1 FROM execution_leases WHERE execution_id = $id;";
@@ -1013,9 +1044,94 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         var project = ToProject(projectReader.GetString(0), projectReader.GetString(1), projectReader.GetString(2));
         await projectReader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
-        var metadata = new Dictionary<string, string>(StringComparer.Ordinal) { ["assignedAtUtc"] = now.ToString("O") };
+        var metadata = recoveryMetadata is null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(recoveryMetadata, StringComparer.Ordinal);
+        metadata["assignedAtUtc"] = now.ToString("O");
         return new(true, new WorkAssignment(assignmentId, candidate.Value.Id, project, candidate.Value.Work, request.WorkerId, metadata,
-            new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active", _leaseRenewalIntervalSeconds)));
+            new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active", _leaseRenewalIntervalSeconds)), recoveryRejections);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> QueueIntegrationRecoveriesAsync(SqliteCommand command, WorkerAssignmentRequest request,
+        IReadOnlyDictionary<string, CentralProject> projects, CancellationToken ct)
+    {
+        var rejections = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var recovery in request.IntegrationRecoveries ?? [])
+        {
+            if (!request.ProjectCapacities.TryGetValue(recovery.ProjectId, out var capacity) || capacity <= 0 ||
+                !projects.TryGetValue(recovery.ProjectId, out var project) || !project.Enabled) continue;
+            command.Parameters.Clear();
+            // Server outcome and node ownership must independently corroborate the local candidate.
+            // Existing reservations include uncertain integration, so another Worker cannot take over its workspace.
+            command.CommandText = """
+                SELECT work_type, work_id, work_reference_json,
+                    (SELECT MAX(attempt_number) FROM execution_requests other WHERE other.project_id=source.project_id AND other.work_id=source.work_id)
+                FROM execution_requests source
+                WHERE id=$source AND project_id=$project AND assigned_worker_id=$worker AND worker_execution_id=$local
+                    AND state='Failed' AND failure_classification='IntegrationConflict' AND recoverable=1 AND recovery_state IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM execution_requests other WHERE other.project_id=source.project_id
+                        AND other.work_id=source.work_id AND (other.state IN ('Queued','Assigned','Running','Completed')
+                            OR other.recovery_state='LeaseExpiredUncertain'))
+                    AND NOT EXISTS (SELECT 1 FROM execution_metadata metadata WHERE metadata.state='IntegrationRecovery'
+                        AND CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationRecoveryExecutionId') END=$local
+                        AND CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationBase') END=$base)
+                """;
+            command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
+            command.Parameters.AddWithValue("$project", recovery.ProjectId);
+            command.Parameters.AddWithValue("$worker", request.WorkerId);
+            command.Parameters.AddWithValue("$local", recovery.WorkerExecutionId);
+            command.Parameters.AddWithValue("$base", recovery.IntegrationBase);
+            string type, workId, workJson;
+            int attempt;
+            await using (var reader = await command.ExecuteReaderAsync(ct))
+            {
+                if (!await reader.ReadAsync(ct))
+                {
+                    await reader.DisposeAsync();
+                    command.Parameters.Clear();
+                    command.CommandText = "SELECT state, assigned_worker_id, worker_execution_id, failure_classification, recoverable, recovery_state FROM execution_requests WHERE id=$source AND project_id=$project;";
+                    command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
+                    command.Parameters.AddWithValue("$project", recovery.ProjectId);
+                    await using var sourceReader = await command.ExecuteReaderAsync(ct);
+                    string? reason = null;
+                    if (!await sourceReader.ReadAsync(ct)) reason = "The original Server execution is missing for this project; reconcile Server ownership before recovery.";
+                    else if (sourceReader.IsDBNull(1) || sourceReader.GetString(1) != request.WorkerId ||
+                        sourceReader.IsDBNull(2) || sourceReader.GetString(2) != recovery.WorkerExecutionId)
+                        reason = "The original Server execution does not corroborate this Worker's local execution identity.";
+                    else if (sourceReader.GetString(0) != "Failed" || sourceReader.IsDBNull(3) || sourceReader.GetString(3) != "IntegrationConflict" ||
+                        !sourceReader.GetBoolean(4) || !sourceReader.IsDBNull(5))
+                        reason = "The original Server execution is not a verified recoverable integration conflict; inspect its outcome and lease reconciliation state.";
+                    if (reason is not null) rejections[recovery.WorkerExecutionId] = reason;
+                    continue;
+                }
+                type = reader.GetString(0); workId = reader.GetString(1); workJson = reader.GetString(2); attempt = reader.GetInt32(3) + 1;
+            }
+            var id = Guid.NewGuid().ToString("N");
+            var now = _timeProvider.GetUtcNow().ToString("O");
+            command.Parameters.Clear();
+            command.CommandText = """
+                INSERT INTO execution_requests (id,project_id,work_type,work_id,work_reference_json,created_at_utc,state,
+                    retry_of_execution_id,attempt_number,workspace_recovery)
+                VALUES ($id,$project,$type,$workId,$work,$now,'Queued',$source,$attempt,'PreservedIntegrationImplementation');
+                INSERT INTO execution_metadata (execution_id,worker_id,project_id,state,metadata_json,updated_at_utc)
+                VALUES ($id,$worker,$project,'IntegrationRecovery',$metadata,$now);
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$project", recovery.ProjectId);
+            command.Parameters.AddWithValue("$type", type);
+            command.Parameters.AddWithValue("$workId", workId);
+            command.Parameters.AddWithValue("$work", workJson);
+            command.Parameters.AddWithValue("$now", now);
+            command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
+            command.Parameters.AddWithValue("$attempt", attempt);
+            command.Parameters.AddWithValue("$worker", request.WorkerId);
+            command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["integrationRecoveryExecutionId"] = recovery.WorkerExecutionId,
+                ["integrationBase"] = recovery.IntegrationBase,
+                ["originalServerExecutionId"] = recovery.ServerExecutionId
+            }));
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        return rejections;
     }
 
     public async Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default)
@@ -1501,13 +1617,13 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
         command.Parameters.Clear();
-        command.CommandText = "SELECT r.id, r.project_id, r.work_type, r.work_id, r.work_reference_json, r.current_stage, r.integration_result, r.attempt_number FROM execution_requests r JOIN execution_leases l ON l.execution_id=r.id AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=r.id) WHERE l.state='Expired' AND r.state IN ('Assigned','Running') AND r.recovery_state IS NULL;";
-        var expired = new List<(string Id, string Project, string Type, string WorkId, string WorkJson, string? Stage, string? Integration, int Attempt)>();
+        command.CommandText = "SELECT r.id, r.project_id, r.work_type, r.work_id, r.work_reference_json, r.current_stage, r.integration_result, r.attempt_number, r.workspace_recovery FROM execution_requests r JOIN execution_leases l ON l.execution_id=r.id AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=r.id) WHERE l.state='Expired' AND r.state IN ('Assigned','Running') AND r.recovery_state IS NULL;";
+        var expired = new List<(string Id, string Project, string Type, string WorkId, string WorkJson, string? Stage, string? Integration, int Attempt, string? WorkspaceRecovery)>();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
-            while (await reader.ReadAsync(cancellationToken)) expired.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6), reader.GetInt32(7)));
+            while (await reader.ReadAsync(cancellationToken)) expired.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6), reader.GetInt32(7), reader.IsDBNull(8) ? null : reader.GetString(8)));
         foreach (var item in expired)
         {
-            var safe = item.Integration is null && (item.Stage is null or "Preparing" or "Codex" or "Validation");
+            var safe = item.WorkspaceRecovery != "PreservedIntegrationImplementation" && item.Integration is null && (item.Stage is null or "Preparing" or "Codex" or "Validation");
             command.Parameters.Clear();
             command.CommandText = "UPDATE execution_requests SET state='Failed', recovery_state=$recovery, recovery_reason=$reason, workspace_recovery='PreviousWorkerLocalStateUnknown' WHERE id=$id AND recovery_state IS NULL;";
             command.Parameters.AddWithValue("$recovery", safe ? "LeaseExpiredRequeued" : "LeaseExpiredUncertain");

@@ -17,6 +17,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     private readonly ConcurrentDictionary<int, byte> _activeIssues = new();
+    private IntegrationRecoveryCoordinator? _integrationRecovery;
+    private IntegrationRecoveryCoordinator IntegrationRecovery => LazyInitializer.EnsureInitialized(ref _integrationRecovery,
+        () => new IntegrationRecoveryCoordinator(config, github, git, telegram, _output, history, _repositoryGate,
+            _operationalLog, issueNumber => _activeIssues.ContainsKey(issueNumber)));
 
     public WorkerConfiguration Configuration => config;
 
@@ -25,7 +29,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (!File.Exists(config.Codex.InstructionsFile))
             throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
         await git.InitializeAsync(ct);
+        await ReconcileIntegrationRecoveryAsync(ct);
     }
+
+    public Task ReconcileIntegrationRecoveryAsync(CancellationToken ct) => IntegrationRecovery.ReconcileAsync(ct);
 
     /// <summary>Checks this project's queue once and processes at most one claimed Issue.</summary>
     public async Task<IssueProcessingResult?> ProcessOneAsync(CancellationToken ct)
@@ -38,22 +45,26 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
         if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
-        var recoveryExcluded = new HashSet<int>();
-        while (true)
+        foreach (var label in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
-            GitHubIssue? recoveryIssue;
-            try { recoveryIssue = await github.FindOldestReadyAsync(config.GitHub.IntegrationRecoveryLabel, recoveryExcluded, ct); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
-            if (recoveryIssue is null || !recoveryExcluded.Add(recoveryIssue.Number)) break;
-            if (recoveryIssue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true)
+            var recoveryExcluded = new HashSet<int>();
+            while (true)
             {
-                var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{recoveryIssue.Number} · explicit ready label takes precedence over integration recovery.";
-                _operationalLog(diagnostic);
-                continue;
+                if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
+                GitHubIssue? recoveryIssue;
+                try { recoveryIssue = await github.FindOldestReadyAsync(label, recoveryExcluded, ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
+                if (recoveryIssue is null || !recoveryExcluded.Add(recoveryIssue.Number)) break;
+                if (recoveryIssue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true)
+                {
+                    _operationalLog($"Scheduler · {config.Project.Name} · Issue #{recoveryIssue.Number} · explicit ready label takes precedence over integration recovery.");
+                    continue;
+                }
+                var recovery = await ClaimIntegrationRecoveryAsync(recoveryIssue, ct,
+                    explicitRecovery: label == config.GitHub.IntegrationRecoveryLabel);
+                if (recovery is not null) return recovery;
             }
-            var recovery = await ClaimIntegrationRecoveryAsync(recoveryIssue, ct);
-            if (recovery is not null) return recovery;
         }
         var excluded = new HashSet<int>();
         while (true)
@@ -68,7 +79,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    private async Task<Task<IssueProcessingResult?>?> ClaimIntegrationRecoveryAsync(GitHubIssue issue, CancellationToken ct)
+    private async Task<Task<IssueProcessingResult?>?> ClaimIntegrationRecoveryAsync(GitHubIssue issue, CancellationToken ct, bool explicitRecovery = true,
+        WorkerAssignmentContract? assignment = null)
     {
         var issueKey = issue.Number;
         if (!_activeIssues.TryAdd(issueKey, 0)) return null;
@@ -81,48 +93,119 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 entry.State == "IntegrationConflict" && entry.RecoveryState is (null or "integration-conflict"))
                 .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
             var source = prior.FirstOrDefault();
+            // Recovery attempts use their original worktree, not a workspace named for the new history row.
+            // A later implementation or completion supersedes older conflicts.
+            var latest = allHistory.Where(entry => entry.Project == config.Project.Name &&
+                entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)
+                .OrderByDescending(entry => entry.AttemptNumber).ThenByDescending(entry => entry.StartedAtUtc).FirstOrDefault();
+            if (source is not null && latest is not null && latest.ExecutionId != source.ExecutionId &&
+                latest.FeatureBranch != source.FeatureBranch) source = null;
             if (source is null)
             {
                 const string missingHistoryReason = "no recoverable integration-conflict execution history";
+                if (!explicitRecovery)
+                {
+                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, null, missingHistoryReason, ct);
+                    _activeIssues.TryRemove(issueKey, out _);
+                    return null;
+                }
                 var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · integration recovery rejected · {missingHistoryReason}.";
                 _operationalLog(diagnostic);
                 _output.Warning(diagnostic);
                 await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue,
                     missingHistoryReason, ct);
-                await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                if (explicitRecovery) await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
+            var lineage = new HashSet<Guid> { source.ExecutionId };
             while (source.RetryOfExecutionId is { } parentId)
             {
                 var parent = allHistory.FirstOrDefault(entry => entry.ExecutionId == parentId);
-                if (parent is null || parent.State != "IntegrationConflict" || parent.RecoveryState is not (null or "integration-conflict")) break;
+                if (parent is null || parent.Project != source.Project || parent.Repository != source.Repository ||
+                    parent.IssueNumber != source.IssueNumber || !lineage.Add(parent.ExecutionId))
+                {
+                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, source.ExecutionId,
+                        "preserved recovery lineage is missing, cyclic or inconsistent", ct);
+                    _activeIssues.TryRemove(issueKey, out _);
+                    return null;
+                }
+                // A normal implementation retry owns its own branch/worktree. Only integration
+                // recovery attempts share their parent's preserved branch and workspace.
+                if (parent.FeatureBranch != source.FeatureBranch) break;
+                if (parent.State != "IntegrationConflict" || parent.RecoveryState is not (null or "integration-conflict"))
+                {
+                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, source.ExecutionId,
+                        "the preserved workspace's original execution is no longer recoverable", ct);
+                    _activeIssues.TryRemove(issueKey, out _);
+                    return null;
+                }
                 source = parent;
             }
-            var rejectionReason = await git.ValidateIntegrationRecoveryAsync(source, ct);
+            if (source.IntegrationRecoveryClaim is not null)
+            {
+                _activeIssues.TryRemove(issueKey, out _);
+                return null;
+            }
+            if (assignment is not null && (assignment.Metadata["integrationRecoveryExecutionId"] != source.ExecutionId.ToString() ||
+                !assignment.Metadata.TryGetValue("originalServerExecutionId", out var originalServerId) || originalServerId != source.ServerExecutionId))
+                throw new WorkerInfrastructureException("Recovery assignment source differs from the preserved implementation.");
+            issue = issue with { Title = source.IssueTitle, Body = source.OriginalIssueBody ?? issue.Body };
+            string? integrationBase;
+            string? rejectionReason;
+            await _repositoryGate.WaitAsync(ct);
+            try
+            {
+                rejectionReason = await IntegrationRecovery.ValidateSourceAsync(source, ct);
+                integrationBase = rejectionReason is null ? await git.GetIntegrationBaseAsync(ct) : null;
+            }
+            finally { _repositoryGate.Release(); }
+            if (!explicitRecovery && source.IntegrationRecoveryAttemptBase == integrationBase && integrationBase is not null)
+            {
+                _activeIssues.TryRemove(issueKey, out _);
+                return null;
+            }
+            if (!explicitRecovery && integrationBase is null && rejectionReason is null)
+                rejectionReason = "the authoritative integration base could not be identified";
             if (rejectionReason is not null)
             {
+                if (!explicitRecovery)
+                {
+                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, source.ExecutionId, rejectionReason, ct);
+                    _activeIssues.TryRemove(issueKey, out _);
+                    return null;
+                }
                 var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution {source.ExecutionId} · integration recovery rejected · {FailureDiagnosticRedactor.Redact(rejectionReason, config.Environment.Variables.Values.ToArray())}.";
                 _operationalLog(diagnostic);
                 _output.Warning(diagnostic);
                 await telegram.IntegrationRecoveryRejectedAsync(config.Project.Name, config.Project.Repository, issue, rejectionReason, ct);
-                await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
+                if (explicitRecovery) await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, ct);
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
+            _operationalLog($"Integration recovery discovered · {config.Project.Name} · Issue #{issue.Number} · original execution {source.ExecutionId}");
             source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
             var execution = WorkerExecution.Create(config.Project, config.Git, issue,
                 retryOfExecutionId: source.ExecutionId, attemptNumber: allHistory.Where(entry =>
                     entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)
                     .Select(entry => entry.AttemptNumber).DefaultIfEmpty(0).Max() + 1,
-                featureBranchOverride: source.FeatureBranch, codexSettings: config.Codex, settingsSource: source);
-            await CreateHistoryAsync(execution, ct);
+                featureBranchOverride: source.FeatureBranch, codexSettings: config.Codex, settingsSource: source,
+                resumed: true, serverExecutionId: assignment?.ServerExecutionId, assignmentId: assignment?.AssignmentId,
+                ownershipGeneration: assignment?.Lease?.Generation);
+            if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
+                    CreateInitialEntry(execution), integrationBase ?? "explicit", explicitRecovery, ct))
+            {
+                _activeIssues.TryRemove(issueKey, out _);
+                return null;
+            }
             claimedExecution = execution;
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
+            _operationalLog($"Integration recovery claimed · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {source.ExecutionId}");
             _output.IssueStarted(config.Project.Name, issue, execution);
+            await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true);
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
@@ -143,6 +226,17 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
+    public Task<IReadOnlyList<CodexProvisioning.IntegrationRecoveryCandidate>> DiscoverManagedIntegrationRecoveriesAsync(
+        string projectId, CancellationToken ct) => IntegrationRecovery.DiscoverManagedAsync(projectId, ct);
+
+    public async Task ReportIntegrationRecoveryRejectionAsync(Guid sourceId, string reason, CancellationToken ct)
+    {
+        if (history is null) return;
+        var source = (await history.ReadAllAsync(ct)).FirstOrDefault(entry => entry.ExecutionId == sourceId &&
+            entry.Project == config.Project.Name && entry.Repository == config.Project.Repository);
+        if (source is not null) await IntegrationRecovery.ReportRejectedAsync(source.IssueNumber, source.ExecutionId, reason, ct);
+    }
+
     /// <summary>Executes a Server assignment through the same claim, history and ExecutionRunner pipeline as standalone work.</summary>
     public async Task<Task<IssueProcessingResult?>?> ClaimAssignedAsync(WorkerAssignmentContract assignment, CancellationToken ct)
     {
@@ -159,6 +253,14 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} does not identify a supported GitHub Issue.");
         var issue = await github.GetIssueAsync(issueNumber, ct)
             ?? throw new WorkerInfrastructureException($"Assigned GitHub Issue #{issueNumber} could not be found.");
+        if (assignment.Metadata.TryGetValue("integrationRecoveryExecutionId", out var recoveryId))
+        {
+            if (!Guid.TryParse(recoveryId, out var id) || history is null ||
+                !(await history.ReadAllAsync(ct)).Any(entry => entry.ExecutionId == id && entry.IssueNumber == issueNumber &&
+                    entry.Project == config.Project.Name && entry.Repository == config.Project.Repository))
+                throw new WorkerInfrastructureException("Recovery assignment does not match local preserved execution ownership.");
+            return await ClaimIntegrationRecoveryAsync(issue, ct, explicitRecovery: false, assignment: assignment);
+        }
         return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct);
     }
 
@@ -178,6 +280,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var allHistory = history is null ? Array.Empty<ExecutionHistoryEntry>() : (await history.ReadAllAsync(ct)).ToArray();
         var issueHistory = allHistory.Where(e => e.Project == config.Project.Name && e.Repository == config.Project.Repository && e.IssueNumber == issue.Number)
             .OrderByDescending(e => e.AttemptNumber).ThenByDescending(e => e.StartedAtUtc).ToArray();
+        if (issueHistory.Any(entry => entry.IntegrationRecoveryClaim is not null))
+        {
+            _activeIssues.TryRemove(issueKey, out _);
+            return null;
+        }
         var latest = issueHistory.FirstOrDefault();
         // Ready is an explicit request for new implementation after an integration conflict,
         // including older rows that recorded the conflict as a failed task.
@@ -302,6 +409,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 (await history.ReadAllAsync(CancellationToken.None)).FirstOrDefault(entry => entry.ExecutionId == execution.ExecutionId)
                 ?? CreateEntry(execution, report, null, null);
             await ReportServerAsync(finalEntry, execution.State, CancellationToken.None);
+            if (integrationRecovery && history is not null && retryOf is not null &&
+                finalEntry.CompletedAtUtc is not null && finalEntry.State == execution.State.ToString())
+            {
+                await history.FinishIntegrationRecoveryAsync(retryOf.ExecutionId, execution.ExecutionId, null, CancellationToken.None);
+                _operationalLog($"Integration recovery {(result.Kind == IssueOutcomeKind.Succeeded ? "completed" : "exhausted")} · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {retryOf.ExecutionId}");
+            }
             return reportedResult;
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
@@ -445,6 +558,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             if (!File.Exists(config.Codex.InstructionsFile))
                 throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
             await git.InitializeAsync(ct);
+            await ReconcileIntegrationRecoveryAsync(ct);
             safelyIdle = true;
             await _output.RunProgressAsync("Codex preflight", async () =>
             {
@@ -497,7 +611,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     }
 
     private Task CreateHistoryAsync(WorkerExecution execution, CancellationToken ct) =>
-        history is null ? Task.CompletedTask : history.CreateAsync(CreateEntry(execution, null, null, null), ct);
+        history is null ? Task.CompletedTask : history.CreateAsync(CreateInitialEntry(execution), ct);
+
+    private ExecutionHistoryEntry CreateInitialEntry(WorkerExecution execution) =>
+        CreateEntry(execution, null, null, null) with
+        {
+            OriginalIssueBody = FailureDiagnosticRedactor.Redact(execution.IssueBody, config.Environment.Variables.Values.ToArray())
+        };
 
     private Task<IssueProcessingResult> RunExecutionAsync(ExecutionContext context, CancellationToken ct)
     {
@@ -536,7 +656,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
     {
         if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
-        var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
+        var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.IntegrationConflict or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
         if (serverSettings is { Enabled: true } && entry.ServerExecutionId is not null && entry.OwnershipGeneration is null)
             throw new WorkerInfrastructureException("Managed execution is missing its ownership generation.");
         await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,

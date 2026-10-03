@@ -895,9 +895,14 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
                 var update = EligibilityUpdate(issue, assignment.Project.Repository,
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture));
-                if (issue?.IsEligible == true)
+                var recovery = assignment.Metadata.ContainsKey("integrationRecoveryExecutionId");
+                if (issue?.IsEligible == true || recovery && issue is not null &&
+                    issue.State.Equals("open", StringComparison.OrdinalIgnoreCase) &&
+                    (assignment.Project.IssueBlockedLabel is null || !issue.Labels.Contains(assignment.Project.IssueBlockedLabel, StringComparer.OrdinalIgnoreCase)) &&
+                    issue.BlockedBy.All(blocker => blocker.State.Equals("closed", StringComparison.OrdinalIgnoreCase)))
                 {
-                    await registry.UpdateManagedEligibilityAsync(assignment.ServerExecutionId, update, CancellationToken.None);
+                    await registry.UpdateManagedEligibilityAsync(assignment.ServerExecutionId,
+                        recovery ? new("eligible", [], _clock.GetUtcNow()) : update, CancellationToken.None);
                     return response;
                 }
                 await registry.RejectManagedAssignmentAsync(assignment.ServerExecutionId, assignment.AssignmentId,

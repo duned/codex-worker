@@ -32,6 +32,7 @@ public sealed class WorkerExecution
         Repository = repository;
         IssueNumber = issue.Number;
         IssueTitle = issue.Title;
+        IssueBody = issue.Body;
         BaseBranch = baseBranch;
         FeatureBranch = featureBranch;
         StartedAtUtc = startedAtUtc;
@@ -48,6 +49,7 @@ public sealed class WorkerExecution
     public string Repository { get; }
     public int IssueNumber { get; }
     public string IssueTitle { get; }
+    public string IssueBody { get; }
     public string BaseBranch { get; }
     public string FeatureBranch { get; }
     public DateTimeOffset StartedAtUtc { get; }

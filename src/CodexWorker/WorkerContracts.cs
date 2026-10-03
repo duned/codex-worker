@@ -51,6 +51,7 @@ public interface IGitRepository : IDisposable
         throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
     Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         Task.FromResult<string?>("recovery state invalid: this Git repository cannot verify preserved integration resources");
+    Task<string?> GetIntegrationBaseAsync(CancellationToken ct) => Task.FromResult<string?>(null);
     Task VerifyCodexStateAsync(CancellationToken ct);
     Task DiscardUncommittedIssueChangesAsync(CancellationToken ct);
     async Task<GitRecoveryInfo?> PreserveFailedIssueChangesAsync(CancellationToken ct)

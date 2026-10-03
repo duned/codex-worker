@@ -36,12 +36,15 @@ public sealed record ExecutionHistoryEntry(
     long? OwnershipGeneration = null,
     string? EffectiveModel = null,
     string? EffectiveEffort = null,
-    string? ReportingFailure = null);
+    string? ReportingFailure = null,
+    string? IntegrationRecoveryAttemptBase = null,
+    Guid? IntegrationRecoveryClaim = null,
+    string? OriginalIssueBody = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 8;
+    private const int CurrentSchemaVersion = 9;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -59,16 +62,22 @@ public sealed class ExecutionHistoryStore : IDisposable
     public async Task CreateAsync(ExecutionHistoryEntry entry, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
+        await InsertAsync(connection, null, entry, ct);
+    }
+
+    private static async Task InsertAsync(SqliteConnection connection, SqliteTransaction? transaction, ExecutionHistoryEntry entry, CancellationToken ct)
+    {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO executions (execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch,
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
                 repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
                 recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc,
-                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure)
+                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
                 $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus,
-                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure)
+                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody)
             """;
         Bind(command, entry);
         try { await command.ExecuteNonQueryAsync(ct); }
@@ -107,6 +116,52 @@ public sealed class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update execution history", ex); }
     }
 
+    /// <summary>Claims preserved implementation and creates its attempt in one durable transaction.
+    /// The base fingerprint survives completion and restart; only a changed base or explicit operator action re-arms it.</summary>
+    public async Task<bool> TryClaimIntegrationRecoveryAsync(ExecutionHistoryEntry source, ExecutionHistoryEntry attempt,
+        string integrationBase, bool explicitRecovery, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE executions SET integration_recovery_attempt_base=$base, integration_recovery_claim=$claim
+            WHERE execution_id=$id AND state='IntegrationConflict'
+                AND (recovery_state IS NULL OR recovery_state='integration-conflict')
+                AND integration_recovery_claim IS NULL
+                AND ($explicit=1 OR integration_recovery_attempt_base IS NULL OR integration_recovery_attempt_base!=$base)
+                AND NOT EXISTS (SELECT 1 FROM executions other WHERE other.project=executions.project
+                    AND other.repository=executions.repository AND other.issue_number=executions.issue_number
+                    AND other.execution_id!=executions.execution_id
+                    AND (other.completed_at_utc IS NULL OR other.state='Completed'))
+            """;
+        command.Parameters.AddWithValue("$id", source.ExecutionId.ToString());
+        command.Parameters.AddWithValue("$base", integrationBase);
+        command.Parameters.AddWithValue("$claim", attempt.ExecutionId.ToString());
+        command.Parameters.AddWithValue("$explicit", explicitRecovery);
+        if (await command.ExecuteNonQueryAsync(ct) != 1) return false;
+        await InsertAsync(connection, transaction, attempt, ct);
+        await transaction.CommitAsync(ct);
+        return true;
+    }
+
+    /// <summary>Releases only this attempt's ownership; its consumed base remains recorded.</summary>
+    public async Task FinishIntegrationRecoveryAsync(Guid sourceId, Guid attemptId, string? finalBase, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE executions SET integration_recovery_claim=NULL,
+                integration_recovery_attempt_base=COALESCE($base,integration_recovery_attempt_base)
+            WHERE execution_id=$id AND integration_recovery_claim=$claim
+            """;
+        command.Parameters.AddWithValue("$id", sourceId.ToString());
+        command.Parameters.AddWithValue("$claim", attemptId.ToString());
+        Add(command, "$base", finalBase);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     /// <summary>Updates recovery metadata without changing the durable execution outcome.</summary>
     public async Task UpdateRecoveryAsync(Guid executionId, string state, CancellationToken ct = default)
     {
@@ -140,15 +195,16 @@ public sealed class ExecutionHistoryStore : IDisposable
     }
 
     public async Task UpdateIntegrationRecoverySnapshotAsync(Guid executionId, string commit, string status,
-        DateTimeOffset expiresAtUtc, CancellationToken ct = default)
+        DateTimeOffset expiresAtUtc, CancellationToken ct = default, string? integrationBase = null)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE executions SET recovery_state='integration-conflict', recovery_base_commit=$commit, recovery_status=$status, recovery_expires_at_utc=$expires WHERE execution_id=$id";
+        command.CommandText = "UPDATE executions SET recovery_state='integration-conflict', recovery_base_commit=$commit, recovery_status=$status, recovery_expires_at_utc=$expires, integration_recovery_attempt_base=COALESCE($base,integration_recovery_attempt_base) WHERE execution_id=$id";
         command.Parameters.AddWithValue("$id", executionId.ToString());
         command.Parameters.AddWithValue("$commit", commit);
         command.Parameters.AddWithValue("$status", status);
         command.Parameters.AddWithValue("$expires", expiresAtUtc.ToString("O"));
+        Add(command, "$base", integrationBase);
         try
         {
             if (await command.ExecuteNonQueryAsync(ct) != 1)
@@ -161,7 +217,7 @@ public sealed class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure FROM executions ORDER BY started_at_utc";
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body FROM executions ORDER BY started_at_utc";
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -175,7 +231,8 @@ public sealed class ExecutionHistoryStore : IDisposable
                 NullableString(reader, 19), NullableString(reader, 20), NullableString(reader, 21),
                 reader.IsDBNull(22) ? null : Guid.Parse(reader.GetString(22)), reader.GetInt32(23), reader.GetBoolean(24), NullableDate(reader, 25),
                 NullableString(reader, 26), NullableString(reader, 27), reader.IsDBNull(28) ? null : reader.GetInt64(28),
-                NullableString(reader, 29), NullableString(reader, 30), NullableString(reader, 31)));
+                NullableString(reader, 29), NullableString(reader, 30), NullableString(reader, 31),
+                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34)));
         }
         return entries;
     }
@@ -276,6 +333,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 migration.CommandText = "ALTER TABLE executions ADD COLUMN reporting_failure TEXT NULL; PRAGMA user_version = 8;";
                 migration.ExecuteNonQuery();
             }
+            if (schemaVersion < 9)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN integration_recovery_attempt_base TEXT NULL; ALTER TABLE executions ADD COLUMN integration_recovery_claim TEXT NULL; ALTER TABLE executions ADD COLUMN original_issue_body TEXT NULL; PRAGMA user_version = 9;";
+                migration.ExecuteNonQuery();
+            }
             transaction.Commit();
         }
         catch (WorkerInfrastructureException) { throw; }
@@ -321,6 +385,9 @@ public sealed class ExecutionHistoryStore : IDisposable
         Add(command, "$effectiveModel", entry.EffectiveModel);
         Add(command, "$effectiveEffort", entry.EffectiveEffort);
         Add(command, "$reportingFailure", entry.ReportingFailure);
+        Add(command, "$recoveryAttemptBase", entry.IntegrationRecoveryAttemptBase);
+        Add(command, "$recoveryClaim", entry.IntegrationRecoveryClaim?.ToString());
+        Add(command, "$originalIssueBody", entry.OriginalIssueBody);
         command.Parameters.AddWithValue("$attempt", entry.AttemptNumber);
         command.Parameters.AddWithValue("$resumed", entry.Resumed);
     }

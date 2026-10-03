@@ -43,7 +43,7 @@ public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerI
     IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
-    IReadOnlyDictionary<string, int> ProjectCapacities);
+    IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
 public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null, string? Scope = null);
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
@@ -54,7 +54,8 @@ public sealed record ServerExecutionLeaseContract(string ExecutionId, string Wor
 public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,
     ServerWorkReferenceContract Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata,
     ServerExecutionLeaseContract? Lease = null);
-public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment);
+public sealed record WorkerAssignmentResponseContract(bool HasWork, WorkerAssignmentContract? Assignment,
+    IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null);
 public sealed record ProvisioningActionContract(string Id, string Type, string Name, string? Version = null, string Operation = "ensure",
     string? CredentialId = null, string? Scope = null);
 public sealed record ProvisioningPlanContract(string Id, string WorkerId, DateTimeOffset CreatedAtUtc, string State,
@@ -330,7 +331,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     }
 
     public async Task<WorkerAssignmentResponseContract> RequestAssignmentAsync(WorkerServerSettings settings, bool workerEnabled, int availableCapacity,
-        IReadOnlyDictionary<string, int> projectCapacities, CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, int> projectCapacities, CancellationToken cancellationToken,
+        IReadOnlyList<IntegrationRecoveryCandidate>? integrationRecoveries = null)
     {
         if (!settings.Enabled) throw new InvalidOperationException("Assignment requests require managed Server mode.");
         if (availableCapacity is < 0 or > 8 || projectCapacities is null || projectCapacities.Any(p => p.Value is < 0 or > 8))
@@ -346,7 +348,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             using var request = new HttpRequestMessage(HttpMethod.Post,
                 new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities));
+            request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities, integrationRecoveries));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Codex Server assignment request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
@@ -502,7 +504,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
                 entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
                 state == "Completed" ? "passed" : null,
-                state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState == "recoverable",
+                state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict",
                 Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation);
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
                 $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));

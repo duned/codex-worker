@@ -64,7 +64,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN reporting_failure; PRAGMA user_version = 7;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -85,7 +85,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN reporting_failure; PRAGMA user_version = 6;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -236,7 +236,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(8L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(9L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);
@@ -259,6 +259,54 @@ public sealed class ExecutionHistoryStoreTests
         var actual = Assert.Single(await reopened.ReadAllAsync());
         Assert.Equal("server-request-123", actual.ServerExecutionId);
         Assert.Equal("assignment-456", actual.AssignmentId);
+    }
+
+    [Fact]
+    public async Task IntegrationRecoveryClaimsAreAtomicAndBaseBudgetSurvivesRestart()
+    {
+        using var database = new TemporaryDatabase();
+        using var firstStore = new ExecutionHistoryStore(database.Path);
+        using var secondStore = new ExecutionHistoryStore(database.Path);
+        var source = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "IntegrationConflict", CompletedAtUtc = DateTimeOffset.UtcNow,
+            RecoveryState = "integration-conflict", RecoveryBaseCommit = "implementation"
+        };
+        await firstStore.CreateAsync(source);
+        var first = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { RetryOfExecutionId = source.ExecutionId, AttemptNumber = 2 };
+        var duplicate = first with { ExecutionId = Guid.NewGuid() };
+        var claims = await Task.WhenAll(firstStore.TryClaimIntegrationRecoveryAsync(source, first, "base-A", false),
+            secondStore.TryClaimIntegrationRecoveryAsync(source, duplicate, "base-A", false));
+        Assert.Single(claims, claimed => claimed);
+        var rows = await firstStore.ReadAllAsync();
+        Assert.Equal(2, rows.Count);
+        var claimedId = rows.Single(row => row.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim;
+        Assert.NotNull(claimedId);
+        // A different attempt cannot release the claim.
+        await secondStore.FinishIntegrationRecoveryAsync(source.ExecutionId, Guid.NewGuid(), null);
+        Assert.Equal(claimedId, (await firstStore.ReadAllAsync()).Single(row => row.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
+        var claimed = rows.Single(row => row.ExecutionId == claimedId);
+        await firstStore.UpdateAsync(claimed with { State = "IntegrationConflict", CompletedAtUtc = DateTimeOffset.UtcNow });
+        await firstStore.FinishIntegrationRecoveryAsync(source.ExecutionId, claimed.ExecutionId, "base-B");
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var next = first with { ExecutionId = Guid.NewGuid(), AttemptNumber = 3 };
+        Assert.False(await reopened.TryClaimIntegrationRecoveryAsync(source, next, "base-B", false));
+        Assert.True(await reopened.TryClaimIntegrationRecoveryAsync(source, next, "base-C", false));
+        Assert.Equal(3, (await reopened.ReadAllAsync()).Count);
+    }
+
+    [Fact]
+    public async Task FailedRecoveryHistoryInsertRollsBackClaimAndDoesNotConsumeBaseBudget()
+    {
+        using var database = new TemporaryDatabase();
+        using var store = new ExecutionHistoryStore(database.Path);
+        var source = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        { State = "IntegrationConflict", CompletedAtUtc = DateTimeOffset.UtcNow, RecoveryState = "integration-conflict" };
+        await store.CreateAsync(source);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => store.TryClaimIntegrationRecoveryAsync(source, source, "base-A", false));
+        var unchanged = Assert.Single(await store.ReadAllAsync());
+        Assert.Null(unchanged.IntegrationRecoveryClaim);
+        Assert.Null(unchanged.IntegrationRecoveryAttemptBase);
     }
 
     private static ExecutionHistoryEntry Entry(Guid id, DateTimeOffset started) => new(

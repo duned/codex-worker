@@ -338,6 +338,46 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(refreshed.ManagedEligibilityReasons!);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManagedIntegrationRecoveryUsesOwnedLeaseWithoutReadyAndRejectsBlockedOrClosedIssue(bool closed)
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "recovery-assignment.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("Recovery project", issueReadyLabel: "ready"));
+        var original = await registry.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "10")));
+        var workerId = Guid.NewGuid().ToString("N");
+        var localId = Guid.NewGuid().ToString();
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var initial = (await registry.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(initial);
+        await registry.ReportExecutionAsync(original.Id, new WorkerExecutionReport(workerId, initial.AssignmentId, localId,
+            "Failed", FailureClassification: "IntegrationConflict", Recoverable: true, Generation: initial.Lease!.Generation));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(10, labels: ["codex-integration-conflict"]) with { State = closed ? "CLOSED" : "OPEN" });
+        var service = new ServerGitHubAdministrationService(registry, read);
+        request = request with { IntegrationRecoveries = [new(project.Id, original.Id, localId, new string('a', 40))] };
+        var result = await service.RequestAssignmentAsync(request);
+        Assert.Equal(!closed, result.HasWork);
+        if (!closed)
+        {
+            Assert.NotNull(result.Assignment);
+            Assert.Equal(localId, result.Assignment.Metadata["integrationRecoveryExecutionId"]);
+            Assert.Equal(workerId, result.Assignment.Lease?.WorkerId);
+            Assert.Equal("Active", result.Assignment.Lease?.State);
+            Assert.Equal(original.Id, (await registry.GetExecutionAsync(result.Assignment.ServerExecutionId))?.RetryOfExecutionId);
+        }
+        else
+        {
+            Assert.Equal("blocked", (await registry.GetExecutionsAsync()).Single(entry => entry.Id != original.Id).ManagedEligibilityState);
+        }
+    }
+
     [Fact]
     public async Task AssignmentReadFailureReleasesReservationAndDoesNotReturnWork()
     {

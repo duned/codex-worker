@@ -1049,11 +1049,13 @@ public sealed class GitWorktreeTests
             Assert.Equal(string.Empty, await fixture.GitAt(workspace, "status", "--porcelain"));
             Assert.Null(await git.ValidateIntegrationRecoveryAsync(entry, CancellationToken.None));
 
-            // Explicit recovery reuses the valuable implementation and performs new bounded
-            // integration repairs even when no further rebase is necessary.
+            // Restart discovery uses only the conflict label. Later main work must survive
+            // recovery of the preserved implementation and semantic repair.
+            await fixture.AdvanceBaseAsync("later.txt", "later main work");
             codex.Exhausted = false;
-            github.RecoveryIssue = fixture.Issue;
-            var recovered = await worker.ProcessOneAsync(CancellationToken.None);
+            github.AutomaticConflictIssue = fixture.Issue;
+            var restartedWorker = new Worker(config, github, git, codex, validation, telegram, console, history);
+            var recovered = await restartedWorker.ProcessOneAsync(CancellationToken.None);
             Assert.NotNull(recovered);
             Assert.Equal(IssueOutcomeKind.Succeeded, recovered.Kind);
             Assert.Single(recovered.Report.ValidationRepairs);
@@ -1061,6 +1063,9 @@ public sealed class GitWorktreeTests
             Assert.Equal("Installed", await fixture.Git("show", "main:provider.txt"));
             Assert.Equal("installation", await fixture.Git("show", "main:status-implementation.txt"));
             Assert.Equal("B's unrelated work", await fixture.Git("show", "main:unrelated.txt"));
+            Assert.Equal("later main work", await fixture.Git("show", "main:later.txt"));
+            Assert.Contains("Validation after integration recovery", logs.ToString());
+            Assert.Contains(entry.ExecutionId.ToString(), recovered.Summary);
             Assert.Equal("integration-recovered", (await history.ReadAllAsync()).Single(row => row.ExecutionId == entry.ExecutionId).RecoveryState);
         }
         else
@@ -1383,12 +1388,18 @@ public sealed class GitWorktreeTests
         public List<(int Issue, string Label)> Labels { get; } = [];
         public List<(int Issue, string Body)> Comments { get; } = [];
         public GitHubIssue? RecoveryIssue { get; set; }
+        public GitHubIssue? AutomaticConflictIssue { get; set; }
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken)
         {
             if (label == "codex-integration-recovery" && RecoveryIssue is { } recovery)
             {
                 RecoveryIssue = null;
                 return Task.FromResult<GitHubIssue?>(recovery);
+            }
+            if (label == "codex-integration-conflict" && AutomaticConflictIssue is { } conflict)
+            {
+                AutomaticConflictIssue = null;
+                return Task.FromResult<GitHubIssue?>(conflict with { Labels = [label] });
             }
             return Task.FromResult<GitHubIssue?>(label == "ready" ? template with { Number = ++_number } : null);
         }

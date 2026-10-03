@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
     string? IntegrationBranch = null, string? CompletedBranch = null);
-public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary);
+public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary, string? IntegrationBase = null);
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
 public sealed record IntegrationRepairResult(bool Attempted, bool Completed);
@@ -237,6 +237,14 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not prepare Git checkout for Issue #{issue.Number}: {ex.Message}", ex); }
     }
 
+    public async Task<string?> GetIntegrationBaseAsync(CancellationToken ct)
+    {
+        await EnsureOriginAsync(ct);
+        await ValidateBranchRefAsync(settings.BaseBranch, ct);
+        await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
+        return (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
+    }
+
     public async Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
     {
         try
@@ -269,6 +277,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         try
         {
             source = NormalizeIntegrationRecoverySource(source);
+            if (source.BaseBranch != settings.BaseBranch || source.Repository != repository)
+                return "recovery state invalid: repository or integration branch differs from persisted execution configuration";
             if (source.State != "IntegrationConflict" || string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
                 return "recovery state invalid: implementation commit metadata is missing";
             await ValidateRecoveryWorkspaceAsync(Path.Combine(Path.GetFullPath(worktreeRoot), source.ExecutionId.ToString("N")), source, ct);
@@ -296,10 +306,21 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
         if (recovery.FeatureBranch != expectedBranch)
             throw new IssuePreparationRejectedException("Persisted recovery branch does not match its Issue identity.");
         if (!Directory.Exists(source)) throw new IssuePreparationRejectedException($"Recoverable execution workspace is missing: {source}");
+        if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+            throw new IssuePreparationRejectedException("Recovery workspace path is a link; refusing recovery.");
+        var top = (await GitAtAsync(source, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim();
+        if (!PathEquals(top, source)) throw new IssuePreparationRejectedException("Recovery workspace is not its own Git worktree.");
         var branch = (await GitAtAsync(source, ["branch", "--show-current"], ct)).StandardOutput.Trim();
         var head = (await GitAtAsync(source, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
         if (branch != recovery.FeatureBranch || head != recovery.RecoveryBaseCommit)
             throw new IssuePreparationRejectedException("Recoverable execution workspace does not match its persisted branch and base commit; refusing to resume it.");
+        foreach (var operation in new[] { "rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD" })
+        {
+            var gitPath = (await GitAtAsync(source, ["rev-parse", "--git-path", operation], ct)).StandardOutput.Trim();
+            var path = Path.GetFullPath(gitPath, source);
+            if (Directory.Exists(path) || File.Exists(path))
+                throw new IssuePreparationRejectedException("Recovery workspace has an unfinished Git operation; inspect it before recovery.");
+        }
         var status = (await GitAtAsync(source, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
         if (recovery.State == "IntegrationConflict" || recovery.RecoveryState == "integration-conflict" ||
             recovery.RecoveryState == "cleanup-pending" && recovery.RecoveryStatus?.StartsWith("Implementation commit ", StringComparison.Ordinal) == true)
@@ -460,7 +481,8 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             if (!string.IsNullOrWhiteSpace(status) || !string.IsNullOrWhiteSpace(unmerged))
                 throw new WorkerInfrastructureException("Integration recovery worktree is not clean after rebase recovery; preserving it for inspection.");
             return new GitRecoveryInfo(_featureBranch, head,
-                $"Implementation commit {head} retained in worker worktree {_executionId.Value:N}; integration recovery is available.");
+                $"Implementation commit {head} retained in worker worktree {_executionId.Value:N}; integration recovery is available.",
+                (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim());
         }
         catch (WorkerInfrastructureException) { throw; }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Could not safely preserve integration recovery: {ex.Message}", ex); }

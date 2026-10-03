@@ -31,7 +31,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     new IssueExecutionReport(null, [], HumanInput: metadataError));
             }
             if (context.IntegrationRecovery)
-                return await RunIntegrationRecoveryAsync(context, ct);
+                return await RunIntegrationRecoveryAsync(context, executionCodex, ct);
             await _repositoryGate.WaitAsync(ct);
             try
             {
@@ -222,17 +222,27 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         }
     }
 
-    private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, CancellationToken ct)
+    private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, ICodexExecutor executionCodex, CancellationToken ct)
     {
         var execution = context.Execution;
         var issue = context.Issue;
-        var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
         var source = context.RetryOf ?? throw new WorkerInfrastructureException("Integration recovery has no source execution history.");
         await _repositoryGate.WaitAsync(ct);
         try
         {
-            try { await git.StartIntegrationRecoveryAsync(source, ct); }
-            catch (Exception ex) when (ex is ProjectCheckoutDirtyException or IssuePreparationRejectedException && !ct.IsCancellationRequested)
+            try
+            {
+                output.Warning($"Reconciling preserved implementation with current {config.Git.BaseBranch} · original execution {source.ExecutionId}");
+                await git.StartIntegrationRecoveryAsync(source, ct);
+            }
+            catch (IssuePreparationRejectedException ex) when (!ct.IsCancellationRequested)
+            {
+                return new IssueProcessingResult(IssueOutcomeKind.IntegrationConflict,
+                    new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} requires inspection.", [],
+                        Failure: ex.Message, FailureCategory: "Integration recovery conflict", RecoveryBranch: source.FeatureBranch,
+                        WorkspacePreserved: false, SecretValues: config.Environment.Variables.Values.ToArray()));
+            }
+            catch (ProjectCheckoutDirtyException ex) when (!ct.IsCancellationRequested)
             {
                 throw new PreExecutionInfrastructureException(execution.Project, issue.Number, execution.ExecutionId,
                     $"Integration recovery preparation was rejected; the preserved execution was not changed: {ex.Message}", ex);
@@ -259,7 +269,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                         return resolved.Status == "success";
                     }, (details, token) => RepairIntegrationAsync(context, executionCodex, source.ImplementationSummary, repairs, details, token),
                     ct, token => EnsureIntegrationAuthorityAsync(execution, token)), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
-            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.", repairs, Integration: integration);
+            var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.\n\n{source.ImplementationSummary}", repairs, Integration: integration);
             if (history is not null) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded, report);
         }
@@ -268,7 +278,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             var recovery = await git.PreserveIntegrationConflictAsync(ct);
             if (history is not null && recovery is not null)
                 await history.UpdateIntegrationRecoverySnapshotAsync(source.ExecutionId, recovery.BaseCommit,
-                    recovery.StatusSummary, DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays), ct);
+                    recovery.StatusSummary, DateTimeOffset.UtcNow.AddDays(config.Worker.RecoveryRetentionDays), ct, recovery.IntegrationBase);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} did not complete.", repairs,
                 Failure: ex.Message, FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration recovery conflict", RecoveryBranch: recovery?.Branch,
                 WorkspacePreserved: recovery is not null, RetryAvailable: recovery is not null,
@@ -322,7 +332,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         List<ValidationRepairRecord> repairs, CancellationToken ct)
     {
         var integrationRepair = repairs.LastOrDefault(repair => repair.IntegrationRepair);
-        var stage = integrationRepair is null ? "Validation after rebase" : "Validation after integration repair";
+        var stage = integrationRepair is null ? (context.IntegrationRecovery ? "Validation after integration recovery" : "Validation after rebase") : "Validation after integration repair";
         var result = await output.RunProgressAsync(TaskLabel(context.Issue, stage, context.Execution),
             () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
             x => x.Succeeded ? (integrationRepair is null ? "passed" : "integration repair succeeded") : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);
