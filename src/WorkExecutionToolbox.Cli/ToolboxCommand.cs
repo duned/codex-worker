@@ -97,15 +97,7 @@ public static class ToolboxCommand
                 default:
                     var graph = await graphs.GetGraphAsync(command.Issue, cancellationToken: cancellationToken);
                     data = graph;
-                    if (graph is not null)
-                    {
-                        AddIssues(lines, "Issues", graph.Issues);
-                        foreach (var edge in graph.Edges)
-                            lines.Add(edge.Kind == IssueGraphEdgeKind.BlockedBy
-                                ? $"Issue {edge.FromIssueNumber} is blocked by Issue {edge.ToIssueNumber}{(edge.IsCycle ? " (cycle)" : "")}."
-                                : $"Issue {edge.FromIssueNumber} is parent of Issue {edge.ToIssueNumber}{(edge.IsCycle ? " (cycle)" : "")}.");
-                        lines.Add($"Depth truncated: {graph.IsDepthTruncated}; cycles detected: {graph.CycleDetected}.");
-                    }
+                    if (graph is not null && !json) lines.AddRange(IssueGraphTextRenderer.Render(graph));
                     break;
             }
             if (data is null)

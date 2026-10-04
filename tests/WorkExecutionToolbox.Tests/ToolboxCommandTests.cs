@@ -3,7 +3,7 @@ using WorkExecutionToolbox.Cli;
 
 namespace WorkExecutionToolbox.Tests;
 
-public sealed class ToolboxCommandTests
+public sealed partial class ToolboxCommandTests
 {
     [Theory]
     [InlineData("parent set 9 3", "parent", true)]
@@ -97,10 +97,11 @@ public sealed class ToolboxCommandTests
     public async Task HumanGraphShowsDirectionAndInspectionLimits()
     {
         var run = await RunAsync(["graph", "9", "--repo", "owner/repo"], new FakeProvider());
-        Assert.Contains("Issue 9 is blocked by Issue 3", run.Output);
-        Assert.Contains("Issue 3 is parent of Issue 9", run.Output);
-        Assert.Contains("Depth truncated: True", run.Output);
-        Assert.Contains("cycles detected: False", run.Output);
+        Assert.Contains("#3 [open] Title", run.Output);
+        Assert.Contains("└── #9 [open] Title  (root)", run.Output);
+        Assert.Contains("    └── blocked by #3", run.Output);
+        Assert.Contains("Depth truncated:", run.Output);
+        Assert.DoesNotContain("cycle", run.Output);
     }
 
     [Fact]
@@ -217,6 +218,7 @@ public sealed class ToolboxCommandTests
         public bool Missing { get; init; }
         public Exception? Failure { get; init; }
         public Action? OnCall { get; init; }
+        public IssueGraph? Graph { get; init; }
 
         private void Called(string operation, IssueReference issue, CancellationToken token)
         {
@@ -251,7 +253,7 @@ public sealed class ToolboxCommandTests
         public Task<IssueGraph?> GetGraphAsync(IssueReference root, IssueGraphOptions? options = null, CancellationToken cancellationToken = default)
         {
             Called("graph", root, cancellationToken);
-            return Task.FromResult(Missing ? null : new IssueGraph(root, [Summary(root), Summary(new(root.Repository, 3))],
+            return Task.FromResult(Missing ? null : Graph ?? new IssueGraph(root, [Summary(root), Summary(new(root.Repository, 3))],
                 [new(9, 3, IssueGraphEdgeKind.BlockedBy), new(3, 9, IssueGraphEdgeKind.ParentChild)], true, false));
         }
         public Task<IssueSummary?> GetIssueAsync(IssueReference issue, CancellationToken cancellationToken = default) => throw new NotSupportedException();

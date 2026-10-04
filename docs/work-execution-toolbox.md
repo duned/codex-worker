@@ -114,6 +114,18 @@ labels, comments or Issue state changes. `children` selects the children from th
 library's direct relationship inspection. `graph` uses the library's default
 bounded traversal and displays depth truncation and detected cycles.
 
+Human `graph` output renders parent/child links as hierarchy trees, with Issue
+number, state and title at each node. The requested Issue is marked `(root)`;
+its topmost available ancestor starts the first tree. Children and compact
+`blocked by #N, #M` annotations are ordered by Issue number. A parent is never
+implicitly a blocker, and dependencies are not repeated as inverse blocking edges.
+Other discovered Issues (including dependency-only prerequisites and dependents)
+appear under `Related branches`, with hierarchy roots first, then any remaining
+cyclic branches, in numeric order. Titles appear once; shared hierarchy nodes use
+numbered references. Hierarchy cycle references stop expansion, dependency cycle
+edges are marked in annotations, and depth truncation is reported for the graph
+as a whole. `--json` retains the versioned node/edge graph contract and directions.
+
 Options may appear anywhere. `--help` / `-h` requires no credentials or repository.
 Ctrl+C cancels pending work. HTTP requests have a 60-second timeout. After a failed,
 partial or cancelled write, read `relationships` before retrying: a write may have
