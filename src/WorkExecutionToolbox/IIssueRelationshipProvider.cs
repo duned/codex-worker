@@ -18,10 +18,10 @@ public interface IIssueRelationshipProvider : IIssueProvider
     Task<IssueRelationships?> GetRelationshipsAsync(IssueReference issue, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sets or replaces a child's parent; null clears it. Numbers are in the child's repository.
-    /// Reject self-links and preflight visibility before writing. Preview performs no writes.
-    /// An already satisfied request returns Unchanged. Report Partial if replacement fails
-    /// after removing the old parent, rather than hiding the completed mutation.
+    /// Sets a child's parent; null clears it. Numbers are in the child's repository.
+    /// Reject self-links and cycles and preflight visibility before writing. Preview performs no writes.
+    /// An already satisfied request returns Unchanged. A different existing parent returns Conflict;
+    /// callers must explicitly clear it before setting a new parent. Verify writes by reading back.
     /// </summary>
     Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default);
 

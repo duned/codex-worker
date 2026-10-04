@@ -55,12 +55,13 @@ public enum RelationshipChangeStatus
     Unchanged,
     Preview,
     Failed,
-    Partial
+    Partial,
+    Conflict
 }
 
 /// <summary>
-/// Partial means a mutation occurred before the remaining operation failed (for example,
-/// removing an old parent before assigning a new one). Refresh before retrying.
+/// Partial means a mutation occurred before the remaining operation failed. Refresh before retrying.
+/// Conflict requires an explicit caller decision; parent operations never replace a different parent.
 /// Diagnostics must be bounded, actionable and free of credentials or raw HTTP responses.
 /// </summary>
 public sealed record RelationshipChangeResult(RelationshipChangeStatus Status, string? Diagnostic = null);
