@@ -11,9 +11,12 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
 public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed }
+[JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
+public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions }
 
 /// <summary>Safe, bounded failure context. It contains no process output or caller-controlled text.</summary>
-public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null)
+public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null,
+    ProvisioningProviderStep ProviderStep = ProvisioningProviderStep.Unknown)
 {
     public string Description => Code switch
     {
@@ -27,10 +30,23 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.RepositoryAccessFailed => "Git could not read the requested repository. Check the repository identifier, network access and node credentials.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
         _ => "Provisioning failed."
+    } + (ProviderStep is ProvisioningProviderStep.Unknown ? string.Empty : $" Provider step: {ProviderStepDescription}.");
+
+    private string ProviderStepDescription => ProviderStep switch
+    {
+        ProvisioningProviderStep.AptIndexRefresh => "refresh apt package indexes",
+        ProvisioningProviderStep.AptRuntimeInstall => "install the Node.js and npm runtime",
+        ProvisioningProviderStep.AptPackageInstall => "install the managed apt package",
+        ProvisioningProviderStep.AptPackageRemoval => "remove the managed apt package",
+        ProvisioningProviderStep.NpmPackageInstall => "install @openai/codex with npm",
+        ProvisioningProviderStep.NpmPackageRemoval => "remove @openai/codex with npm",
+        ProvisioningProviderStep.ExecutablePermissions => "set managed tool permissions",
+        _ => "run the managed provider command"
     };
 
     public bool IsValid => Enum.IsDefined(Code) && (ProcessExitCode is null or >= 0) &&
-        (Code == ProvisioningFailureCode.ProcessExited || ProcessExitCode is null);
+        Enum.IsDefined(ProviderStep) && (Code == ProvisioningFailureCode.ProcessExited || ProcessExitCode is null) &&
+        (Code == ProvisioningFailureCode.ProcessExited || ProviderStep == ProvisioningProviderStep.Unknown);
 }
 
 /// <summary>Bounded process result. StandardError is transient and used only to classify known failures.</summary>
@@ -122,7 +138,7 @@ public sealed class NodeProvisioningCommandExecutor
         _supportsApt = supportsApt ?? SupportsPackageProvisioning;
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
         _login = login ?? CodexDeviceLogin.RunAsync;
-        _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/npm"));
+        _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/node") && File.Exists("/usr/bin/npm"));
     }
 
     public static bool SupportsPackageProvisioning() => OperatingSystem.IsLinux() && File.Exists("/etc/debian_version");
@@ -196,11 +212,17 @@ public sealed class NodeProvisioningCommandExecutor
                     return new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
                 }
                 ProvisioningProcessResult? processResult = null;
-                foreach (var step in ToolProvisioningProviders.Plan(request.CapabilityId, request.Action))
+                var failedProviderStep = ProvisioningProviderStep.Unknown;
+                foreach (var step in ToolProvisioningProviders.Plan(request.CapabilityId, request.Action,
+                    request.CapabilityId == "codex-cli" && _npmAvailable()))
                 {
                     processResult = await _run(_isRoot() ? step.Executable : "/usr/bin/sudo",
                         _isRoot() ? step.Arguments : ["-n", step.Executable, .. step.Arguments], timeout.Token);
-                    if (processResult.ExitCode != 0) break;
+                    if (processResult.ExitCode != 0)
+                    {
+                        failedProviderStep = step.FailureStep;
+                        break;
+                    }
                 }
                 var states = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
                 refreshed = true;
@@ -212,7 +234,8 @@ public sealed class NodeProvisioningCommandExecutor
                 return processResult?.ExitCode == 0 && observedState.Installation == expected && observedState.Health != CapabilityHealth.Error
                     ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
                     : processResult is { ExitCode: not 0 } ? Failed(Classify(processResult),
-                        Classify(processResult) == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null)
+                        Classify(processResult) == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null,
+                        Classify(processResult) == ProvisioningFailureCode.ProcessExited ? failedProviderStep : ProvisioningProviderStep.Unknown)
                         : Failed(ProvisioningFailureCode.VerificationFailed);
             }
             else
@@ -265,9 +288,10 @@ public sealed class NodeProvisioningCommandExecutor
         }
     }
 
-    private static ProvisioningCommandReport Failed(ProvisioningFailureCode code, int? exitCode = null) =>
+    private static ProvisioningCommandReport Failed(ProvisioningFailureCode code, int? exitCode = null,
+        ProvisioningProviderStep providerStep = ProvisioningProviderStep.Unknown) =>
         new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed,
-            FailureDetail: new ProvisioningFailureDetail(code, exitCode));
+            FailureDetail: new ProvisioningFailureDetail(code, exitCode, providerStep));
 
     private static ProvisioningFailureCode Classify(ProvisioningProcessResult result)
     {

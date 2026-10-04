@@ -2,7 +2,8 @@ namespace CodexProvisioning;
 
 using System.Text.RegularExpressions;
 
-internal sealed record ToolProvisioningStep(string Executable, IReadOnlyList<string> Arguments);
+internal sealed record ToolProvisioningStep(string Executable, IReadOnlyList<string> Arguments,
+    ProvisioningProviderStep FailureStep = ProvisioningProviderStep.Unknown);
 
 /// <summary>Local product policy, never caller-supplied packages, paths or shell commands.</summary>
 internal static class ToolProvisioningProviders
@@ -57,12 +58,17 @@ internal static class ToolProvisioningProviders
         : id == "codex-cli" ? new("/usr/bin/npm", ["view", "@openai/codex@latest", "version", "--global",
             "--registry", NpmRegistry, "--userconfig", "/dev/null", "--globalconfig", "/dev/null"]) : throw new InvalidOperationException("Unsupported tool provider.");
 
-    internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action)
+    internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action,
+        bool npmAvailable = false)
     {
         var remove = action == ProvisioningCommandAction.Uninstall;
         if (AptPackage(id) is { } package)
-            return remove ? [Apt("remove", "-y", package)] :
-                [Apt("update"), new("/usr/bin/apt-get", ["install", "-y", "--no-install-recommends", package, .. id == "git" ? new[] { "openssh-client" } : Array.Empty<string>()])];
+            return remove ? [Apt("remove", ProvisioningProviderStep.AptPackageRemoval, "-y", package)] :
+                [Apt("update", ProvisioningProviderStep.AptIndexRefresh),
+                    Apt("install", ProvisioningProviderStep.AptPackageInstall,
+                        id == "git"
+                            ? ["-y", "--no-install-recommends", package, "openssh-client"]
+                            : ["-y", "--no-install-recommends", package])];
         if (id != "codex-cli") throw new InvalidOperationException("Unsupported tool provider.");
         // Use the stable official npm channel, a system prefix and private product cache.
         // No nvm, shell initialization, operator HOME, npmrc, purge or autoremove.
@@ -70,13 +76,24 @@ internal static class ToolProvisioningProviders
             [remove ? "uninstall" : "install", "--global", "--prefix", "/usr/local",
                 "--registry", NpmRegistry, "--userconfig", "/dev/null", "--globalconfig", "/dev/null",
                 "--cache", "/var/cache/codex-provisioning/npm", "--no-audit", "--no-fund",
-                remove ? "@openai/codex" : "@openai/codex@latest"]);
-        return remove ? [npm] : [Apt("update"), Apt("install", "-y", "--no-install-recommends", "nodejs", "npm"), npm,
-            // Packaged services use umask 077. Make only the tool and its standard
-            // system parent directories traversable by the effective service account.
-            new("/usr/bin/chmod", ["a+rx", "/usr/local/bin", "/usr/local/lib", "/usr/local/lib/node_modules", "/usr/local/lib/node_modules/@openai"]),
-            new("/usr/bin/chmod", ["-R", "a+rX", "/usr/local/lib/node_modules/@openai/codex"])];
+                remove ? "@openai/codex" : "@openai/codex@latest"],
+            remove ? ProvisioningProviderStep.NpmPackageRemoval : ProvisioningProviderStep.NpmPackageInstall);
+        if (remove) return [npm];
+        var steps = new List<ToolProvisioningStep>();
+        if (!npmAvailable)
+        {
+            steps.Add(Apt("update", ProvisioningProviderStep.AptIndexRefresh));
+            steps.Add(Apt("install", ProvisioningProviderStep.AptRuntimeInstall,
+                "-y", "--no-install-recommends", "nodejs", "npm"));
+        }
+        steps.Add(npm);
+        // Packaged services use umask 077. Make only the tool and its standard
+        // system parent directories traversable by the effective service account.
+        steps.Add(new("/usr/bin/chmod", ["a+rx", "/usr/local/bin", "/usr/local/lib", "/usr/local/lib/node_modules", "/usr/local/lib/node_modules/@openai"], ProvisioningProviderStep.ExecutablePermissions));
+        steps.Add(new("/usr/bin/chmod", ["-R", "a+rX", "/usr/local/lib/node_modules/@openai/codex"], ProvisioningProviderStep.ExecutablePermissions));
+        return steps;
     }
 
-    private static ToolProvisioningStep Apt(params string[] arguments) => new("/usr/bin/apt-get", arguments);
+    private static ToolProvisioningStep Apt(string operation, ProvisioningProviderStep failureStep, params string[] arguments) =>
+        new("/usr/bin/apt-get", [operation, .. arguments], failureStep);
 }

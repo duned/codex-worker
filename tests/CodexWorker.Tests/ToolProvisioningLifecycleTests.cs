@@ -143,7 +143,73 @@ public sealed class ToolProvisioningLifecycleTests
         if (id == "codex-cli")
         {
             Assert.Contains(calls, call => call.Tool == "/usr/bin/npm" && call.Args.Contains("@openai/codex@latest") && call.Args.Contains("/usr/local"));
-            Assert.Contains(calls, call => call.Tool == "/usr/bin/apt-get" && call.Args.Contains("nodejs") && call.Args.Contains("npm"));
+            Assert.DoesNotContain(calls, call => call.Tool == "/usr/bin/apt-get");
         }
+    }
+
+    [Fact]
+    public async Task CodexInstallUsesAvailableNpmAndLeavesAuthenticationRequired()
+    {
+        var installed = false;
+        var discovery = new NodeCapabilityDiscovery((tool, args, _) =>
+        {
+            if ((tool == CodexServiceEnvironment.Executable || tool == "/usr/local/bin/codex") && args[0] == "--version")
+                return installed ? Task.FromResult((0, "codex 0.160.0")) : Task.FromException<(int, string)>(new FileNotFoundException());
+            if (tool == "/usr/bin/npm" && args[0] == "view") return Task.FromResult((0, "0.160.0"));
+            return Task.FromResult((args[0] == "login" ? 1 : 0, ""));
+        });
+        var calls = new List<(string Tool, IReadOnlyList<string> Args)>();
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
+            isRoot: () => true, npmAvailable: () => true,
+            processRunner: (tool, args, _) =>
+            {
+                calls.Add((tool, args));
+                if (tool == "/usr/bin/npm" && args[0] == "install") installed = true;
+                if (tool == "/usr/bin/apt-get")
+                    return Task.FromResult(new ProvisioningProcessResult(1, "apt index service unavailable"));
+                return Task.FromResult(new ProvisioningProcessResult(0));
+            });
+        var report = await Execute(executor, ProvisioningCommandAction.Install);
+
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, report.Status);
+        Assert.DoesNotContain(calls, call => call.Tool == "/usr/bin/apt-get");
+        Assert.Contains(calls, call => call.Tool == "/usr/bin/npm" && call.Args.Contains("@openai/codex@latest"));
+        var state = Assert.Single(await discovery.GetAsync(), item => item.Id == "codex-cli");
+        Assert.Equal(InstallationState.Installed, state.Installation);
+        Assert.Equal(RequirementState.Required, state.Authentication);
+        Assert.Equal(["authentication-required"], CapabilityCatalog.Evaluate(
+            CapabilityCatalog.Definitions.Single(item => item.Id == "codex-cli"), state).BlockingReasons);
+    }
+
+    [Fact]
+    public async Task CodexInstallerFailureNamesProviderStepWithoutReturningOutput()
+    {
+        var discovery = new NodeCapabilityDiscovery((_, args, _) => args[0] == "--version"
+            ? Task.FromException<(int, string)>(new FileNotFoundException())
+            : Task.FromResult((1, "")));
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
+            isRoot: () => true, npmAvailable: () => true,
+            processRunner: (_, args, _) => Task.FromResult(args[0] == "install"
+                ? new ProvisioningProcessResult(1, "npm ERR! authToken=private-token registry refused package")
+                : new ProvisioningProcessResult(0)));
+
+        var report = await Execute(executor, ProvisioningCommandAction.Install);
+
+        Assert.Equal(ProvisioningFailureCode.ProcessExited, report.FailureDetail?.Code);
+        Assert.Equal(ProvisioningProviderStep.NpmPackageInstall, report.FailureDetail?.ProviderStep);
+        Assert.Contains("install @openai/codex with npm", report.FailureDetail?.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-token", report.FailureDetail?.Description, StringComparison.Ordinal);
+        var state = Assert.Single(await discovery.GetAsync(), item => item.Id == "codex-cli");
+        Assert.Equal(InstallationState.Missing, state.Installation);
+    }
+
+    private static async Task<ProvisioningCommandReport> Execute(NodeProvisioningCommandExecutor executor,
+        ProvisioningCommandAction action)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var command = new ProvisioningCommand(Guid.NewGuid().ToString("N"),
+            new("server", "codex-cli", action, AllowElevation: true), now,
+            ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing, now, now.AddMinutes(2));
+        return await executor.ExecuteAsync(command, permitted: true);
     }
 }
