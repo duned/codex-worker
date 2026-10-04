@@ -1,15 +1,19 @@
 namespace WorkExecutionToolbox;
 
 /// <summary>
-/// Provider-neutral Issue reads and initial relationship operations. Hosts construct providers
+/// Provider-neutral Issue reads. Hosts construct providers
 /// with their own HTTP and authentication dependencies. Implementations resolve internal IDs,
 /// validate provider-specific repository rules, and propagate cancellation; no CLI is required.
 /// </summary>
-public interface IIssueRelationshipProvider
+public interface IIssueProvider
 {
     /// <summary>Returns null when the Issue is missing or not visible.</summary>
     Task<IssueSummary?> GetIssueAsync(IssueReference issue, CancellationToken cancellationToken = default);
+}
 
+/// <summary>Issue reads and initial relationship operations using repository-scoped human numbers.</summary>
+public interface IIssueRelationshipProvider : IIssueProvider
+{
     /// <summary>Returns complete relationships, or null when the Issue is missing or not visible.</summary>
     Task<IssueRelationships?> GetRelationshipsAsync(IssueReference issue, CancellationToken cancellationToken = default);
 

@@ -18,5 +18,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Shared/CodexProvisioning.csproj" />
+    <ProjectReference Include="../WorkExecutionToolbox/WorkExecutionToolbox.csproj" />
   </ItemGroup>
 </Project>
