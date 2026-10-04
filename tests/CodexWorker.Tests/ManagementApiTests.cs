@@ -34,7 +34,16 @@ public sealed class ManagementApiTests
             Assert.Equal("[]", await dryRun.Content.ReadAsStringAsync());
             using var undrained = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.Conflict, undrained.StatusCode);
+            using var branchTooBroad = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
+                new CompletedBranchCleanupRequest(directory, 30, Limit: 101));
+            Assert.Equal(HttpStatusCode.BadRequest, branchTooBroad.StatusCode);
+            using var branchUndrained = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
+                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, branchUndrained.StatusCode);
             model.Registry.DrainWorker();
+            using var branchStarting = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
+                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, branchStarting.StatusCode);
             using var starting = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.Conflict, starting.StatusCode);
             model.State = "drained";

@@ -25,7 +25,7 @@ Developer and local Worker operations:
     show ID       Show an exact execution
     show --issue NUMBER  Show all known attempts, grouped by project/repository
   execution inspect ID [--json]  Inspect retained resources through the Worker API
-  maintenance completed-branches --older-than DAYS [--apply]
+  maintenance completed-branches --older-than DAYS [--limit 1..100] [--apply] [--json]
                   Preview or prune integrated archives for this source checkout
   execution cleanup ID | --issue NUMBER | --stale [--limit 1..100] [--apply] [--json]
                   Dry-run by default; apply requires a completed Worker drain
@@ -790,12 +790,14 @@ except (ValueError, KeyError, TypeError):
 }
 
 maintenance_command() {
-  [[ ${1:-} == completed-branches ]] || { error 'usage: cw maintenance completed-branches --older-than DAYS [--apply]'; return 2; }
+  [[ ${1:-} == completed-branches ]] || { error 'usage: cw maintenance completed-branches --older-than DAYS [--limit 1..100] [--apply] [--json]'; return 2; }
   shift
-  local days='' apply=false response payload
+  local days='' apply=false limit=20 json=false response payload result
   while (($#)); do
     case $1 in
       --older-than) [[ $# -ge 2 && $2 =~ ^[0-9]+$ ]] || { error '--older-than requires days (1-36500)'; return 2; }; days=$2; shift 2 ;;
+      --limit) [[ $# -ge 2 && $2 =~ ^[1-9][0-9]{0,2}$ ]] && ((10#$2 <= 100)) || { error '--limit requires 1..100'; return 2; }; limit=$2; shift 2 ;;
+      --json) json=true; shift ;;
       --apply) apply=true; shift ;;
       *) error "unknown maintenance option: $1"; return 2 ;;
     esac
@@ -803,18 +805,27 @@ maintenance_command() {
   [[ -n $days && ${#days} -le 5 ]] && ((10#$days >= 1 && 10#$days <= 36500)) || { error '--older-than requires days (1-36500)'; return 2; }
   need_command curl || return 1
   need_command python3 || return 1
-  payload=$(python3 -c 'import json,sys; print(json.dumps({"repositoryDirectory":sys.argv[1],"olderThanDays":int(sys.argv[2]),"apply":sys.argv[3]=="true"}))' "$REPO_ROOT" "$days" "$apply")
-  response=$(curl --fail --silent --show-error --max-time 600 -H 'Content-Type: application/json' --data "$payload" "${worker_api_url%/}/api/maintenance/completed-branches") || {
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"repositoryDirectory":sys.argv[1],"olderThanDays":int(sys.argv[2]),"apply":sys.argv[3]=="true","limit":int(sys.argv[4])}))' "$REPO_ROOT" "$days" "$apply" "$limit")
+  response=$(curl --fail-with-body --silent --show-error --max-time 600 -H 'Content-Type: application/json' --data "$payload" "${worker_api_url%/}/api/maintenance/completed-branches") || {
+    [[ -z ${response:-} ]] || printf '%s\n' "$response" >&2
     error 'Worker maintenance request failed; inspect Worker/repository state before retrying'; return 1
   }
   python3 -c 'import json,sys
 try:
     r=json.load(sys.stdin)
-    print("{}: {} deleted, {} skipped, {} review required, {} eligible".format("Apply" if r["applied"] else "Preview",r["deleted"],r["skipped"],r["reviewRequired"],r["eligible"]))
-    for b in r["branches"]:
-        print("{}: {} — {} (local deleted: {}, remote deleted: {})".format(b["branch"],b["decision"],b["reason"],b["localDeleted"],b["remoteDeleted"]))
+    if sys.argv[1] == "true":
+        print(json.dumps(r,indent=2))
+    else:
+        print("{}: {} deleted, {} skipped, {} review required, {} eligible".format("Apply" if r["applied"] else "Preview",r["deleted"],r["skipped"],r["reviewRequired"],r["eligible"]))
+        for b in r["branches"]:
+            print("{}: {} — {} (local deleted: {}, remote deleted: {})".format(b["branch"],b["decision"],b["reason"],b["localDeleted"],b["remoteDeleted"]))
+    if r["applied"] and r["reviewRequired"]: sys.exit(2)
 except (ValueError,KeyError,TypeError):
-    sys.exit(1)' <<<"$response" || { error 'Worker returned invalid maintenance metadata'; return 1; }
+    sys.exit(1)' "$json" <<<"$response" || {
+    result=$?
+    if [[ $result == 2 ]]; then error 'Some branches require manual review; inspect the reported reasons'; else error 'Worker returned invalid maintenance metadata'; fi
+    return "$result"
+  }
 }
 
 main() {

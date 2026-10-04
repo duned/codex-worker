@@ -1663,6 +1663,7 @@ public sealed class GitWorktreeTests
     [InlineData("remote-only", "eligible")]
     [InlineData("stale-base", "eligible")]
     [InlineData("ambiguous", "review")]
+    [InlineData("claimed", "review")]
     public async Task CompletedBranchCleanupRequiresHistoryAgeExactTipsAndIntegration(string scenario, string decision)
     {
         using var fixture = await RepositoryFixture.CreateAsync();
@@ -1689,7 +1690,7 @@ public sealed class GitWorktreeTests
         var completed = scenario == "new" ? now.AddDays(-1) : now.AddDays(-40);
         var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
             "feature/example-task-17", "main", completed.AddMinutes(-1), completed, "Completed", 1, null, null, 0, [],
-            tip, "main", branch, null);
+            tip, "main", branch, null, IntegrationRecoveryClaim: scenario == "claimed" ? Guid.NewGuid() : null);
         IReadOnlyList<ExecutionHistoryEntry> history = scenario switch
         {
             "orphan" => [],
@@ -1744,10 +1745,17 @@ public sealed class GitWorktreeTests
             "feature/example-task-17", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [],
             tip, "main", branch, null));
         var request = new CompletedBranchCleanupRequest(fixture.Checkout, 30, true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CleanupAsync(request, CancellationToken.None));
+        Assert.True(registry.TryReserve("sample"));
+        registry.DrainWorker();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CleanupAsync(request, CancellationToken.None));
+        registry.Release("sample");
+        Assert.False(registry.TryReserve("sample"));
         await gate.WaitAsync();
         using var cancellation = new CancellationTokenSource();
         var waiting = service.CleanupAsync(request, cancellation.Token);
         Assert.False(waiting.IsCompleted);
+        Assert.False(registry.CancelWorkerDrain(() => { }));
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
         Assert.Equal(tip, await fixture.Git("rev-parse", branch));
@@ -1758,6 +1766,37 @@ public sealed class GitWorktreeTests
         Assert.Null(await service.CleanupAsync(request with { RepositoryDirectory = fixture.WorktreeRoot }, CancellationToken.None));
         registry.ReplaceConfiguration([("project.yml", new WorkerConfiguration { Project = config.Project, Codex = config.Codex })]);
         Assert.Null(await service.CleanupAsync(request, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CompletedBranchCleanupBoundsTheSameEligibleSetForPreviewAndApply()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
+        var tip = await fixture.Git("rev-parse", "HEAD");
+        var now = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        var history = new List<ExecutionHistoryEntry>();
+        foreach (var number in new[] { 17, 18 })
+        {
+            var branch = $"done/example-task-{number}";
+            await fixture.Git("branch", branch);
+            await fixture.Git("push", "origin", branch);
+            history.Add(new(Guid.NewGuid(), "sample", "owner/repo", number, "Example task",
+                $"feature/example-task-{number}", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1,
+                null, null, 0, [], tip, "main", branch, null));
+        }
+        var preview = await git.CleanupCompletedBranchesAsync("sample", history, 30, false, now, CancellationToken.None, limit: 1);
+        Assert.Equal(1, preview.Eligible);
+        Assert.Equal(1, preview.Skipped);
+        var applied = await git.CleanupCompletedBranchesAsync("sample", history, 30, true, now, CancellationToken.None, limit: 1);
+        Assert.Equal(1, applied.Deleted);
+        Assert.Equal(preview.Branches.Select(b => b.Branch), applied.Branches.Select(b => b.Branch));
+        Assert.Equal("deleted", applied.Branches[0].Decision);
+        Assert.Equal("skipped", applied.Branches[1].Decision);
+        Assert.Equal(tip, await fixture.Git("rev-parse", "done/example-task-18"));
+        Assert.Contains(tip, await fixture.Git("ls-remote", "--heads", "origin", "refs/heads/done/example-task-18"), StringComparison.Ordinal);
+        var remaining = await git.CleanupCompletedBranchesAsync("sample", history, 30, true, now, CancellationToken.None, limit: 1);
+        Assert.Equal(1, remaining.Deleted);
     }
 
     [Fact]

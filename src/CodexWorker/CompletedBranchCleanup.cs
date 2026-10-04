@@ -1,6 +1,6 @@
 namespace CodexWorker;
 
-public sealed record CompletedBranchCleanupRequest(string RepositoryDirectory, int OlderThanDays, bool Apply = false);
+public sealed record CompletedBranchCleanupRequest(string RepositoryDirectory, int OlderThanDays, bool Apply = false, int Limit = 20);
 public sealed record CompletedBranchCleanupItem(string Branch, string Decision, string Reason, bool LocalDeleted = false,
     bool RemoteDeleted = false);
 public sealed record CompletedBranchCleanupResult(bool Applied, IReadOnlyList<CompletedBranchCleanupItem> Branches)
@@ -15,9 +15,10 @@ public sealed partial class GitRepository
 {
     /// <summary>Caller holds the Worker's repository gate throughout inspection and mutation.</summary>
     public async Task<CompletedBranchCleanupResult> CleanupCompletedBranchesAsync(string project,
-        IReadOnlyList<ExecutionHistoryEntry> history, int olderThanDays, bool apply, DateTimeOffset now, CancellationToken ct)
+        IReadOnlyList<ExecutionHistoryEntry> history, int olderThanDays, bool apply, DateTimeOffset now, CancellationToken ct, int limit = 20)
     {
         if (olderThanDays is < 1 or > 36500) throw new ArgumentOutOfRangeException(nameof(olderThanDays));
+        if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
         var results = new List<CompletedBranchCleanupItem>();
         try
         {
@@ -41,6 +42,7 @@ public sealed partial class GitRepository
                 "refs/heads/"], ct)).StandardOutput);
             var prefix = "refs/heads/" + settings.CompletedPrefix;
             var deletionStopped = false;
+            var selected = 0;
             foreach (var reference in local.Keys.Concat(remote.Keys).Where(r => r.StartsWith(prefix, StringComparison.Ordinal))
                          .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
             {
@@ -62,7 +64,8 @@ public sealed partial class GitRepository
                 if (branch == settings.BaseBranch || entries.Length != 1 || entries[0].ExecutionId == Guid.Empty ||
                     entries[0].IssueNumber < 1 || entries[0].AttemptNumber < 1 ||
                     (branch != expectedBranch && branch != $"{expectedBranch}-execution-{entries[0].ExecutionId:N}") ||
-                    entries[0].State != "Completed" || entries[0].CompletedAtUtc is null || entries[0].CompletedAtUtc < entries[0].StartedAtUtc || entries[0].BaseBranch != settings.BaseBranch ||
+                    entries[0].State != "Completed" || entries[0].IntegrationRecoveryClaim is not null ||
+                    entries[0].CompletedAtUtc is null || entries[0].CompletedAtUtc < entries[0].StartedAtUtc || entries[0].BaseBranch != settings.BaseBranch ||
                     !IsCommitId(entries[0].CommitSha) || entries[0].CommitSha != tip)
                 {
                     results.Add(Item("review", "No unique completed execution with matching base and exact commit.")); continue;
@@ -83,6 +86,11 @@ public sealed partial class GitRepository
                 {
                     results.Add(Item("review", "Tip is not provably reachable from authoritative base.")); continue;
                 }
+                if (selected >= limit)
+                {
+                    results.Add(Item("skipped", "Eligible branch exceeds this request's cleanup limit.")); continue;
+                }
+                selected++;
                 if (!apply) { results.Add(Item("eligible", "Exact tip is integrated and retention has elapsed.")); continue; }
                 // Re-read both refs and the base. An explicit lease is a compare-and-delete on origin,
                 // including changes racing this re-read; never use an unconditional remote deletion.

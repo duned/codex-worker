@@ -697,7 +697,7 @@ preview=$("$repo_root/cw" maintenance completed-branches --older-than 30)
 "$repo_root/cw" maintenance completed-branches --older-than 30 --apply > /dev/null
 [[ $(cat "$test_root/curl.args") == *'"apply": true'* ]]
 [[ $(cat "$test_root/curl.args") == *"$repo_root"* ]]
-for args in 'completed-branches' 'completed-branches --older-than 0' 'completed-branches --older-than -1' 'completed-branches --older-than 36501' 'completed-branches --older-than invalid' 'completed-branches --force' 'unknown'; do
+for args in 'completed-branches' 'completed-branches --older-than 0' 'completed-branches --older-than -1' 'completed-branches --older-than 36501' 'completed-branches --older-than invalid' 'completed-branches --force' 'completed-branches --older-than 30 --limit 0' 'completed-branches --older-than 30 --limit 101' 'unknown'; do
   if "$repo_root/cw" maintenance $args > /dev/null 2>&1; then
     echo "maintenance accepted invalid arguments: $args" >&2; exit 1
   fi
@@ -706,3 +706,20 @@ done
 echo 'cw tests passed'
 
 bash "$repo_root/tests/cw-cleanup-tests.sh"
+
+"$repo_root/cw" maintenance completed-branches --older-than 30 --limit 1 --json > "$test_root/maintenance-output.json"
+python3 - "$test_root/maintenance-output.json" <<'PYTEST'
+import json,sys
+assert json.load(open(sys.argv[1]))["eligible"] == 1
+PYTEST
+[[ $(cat "$test_root/curl.args") == *'"limit": 1'* ]]
+
+printf '%s\n' '{"applied":true,"deleted":0,"skipped":0,"reviewRequired":1,"eligible":0,"branches":[]}' > "$test_root/maintenance.json"
+if "$repo_root/cw" maintenance completed-branches --older-than 30 --apply --json > "$test_root/maintenance-output.json" 2> "$test_root/maintenance-error"; then
+  echo 'maintenance review result should fail apply' >&2; exit 1
+fi
+grep -Fq 'Some branches require manual review' "$test_root/maintenance-error"
+python3 - "$test_root/maintenance-output.json" <<'PYTEST'
+import json,sys
+assert json.load(open(sys.argv[1]))["reviewRequired"] == 1
+PYTEST

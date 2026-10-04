@@ -202,16 +202,9 @@ public sealed class WorkerRuntimeReadModel
 
     public async Task<ExecutionCleanupInspection?> InspectExecutionCleanupAsync(Guid executionId, CancellationToken ct)
     {
-        var history = await _history.ReadAllAsync(ct);
-        var entry = history.FirstOrDefault(e => e.ExecutionId == executionId);
-        if (entry is null) return null;
-        var projects = _registry.Snapshot().Where(p => p.Configuration.Project.Name == entry.Project &&
-            p.Configuration.Project.Repository == entry.Repository).ToArray();
-        if (projects.Length != 1)
-            return new(entry.ExecutionId, "review", "project-unavailable", "Execution has no unique configured project; preserve resources for review.");
-        var config = projects[0].Configuration;
-        using var git = new GitRepository(new ProcessRunner(), config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
-        return await git.InspectOperatorCleanupAsync(entry, history, ct);
+        if (executionId == Guid.Empty) return null;
+        var results = await ExecutionCleanup.RunAsync(new ExecutionCleanupRequest(ExecutionId: executionId), ct);
+        return results.Count == 0 ? null : results[0].Inspection;
     }
 
     private static string? Outcome(string state) => state switch
@@ -303,6 +296,8 @@ public static class ManagementApi
         }
         app.MapPost("/api/maintenance/completed-branches", async (CompletedBranchCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
         {
+            if (request.Apply && model.State != "drained")
+                return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
             try
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, app.Lifetime.ApplicationStopping);
@@ -312,6 +307,8 @@ public static class ManagementApi
             }
             catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
             { return Results.BadRequest(new { error = "Invalid maintenance request or unverifiable Git refs; cleanup refused." }); }
+            catch (InvalidOperationException ex)
+            { return Results.Conflict(new { error = ex.Message }); }
             catch (WorkerInfrastructureException)
             { return Results.Conflict(new { error = "Repository refresh or verification failed; cleanup could not complete. Inspect repository state before retrying." }); }
         });
@@ -334,7 +331,12 @@ public static class ManagementApi
         {
             if (request.Apply && model.State != "drained")
                 return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
-            try { return Results.Ok(await model.ExecutionCleanup.RunAsync(request, context.RequestAborted)); }
+            try
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, app.Lifetime.ApplicationStopping);
+                deadline.CancelAfter(TimeSpan.FromMinutes(5));
+                return Results.Ok(await model.ExecutionCleanup.RunAsync(request, deadline.Token));
+            }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
