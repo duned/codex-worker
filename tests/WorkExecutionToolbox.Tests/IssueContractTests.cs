@@ -113,6 +113,8 @@ public sealed class IssueContractTests
                 [Summary(issue.Repository, 20)], [Summary(issue.Repository, 50)]));
         }
 
+        public Task<ParentBatchResult> SetParentsAsync(SetParentsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();

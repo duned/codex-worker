@@ -19,6 +19,13 @@ Providers preflight visibility and return typed changed, unchanged, preview, con
 
 `GitHubIssueProvider.SetParentAsync` uses the existing `SetParentRequest`, and `ClearParentAsync` explicitly clears a parent. Repeated set/clear requests return `Unchanged` when the state already matches. A different parent returns `Conflict` without writing; replacement requires a separate explicit clear. Previews run visibility, scope and cycle checks without writing. Ancestors are read from GitHub and checked for cycles before assignment, with a safety bound of 1,000 ancestors. Writes use the resolved child's internal ID with GitHub's [native sub-issue endpoints](https://docs.github.com/en/rest/issues/sub-issues), never labels, body text or local storage, and never request implicit parent replacement. After a write, the provider verifies the child is still visible with the same identity and reads its native parent back. A verified mismatch returns `Failed` with safe diagnostics. Even after a write error, the provider reads back state: a matching state returns `Changed`, while an invisible child or failed verification returns `Partial`. It never replays the write; callers must refresh before retrying uncertain results. Cancellation propagates even after sending a write.
 
+`SetParentsRequest` and `SetParentsAsync` assign one parent to 1–50 distinct children.
+`ParentBatchResult` includes the parent number and an ordered `ParentChangeResult`
+for every child. The provider reuses single-parent preview checks for the entire
+batch before writing, then rechecks each child during mutation. Preflight rejection
+writes nothing; unsuccessful or uncertain mutations stop remaining operations.
+Verified successes remain observable without rollback or automatic retry.
+
 `GetParentAsync` reads the native parent; `ListChildrenAsync` lists direct children with 100-item pages. Missing Issues or pull requests return `null`; a visible parent with no children returns an empty list. Relationship payloads must contain actual Issues in the explicitly selected repository: cross-repository links, pull requests and malformed responses are rejected. Child listings are limited to 100 pages and fail rather than silently truncate at that bound. Read errors retain typed `GitHubIssueException` diagnostics. `GetRelationshipsAsync` completes the existing relationship contract by returning the direct parent, children, blocked-by prerequisites and blocking dependents from GitHub’s native endpoints. It rejects self-links and inconsistent identities across the returned lists.
 
 `GitHubRepositoryContext.Create` requires explicit GitHub.com `owner/name` syntax. Every read validates its context before acquiring credentials or sending HTTP. There is no fallback to `GH_REPO`, `gh` defaults, HTTP base addresses or a different repository. Hosts may offer `GitHubRepositoryContext.Discover` using local remote URLs they have read: it returns a context only when all supplied URLs identify the same GitHub.com repository; empty, ambiguous or unsupported remotes return `null`. An explicit repository takes precedence over discovery. Writes carry that selected context through the existing repository-scoped requests.
@@ -95,12 +102,19 @@ keeps credentials only in memory for the request, and never saves tokens or prin
 credential-bearing process output. It neither logs in nor modifies gh state.
 Repository permissions must allow the requested native Issue relationship operation.
 
-Every command requires `--repo owner/name`, including reads. There is no implicit
-checkout, remote, `GH_REPO`, or gh default repository selection. All positional
-arguments are positive human GitHub Issue numbers in that repository:
+Use `--repo owner/name` to explicitly select a repository; this always wins and
+never inspects the current checkout. Without it, WET reads the current checkout's
+local Git fetch/push remotes with a bounded, cancellable invocation and applies
+`GitHubRepositoryContext.Discover`. All remotes must identify one unambiguous
+GitHub.com repository (HTTPS or SSH). A missing checkout, no remotes, unsupported
+or malformed remotes, or distinct repositories fail before authentication and ask
+for `--repo owner/name`. Remote URLs and Git diagnostics are never printed.
+WET never uses `GH_REPO`, gh defaults or other ambient repository fallbacks.
+All positional arguments are positive human GitHub Issue numbers in that repository:
 
 ```sh
 wet parent set 9 3 --repo owner/name
+wet parent set 9 10 3 --repo owner/name
 wet parent clear 9 --repo owner/name
 wet children 3 --repo owner/name
 wet dependency add 9 3 4 --repo owner/name
@@ -109,6 +123,23 @@ wet relationships 9 --repo owner/name
 wet graph 9 --repo owner/name --json
 wet graph 9 --repo owner/name --refresh
 ```
+
+From an unambiguous GitHub.com checkout, repository discovery applies to all commands:
+
+```sh
+wet parent set 9 10 3
+wet relationships 3
+wet graph 9 --json
+```
+
+`wet parent set CHILD... PARENT [--repo owner/name]` accepts 1–50 distinct
+children followed by one parent; duplicate children and self-parent requests are
+rejected before authentication. The complete batch is preflighted before writes,
+then each child is rechecked and its write verified. A rejected preflight performs
+no writes. Results preserve each child's outcome in input order, including
+unchanged relationships and children not attempted. Failed, conflicting or uncertain
+operations stop the mutation phase; refresh relationships before retrying. There
+is no automatic rollback or replay of remaining children.
 
 Parent/child relationships organize Issues; they do not block execution. Setting
 Issue 3 as Issue 9's parent does not make 3 a prerequisite. `dependency add 9 3`
@@ -152,9 +183,12 @@ no human progress text. Successful reads and mutation outcomes go to stdout:
 have `repository: {repository: "owner/name"}` and `number`; summaries have `issue`,
 `title`, `state` (`open` or `closed`) and `url`. Graph edges have `fromIssueNumber`,
 `toIssueNumber`, `kind` (`parentChild` or `blockedBy`), and `isCycle`. `blockedBy`
-edges point from the blocked Issue to its prerequisite. Batch mutation data has
+edges point from the blocked Issue to its prerequisite. Dependency batch data has
 `status` and `relations`, each with `blockerIssueNumber` and `result` (status and
-diagnostic). Status strings are `changed`, `unchanged`, `preview`, `conflict`,
+diagnostic). Multi-child parent data has `parentIssueNumber`, `status` and
+`relations`, each with `childIssueNumber` and `result`. The envelope's `issue`
+remains the first child. Single-child parent output retains its existing
+`status`/`diagnostic` data shape; batches emit one JSON document. Status strings are `changed`, `unchanged`, `preview`, `conflict`,
 `failed`, or `partial`. Arrays follow provider order; callers should use numbers
 rather than positions for identity. Null fields are retained.
 

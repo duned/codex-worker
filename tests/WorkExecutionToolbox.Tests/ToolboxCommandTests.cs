@@ -205,7 +205,7 @@ public sealed partial class ToolboxCommandTests
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
-        var exit = await ToolboxCommand.RunAsync(args, provider, provider, output, error, token);
+        var exit = await ToolboxCommand.RunAsync(args, provider, provider, output, error, token, _ => Task.FromResult<IReadOnlyList<string>>([]));
         return (exit, output.ToString(), error.ToString());
     }
 
@@ -238,6 +238,12 @@ public sealed partial class ToolboxCommandTests
             Called("relationships", issue, cancellationToken);
             var blocker = Summary(new(issue.Repository, 3));
             return Task.FromResult(Missing ? null : new IssueRelationships(Summary(issue), blocker, [], [blocker], []));
+        }
+        public Task<ParentBatchResult> SetParentsAsync(SetParentsRequest request, CancellationToken cancellationToken = default)
+        {
+            Called("parents", request.Parent, cancellationToken);
+            return Task.FromResult(new ParentBatchResult(request.Parent.Number, Status, request.ChildIssueNumbers.Select(n =>
+                new ParentChangeResult(n, new RelationshipChangeResult(Status))).ToArray()));
         }
         public Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default)
         {

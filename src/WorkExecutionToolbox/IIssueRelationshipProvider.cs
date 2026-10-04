@@ -17,6 +17,9 @@ public interface IIssueRelationshipProvider : IIssueDependencyProvider
     /// <summary>Returns complete relationships, or null when the Issue is missing or not visible.</summary>
     Task<IssueRelationships?> GetRelationshipsAsync(IssueReference issue, CancellationToken cancellationToken = default);
 
+    /// <summary>Preflights all children, preserves individual outcomes, and stops on unsuccessful writes.</summary>
+    Task<ParentBatchResult> SetParentsAsync(SetParentsRequest request, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Sets a child's parent; null clears it. Numbers are in the child's repository.
     /// Reject self-links and cycles and preflight visibility before writing. Preview performs no writes.
@@ -66,3 +69,32 @@ public sealed record SetDependencyRequest
     public bool Applied { get; }
     public bool PreviewOnly { get; }
 }
+
+/// <summary>Assigns one parent to 1–50 distinct children in the same repository.</summary>
+public sealed record SetParentsRequest
+{
+    public SetParentsRequest(IssueReference parent, IReadOnlyList<int> childIssueNumbers, bool previewOnly = false)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentNullException.ThrowIfNull(childIssueNumbers);
+        if (childIssueNumbers.Count is < 1 or > 50)
+            throw new ArgumentException("A parent batch must contain 1 to 50 children.", nameof(childIssueNumbers));
+        var numbers = childIssueNumbers.ToArray();
+        foreach (var number in numbers)
+            _ = new SetParentRequest(new(parent.Repository, number), parent.Number, previewOnly);
+        if (numbers.Distinct().Count() != numbers.Length)
+            throw new ArgumentException("A parent batch cannot contain duplicate children.", nameof(childIssueNumbers));
+        Parent = parent;
+        ChildIssueNumbers = Array.AsReadOnly(numbers);
+        PreviewOnly = previewOnly;
+    }
+
+    public IssueReference Parent { get; }
+    public IReadOnlyList<int> ChildIssueNumbers { get; }
+    public bool PreviewOnly { get; }
+}
+
+public sealed record ParentChangeResult(int ChildIssueNumber, RelationshipChangeResult Result);
+
+/// <summary>Ordered child outcomes; Partial requires relationship refresh before retrying.</summary>
+public sealed record ParentBatchResult(int ParentIssueNumber, RelationshipChangeStatus Status, IReadOnlyList<ParentChangeResult> Relations);

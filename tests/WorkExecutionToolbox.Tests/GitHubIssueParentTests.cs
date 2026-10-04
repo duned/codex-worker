@@ -252,6 +252,123 @@ public sealed class GitHubIssueParentTests
         }
     }
 
+    [Fact]
+    public async Task BatchPreservesChangedAndUnchangedOutcomes()
+    {
+        using var handler = new GraphHandler();
+        handler.Parents[1] = 3;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(3), [1, 2]));
+        Assert.Equal(RelationshipChangeStatus.Changed, result.Status);
+        Assert.Equal(3, result.ParentIssueNumber);
+        Assert.Equal([RelationshipChangeStatus.Unchanged, RelationshipChangeStatus.Changed],
+            result.Relations.Select(item => item.Result.Status));
+        Assert.Single(handler.Writes);
+        Assert.Equal(3, handler.Parents[2]);
+    }
+
+    [Fact]
+    public async Task BatchAssignsMultipleChildren()
+    {
+        using var handler = new GraphHandler();
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(3), [1, 2]));
+        Assert.Equal(RelationshipChangeStatus.Changed, result.Status);
+        Assert.All(result.Relations, item => Assert.Equal(RelationshipChangeStatus.Changed, item.Result.Status));
+        Assert.Equal(2, handler.Writes.Count);
+    }
+
+    [Fact]
+    public async Task BatchConflictPreflightsEveryChildWithoutWriting()
+    {
+        using var handler = new GraphHandler();
+        handler.Parents[2] = 1;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(3), [1, 2]));
+        Assert.Equal(RelationshipChangeStatus.Conflict, result.Status);
+        Assert.Equal(RelationshipChangeStatus.Failed, result.Relations[0].Result.Status);
+        Assert.Equal(RelationshipChangeStatus.Conflict, result.Relations[1].Result.Status);
+        Assert.Empty(handler.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BatchStopsAfterFailedOrUncertainWrite(bool uncertain)
+    {
+        using var handler = new GraphHandler { IgnoreWrites = !uncertain };
+        handler.Override = request => uncertain && handler.Writes.Count > 0 && request.Method == HttpMethod.Get
+            ? throw new HttpRequestException("sensitive-response") : null;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(3), [1, 2]));
+        Assert.Equal(uncertain ? RelationshipChangeStatus.Partial : RelationshipChangeStatus.Failed, result.Status);
+        Assert.Equal(uncertain ? RelationshipChangeStatus.Partial : RelationshipChangeStatus.Failed, result.Relations[0].Result.Status);
+        Assert.Contains("Not attempted", result.Relations[1].Result.Diagnostic);
+        Assert.Single(handler.Writes);
+    }
+
+    [Fact]
+    public async Task BatchRetainsSuccessBeforeLaterUncertainty()
+    {
+        using var handler = new GraphHandler();
+        handler.Numbers.Add(4);
+        handler.Override = request => handler.Writes.Count == 2 && request.Method == HttpMethod.Get
+            ? throw new HttpRequestException("sensitive-response") : null;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(4), [1, 2, 3]));
+        Assert.Equal(RelationshipChangeStatus.Partial, result.Status);
+        Assert.Equal(RelationshipChangeStatus.Changed, result.Relations[0].Result.Status);
+        Assert.Equal(RelationshipChangeStatus.Partial, result.Relations[1].Result.Status);
+        Assert.Contains("Not attempted", result.Relations[2].Result.Diagnostic);
+        Assert.Equal(2, handler.Writes.Count);
+    }
+
+    [Fact]
+    public async Task BatchPreviewChecksCyclesWithoutWriting()
+    {
+        using var handler = new GraphHandler();
+        handler.Parents[3] = 2;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentsAsync(new(Issue(3), [1, 2], previewOnly: true));
+        Assert.Equal(RelationshipChangeStatus.Failed, result.Status);
+        Assert.Empty(handler.Writes);
+    }
+
+    [Fact]
+    public void BatchRequestCopiesChildrenAndRejectsInvalidInput()
+    {
+        int[] numbers = [1, 2];
+        var request = new SetParentsRequest(Issue(3), numbers);
+        numbers[0] = 3;
+        Assert.Equal([1, 2], request.ChildIssueNumbers);
+        Assert.Throws<ArgumentException>(() => new SetParentsRequest(Issue(3), [1, 1]));
+        Assert.Throws<ArgumentException>(() => new SetParentsRequest(Issue(3), [1, 3]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SetParentsRequest(Issue(3), [0]));
+        Assert.Throws<ArgumentException>(() => new SetParentsRequest(Issue(3), []));
+        Assert.Throws<ArgumentException>(() => new SetParentsRequest(Issue(100), Enumerable.Range(1, 51).ToArray()));
+    }
+
+    [Fact]
+    public async Task BatchCancellationAfterWriteDoesNotAttemptRemainingChildren()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var handler = new GraphHandler();
+        handler.Override = _ =>
+        {
+            if (handler.Writes.Count > 0)
+            {
+                cancellation.Cancel();
+                throw new OperationCanceledException(cancellation.Token);
+            }
+            return null;
+        };
+        using var http = new HttpClient(handler);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Provider(http)
+            .SetParentsAsync(new(Issue(3), [1, 2]), cancellation.Token));
+        Assert.Single(handler.Writes);
+        Assert.False(handler.Parents.ContainsKey(2));
+    }
+
     private static IssueReference Issue(int number) => new(new("team/project"), number);
     private static GitHubIssueProvider Provider(HttpClient http) => new(http, _ => Task.FromResult("fake-test-credential"));
     private static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body) };

@@ -102,6 +102,50 @@ public sealed partial class GitHubIssueProvider
         }
     }
 
+    public async Task<ParentBatchResult> SetParentsAsync(SetParentsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var results = new List<ParentChangeResult>();
+        foreach (var number in request.ChildIssueNumbers)
+        {
+            var result = await SetParentAsync(new(new(request.Parent.Repository, number),
+                request.Parent.Number, previewOnly: true), cancellationToken);
+            results.Add(new(number, result));
+        }
+        if (results.Any(item => item.Result.Status is RelationshipChangeStatus.Failed or RelationshipChangeStatus.Conflict))
+        {
+            var rejected = results.Select(item => item.Result.Status == RelationshipChangeStatus.Preview
+                ? item with { Result = Failed("Not attempted because batch preflight was rejected; no writes performed.") }
+                : item).ToArray();
+            return new(request.Parent.Number, results.Any(item => item.Result.Status == RelationshipChangeStatus.Conflict)
+                ? RelationshipChangeStatus.Conflict : RelationshipChangeStatus.Failed, rejected);
+        }
+        if (request.PreviewOnly) return new(request.Parent.Number, results.Any(item => item.Result.Status == RelationshipChangeStatus.Preview)
+            ? RelationshipChangeStatus.Preview : RelationshipChangeStatus.Unchanged, results.AsReadOnly());
+
+        // Recheck each relationship at mutation time to preserve conflict/cycle safety if state changed.
+        for (var i = 0; i < results.Count; i++)
+        {
+            var number = results[i].ChildIssueNumber;
+            var result = await SetParentAsync(new(new(request.Parent.Repository, number), request.Parent.Number), cancellationToken);
+            results[i] = new(number, result);
+            if (result.Status is not (RelationshipChangeStatus.Changed or RelationshipChangeStatus.Unchanged))
+            {
+                for (var remaining = i + 1; remaining < results.Count; remaining++)
+                    results[remaining] = results[remaining] with
+                    {
+                        Result = Failed("Not attempted because a preceding operation failed or could not be verified. Refresh relationships before retrying.")
+                    };
+                return new(request.Parent.Number, result.Status == RelationshipChangeStatus.Partial ||
+                    results.Any(item => item.Result.Status == RelationshipChangeStatus.Changed)
+                    ? RelationshipChangeStatus.Partial : result.Status, results.AsReadOnly());
+            }
+        }
+        return new(request.Parent.Number, results.Any(item => item.Result.Status == RelationshipChangeStatus.Changed)
+            ? RelationshipChangeStatus.Changed : RelationshipChangeStatus.Unchanged, results.AsReadOnly());
+    }
+
     private async Task<ResolvedIssue?> ReadParentAsync(IssueReference child, CancellationToken cancellationToken, Action? beforeRequest = null)
     {
         var entry = await CachedReadAsync(child, "parent", async () =>

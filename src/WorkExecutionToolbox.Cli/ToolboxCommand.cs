@@ -8,15 +8,17 @@ namespace WorkExecutionToolbox.Cli;
 public static class ToolboxCommand
 {
     public const string Help = """
-        Usage: wet COMMAND --repo owner/name [--json] [--refresh]
-          parent set CHILD PARENT       Set an organizational parent (clear before replacing).
+        Usage: wet COMMAND [--repo owner/name] [--json] [--refresh]
+          parent set CHILD... PARENT       Set one parent for 1–50 distinct children (clear before replacing).
           parent clear CHILD            Clear an organizational parent.
           children PARENT               List direct organizational children.
           dependency add ISSUE BLOCKER...     ISSUE is blocked by each BLOCKER (1–50).
           dependency remove ISSUE BLOCKER...  Remove those prerequisites.
           relationships ISSUE           Show parent, children, prerequisites and dependents.
           graph ISSUE                   Inspect a bounded graph (default depth 5).
-        All numbers are positive GitHub Issue numbers in the explicit repository.
+        All numbers are positive GitHub Issue numbers in the selected repository.
+        Without --repo, local remotes must identify one unambiguous GitHub.com repository.
+        Explicit --repo overrides discovery; GH_REPO and gh defaults are never used.
         Parent/child organization does not imply execution dependencies.
         Options may appear anywhere. --help / -h shows help without authentication.
         Authenticate with: gh auth login --hostname github.com
@@ -34,7 +36,8 @@ public static class ToolboxCommand
     };
 
     public static async Task<int> RunAsync(string[] args, IIssueRelationshipProvider relationships,
-        IIssueGraphProvider graphs, TextWriter output, TextWriter error, CancellationToken cancellationToken = default)
+        IIssueGraphProvider graphs, TextWriter output, TextWriter error, CancellationToken cancellationToken = default,
+        Func<CancellationToken, Task<IReadOnlyList<string>>>? readRemoteUrls = null)
     {
         var json = args.Contains("--json", StringComparer.Ordinal);
         if (args.Length == 0 || args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
@@ -51,6 +54,20 @@ public static class ToolboxCommand
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (command.Repository is null)
+            {
+                var remotes = await (readRemoteUrls ?? LocalRepositoryDiscovery.ReadRemoteUrlsAsync)(cancellationToken);
+                var repository = GitHubRepositoryContext.Discover(remotes);
+                if (repository is null)
+                    return await ErrorAsync(error, json, 2, "usage",
+                        "Cannot discover one unambiguous GitHub.com repository from this checkout. Use --repo owner/name and see wet --help.");
+                command = command with { Repository = repository };
+            }
+            try { ValidateMutation(command); }
+            catch (ArgumentException)
+            {
+                return await ErrorAsync(error, json, 2, "usage", "Invalid command, Issue numbers or repository. Use --repo owner/name and see wet --help.");
+            }
             using var readScope = (command.Name == "graph" ? graphs : (IIssueProvider)relationships)
                 is ICacheAwareIssueProvider cacheAware ? cacheAware.BeginReadOperation(command.Refresh) : null;
             if (command.Refresh && readScope is null)
@@ -60,6 +77,18 @@ public static class ToolboxCommand
             var exit = 0;
             switch (command.Name)
             {
+                case "parent set" when command.Numbers.Length > 2:
+                    var parents = await relationships.SetParentsAsync(new(new(command.Issue.Repository, command.Numbers[^1]),
+                        command.Numbers[..^1]), cancellationToken);
+                    data = parents;
+                    exit = ExitCode(parents.Status);
+                    lines.Add($"Parent set batch: {parents.Status}.");
+                    foreach (var relation in parents.Relations)
+                    {
+                        lines.Add($"Issue {relation.ChildIssueNumber}: parent {command.Numbers[^1]}: {relation.Result.Status}.");
+                        AddDiagnostic(lines, relation.Result.Diagnostic);
+                    }
+                    break;
                 case "parent set":
                 case "parent clear":
                     var parent = command.Numbers.Length == 2 ? command.Numbers[1] : (int?)null;
@@ -149,26 +178,30 @@ public static class ToolboxCommand
             else if (args[i].StartsWith('-')) throw new ArgumentException("Unknown or duplicate option.");
             else words.Add(args[i]);
         }
-        if (repository is null || words.Count < 2) throw new ArgumentException("Repository and command required.");
+        if (words.Count < 2) throw new ArgumentException("Command required.");
         var name = words[0] is "parent" or "dependency" ? string.Join(' ', words.Take(2)) : words[0];
         var numberWords = words.Skip(name.Contains(' ') ? 2 : 1).ToArray();
         var numbers = numberWords.Select(word => int.TryParse(word, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > 0
             ? n : throw new ArgumentException("Positive Issue number required.")).ToArray();
         var valid = name switch
         {
-            "parent set" => numbers.Length == 2,
+            "parent set" => numbers.Length is >= 2 and <= 51,
             "parent clear" or "children" or "relationships" or "graph" => numbers.Length == 1,
             "dependency add" or "dependency remove" => numbers.Length is >= 2 and <= 51,
             _ => false
         };
         if (refresh && name is not ("children" or "relationships" or "graph")) valid = false;
         if (!valid) throw new ArgumentException("Invalid command arguments.");
-        var issue = new IssueReference(GitHubRepositoryContext.Create(repository), numbers[0]);
-        // Validate mutation contracts before any provider call or authentication.
-        if (name == "parent set") _ = new SetParentRequest(issue, numbers[1]);
-        if (name.StartsWith("dependency", StringComparison.Ordinal))
-            _ = new SetDependenciesRequest(issue, numbers[1..], name == "dependency add");
-        return new Command(name, issue, numbers, refresh);
+        return new Command(name, repository is null ? null : GitHubRepositoryContext.Create(repository), numbers, refresh);
+    }
+
+    private static void ValidateMutation(Command command)
+    {
+        // Validate library contracts before any provider call or authentication.
+        if (command.Name == "parent set")
+            _ = new SetParentsRequest(new(command.Issue.Repository, command.Numbers[^1]), command.Numbers[..^1]);
+        if (command.Name.StartsWith("dependency", StringComparison.Ordinal))
+            _ = new SetDependenciesRequest(command.Issue, command.Numbers[1..], command.Name == "dependency add");
     }
 
     private static int ExitCode(RelationshipChangeStatus status) => status switch
@@ -198,5 +231,8 @@ public static class ToolboxCommand
         return exit;
     }
 
-    private sealed record Command(string Name, IssueReference Issue, int[] Numbers, bool Refresh);
+    private sealed record Command(string Name, RepositoryContext? Repository, int[] Numbers, bool Refresh)
+    {
+        public IssueReference Issue => new(Repository ?? throw new InvalidOperationException("Repository has not been resolved."), Numbers[0]);
+    }
 }
