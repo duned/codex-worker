@@ -159,6 +159,8 @@ if [[ $unit_was_present == true ]] || systemctl cat codex-worker >/dev/null 2>&1
   service_was_present=true
 fi
 config_changed=false
+association_changed=false
+association_was_present=false
 if [[ -f $config_root/worker.yml ]]; then
   cp -a -- "$config_root/worker.yml" "$temporary_dir/previous.yml"
 fi
@@ -188,6 +190,13 @@ cleanup() {
       if [[ $runtime_was_present == true ]]; then
         if [[ $config_changed == true && -f $temporary_dir/previous.yml ]]; then
           cp -a -- "$temporary_dir/previous.yml" "$config_root/worker.yml"
+        fi
+        if [[ $association_changed == true ]]; then
+          if [[ $association_was_present == true && -f $temporary_dir/previous.server ]]; then
+            cp -a -- "$temporary_dir/previous.server" "$association_path"
+          else
+            rm -f -- "$association_path"
+          fi
         fi
         if systemctl daemon-reload; then
           if [[ $service_was_active == true && -x $install_root/CodexWorker ]]; then
@@ -320,11 +329,11 @@ if [[ $server_was_set == true || $capacity_was_set == true ]]; then
       /^worker:$/ { section = "worker"; print; next }
       /^server:$/ { section = "server"; print; next }
       /^[^[:space:]]/ { section = "" }
-      section == "worker" && WORKER_SET_CAPACITY == "true" && /^  maxParallelTasks:/ {
-        print "  maxParallelTasks: " WORKER_CAPACITY; next
+      section == "worker" && ENVIRON["WORKER_SET_CAPACITY"] == "true" && /^  maxParallelTasks:/ {
+        print "  maxParallelTasks: " ENVIRON["WORKER_CAPACITY"]; next
       }
-      section == "server" && WORKER_SET_SERVER == "true" && /^  url:/ {
-        print "  url: \"" WORKER_SERVER_URL "\""; next
+      section == "server" && ENVIRON["WORKER_SET_SERVER"] == "true" && /^  url:/ {
+        print "  url: \"" ENVIRON["WORKER_SERVER_URL"] "\""; next
       }
       { print }
     ' "$config_root/worker.yml" > "$config_update" || fail "could not update Worker configuration"
@@ -335,6 +344,33 @@ if [[ $server_was_set == true || $capacity_was_set == true ]]; then
     fail "Worker configuration has no server.url setting"
   fi
   install -o root -g codex-worker -m 0640 "$config_update" "$config_root/worker.yml" || fail "could not save Worker configuration"
+fi
+if [[ $server_was_set == true ]]; then
+  # Runtime uses the persisted registration association in preference to YAML.
+  # Keep both existing representations aligned when repairing an installed
+  # Worker without re-registering it (which would require a consumed token).
+  identity_file=$(awk '
+    /^server:$/ { in_server = 1; next }
+    /^[^[:space:]]/ { in_server = 0 }
+    in_server && /^  identityFile:/ {
+      sub(/^  identityFile:[[:space:]]*/, "")
+      if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2)
+      print
+      exit
+    }
+  ' "$config_root/worker.yml")
+  identity_file=${identity_file:-$data_root/.codex-worker/worker-id}
+  [[ $identity_file == /* ]] || identity_file="$config_root/$identity_file"
+  association_path="$identity_file.server"
+  association_dir=$(dirname -- "$association_path")
+  [[ -d $association_dir ]] || fail "Worker identity directory is missing: $association_dir"
+  if [[ -f $association_path ]]; then
+    cp -a -- "$association_path" "$temporary_dir/previous.server" || fail "could not preserve the existing Worker Server association"
+    association_was_present=true
+  fi
+  association_changed=true
+  printf '%s\n' "${requested_server%/}" > "$temporary_dir/worker-server-url"
+  install -o codex-worker -g codex-worker -m 0600 "$temporary_dir/worker-server-url" "$association_path" || fail "could not update the persisted Worker Server association"
 fi
 if [[ $server_was_set == false ]]; then
   requested_server=$(awk '/^server:$/ { in_server = 1; next } /^[^[:space:]]/ { in_server = 0 } in_server && /^  url:/ { sub(/^  url:[[:space:]]*/, ""); if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2); print; exit }' "$config_root/worker.yml")
