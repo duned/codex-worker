@@ -177,6 +177,7 @@ public sealed class WorkerHost
             foreach (var (path, config) in configuredProjects)
             {
                 var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct);
+                runtimeReadModel.CompletedBranchMaintenance.Register(config, project.Git, project.RepositoryGate);
                 runtimes.Add(project);
                 allRuntimes.Add(project);
             }
@@ -437,6 +438,7 @@ public sealed class WorkerHost
                         else
                         {
                             var project = CreateRuntime(path, configuration, telegram, history, repositoryGates, ct);
+                            runtimeReadModel.CompletedBranchMaintenance.Register(configuration, project.Git, project.RepositoryGate);
                             replacement.Add(project);
                             allRuntimes.Add(project);
                         }

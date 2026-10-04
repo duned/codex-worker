@@ -25,6 +25,8 @@ Developer and local Worker operations:
     show ID       Show an exact execution
     show --issue NUMBER  Show all known attempts, grouped by project/repository
   execution inspect ID [--json]  Inspect retained resources through the Worker API
+  maintenance completed-branches --older-than DAYS [--apply]
+                  Preview or prune integrated archives for this source checkout
   version, v      Show or safely bump the product version
   release, r      Publish the current product version or inspect releases
   help, -h, --help
@@ -749,12 +751,40 @@ except (ValueError, KeyError, TypeError):
     sys.exit(1)' <<<"$response" || { error 'Worker returned invalid inspection metadata'; return 1; }
 }
 
+maintenance_command() {
+  [[ ${1:-} == completed-branches ]] || { error 'usage: cw maintenance completed-branches --older-than DAYS [--apply]'; return 2; }
+  shift
+  local days='' apply=false response payload
+  while (($#)); do
+    case $1 in
+      --older-than) [[ $# -ge 2 && $2 =~ ^[0-9]+$ ]] || { error '--older-than requires days (1-36500)'; return 2; }; days=$2; shift 2 ;;
+      --apply) apply=true; shift ;;
+      *) error "unknown maintenance option: $1"; return 2 ;;
+    esac
+  done
+  [[ -n $days && ${#days} -le 5 ]] && ((10#$days >= 1 && 10#$days <= 36500)) || { error '--older-than requires days (1-36500)'; return 2; }
+  need_command curl || return 1
+  need_command python3 || return 1
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"repositoryDirectory":sys.argv[1],"olderThanDays":int(sys.argv[2]),"apply":sys.argv[3]=="true"}))' "$REPO_ROOT" "$days" "$apply")
+  response=$(curl --fail --silent --show-error --max-time 600 -H 'Content-Type: application/json' --data "$payload" "${worker_api_url%/}/api/maintenance/completed-branches") || {
+    error 'Worker maintenance request failed; inspect Worker/repository state before retrying'; return 1
+  }
+  python3 -c 'import json,sys
+try:
+    r=json.load(sys.stdin)
+    print("{}: {} deleted, {} skipped, {} review required, {} eligible".format("Apply" if r["applied"] else "Preview",r["deleted"],r["skipped"],r["reviewRequired"],r["eligible"]))
+    for b in r["branches"]:
+        print("{}: {} — {} (local deleted: {}, remote deleted: {})".format(b["branch"],b["decision"],b["reason"],b["localDeleted"],b["remoteDeleted"]))
+except (ValueError,KeyError,TypeError):
+    sys.exit(1)' <<<"$response" || { error 'Worker returned invalid maintenance metadata'; return 1; }
+}
+
 main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
   case $command in
     --help|-h|help|h) ;;
-    status|s|deploy|d|version|v|release|r) validate_repository "$command" || return 1 ;;
+    status|s|deploy|d|version|v|release|r|maintenance) validate_repository "$command" || return 1 ;;
   esac
   case $command in
     --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
@@ -765,6 +795,7 @@ main() {
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
     executions|e) executions_command "$@" ;;
     execution) execution_command "$@" ;;
+    maintenance) maintenance_command "$@" ;;
     version|v) version_command "$@" ;;
     release|r) release_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;

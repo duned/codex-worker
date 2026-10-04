@@ -32,7 +32,9 @@ MOCK
 cat > "$bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CW_TEST_ROOT/curl.args"
-if [[ $* == *cleanup-inspection* ]]; then
+if [[ $* == *maintenance/completed-branches* ]]; then
+  cat "$CW_TEST_ROOT/maintenance.json"
+elif [[ $* == *cleanup-inspection* ]]; then
   cat "$CW_TEST_ROOT/inspection.json"
 else
   cat "$CW_TEST_ROOT/projects.json"
@@ -685,5 +687,20 @@ inspection=$("$repo_root/cw" execution inspect 00000000-0000-0000-0000-000000000
 if "$repo_root/cw" execution inspect invalid > /dev/null 2>&1; then
   echo 'execution inspect accepted invalid ID' >&2; exit 1
 fi
+
+printf '%s\n' '{"applied":false,"deleted":0,"skipped":1,"reviewRequired":1,"eligible":1,"branches":[{"branch":"done/example","decision":"eligible","reason":"Integrated","localDeleted":false,"remoteDeleted":false}]}' > "$test_root/maintenance.json"
+export CW_REPO_DIR="$repo_root"
+preview=$("$repo_root/cw" maintenance completed-branches --older-than 30)
+[[ $preview == *'Preview: 0 deleted, 1 skipped, 1 review required, 1 eligible'* ]]
+[[ $(cat "$test_root/curl.args") == *'/api/maintenance/completed-branches'* ]]
+[[ $(cat "$test_root/curl.args") == *'"apply": false'* ]]
+"$repo_root/cw" maintenance completed-branches --older-than 30 --apply > /dev/null
+[[ $(cat "$test_root/curl.args") == *'"apply": true'* ]]
+[[ $(cat "$test_root/curl.args") == *"$repo_root"* ]]
+for args in 'completed-branches' 'completed-branches --older-than 0' 'completed-branches --older-than -1' 'completed-branches --older-than 36501' 'completed-branches --older-than invalid' 'completed-branches --force' 'unknown'; do
+  if "$repo_root/cw" maintenance $args > /dev/null 2>&1; then
+    echo "maintenance accepted invalid arguments: $args" >&2; exit 1
+  fi
+done
 
 echo 'cw tests passed'

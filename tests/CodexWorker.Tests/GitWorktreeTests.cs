@@ -1651,6 +1651,142 @@ public sealed class GitWorktreeTests
         }
     }
 
+    [Theory]
+    [InlineData("integrated", "eligible")]
+    [InlineData("flat-prefix", "eligible")]
+    [InlineData("new", "skipped")]
+    [InlineData("unmerged", "review")]
+    [InlineData("mismatch", "review")]
+    [InlineData("worktree", "review")]
+    [InlineData("orphan", "review")]
+    [InlineData("local-only", "eligible")]
+    [InlineData("remote-only", "eligible")]
+    [InlineData("stale-base", "eligible")]
+    [InlineData("ambiguous", "review")]
+    public async Task CompletedBranchCleanupRequiresHistoryAgeExactTipsAndIntegration(string scenario, string decision)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var prefix = scenario == "flat-prefix" ? "done-" : "done/";
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = prefix });
+        var branch = prefix + "example-task-17";
+        var integrated = await fixture.Git("rev-parse", "HEAD");
+        await fixture.Git("branch", branch);
+        if (scenario is "unmerged" or "mismatch" or "stale-base")
+        {
+            await fixture.Git("checkout", branch);
+            await File.WriteAllTextAsync(Path.Combine(fixture.Checkout, "unmerged.txt"), "unmerged");
+            await fixture.Git("add", "unmerged.txt");
+            await fixture.Git("commit", "-m", "unmerged");
+            await fixture.Git("checkout", "main");
+        }
+        var tip = await fixture.Git("rev-parse", branch);
+        if (scenario != "local-only")
+            await fixture.Git("push", "origin", scenario == "mismatch" ? $"{integrated}:refs/heads/{branch}" : branch);
+        if (scenario == "stale-base") await fixture.Git("push", "origin", $"{tip}:refs/heads/main");
+        if (scenario == "remote-only") await fixture.Git("branch", "-d", branch);
+        if (scenario == "worktree") await fixture.Git("worktree", "add", Path.Combine(fixture.WorktreeRoot, "checked-out"), branch);
+        var now = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        var completed = scenario == "new" ? now.AddDays(-1) : now.AddDays(-40);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", completed.AddMinutes(-1), completed, "Completed", 1, null, null, 0, [],
+            tip, "main", branch, null);
+        IReadOnlyList<ExecutionHistoryEntry> history = scenario switch
+        {
+            "orphan" => [],
+            "ambiguous" => [entry, entry with { ExecutionId = Guid.NewGuid() }],
+            _ => [entry]
+        };
+        var preview = await git.CleanupCompletedBranchesAsync("sample", history, 30, false, now, CancellationToken.None);
+        Assert.Equal(decision, Assert.Single(preview.Branches).Decision);
+        Assert.False(preview.Applied);
+        // Commit timestamps are current; the old lifecycle timestamp is the authoritative age.
+        var applied = await git.CleanupCompletedBranchesAsync("sample", history, 30, true, now, CancellationToken.None);
+        if (decision == "eligible")
+        {
+            var deleted = Assert.Single(applied.Branches);
+            Assert.Equal("deleted", deleted.Decision);
+            Assert.Equal(scenario != "remote-only", deleted.LocalDeleted);
+            Assert.Equal(scenario != "local-only", deleted.RemoteDeleted);
+            Assert.Equal(string.Empty, await fixture.Git("branch", "--list", branch));
+            Assert.Equal(string.Empty, await fixture.Git("ls-remote", "--heads", "origin", "refs/heads/" + branch));
+            var repeated = await git.CleanupCompletedBranchesAsync("sample", history, 30, true, now, CancellationToken.None);
+            Assert.Empty(repeated.Branches);
+        }
+        else
+        {
+            Assert.Equal(decision, Assert.Single(applied.Branches).Decision);
+            Assert.Equal(0, applied.Deleted);
+            Assert.Equal(tip, await fixture.Git("rev-parse", branch));
+        }
+    }
+
+    [Fact]
+    public async Task CompletedBranchMaintenanceUsesPersistedHistoryAndRepositoryGate()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "maintenance-history.db"));
+        using var gate = new SemaphoreSlim(1, 1);
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Codex = new CodexSettings { InstructionsFile = Path.Combine(fixture.Checkout, "base.txt") }
+        };
+        var registry = new ProjectRuntimeRegistry([("project.yml", config)]);
+        var service = new CompletedBranchMaintenanceService(registry, history);
+        service.Register(config, git, gate);
+        const string branch = "done/example-task-17";
+        await fixture.Git("branch", branch);
+        await fixture.Git("push", "origin", branch);
+        var tip = await fixture.Git("rev-parse", branch);
+        var now = DateTimeOffset.UtcNow;
+        await history.CreateAsync(new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [],
+            tip, "main", branch, null));
+        var request = new CompletedBranchCleanupRequest(fixture.Checkout, 30, true);
+        await gate.WaitAsync();
+        using var cancellation = new CancellationTokenSource();
+        var waiting = service.CleanupAsync(request, cancellation.Token);
+        Assert.False(waiting.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.Equal(tip, await fixture.Git("rev-parse", branch));
+        gate.Release();
+        var result = await service.CleanupAsync(request, CancellationToken.None);
+        Assert.NotNull(result);
+        Assert.Equal(1, result.Deleted);
+        Assert.Null(await service.CleanupAsync(request with { RepositoryDirectory = fixture.WorktreeRoot }, CancellationToken.None));
+        registry.ReplaceConfiguration([("project.yml", new WorkerConfiguration { Project = config.Project, Codex = config.Codex })]);
+        Assert.Null(await service.CleanupAsync(request, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CompletedBranchCleanupRemoteLeasePreservesRefChangedDuringPush()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
+        const string branch = "done/example-task-17";
+        var tip = await fixture.Git("rev-parse", "HEAD");
+        await fixture.Git("branch", branch);
+        await fixture.Git("push", "origin", branch);
+        await fixture.AdvanceBaseAsync();
+        var changedTip = await fixture.Git("rev-parse", "HEAD");
+        var remotePath = Path.Combine(Path.GetDirectoryName(fixture.Checkout) ?? "", "origin.git");
+        var hook = Path.Combine(fixture.Checkout, ".git", "hooks", "pre-push");
+        await File.WriteAllTextAsync(hook, $"#!/bin/sh\ngit --git-dir='{remotePath}' update-ref refs/heads/{branch} {changedTip} {tip}\n");
+        File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var now = DateTimeOffset.UtcNow;
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [],
+            tip, "main", branch, null);
+        var result = await git.CleanupCompletedBranchesAsync("sample", [entry], 30, true, now, CancellationToken.None);
+        Assert.Equal("review", Assert.Single(result.Branches).Decision);
+        Assert.Equal(0, result.Deleted);
+        Assert.Equal(tip, await fixture.Git("rev-parse", branch));
+        Assert.StartsWith(changedTip, await fixture.Git("ls-remote", "--heads", "origin", "refs/heads/" + branch));
+    }
+
     private sealed class RepositoryFixture : IDisposable
     {
         private readonly string _root;
