@@ -704,3 +704,5 @@ for args in 'completed-branches' 'completed-branches --older-than 0' 'completed-
 done
 
 echo 'cw tests passed'
+
+bash "$repo_root/tests/cw-cleanup-tests.sh"

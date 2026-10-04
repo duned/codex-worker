@@ -27,6 +27,8 @@ Developer and local Worker operations:
   execution inspect ID [--json]  Inspect retained resources through the Worker API
   maintenance completed-branches --older-than DAYS [--apply]
                   Preview or prune integrated archives for this source checkout
+  execution cleanup ID | --issue NUMBER | --stale [--limit 1..100] [--apply] [--json]
+                  Dry-run by default; apply requires a completed Worker drain
   version, v      Show or safely bump the product version
   release, r      Publish the current product version or inspect releases
   help, -h, --help
@@ -726,7 +728,43 @@ except (ValueError, KeyError, TypeError, AttributeError):
   fi
 }
 
+execution_cleanup_command() {
+  local selector='' value='' limit=20 apply=false json=false response body
+  while (($#)); do
+    case $1 in
+      --issue) [[ $# -ge 2 && $2 =~ ^[1-9][0-9]*$ && -z $selector ]] || { error 'Invalid cleanup Issue selector'; return 2; }; selector=issueNumber; value=$2; shift 2 ;;
+      --stale) [[ -z $selector ]] || { error 'Select exactly one cleanup target'; return 2; }; selector=stale; value=true; shift ;;
+      --limit) [[ $# -ge 2 && $2 =~ ^[1-9][0-9]?$|^100$ ]] || { error 'Cleanup limit must be 1 through 100'; return 2; }; limit=$2; shift 2 ;;
+      --apply) apply=true; shift ;;
+      --json) json=true; shift ;;
+      *) [[ -z $selector && $1 =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || { error 'Usage: cw execution cleanup ID | --issue NUMBER | --stale [--limit 1..100] [--apply] [--json]'; return 2; }; selector=executionId; value=$1; shift ;;
+    esac
+  done
+  [[ -n $selector ]] || { error 'Select an execution ID, --issue NUMBER, or --stale'; return 2; }
+  need_command curl || return 1
+  need_command python3 || return 1
+  body=$(python3 -c 'import json,sys
+key,value,limit,apply=sys.argv[1:]
+print(json.dumps({key: value if key == "executionId" else int(value) if key == "issueNumber" else True, "limit": int(limit), "apply": apply == "true"}))' "$selector" "$value" "$limit" "$apply") || return 1
+  response=$(curl --fail-with-body --silent --show-error --max-time 300 -X POST -H 'Content-Type: application/json' --data "$body" "${worker_api_url%/}/api/executions/cleanup") || {
+    printf '%s\n' "$response" >&2
+    error 'Worker cleanup request failed; inspect Worker drain and resource state'; return 1
+  }
+  if [[ $json == true ]]; then printf '%s\n' "$response"; fi
+  python3 -c 'import json,sys
+try:
+    results=json.load(sys.stdin)
+    if sys.argv[1] != "true":
+        if not results: print("No executions matched the bounded selection.")
+        for r in results:
+            i=r["inspection"]
+            print("{}: {} ({}) — {}".format(i["executionId"],r["outcome"],i["reasonCode"],i["message"]))
+    sys.exit(1 if any(r["outcome"] in ("refused", "failed") for r in results) else 0)
+except (ValueError,KeyError,TypeError): sys.exit(1)' "$json" <<<"$response"
+}
+
 execution_command() {
+  if [[ ${1:-} == cleanup ]]; then shift; execution_cleanup_command "$@"; return $?; fi
   if [[ $# -lt 2 || $# -gt 3 || $1 != inspect || ! $2 =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
     error 'Usage: cw execution inspect EXECUTION_ID [--json]'; return 2
   fi

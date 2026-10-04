@@ -6,6 +6,31 @@ public sealed record ExecutionCleanupInspection(Guid ExecutionId, string Decisio
 
 public sealed partial class GitRepository
 {
+    public async Task<ExecutionCleanupInspection> InspectOperatorCleanupAsync(ExecutionHistoryEntry entry,
+        IReadOnlyList<ExecutionHistoryEntry> history, CancellationToken ct)
+    {
+        var result = await InspectCleanupAsync(entry, history, ct);
+        if (result.Decision != "safe") return result;
+        if (entry.State is "InfrastructureFailure" or "Cancelled")
+            return result with { Decision = "review", ReasonCode = "uncertain-execution", Message = "Interrupted or infrastructure-failed execution requires reconciliation; preserve its resources." };
+        if (result.ReasonCode == "already-clean") return result;
+        if (result.NewerExecutionId is null && (entry.RecoveryState is "recoverable" or "integration-conflict" or "missing" ||
+            entry.State == "IntegrationConflict" && entry.RecoveryState != "integration-recovered"))
+            return result with { Decision = "keep", ReasonCode = "authoritative-recovery", Message = "This is the current recovery attempt; preserve it until recovery is superseded or reconciled." };
+        return result;
+    }
+
+    /// <summary>Caller must hold a drained Worker maintenance reservation through history recording.</summary>
+    public async Task<ExecutionCleanupInspection> CleanupStaleExecutionAsync(ExecutionHistoryEntry entry,
+        IReadOnlyList<ExecutionHistoryEntry> history, CancellationToken ct)
+    {
+        var inspection = await InspectOperatorCleanupAsync(entry, history, ct);
+        if (inspection.Decision != "safe" || inspection.ReasonCode == "already-clean") return inspection;
+        // Never force-remove operator-selected worktrees. Git also refuses new local edits or locks.
+        await CleanupRecoveryWorkspaceCoreAsync(entry with { RecoveryState = "cleanup-pending" }, force: false, ct);
+        return inspection;
+    }
+
     private sealed record OwnershipError(string Code, string Message);
     private sealed record RecoveryOwnership(bool DirectoryExists, bool BranchExists, OwnershipError? Error = null);
 
@@ -76,7 +101,7 @@ public sealed partial class GitRepository
             related.Any(e => e.ExecutionId != entry.ExecutionId && e.AttemptNumber == entry.AttemptNumber))
             return Result("review", "lineage-inconsistent", "Attempt lineage is missing or inconsistent.");
         if (entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
-            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered"))
+            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "operator-cleaned"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
         {
@@ -85,7 +110,7 @@ public sealed partial class GitRepository
             if (!ownership.DirectoryExists && !ownership.BranchExists)
             {
                 if (entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
-                    "superseded" or "integration-recovered" or "cleanup-pending")
+                    "superseded" or "integration-recovered" or "cleanup-pending" or "operator-cleaned")
                     return Result("safe", "already-clean", "No managed workspace, Git registration or feature branch remains.");
                 return Result("review", "missing-recovery-resources", "History still requires recovery resources that no longer exist.");
             }

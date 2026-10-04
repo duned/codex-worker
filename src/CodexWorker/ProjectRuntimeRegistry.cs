@@ -11,6 +11,7 @@ public sealed class ProjectRuntimeRegistry
     private readonly RuntimeEventLog? _events;
     private bool _workerDraining;
     private int _workerActive;
+    private bool _maintenance;
     private long _version;
     private TaskCompletionSource<bool> _changed = NewSignal();
 
@@ -56,7 +57,7 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (!_projects.TryGetValue(name, out var entry) || entry.Active != 0 || entry.Removing) return false;
+            if (_maintenance || !_projects.TryGetValue(name, out var entry) || entry.Active != 0 || entry.Removing) return false;
             entry.StateBeforeRemoval = entry.State;
             entry.Removing = true;
             entry.State = ProjectLifecycleState.Disabled;
@@ -156,12 +157,38 @@ public sealed class ProjectRuntimeRegistry
         ArgumentNullException.ThrowIfNull(cancelLifecycle);
         lock (_gate)
         {
-            if (!_workerDraining || _workerActive != 0) return false;
+            if (!_workerDraining || _workerActive != 0 || _maintenance) return false;
             cancelLifecycle();
             _workerDraining = false;
             _events?.Publish("worker.drain.cancelled", "Worker drain was cancelled.");
             SignalChanged();
             return true;
+        }
+    }
+
+    /// <summary>Holds a completed drain until maintenance finishes, including durable recording.</summary>
+    public IDisposable? TryBeginMaintenance()
+    {
+        lock (_gate)
+        {
+            if (!_workerDraining || _workerActive != 0 || _maintenance || _projects.Values.Any(e => e.Removing)) return null;
+            _maintenance = true;
+            return new MaintenanceReservation(this);
+        }
+    }
+
+    private sealed class MaintenanceReservation(ProjectRuntimeRegistry registry) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            lock (registry._gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                registry._maintenance = false;
+            }
         }
     }
 
@@ -199,6 +226,7 @@ public sealed class ProjectRuntimeRegistry
         ProjectConfigurationDiscovery.ValidateSet(configurations);
         lock (_gate)
         {
+            if (_maintenance) throw new ProjectConfigurationConflictException("Execution cleanup is in progress; retry configuration changes after maintenance finishes.");
             var next = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
             foreach (var (path, configuration) in configurations)
             {

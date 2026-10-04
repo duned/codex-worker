@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using CodexWorker;
@@ -9,6 +10,45 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagementApiTests
 {
+    [Fact]
+    public async Task CleanupApiValidatesSelectionAndRequiresCompletedRunningDrain()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var history = new ExecutionHistoryStore(Path.Combine(directory, "history.db"));
+        var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [], history) { State = "running" };
+        var port = GetFreePort();
+        var app = await ManagementApi.StartAsync(model, new ManagementApiSettings { ListenUrl = $"http://127.0.0.1:{port}" }, CancellationToken.None);
+        Assert.NotNull(app);
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+            using var invalid = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest());
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            using var conflicting = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(IssueNumber: 4, Stale: true));
+            Assert.Equal(HttpStatusCode.BadRequest, conflicting.StatusCode);
+            using var tooBroad = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Limit: 101));
+            Assert.Equal(HttpStatusCode.BadRequest, tooBroad.StatusCode);
+            using var dryRun = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true));
+            Assert.Equal(HttpStatusCode.OK, dryRun.StatusCode);
+            Assert.Equal("[]", await dryRun.Content.ReadAsStringAsync());
+            using var undrained = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, undrained.StatusCode);
+            model.Registry.DrainWorker();
+            using var starting = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, starting.StatusCode);
+            model.State = "drained";
+            using var applied = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+        }
+        finally
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task ApiServesSafeRuntimeSnapshotsAndBoundedEvents()
     {

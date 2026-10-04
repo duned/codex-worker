@@ -71,7 +71,7 @@ public sealed class WorkerHost
         ProjectConfigurationWatcher? configurationWatcher = null;
         var runtimes = new List<ProjectRuntime>();
         var allRuntimes = new List<ProjectRuntime>();
-        var repositoryGates = new Dictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+        var repositoryGates = new System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
         var discoveredCapabilities = (IReadOnlyList<WorkerCapabilityContract>)Array.Empty<WorkerCapabilityContract>();
         var validatedConfigurations = new HashSet<WorkerConfiguration>(ReferenceEqualityComparer.Instance);
         string? activeProject = null;
@@ -168,7 +168,7 @@ public sealed class WorkerHost
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
             var lifecycle = new WorkerLifecycle();
             runtimeReadModel = new WorkerRuntimeReadModel(_global, configuredProjects, history, managedConfiguration: managedConfiguration,
-                lifecycle: lifecycle);
+                lifecycle: lifecycle, repositoryGates: repositoryGates);
             var configurationService = _global.Projects.Ownership == "managed"
                 ? null
                 : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
@@ -874,103 +874,107 @@ public sealed class WorkerHost
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct)
     {
-        var entries = await history.ReadAllAsync(ct);
         foreach (var project in runtimes)
         {
-            foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
-                         item.Repository == project.Configuration.Project.Repository &&
-                         item.RecoveryState == GitHubOperationException.ReconciliationRequiredState))
+            await project.RepositoryGate.WaitAsync(ct);
+            try
             {
-                GitHubIssueState remote;
-                try
+                var entries = await history.ReadAllAsync(ct);
+                foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
+                             item.Repository == project.Configuration.Project.Repository &&
+                             item.RecoveryState == GitHubOperationException.ReconciliationRequiredState))
                 {
-                    remote = await project.GitHub.ReadIssueStateAsync(entry.IssueNumber, ct);
-                }
-                catch (WorkerInfrastructureException ex)
-                {
-                    var safeDetail = FailureDiagnosticRedactor.Redact(ex.Message,
-                        project.Configuration.Environment.Variables.Values.ToArray());
-                    if (safeDetail.Length > 1200) safeDetail = safeDetail[..1180] + " … [truncated]";
-                    var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remote state could not be verified for execution {entry.ExecutionId}: {safeDetail}";
-                    runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
-                    runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
-                    _output.Warning(reason);
-                    _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · startup GitHub reconciliation could not verify remote state · project scheduling paused.");
-                    continue;
-                }
-                var readyRemains = RequiresManualGitHubReconciliation(remote, project.Configuration.GitHub.ReadyLabel);
-                if (readyRemains)
-                {
-                    var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
-                    runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
-                    runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
-                    _output.Warning(reason);
-                    _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · remote state verified as open and ready · scheduling paused pending manual reconciliation.");
-                    continue;
-                }
-                await history.UpdateRecoveryAsync(entry.ExecutionId, "github-reconciled", ct);
-                _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · GitHub state verified; Issue is not eligible for automatic replay.");
-            }
-            var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
-            foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
-                         item.Repository == project.Configuration.Project.Repository &&
-                         (item.RecoveryState is "recoverable" or "integration-conflict" or "cleanup-pending" or "missing") &&
-                         item.State != "IntegrationConflict" && item.IntegrationRecoveryClaim is null))
-            {
-                var expired = RecoveryRetentionPolicy.IsExpired(entry, retention, DateTimeOffset.UtcNow);
-                var cleanupPending = entry.RecoveryState == "cleanup-pending";
-                if (!project.Git.RecoveryWorkspaceExists(entry) && !expired && !cleanupPending)
-                {
-                    if (entry.RecoveryState != "missing")
-                    {
-                        await history.UpdateRecoveryAsync(entry.ExecutionId, "missing", ct);
-                        runtime.Events.Publish("recovery.missing", $"Recovery workspace for execution {entry.ExecutionId} is missing.", entry.Project);
-                    }
-                    continue;
-                }
-                if (!expired && !cleanupPending)
-                {
+                    GitHubIssueState remote;
                     try
                     {
-                        await project.Git.ValidateRecoveryWorkspaceAsync(project.Git.RecoveryWorkspacePath(entry), entry, ct);
+                        remote = await project.GitHub.ReadIssueStateAsync(entry.IssueNumber, ct);
                     }
                     catch (WorkerInfrastructureException ex)
                     {
-                        runtime.Events.Publish("recovery.reconciliation.skipped", $"Recovery state for execution {entry.ExecutionId} could not be verified: {ex.Message}", entry.Project);
-                        _output.Warning($"Recovery state retained for execution {entry.ExecutionId}: {ex.Message}");
+                        var safeDetail = FailureDiagnosticRedactor.Redact(ex.Message,
+                            project.Configuration.Environment.Variables.Values.ToArray());
+                        if (safeDetail.Length > 1200) safeDetail = safeDetail[..1180] + " … [truncated]";
+                        var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remote state could not be verified for execution {entry.ExecutionId}: {safeDetail}";
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
+                        _output.Warning(reason);
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · startup GitHub reconciliation could not verify remote state · project scheduling paused.");
+                        continue;
                     }
-                    continue;
+                    var readyRemains = RequiresManualGitHubReconciliation(remote, project.Configuration.GitHub.ReadyLabel);
+                    if (readyRemains)
+                    {
+                        var reason = $"GitHub reconciliation required: Issue #{entry.IssueNumber} remains open and ready after execution {entry.ExecutionId} had an uncertain mutation. Inspect the Issue and history, then explicitly enable the project after reconciliation.";
+                        runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                        runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
+                        _output.Warning(reason);
+                        _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · remote state verified as open and ready · scheduling paused pending manual reconciliation.");
+                        continue;
+                    }
+                    await history.UpdateRecoveryAsync(entry.ExecutionId, "github-reconciled", ct);
+                    _operationalLog($"Scheduler · {project.Configuration.Project.Name} · Issue #{entry.IssueNumber} · execution {entry.ExecutionId} · GitHub state verified; Issue is not eligible for automatic replay.");
                 }
+                var retention = TimeSpan.FromDays(project.Configuration.Worker.RecoveryRetentionDays);
+                foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
+                             item.Repository == project.Configuration.Project.Repository &&
+                             (item.RecoveryState is "recoverable" or "integration-conflict" or "cleanup-pending" or "missing") &&
+                             item.State != "IntegrationConflict" && item.IntegrationRecoveryClaim is null))
+                {
+                    var expired = RecoveryRetentionPolicy.IsExpired(entry, retention, DateTimeOffset.UtcNow);
+                    var cleanupPending = entry.RecoveryState == "cleanup-pending";
+                    if (!project.Git.RecoveryWorkspaceExists(entry) && !expired && !cleanupPending)
+                    {
+                        if (entry.RecoveryState != "missing")
+                        {
+                            await history.UpdateRecoveryAsync(entry.ExecutionId, "missing", ct);
+                            runtime.Events.Publish("recovery.missing", $"Recovery workspace for execution {entry.ExecutionId} is missing.", entry.Project);
+                        }
+                        continue;
+                    }
+                    if (!expired && !cleanupPending)
+                    {
+                        try
+                        {
+                            await project.Git.ValidateRecoveryWorkspaceAsync(project.Git.RecoveryWorkspacePath(entry), entry, ct);
+                        }
+                        catch (WorkerInfrastructureException ex)
+                        {
+                            runtime.Events.Publish("recovery.reconciliation.skipped", $"Recovery state for execution {entry.ExecutionId} could not be verified: {ex.Message}", entry.Project);
+                            _output.Warning($"Recovery state retained for execution {entry.ExecutionId}: {ex.Message}");
+                        }
+                        continue;
+                    }
 
-                runtime.Events.Publish(expired ? "recovery.expired" : "recovery.cleanup.resuming",
-                    expired ? $"Recovery workspace for execution {entry.ExecutionId} expired and is eligible for cleanup." :
-                    $"Resuming interrupted recovery cleanup for execution {entry.ExecutionId}.", entry.Project);
-                await history.UpdateRecoveryAsync(entry.ExecutionId, "cleanup-pending", ct);
-                try
-                {
-                    await project.Git.CleanupRecoveryWorkspaceAsync(entry with { RecoveryState = "cleanup-pending" }, ct);
-                    await history.UpdateRecoveryAsync(entry.ExecutionId, "expired-cleaned", ct);
-                    runtime.Events.Publish("recovery.cleanup.completed", $"Cleaned expired recovery resources for execution {entry.ExecutionId}.", entry.Project);
+                    runtime.Events.Publish(expired ? "recovery.expired" : "recovery.cleanup.resuming",
+                        expired ? $"Recovery workspace for execution {entry.ExecutionId} expired and is eligible for cleanup." :
+                        $"Resuming interrupted recovery cleanup for execution {entry.ExecutionId}.", entry.Project);
+                    await history.UpdateRecoveryAsync(entry.ExecutionId, "cleanup-pending", ct);
+                    try
+                    {
+                        await project.Git.CleanupRecoveryWorkspaceAsync(entry with { RecoveryState = "cleanup-pending" }, ct);
+                        await history.UpdateRecoveryAsync(entry.ExecutionId, "expired-cleaned", ct);
+                        runtime.Events.Publish("recovery.cleanup.completed", $"Cleaned expired recovery resources for execution {entry.ExecutionId}.", entry.Project);
+                    }
+                    catch (WorkerInfrastructureException ex)
+                    {
+                        runtime.Events.Publish("recovery.cleanup.skipped", $"Cleanup skipped for execution {entry.ExecutionId}: {ex.Message}", entry.Project);
+                        _output.Warning($"Recovery cleanup skipped for execution {entry.ExecutionId}: {ex.Message}");
+                    }
                 }
-                catch (WorkerInfrastructureException ex)
-                {
-                    runtime.Events.Publish("recovery.cleanup.skipped", $"Cleanup skipped for execution {entry.ExecutionId}: {ex.Message}", entry.Project);
-                    _output.Warning($"Recovery cleanup skipped for execution {entry.ExecutionId}: {ex.Message}");
-                }
+                runtime.Events.Publish("recovery.reconciled", "Recovery metadata reconciliation completed.", project.Configuration.Project.Name);
             }
-            runtime.Events.Publish("recovery.reconciled", "Recovery metadata reconciliation completed.", project.Configuration.Project.Name);
+            finally { project.RepositoryGate.Release(); }
         }
     }
 
     private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,
-        ExecutionHistoryStore history, IDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken)
+        ExecutionHistoryStore history, System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken)
     {
         var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
         var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
         var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
         var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
-        if (!repositoryGates.TryGetValue(config.Project.Repository, out var repositoryGate))
-            repositoryGates.Add(config.Project.Repository, repositoryGate = new SemaphoreSlim(1, 1));
+        var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken), codex, github, repositoryGate);
     }

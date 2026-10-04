@@ -109,6 +109,30 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Fact]
+    public void MaintenanceRequiresDrainAndPinsDrainAndConfigurationUntilReleased()
+    {
+        var config = Config("alpha");
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", config)]);
+        Assert.Null(registry.TryBeginMaintenance());
+        Assert.True(registry.TryReserve("alpha"));
+        registry.DrainWorker();
+        Assert.Null(registry.TryBeginMaintenance());
+        registry.Release("alpha");
+        using (var maintenance = registry.TryBeginMaintenance())
+        {
+            Assert.NotNull(maintenance);
+            Assert.Null(registry.TryBeginMaintenance());
+            Assert.False(registry.TryReserve("alpha"));
+            Assert.False(registry.CancelWorkerDrain(() => throw new InvalidOperationException("must not be invoked")));
+            Assert.False(registry.TryBeginRemoval("alpha"));
+            Assert.Throws<ProjectConfigurationConflictException>(() => registry.ReplaceConfiguration([("alpha.yml", config)]));
+        }
+        Assert.True(registry.CancelWorkerDrain(() => { }));
+        Assert.True(registry.TryReserve("alpha"));
+        registry.Release("alpha");
+    }
+
     private static WorkerConfiguration Config(string name, string repository = "owner/repo") => new()
     {
         Project = new ProjectSettings { Name = name, Repository = repository, Directory = Path.GetTempPath() },

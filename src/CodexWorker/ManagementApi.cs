@@ -99,13 +99,15 @@ public sealed class WorkerRuntimeReadModel
     private readonly ProjectRuntimeRegistry _registry;
     private readonly ManagedConfigurationSynchronizer? _managedConfiguration;
     private readonly WorkerLifecycle _lifecycle;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _repositoryGates;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private volatile string _state = "starting";
 
     public WorkerRuntimeReadModel(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, ExecutionHistoryStore history,
         ProjectConfigurationService? configurationService = null,
-        ManagedConfigurationSynchronizer? managedConfiguration = null, WorkerLifecycle? lifecycle = null)
+        ManagedConfigurationSynchronizer? managedConfiguration = null, WorkerLifecycle? lifecycle = null,
+        System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>? repositoryGates = null)
     {
         _global = global;
         _projects = projects;
@@ -113,6 +115,7 @@ public sealed class WorkerRuntimeReadModel
         _configurationService = configurationService;
         _managedConfiguration = managedConfiguration;
         _lifecycle = lifecycle ?? new WorkerLifecycle();
+        _repositoryGates = repositoryGates ?? new(StringComparer.OrdinalIgnoreCase);
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
         _registry = new ProjectRuntimeRegistry(projects, Events);
         CompletedBranchMaintenance = new CompletedBranchMaintenanceService(_registry, history);
@@ -122,6 +125,7 @@ public sealed class WorkerRuntimeReadModel
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
     public WorkerLifecycle Lifecycle => _lifecycle;
+    public ExecutionCleanupService ExecutionCleanup => new(_history, _registry, repositoryGates: _repositoryGates);
     public string State { get => _state; set => _state = value; }
     public WorkerConfigurationSyncStatus? ConfigurationSyncStatus => _managedConfiguration?.Status;
 
@@ -207,7 +211,7 @@ public sealed class WorkerRuntimeReadModel
             return new(entry.ExecutionId, "review", "project-unavailable", "Execution has no unique configured project; preserve resources for review.");
         var config = projects[0].Configuration;
         using var git = new GitRepository(new ProcessRunner(), config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
-        return await git.InspectCleanupAsync(entry, history, ct);
+        return await git.InspectOperatorCleanupAsync(entry, history, ct);
     }
 
     private static string? Outcome(string state) => state switch
@@ -325,6 +329,14 @@ public static class ManagementApi
         {
             var inspection = await model.InspectExecutionCleanupAsync(executionId, context.RequestAborted);
             return inspection is null ? (IResult)Results.NotFound() : Results.Ok(inspection);
+        });
+        app.MapPost("/api/executions/cleanup", async (ExecutionCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            if (request.Apply && model.State != "drained")
+                return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
+            try { return Results.Ok(await model.ExecutionCleanup.RunAsync(request, context.RequestAborted)); }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapGet("/api/events", (int? limit, WorkerRuntimeReadModel model) => Results.Ok(model.Events.ReadRecent(limit)));
         app.MapGet("/api/events/stream", async (HttpContext context, WorkerRuntimeReadModel model) =>

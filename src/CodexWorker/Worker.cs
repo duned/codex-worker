@@ -28,7 +28,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         if (!File.Exists(config.Codex.InstructionsFile))
             throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
-        await git.InitializeAsync(ct);
+        await _repositoryGate.WaitAsync(ct);
+        try { await git.InitializeAsync(ct); }
+        finally { _repositoryGate.Release(); }
         await ReconcileIntegrationRecoveryAsync(ct);
     }
 

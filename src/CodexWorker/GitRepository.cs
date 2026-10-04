@@ -493,6 +493,9 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
 
     /// <summary>Removes one persisted failed-execution workspace after proving its path, branch, and base identity.</summary>
     public async Task CleanupRecoveryWorkspaceAsync(ExecutionHistoryEntry recovery, CancellationToken ct)
+        => await CleanupRecoveryWorkspaceCoreAsync(recovery, force: true, ct);
+
+    private async Task CleanupRecoveryWorkspaceCoreAsync(ExecutionHistoryEntry recovery, bool force, CancellationToken ct)
     {
         try
         {
@@ -505,7 +508,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             var expectedBranch = recovery.FeatureBranch;
             var path = RecoveryWorkspacePath(recovery);
             if (ownership.DirectoryExists)
-                await GitAsync(["worktree", "remove", "--force", path], ct);
+                await GitAsync(force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path], ct);
 
             // show-ref --verify can report an absent ref as a fatal error on some Git
             // versions. Enumerate the expected ref prefix and require an exact match
