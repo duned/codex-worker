@@ -156,16 +156,22 @@ public sealed class NodeGitHubSetup
             File.SetUnixFileMode(key, FileMode);
             File.SetUnixFileMode(publicKey, FileMode);
         }
+        if (request.Action == ProvisioningCommandAction.VerifyRepositoryAccess)
+        {
+            // Repository reads use Git's supported HTTPS context. This does not require an SSH
+            // key or Git identity, and does not modify checkout or node configuration.
+            var repository = request.Repository ?? throw new InvalidOperationException("Repository is required.");
+            if (repository.EndsWith(".git", StringComparison.Ordinal)) repository = repository[..^4];
+            var verified = await _run("/usr/bin/git", ["ls-remote", "--", "https://github.com/" + repository + ".git", "HEAD"], token);
+            return verified.ExitCode == 0 ? Success() : new(ProvisioningCommandStatus.Failed,
+                ProvisioningDiagnostic.ProcessFailed, FailureDetail: new ProvisioningFailureDetail(ProvisioningFailureCode.RepositoryAccessFailed));
+        }
+        if (request.Action == ProvisioningCommandAction.InspectSshKey && !File.Exists(key) && !File.Exists(publicKey))
+            return Success();
         var identity = await ReadIdentityAsync(key, publicKey, token);
         if (request.Action is ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey)
             return Success(identity);
-        // No caller-supplied executable, options, host, URL, path or shell text. Ignore SSH
-        // config and require an operator-trusted github.com entry in node known_hosts.
-        var ssh = "/usr/bin/ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i " + ShellQuote(key);
-        var repository = request.Repository ?? throw new InvalidOperationException("Repository is required.");
-        if (repository.EndsWith(".git", StringComparison.Ordinal)) repository = repository[..^4];
-        var verified = await _run("/usr/bin/git", ["-C", directory, "-c", "core.sshCommand=" + ssh, "ls-remote", "--", "git@github.com:" + repository + ".git"], token);
-        return verified.ExitCode == 0 ? Success() : Failure(ProvisioningDiagnostic.ProcessFailed);
+        throw new InvalidOperationException("Unsupported Git setup action.");
     }
 
     private async Task<SshPublicIdentity> ReadIdentityAsync(string key, string publicKey, CancellationToken token)
@@ -242,7 +248,6 @@ public sealed class NodeGitHubSetup
         File.SetUnixFileMode(path, DirectoryMode);
     }
 
-    private static string ShellQuote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
     private static ProvisioningCommandReport Success(SshPublicIdentity? identity = null) => new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed, identity);
     private static ProvisioningCommandReport Failure(ProvisioningDiagnostic diagnostic) => new(ProvisioningCommandStatus.Failed, diagnostic);
 

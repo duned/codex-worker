@@ -10,7 +10,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed }
 
 /// <summary>Safe, bounded failure context. It contains no process output or caller-controlled text.</summary>
 public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null)
@@ -24,6 +24,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.ProcessStartFailed => "A provisioning process could not be started.",
         ProvisioningFailureCode.CapabilityDetectionFailed => "Capability detection failed.",
         ProvisioningFailureCode.PackageUnavailable => "The managed tool package is unavailable. Configure compatible node-local apt sources and refresh their indexes before retrying.",
+        ProvisioningFailureCode.RepositoryAccessFailed => "Git could not read the requested repository. Check the repository identifier, network access and node credentials.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
         _ => "Provisioning failed."
     };

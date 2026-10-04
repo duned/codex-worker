@@ -57,12 +57,66 @@ public sealed class NodeGitHubSetupTests
         Assert.Equal(generated.PublicIdentity, inspected.PublicIdentity);
         var verified = await setup.ExecuteAsync(Request(ProvisioningCommandAction.VerifyRepositoryAccess) with { Repository = "owner/repo" }, CancellationToken.None);
         Assert.Equal(ProvisioningCommandStatus.Succeeded, verified.Status);
-        Assert.Contains(node.Calls, call => call.Tool == "/usr/bin/git" && call.Args.Contains("git@github.com:owner/repo.git") &&
-            call.Args.Any(arg => arg.Contains("StrictHostKeyChecking=yes", StringComparison.Ordinal) && arg.Contains("IdentitiesOnly=yes", StringComparison.Ordinal)));
+        Assert.Contains(node.Calls, call => call.Tool == "/usr/bin/git" && call.Args.SequenceEqual(new[]
+            { "ls-remote", "--", "https://github.com/owner/repo.git", "HEAD" }));
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await setup.ExecuteAsync(Request(ProvisioningCommandAction.RemoveSshKey), CancellationToken.None)).Status);
         Assert.False(File.Exists(node.Key));
         Assert.False(File.Exists(node.Key + ".pub"));
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await setup.ExecuteAsync(Request(ProvisioningCommandAction.GenerateSshKey), CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task CleanHostInspectionAndRepositoryReadNeedNoSshDirectoryOrGitIdentity()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var node = new TestNode();
+        var setup = new NodeGitHubSetup(node.Root, node.RunAsync, unrelatedAuthentication: () => false);
+
+        var inspected = await setup.ExecuteAsync(Request(ProvisioningCommandAction.InspectSshKey), CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, inspected.Status);
+        Assert.Null(inspected.PublicIdentity);
+        Assert.False(Directory.Exists(Path.Combine(node.Root, "ssh")));
+        Assert.Empty(node.Calls);
+
+        var verified = await setup.ExecuteAsync(Request(ProvisioningCommandAction.VerifyRepositoryAccess) with
+        {
+            Repository = "owner/repo"
+        }, CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, verified.Status);
+        Assert.Equal("/usr/bin/git", Assert.Single(node.Calls).Tool);
+        Assert.Equal(new[] { "ls-remote", "--", "https://github.com/owner/repo.git", "HEAD" }, node.Calls[0].Args);
+        Assert.False(Directory.Exists(Path.Combine(node.Root, "ssh")));
+        Assert.False(Directory.Exists(node.Root));
+
+        Directory.CreateDirectory(Path.Combine(node.Root, "ssh"));
+        var missingKey = await setup.ExecuteAsync(Request(ProvisioningCommandAction.InspectSshKey), CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, missingKey.Status);
+        Assert.Null(missingKey.PublicIdentity);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(node.Root, "ssh")));
+    }
+
+    [Fact]
+    public async Task RepositoryReadFailureIsVerificationFailureAndProcessStartFailureRemainsTyped()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var node = new TestNode { RepositoryAccessFails = true };
+        var setup = new NodeGitHubSetup(node.Root, node.RunAsync, unrelatedAuthentication: () => false);
+        var request = Request(ProvisioningCommandAction.VerifyRepositoryAccess) with { Repository = "owner/private" };
+        var failed = await setup.ExecuteAsync(request, CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Failed, failed.Status);
+        Assert.Equal(ProvisioningFailureCode.RepositoryAccessFailed, failed.FailureDetail?.Code);
+        Assert.Contains("requested repository", failed.FailureDetail?.Description, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(node.Root));
+
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0")));
+        var executor = new NodeProvisioningCommandExecutor(discovery,
+            githubSetup: new NodeGitHubSetup(node.Root, (_, _, _) => throw new System.ComponentModel.Win32Exception(2),
+                unrelatedAuthentication: () => false));
+        var now = DateTimeOffset.UtcNow;
+        var command = new ProvisioningCommand(Guid.NewGuid().ToString("N"), request, now,
+            ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing, now, now.AddMinutes(1));
+        var startFailure = await executor.ExecuteAsync(command, permitted: true);
+        Assert.Equal(ProvisioningFailureCode.ExecutableNotFound, startFailure.FailureDetail?.Code);
     }
 
     [Fact]
@@ -234,6 +288,7 @@ public sealed class NodeGitHubSetupTests
         public int Generations { get; private set; }
         public bool Mismatch { get; set; }
         public bool Fail { get; set; }
+        public bool RepositoryAccessFails { get; set; }
         public List<(string Tool, IReadOnlyList<string> Args)> Calls { get; } = [];
         public static string PublicKey => "ssh-ed25519 " + Convert.ToBase64String([0, 0, 0, 11, .. System.Text.Encoding.ASCII.GetBytes("ssh-ed25519"), 0, 0, 0, 32, .. new byte[32]]);
         public async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
@@ -241,6 +296,7 @@ public sealed class NodeGitHubSetupTests
             token.ThrowIfCancellationRequested();
             Calls.Add((executable, arguments));
             if (Fail) return (1, "private-sentinel");
+            if (RepositoryAccessFails && arguments.Contains("ls-remote")) return (128, "private-sentinel");
             if (executable == "/usr/bin/gh")
             {
                 if (arguments.Contains("logout"))
