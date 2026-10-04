@@ -8,7 +8,7 @@ namespace WorkExecutionToolbox.Cli;
 public static class ToolboxCommand
 {
     public const string Help = """
-        Usage: wet COMMAND --repo owner/name [--json]
+        Usage: wet COMMAND --repo owner/name [--json] [--refresh]
           parent set CHILD PARENT       Set an organizational parent (clear before replacing).
           parent clear CHILD            Clear an organizational parent.
           children PARENT               List direct organizational children.
@@ -23,6 +23,7 @@ public static class ToolboxCommand
         Exit codes: 0 success; 1 provider/operation failure; 2 usage; 3 missing Issue;
                     4 conflict; 5 partial/uncertain write; 130 cancelled.
         After a failed, partial or cancelled write, refresh relationships before retrying.
+        --refresh fetches fresh Issue data for children, relationships and graph; stable IDs stay cached.
         --json emits a versioned JSON envelope; errors go to stderr, results to stdout.
         """;
 
@@ -50,6 +51,10 @@ public static class ToolboxCommand
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            using var readScope = (command.Name == "graph" ? graphs : (IIssueProvider)relationships)
+                is ICacheAwareIssueProvider cacheAware ? cacheAware.BeginReadOperation(command.Refresh) : null;
+            if (command.Refresh && readScope is null)
+                throw new GitHubIssueException(GitHubIssueFailure.Provider, "Provider does not support explicit refresh.");
             object? data;
             var lines = new List<string>();
             var exit = 0;
@@ -133,11 +138,13 @@ public static class ToolboxCommand
     {
         string? repository = null;
         var jsonSeen = false;
+        var refresh = false;
         var words = new List<string>();
         for (var i = 0; i < args.Length; i++)
         {
             if (args[i] == "--repo" && repository is null && i + 1 < args.Length)
                 repository = args[++i];
+            else if (args[i] == "--refresh" && !refresh) refresh = true;
             else if (args[i] == "--json" && !jsonSeen) jsonSeen = true;
             else if (args[i].StartsWith('-')) throw new ArgumentException("Unknown or duplicate option.");
             else words.Add(args[i]);
@@ -154,13 +161,14 @@ public static class ToolboxCommand
             "dependency add" or "dependency remove" => numbers.Length is >= 2 and <= 51,
             _ => false
         };
+        if (refresh && name is not ("children" or "relationships" or "graph")) valid = false;
         if (!valid) throw new ArgumentException("Invalid command arguments.");
         var issue = new IssueReference(GitHubRepositoryContext.Create(repository), numbers[0]);
         // Validate mutation contracts before any provider call or authentication.
         if (name == "parent set") _ = new SetParentRequest(issue, numbers[1]);
         if (name.StartsWith("dependency", StringComparison.Ordinal))
             _ = new SetDependenciesRequest(issue, numbers[1..], name == "dependency add");
-        return new Command(name, issue, numbers);
+        return new Command(name, issue, numbers, refresh);
     }
 
     private static int ExitCode(RelationshipChangeStatus status) => status switch
@@ -190,5 +198,5 @@ public static class ToolboxCommand
         return exit;
     }
 
-    private sealed record Command(string Name, IssueReference Issue, int[] Numbers);
+    private sealed record Command(string Name, IssueReference Issue, int[] Numbers, bool Refresh);
 }

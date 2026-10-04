@@ -5,6 +5,7 @@ public sealed partial class GitHubIssueProvider
     public async Task<IssueGraph?> GetGraphAsync(IssueReference root, IssueGraphOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        using var operation = EnsureReadOperation();
         ArgumentNullException.ThrowIfNull(root);
         options ??= new();
         options.Validate();
@@ -12,12 +13,10 @@ public sealed partial class GitHubIssueProvider
         void BeforeRequest()
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (requests >= options.MaxRequests) throw SafetyLimit("request count");
-            requests++;
+            if (Interlocked.Increment(ref requests) > options.MaxRequests) throw SafetyLimit("request count");
         }
 
-        BeforeRequest();
-        var resolvedRoot = await ResolveAsync(root, cancellationToken);
+        var resolvedRoot = await ResolveAsync(root, cancellationToken, BeforeRequest);
         if (resolvedRoot is null) return null;
         var nodes = new Dictionary<int, ResolvedIssue> { [root.Number] = resolvedRoot };
         var ids = new Dictionary<long, int> { [resolvedRoot.DatabaseId] = root.Number };
@@ -30,8 +29,7 @@ public sealed partial class GitHubIssueProvider
             var target = nodes[entry.Number];
             if (entry.Number != root.Number)
             {
-                BeforeRequest();
-                var verified = await ResolveAsync(target.Summary.Issue, cancellationToken);
+                var verified = await ResolveAsync(target.Summary.Issue, cancellationToken, BeforeRequest);
                 if (verified is null || verified.DatabaseId != target.DatabaseId)
                     throw InconsistentGraph();
                 target = verified;

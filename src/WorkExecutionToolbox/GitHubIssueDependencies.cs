@@ -9,6 +9,7 @@ public sealed partial class GitHubIssueProvider
     public async Task<IReadOnlyList<IssueSummary>?> GetBlockedByAsync(IssueReference issue,
         CancellationToken cancellationToken = default)
     {
+        using var operation = EnsureReadOperation();
         var target = await ResolveAsync(issue, cancellationToken);
         if (target is null) return null;
         return (await ReadBlockedByAsync(target.Summary.Issue, cancellationToken)).Select(item => item.Summary).ToArray();
@@ -17,6 +18,7 @@ public sealed partial class GitHubIssueProvider
     public async Task<RelationshipChangeResult> SetDependencyAsync(SetDependencyRequest request,
         CancellationToken cancellationToken = default)
     {
+        using var operation = EnsureReadOperation();
         ArgumentNullException.ThrowIfNull(request);
         var batch = await SetDependenciesAsync(new(request.Issue, [request.BlockerIssueNumber],
             request.Applied, request.PreviewOnly), cancellationToken);
@@ -26,6 +28,7 @@ public sealed partial class GitHubIssueProvider
     public async Task<DependencyBatchResult> SetDependenciesAsync(SetDependenciesRequest request,
         CancellationToken cancellationToken = default)
     {
+        using var operation = BeginReadOperation(refresh: true);
         ArgumentNullException.ThrowIfNull(request);
         // Validate scope before credentials, then preflight every relation before the first write.
         var repository = GitHubRepositoryContext.Create(request.Issue.Repository.Repository);
@@ -74,9 +77,8 @@ public sealed partial class GitHubIssueProvider
             {
                 var id = blockers[number].DatabaseId;
                 using var content = request.Applied ? JsonContent.Create(new { issue_id = id }) : null;
-                using var response = await SendAsync(request.Applied ? HttpMethod.Post : HttpMethod.Delete,
-                    request.Applied ? path : $"{path}/{id.ToString(CultureInfo.InvariantCulture)}", content,
-                    allowMissing: false, readBody: false, cancellationToken);
+                using var response = await SendMutationAsync(target, request.Applied ? HttpMethod.Post : HttpMethod.Delete,
+                    request.Applied ? path : $"{path}/{id.ToString(CultureInfo.InvariantCulture)}", content, cancellationToken);
             }
             catch (GitHubIssueException error) { writeError = error; }
 

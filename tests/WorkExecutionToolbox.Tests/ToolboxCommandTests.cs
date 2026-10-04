@@ -51,6 +51,8 @@ public sealed partial class ToolboxCommandTests
     [InlineData("--repo owner/repo --repo other/repo graph 9")]
     [InlineData("--repo owner/repo --unexpected graph 9")]
     [InlineData("--repo owner/repo --json --json graph 9")]
+    [InlineData("--repo owner/repo --refresh --refresh graph 9")]
+    [InlineData("--repo owner/repo parent set 9 3 --refresh")]
     public async Task InvalidInputNeverCallsProvider(string arguments)
     {
         var provider = new FakeProvider();

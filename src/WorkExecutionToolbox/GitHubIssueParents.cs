@@ -7,6 +7,7 @@ public sealed partial class GitHubIssueProvider
     /// <summary>Returns the native parent, or null when the Issue or parent is missing.</summary>
     public async Task<IssueSummary?> GetParentAsync(IssueReference child, CancellationToken cancellationToken = default)
     {
+        using var operation = EnsureReadOperation();
         var resolved = await ResolveAsync(child, cancellationToken);
         return resolved is null ? null : (await ReadParentAsync(resolved.Summary.Issue, cancellationToken))?.Summary;
     }
@@ -17,6 +18,7 @@ public sealed partial class GitHubIssueProvider
     /// </summary>
     public async Task<IReadOnlyList<IssueSummary>?> ListChildrenAsync(IssueReference parent, CancellationToken cancellationToken = default)
     {
+        using var operation = EnsureReadOperation();
         var resolved = await ResolveAsync(parent, cancellationToken);
         if (resolved is null) return null;
         var children = await ReadRelatedIssuesAsync(resolved.Summary.Issue, "/sub_issues", cancellationToken);
@@ -35,6 +37,7 @@ public sealed partial class GitHubIssueProvider
     /// </summary>
     public async Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default)
     {
+        using var operation = BeginReadOperation(refresh: true);
         ArgumentNullException.ThrowIfNull(request);
         var writeAttempted = false;
         try
@@ -101,10 +104,15 @@ public sealed partial class GitHubIssueProvider
 
     private async Task<ResolvedIssue?> ReadParentAsync(IssueReference child, CancellationToken cancellationToken, Action? beforeRequest = null)
     {
-        beforeRequest?.Invoke();
-        using var document = await SendAsync(child.Repository, child.Number, "/parent", HttpMethod.Get, null,
-            allowMissing: true, readBody: true, cancellationToken);
-        return document is null ? null : ParseIssue(document.RootElement, child.Repository) ?? throw InvalidResponse();
+        var entry = await CachedReadAsync(child, "parent", async () =>
+        {
+            beforeRequest?.Invoke();
+            using var document = await SendAsync(child.Repository, child.Number, "/parent", HttpMethod.Get, null,
+                allowMissing: true, readBody: true, cancellationToken);
+            var parent = document is null ? null : ParseIssue(document.RootElement, child.Repository) ?? throw InvalidResponse();
+            return (parent is null ? Array.Empty<ResolvedIssue>() : new[] { parent }, 1);
+        }, cancellationToken);
+        return entry.Issues.SingleOrDefault();
     }
 
     private static RelationshipChangeResult Failed(string diagnostic) => new(RelationshipChangeStatus.Failed, diagnostic);

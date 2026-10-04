@@ -186,7 +186,7 @@ public sealed class GitHubIssueInspectionTests
         var error = await Assert.ThrowsAsync<GitHubIssueException>(() => Provider(http).GetGraphAsync(Issue(1),
             new() { MaxPagesPerRelation = 1 }));
         Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
-        Assert.Equal(3, handler.Paths.Count);
+        Assert.Equal(5, handler.Paths.Count);
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public sealed class GitHubIssueInspectionTests
         using var http = new HttpClient(handler);
         var error = await Assert.ThrowsAsync<GitHubIssueException>(() => Provider(http).GetRelationshipsAsync(Issue(1)));
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
-        Assert.Equal(4, handler.Paths.Count);
+        Assert.Equal(6, handler.Paths.Count);
     }
 
     [Theory]
@@ -301,6 +301,29 @@ public sealed class GitHubIssueInspectionTests
             new IssueGraphOptions { MaxPagesPerRelation = 0 }, new IssueGraphOptions { MaxPagesPerRelation = 101 }
         })
             await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => provider.GetGraphAsync(Issue(1), options));
+    }
+
+    [Fact]
+    public async Task WarmRelationshipSetsStillEnforceGraphPaginationLimits()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-pagination-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var handler = new GraphHandler();
+            for (var number = 2; number <= 102; number++) handler.Parents[number] = 1;
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new GitHubIssueCacheOptions { DirectoryPath = directory });
+            var relationships = await Create().GetRelationshipsAsync(Issue(1));
+            Assert.NotNull(relationships);
+            Assert.Equal(101, relationships.Children.Count);
+            handler.Paths.Clear();
+            var error = await Assert.ThrowsAsync<GitHubIssueException>(() => Create().GetGraphAsync(Issue(1),
+                new() { MaxDepth = 0, MaxPagesPerRelation = 1 }));
+            Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
+            Assert.Empty(handler.Paths);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
     private static void AssertSafe(object value)

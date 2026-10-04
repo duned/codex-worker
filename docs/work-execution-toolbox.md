@@ -107,6 +107,7 @@ wet dependency add 9 3 4 --repo owner/name
 wet dependency remove 9 4 --repo owner/name
 wet relationships 9 --repo owner/name
 wet graph 9 --repo owner/name --json
+wet graph 9 --repo owner/name --refresh
 ```
 
 Parent/child relationships organize Issues; they do not block execution. Setting
@@ -133,7 +134,7 @@ as a whole. `--json` retains the versioned node/edge graph contract and directio
 
 Options may appear anywhere. `--help` / `-h` requires no credentials or repository.
 Ctrl+C cancels pending work. HTTP requests have a 60-second timeout. After a failed,
-partial or cancelled write, read `relationships` before retrying: a write may have
+partial or cancelled write, read `relationships --refresh` before retrying: a write may have
 taken effect even if its response could not be verified.
 
 ### JSON contract and exit codes
@@ -266,3 +267,42 @@ Check that the first mutations report `changed`, repeated requests report
 has no parent or blockers and parent 3 no longer lists it. If any write fails,
 returns partial or is cancelled, inspect current relationships before continuing;
 cleanup must use only the disposable relationships you created.
+
+## GitHub read caching and refresh
+
+The standalone CLI persists validated Issue summaries, stable database identities, and complete
+parent, children, blocked-by and blocking sets under the current user's local application data
+directory, `wet/github-issue-cache`. On Linux this normally uses `$XDG_DATA_HOME` or
+`~/.local/share`. This cache belongs to WET and needs no Server, Worker or `cw` installation.
+Repository names (case insensitive) and human Issue numbers scope every entry. Only minimal
+validated read data is stored; credentials and raw GitHub response bodies are excluded. Invalid,
+unsupported or unreadable entries are treated as misses. Cache writes use atomic replacement.
+
+Open Issue metadata and relationships expire after **30 seconds**; closed Issue data expires
+after **7 days**. Closed state alone selects the longer lifetime, with no Worker label policy.
+These are read optimizations, not an atomic GitHub snapshot or a guarantee that state remains
+unchanged. Missing/invisible Issues are not persistently negative-cached. Graph reciprocity,
+identity, cycle, depth, Issue and edge checks remain active. HTTP request budgets count actual
+cache misses; cached lists still obey relationship pagination limits.
+
+Use `--refresh` with `children`, `relationships` or `graph` to bypass persistent mutable data.
+Stable identities stay cached, and equivalent reads are deduplicated within the command even
+with refresh. Refresh is rejected for mutation commands: mutation preflight and verification
+always read fresh state. Before and after each attempted write, all mutable data for the
+repository is invalidated, including the reverse relationships. Uncertain and cancelled writes
+also invalidate it; refresh authoritative relationships before retrying. Identity mappings are
+retained. Generation markers prevent reads started before a mutation from republishing stale
+data into the current cache generation.
+
+Library hosts can supply `GitHubIssueCacheOptions` to `GitHubIssueProvider`, setting
+`DirectoryPath` to their own standalone cache location and optionally supplying `TimeProvider`.
+Without a directory, only operation deduplication is enabled. `BeginReadOperation(refresh: true)`
+on `ICacheAwareIssueProvider` provides explicit freshness for library callers. Public read methods
+create a scope automatically when needed; hosts may wrap several reads in one scope. Dispose
+the scope in the caller's execution context. Internal GitHub IDs remain behind the provider.
+
+Cold inspections overlap the four independent relationship endpoints per Issue with bounded
+concurrency, while joining every read on failure or cancellation. A deterministic 15-Issue
+hierarchy/dependency overlap regression counts **75 unique cold REST
+reads** and **zero warm reads** from a new provider using the same persisted cache. This protects
+request efficiency without live GitHub credentials; it is not a measured live campaign timing.
