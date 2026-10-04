@@ -8,7 +8,9 @@ public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string St
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
 public sealed record IntegrationRepairResult(bool Attempted, bool Completed);
-public class GitIntegrationConflictException(string message) : Exception(message);
+public class GitIntegrationConflictException(string message, Exception? inner = null) : Exception(message, inner);
+
+public sealed class GitIntegrationArchiveException(string message, Exception inner) : GitIntegrationConflictException(message, inner);
 
 /// <summary>Post-rebase validation could not be repaired on a preserved implementation.</summary>
 public sealed class PostRebaseValidationException(string message, ValidationFailure? failure = null) : GitIntegrationConflictException(message)
@@ -186,13 +188,12 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await EnsureOriginAsync(ct);
             await EnsureCleanAsync($"before Issue #{issue.Number}", ct);
             await ValidateBranchRefAsync(FeatureBranchName(settings, issue), ct);
-            await ValidateBranchRefAsync(CompletedBranchName(settings, issue), ct);
             await GitAsync(["switch", "--", settings.BaseBranch], ct);
             await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             _executionId = executionId;
             _featureBranch = attemptNumber <= 1 ? FeatureBranchName(settings, issue) : $"{FeatureBranchName(settings, issue)}-retry-{attemptNumber}";
-            _completedBranch = CompletedBranchName(settings, issue);
+            _completedBranch = await SelectCompletedBranchAsync(issue, attemptNumber, executionId, ct);
             var root = Path.GetFullPath(worktreeRoot);
             if (IsWithin(Path.GetFullPath(directory), root))
                 throw new WorkerInfrastructureException("Managed execution worktree root must be outside the configured project checkout.");
@@ -262,7 +263,9 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             await ValidateRecoveryWorkspaceAsync(sourcePath, source, ct);
             _executionDirectory = sourcePath;
             _featureBranch = source.FeatureBranch;
-            _completedBranch = CompletedBranchName(settings, new GitHubIssue(source.IssueNumber, source.IssueTitle, "", source.StartedAtUtc));
+            _completedBranch = await SelectCompletedBranchAsync(
+                new GitHubIssue(source.IssueNumber, source.IssueTitle, "", source.StartedAtUtc),
+                source.AttemptNumber, source.ExecutionId, ct, source.RecoveryBaseCommit);
             _startingCommit = source.RecoveryBaseCommit;
             _executionId = source.ExecutionId;
             _implementationAlreadyCommitted = true;
@@ -646,24 +649,43 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
                 if (settings.PushCompletedBranch)
-                    await GitAsync(["push", "origin", $"{_featureBranch}:refs/heads/{_completedBranch}"], ct);
+                {
+                    try
+                    {
+                        await GitAsync(["push", "origin", $"{_featureBranch}:refs/heads/{_completedBranch}"], ct);
+                    }
+                    catch (WorkerInfrastructureException ex) when (!WorkerShutdown.IsCancellation(ex))
+                    {
+                        throw new GitIntegrationArchiveException(
+                            $"Could not preserve Issue #{issue.Number} integration as completed branch '{_completedBranch}'. The implementation remains available for integration recovery.", ex);
+                    }
+                }
             }
             if (settings.DeleteLocalFeatureBranch && settings.AutoMerge)
             {
                 await RemoveExecutionWorktreeAsync(ct);
-                _executionDirectory = null;
-                _executionId = null;
                 if (await GetCurrentBranchAsync(ct) != settings.BaseBranch)
                     throw new WorkerInfrastructureException("Refusing to delete feature branch while it is checked out.");
                 if (settings.PushCompletedBranch)
                 {
-                    await GitAsync(["branch", "-m", "--", _featureBranch!, _completedBranch!], ct);
-                    _featureBranch = _completedBranch;
+                    try
+                    {
+                        await GitAsync(["branch", "-m", "--", _featureBranch!, _completedBranch!], ct);
+                        _featureBranch = _completedBranch;
+                    }
+                    catch (WorkerInfrastructureException ex) when (!WorkerShutdown.IsCancellation(ex))
+                    {
+                        await GitAsync(["worktree", "add", Path.GetFullPath(_executionDirectory!), _featureBranch!], ct);
+                        throw new GitIntegrationArchiveException(
+                            $"Could not archive Issue #{issue.Number} as completed branch '{_completedBranch}'. The implementation remains available for integration recovery.", ex);
+                    }
                 }
                 else
                 {
                     await DeleteFeatureBranchIfUnownedAsync(_featureBranch!, ct);
                 }
+                _executionDirectory = null;
+                _executionId = null;
             }
             else
             {
@@ -833,6 +855,50 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     {
         if (!await IsValidBranchRefAsync(runner, directory, branch, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct))
             throw new WorkerInfrastructureException($"Invalid Git branch ref generated from configuration/title: '{branch}'.");
+    }
+
+    private async Task<string> SelectCompletedBranchAsync(GitHubIssue issue, int attemptNumber, Guid executionId,
+        CancellationToken ct, string? expectedCommit = null)
+    {
+        var standard = CompletedBranchName(settings, issue);
+        var preferred = attemptNumber <= 1 ? standard : $"{standard}-retry-{attemptNumber}";
+        await ValidateBranchRefAsync(preferred, ct);
+        if (!settings.PushCompletedBranch) return preferred;
+        if (await IsCompletedBranchAvailableOrOwnedAsync(preferred, expectedCommit, ct)) return preferred;
+
+        var executionBranch = $"{preferred}-execution-{executionId:N}";
+        await ValidateBranchRefAsync(executionBranch, ct);
+        if (await IsCompletedBranchAvailableOrOwnedAsync(executionBranch, expectedCommit, ct)) return executionBranch;
+
+        throw new GitIntegrationArchiveException(
+            $"Completed branch names for Issue #{issue.Number} are already owned by other commits; no historical branch was changed.",
+            new InvalidOperationException("Completed branch candidates are occupied."));
+    }
+
+    private async Task<bool> IsCompletedBranchAvailableOrOwnedAsync(string branch, string? expectedCommit, CancellationToken ct)
+    {
+        var expectedRef = $"refs/heads/{branch}";
+        var localRefs = (await GitAsync(["for-each-ref", "--format=%(refname)", expectedRef], ct))
+            .StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (localRefs.Contains(expectedRef, StringComparer.Ordinal))
+        {
+            var localCommit = (await GitAsync(["rev-parse", expectedRef], ct)).StandardOutput.Trim();
+            if (expectedCommit is null || !string.Equals(localCommit, expectedCommit, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        var remote = await GitAsync(["ls-remote", "--heads", "origin", $"refs/heads/{branch}"], ct);
+        var remoteCommit = remote.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => line.Split('\t', StringSplitOptions.TrimEntries))
+            .Where(fields => fields.Length == 2 && string.Equals(fields[1], expectedRef, StringComparison.Ordinal))
+            .Select(fields => fields[0])
+            .FirstOrDefault();
+        if (remoteCommit is not null && (expectedCommit is null ||
+            !string.Equals(remoteCommit, expectedCommit, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        return true;
     }
 
     private async Task<string> GetCurrentBranchAsync(CancellationToken ct) =>

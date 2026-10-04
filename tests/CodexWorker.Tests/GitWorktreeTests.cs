@@ -276,6 +276,60 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
+    public async Task ReopenedIssueArchivesEachExecutionWithoutReplacingHistoricalCompletedBranches()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var settings = new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" };
+        var historicalCommit = string.Empty;
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            using var git = fixture.CreateRepository(settings);
+            await git.InitializeAsync(CancellationToken.None);
+            await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, null, false, attempt, CancellationToken.None);
+            await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, $"implementation-{attempt}.txt"), $"attempt {attempt}");
+
+            var result = await git.CommitAndIntegrateAsync(fixture.Issue,
+                _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+
+            Assert.True(result.HasChanges);
+            var expected = attempt == 1
+                ? "done/feature/example-task-17"
+                : $"done/feature/example-task-17-retry-{attempt}";
+            Assert.Equal(expected, result.CompletedBranch);
+            Assert.Equal($"attempt {attempt}", await fixture.Git("show", $"{expected}:implementation-{attempt}.txt"));
+            if (attempt == 1) historicalCommit = (await fixture.Git("rev-parse", expected)).Trim();
+            else Assert.Equal(historicalCommit, (await fixture.Git("rev-parse", "done/feature/example-task-17")).Trim());
+        }
+    }
+
+    [Fact]
+    public async Task ExistingLocalAndRemoteRetryCompletionRefsArePreservedAndExecutionGetsUniqueName()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var settings = new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" };
+        const string occupied = "done/feature/example-task-17-retry-2";
+        await fixture.Git("branch", occupied, "main");
+        await fixture.Git("push", "origin", $"refs/heads/{occupied}");
+        var historical = (await fixture.Git("rev-parse", occupied)).Trim();
+        var executionId = Guid.NewGuid();
+
+        using var git = fixture.CreateRepository(settings);
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(executionId, fixture.Issue, null, false, 2, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "retry-implementation.txt"), "new implementation");
+
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+
+        var unique = $"{occupied}-execution-{executionId:N}";
+        Assert.Equal(unique, result.CompletedBranch);
+        Assert.Equal(historical, (await fixture.Git("rev-parse", occupied)).Trim());
+        Assert.Equal(historical, (await fixture.Git("ls-remote", "origin", $"refs/heads/{occupied}")).Split('\t')[0]);
+        Assert.Equal("new implementation", await fixture.Git("show", $"{unique}:retry-implementation.txt"));
+    }
+
+    [Fact]
     public async Task AdvancedBaseRebasesFeatureValidatesAndFastForwardsFeatureCommit()
     {
         using var fixture = await RepositoryFixture.CreateAsync();
