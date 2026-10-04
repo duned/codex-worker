@@ -21,6 +21,8 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
 {
     public string Description => Code switch
     {
+        ProvisioningFailureCode.ElevationDenied when ProviderStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval =>
+            "Non-interactive sudo authorization was denied. Authorize the fixed npm system-prefix command through node-local sudo policy, or invoke local provisioning as an administrator with --allow-elevation. The action must still be allowlisted by local provisioning policy.",
         ProvisioningFailureCode.ElevationDenied => "Non-interactive sudo authorization was denied.",
         ProvisioningFailureCode.SystemPrefixPermissionDenied => "npm could not mutate the managed system prefix /usr/local or cache /var/cache/codex-provisioning/npm. Check node-local non-interactive sudo authorization for the fixed npm provider commands and filesystem permissions, then retry with --allow-elevation and the action allowlisted by local provisioning policy.",
         ProvisioningFailureCode.ExecutableNotFound => "A required provisioning executable was not found.",

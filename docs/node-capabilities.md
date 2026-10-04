@@ -131,7 +131,9 @@ output. Inspect refreshed installation/version facts after `ProcessFailed`,
 or local authorization failures, and explicitly retry install/update/uninstall.
 Codex npm permission failures identify the managed prefix/cache and the failed
 provider step, with guidance to check the fixed-command sudo authorization and
-filesystem permissions; raw npm output is never returned.
+filesystem permissions; raw npm output is never returned. A denied npm elevation
+also explains that an administrator may invoke local provisioning with
+`--allow-elevation`, while the node-local action allowlist remains required.
 The command store's existing acknowledgement/reconciliation rules prevent
 automatic replay of an uncertain operation.
 

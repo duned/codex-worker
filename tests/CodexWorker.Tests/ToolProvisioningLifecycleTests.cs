@@ -188,13 +188,18 @@ public sealed class ToolProvisioningLifecycleTests
     }
 
     [Theory]
-    [InlineData(ProvisioningCommandAction.Install, true)]
-    [InlineData(ProvisioningCommandAction.Install, false)]
-    [InlineData(ProvisioningCommandAction.Update, true)]
-    [InlineData(ProvisioningCommandAction.Update, false)]
-    [InlineData(ProvisioningCommandAction.Uninstall, true)]
+    [InlineData(ProvisioningCommandAction.Install, true, false)]
+    [InlineData(ProvisioningCommandAction.Install, false, false)]
+    [InlineData(ProvisioningCommandAction.Update, true, false)]
+    [InlineData(ProvisioningCommandAction.Update, false, false)]
+    [InlineData(ProvisioningCommandAction.Uninstall, true, false)]
+    [InlineData(ProvisioningCommandAction.Install, true, true)]
+    [InlineData(ProvisioningCommandAction.Install, false, true)]
+    [InlineData(ProvisioningCommandAction.Update, true, true)]
+    [InlineData(ProvisioningCommandAction.Update, false, true)]
+    [InlineData(ProvisioningCommandAction.Uninstall, true, true)]
     public async Task CodexSystemMutationsUseNonInteractiveElevationOnlyForFixedProviderSteps(
-        ProvisioningCommandAction action, bool npmAvailable)
+        ProvisioningCommandAction action, bool npmAvailable, bool isRoot)
     {
         var calls = new List<(string Tool, IReadOnlyList<string> Args)>();
         var discovery = new NodeCapabilityDiscovery((tool, _, _) =>
@@ -203,7 +208,7 @@ public sealed class ToolProvisioningLifecycleTests
             return Task.FromException<(int, string)>(new FileNotFoundException());
         });
         var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
-            isRoot: () => false, npmAvailable: () => npmAvailable,
+            isRoot: () => isRoot, npmAvailable: () => npmAvailable,
             processRunner: (tool, args, _) =>
             {
                 calls.Add((tool, args));
@@ -217,8 +222,8 @@ public sealed class ToolProvisioningLifecycleTests
         for (var index = 0; index < plan.Count; index++)
         {
             Assert.True(plan[index].RequiresElevation);
-            Assert.Equal("/usr/bin/sudo", calls[index].Tool);
-            Assert.Equal(["-n", plan[index].Executable, .. plan[index].Arguments], calls[index].Args);
+            Assert.Equal(isRoot ? plan[index].Executable : "/usr/bin/sudo", calls[index].Tool);
+            Assert.Equal(isRoot ? plan[index].Arguments : ["-n", plan[index].Executable, .. plan[index].Arguments], calls[index].Args);
         }
         var npm = Assert.Single(plan, step => step.Executable == "/usr/bin/npm");
         Assert.Equal([action == ProvisioningCommandAction.Uninstall ? "uninstall" : "install",
@@ -237,14 +242,18 @@ public sealed class ToolProvisioningLifecycleTests
     }
 
     [Theory]
-    [InlineData(ProvisioningCommandAction.Install)]
-    [InlineData(ProvisioningCommandAction.Update)]
-    [InlineData(ProvisioningCommandAction.Uninstall)]
-    public async Task CodexPolicyRejectsMissingAuthorizationAllowlistAndDeniedActionsBeforeMutation(ProvisioningCommandAction action)
+    [InlineData(ProvisioningCommandAction.Install, false)]
+    [InlineData(ProvisioningCommandAction.Update, false)]
+    [InlineData(ProvisioningCommandAction.Uninstall, false)]
+    [InlineData(ProvisioningCommandAction.Install, true)]
+    [InlineData(ProvisioningCommandAction.Update, true)]
+    [InlineData(ProvisioningCommandAction.Uninstall, true)]
+    public async Task CodexPolicyRejectsMissingAuthorizationAllowlistAndDeniedActionsBeforeMutation(
+        ProvisioningCommandAction action, bool isRoot)
     {
         var discovery = new NodeCapabilityDiscovery((_, _, _) => throw new InvalidOperationException("Must not probe"));
         var executor = new NodeProvisioningCommandExecutor(discovery,
-            (_, _, _) => throw new InvalidOperationException("Must not mutate"), supportsApt: () => true);
+            (_, _, _) => throw new InvalidOperationException("Must not mutate"), supportsApt: () => true, isRoot: () => isRoot);
         var request = new ProvisioningCommandRequest("server", "codex-cli", action, AllowElevation: true);
         var key = $"tool:codex-cli:{action}".ToLowerInvariant();
         var policy = new ProvisioningPolicy { Enabled = true, AllowNonPrivileged = true };
@@ -284,6 +293,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(action == ProvisioningCommandAction.Uninstall ? ProvisioningProviderStep.NpmPackageRemoval :
             ProvisioningProviderStep.NpmPackageInstall, report.FailureDetail?.ProviderStep);
         Assert.Contains("sudo", report.FailureDetail?.Description, StringComparison.Ordinal);
+        Assert.Contains("--allow-elevation", report.FailureDetail?.Description, StringComparison.Ordinal);
+        Assert.Contains("local provisioning policy", report.FailureDetail?.Description, StringComparison.Ordinal);
         Assert.DoesNotContain("private-token", JsonSerializer.Serialize(report), StringComparison.Ordinal);
         Assert.True(report.FailureDetail?.Description.Length < 600);
         Assert.True(ProvisioningCommandProtocol.ValidReport(report));
