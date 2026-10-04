@@ -12,7 +12,7 @@ public interface IIssueProvider
 }
 
 /// <summary>Issue reads and initial relationship operations using repository-scoped human numbers.</summary>
-public interface IIssueRelationshipProvider : IIssueProvider
+public interface IIssueRelationshipProvider : IIssueDependencyProvider
 {
     /// <summary>Returns complete relationships, or null when the Issue is missing or not visible.</summary>
     Task<IssueRelationships?> GetRelationshipsAsync(IssueReference issue, CancellationToken cancellationToken = default);
@@ -24,13 +24,6 @@ public interface IIssueRelationshipProvider : IIssueProvider
     /// callers must explicitly clear it before setting a new parent. Verify writes by reading back.
     /// </summary>
     Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Adds or removes a blocked-by dependency in the Issue's repository. Reject self-links
-    /// and preflight visibility before writing. Preview performs no writes; an already
-    /// satisfied request returns Unchanged. Parent/child relationships are unaffected.
-    /// </summary>
-    Task<RelationshipChangeResult> SetDependencyAsync(SetDependencyRequest request, CancellationToken cancellationToken = default);
 }
 
 public sealed record SetParentRequest

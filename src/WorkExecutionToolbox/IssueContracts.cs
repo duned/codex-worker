@@ -60,7 +60,8 @@ public enum RelationshipChangeStatus
 }
 
 /// <summary>
-/// Partial means a mutation occurred before the remaining operation failed. Refresh before retrying.
+/// Partial means a mutation occurred before a remaining operation failed, or an attempted
+/// mutation could not be verified. Refresh before retrying.
 /// Conflict requires an explicit caller decision; parent operations never replace a different parent.
 /// Diagnostics must be bounded, actionable and free of credentials or raw HTTP responses.
 /// </summary>

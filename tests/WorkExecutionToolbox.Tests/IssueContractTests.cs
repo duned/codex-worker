@@ -129,6 +129,20 @@ public sealed class IssueContractTests
                 ? RelationshipChangeStatus.Preview : RelationshipChangeStatus.Changed));
         }
 
+        public Task<IReadOnlyList<IssueSummary>?> GetBlockedByAsync(IssueReference issue, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<IssueSummary>?>([Summary(issue.Repository, 20)]);
+        }
+
+        public async Task<DependencyBatchResult> SetDependenciesAsync(SetDependenciesRequest request, CancellationToken cancellationToken = default)
+        {
+            var results = new List<DependencyChangeResult>();
+            foreach (var number in request.BlockerIssueNumbers)
+                results.Add(new(number, await SetDependencyAsync(new(request.Issue, number, request.Applied, request.PreviewOnly), cancellationToken)));
+            return new(request.PreviewOnly ? RelationshipChangeStatus.Preview : RelationshipChangeStatus.Changed, results);
+        }
+
         private static IssueSummary Summary(RepositoryContext repository, int number) => new(new(repository, number), "Example", IssueState.Open);
     }
 }

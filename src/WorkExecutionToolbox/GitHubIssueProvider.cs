@@ -23,7 +23,7 @@ public sealed class GitHubIssueException(GitHubIssueFailure failure, string mess
 /// GitHub.com Issue resolution. The host owns HTTP lifetime and supplies credentials;
 /// the provider never reads CLI state, environment variables or ambient repository defaults.
 /// </summary>
-public sealed partial class GitHubIssueProvider : IIssueProvider
+public sealed partial class GitHubIssueProvider : IIssueDependencyProvider
 {
     private readonly HttpClient _http;
     private readonly Func<CancellationToken, Task<string>> _getToken;
@@ -44,14 +44,21 @@ public sealed partial class GitHubIssueProvider : IIssueProvider
     {
         ArgumentNullException.ThrowIfNull(issue);
         var repository = GitHubRepositoryContext.Create(issue.Repository.Repository);
-        using var document = await SendAsync(repository, issue.Number, "", HttpMethod.Get, null,
-            allowMissing: true, readBody: true, cancellationToken);
+        using var document = await SendAsync(HttpMethod.Get,
+            $"repos/{repository.Repository}/issues/{issue.Number.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            null, allowMissing: true, readBody: true, cancellationToken);
         if (document is null) return null;
         return ParseIssue(document.RootElement, repository, issue.Number, allowPullRequest: true);
     }
 
-    private async Task<JsonDocument?> SendAsync(RepositoryContext repository, int number, string suffix,
-        HttpMethod method, object? body, bool allowMissing, bool readBody, CancellationToken cancellationToken)
+    private Task<JsonDocument?> SendAsync(RepositoryContext repository, int number, string suffix,
+        HttpMethod method, object? body, bool allowMissing, bool readBody, CancellationToken cancellationToken) =>
+        SendAsync(method,
+            $"repos/{repository.Repository}/issues/{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}{suffix}",
+            body is null ? null : System.Net.Http.Json.JsonContent.Create(body), allowMissing, readBody, cancellationToken);
+
+    private async Task<JsonDocument?> SendAsync(HttpMethod method, string path, HttpContent? content,
+        bool allowMissing, bool readBody, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string token;
@@ -61,9 +68,8 @@ public sealed partial class GitHubIssueProvider : IIssueProvider
         if (string.IsNullOrWhiteSpace(token) || token.Length > 16_384 || token.Any(char.IsWhiteSpace) || token.Any(char.IsControl))
             throw new GitHubIssueException(GitHubIssueFailure.Authorization, "GitHub credentials are missing or invalid.");
 
-        using var request = new HttpRequestMessage(method,
-            $"https://api.github.com/repos/{repository.Repository}/issues/{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}{suffix}");
-        if (body is not null) request.Content = System.Net.Http.Json.JsonContent.Create(body);
+        using var request = new HttpRequestMessage(method, $"https://api.github.com/{path}");
+        request.Content = content;
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Headers.UserAgent.ParseAdd("WorkExecutionToolbox/1.0");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
@@ -81,6 +87,7 @@ public sealed partial class GitHubIssueProvider : IIssueProvider
                 throw new GitHubIssueException(GitHubIssueFailure.Provider, "GitHub Issue request failed.");
 
             if (!readBody) return null;
+
             // Bound even successful payloads; neither malformed bodies nor transport errors enter diagnostics.
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var buffer = new MemoryStream();
@@ -119,7 +126,8 @@ public sealed partial class GitHubIssueProvider : IIssueProvider
             if (number <= 0 || expectedNumber is { } expected && number != expected || id <= 0 ||
                 title is null || state is not ("open" or "closed") ||
                 !Uri.TryCreate(urlText, UriKind.Absolute, out var url) ||
-                !url.AbsoluteUri.Equals($"https://github.com/{repository.Repository}/issues/{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}", StringComparison.OrdinalIgnoreCase))
+                !url.AbsoluteUri.Equals($"https://github.com/{repository.Repository}/issues/{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+                    StringComparison.OrdinalIgnoreCase))
                 throw InvalidResponse();
             return new(id, new(new(repository, number), title, state == "open" ? IssueState.Open : IssueState.Closed, url));
         }
