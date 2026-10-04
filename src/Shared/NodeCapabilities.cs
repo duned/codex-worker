@@ -48,6 +48,16 @@ public sealed record NodeCapability(CapabilityDefinition Definition, CapabilityS
 {
     public CapabilityReadiness Readiness => CapabilityCatalog.Evaluate(Definition, State);
 }
+
+/// <summary>Runs Docker probes as the packaged Worker account, even when local administration uses another identity.</summary>
+internal static class DockerDaemonAccessProbe
+{
+    public static (string Executable, IReadOnlyList<string> Arguments) ForCurrentProcess(string executable,
+        IReadOnlyList<string> arguments) => OperatingSystem.IsLinux() && Environment.UserName != "codex-worker"
+            ? ("/usr/sbin/runuser", ["-u", "codex-worker", "--", executable, .. arguments])
+            : (executable, arguments);
+}
+
 public sealed record ProvisionableNode(string Id, string Kind, string DisplayName, string Connectivity,
     string ExecutionReadiness, string ProvisioningReadiness, bool ObservationsStale, IReadOnlyList<NodeCapability> Capabilities, string Health = "unknown");
 
@@ -123,7 +133,7 @@ public static class CapabilityCatalog
             (state.Configuration is null || Enum.IsDefined(state.Configuration.Value)) &&
             state.Operation is not null && Enum.IsDefined(state.Operation.State) &&
             (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
-            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" or "configuration-required" &&
+            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" or "configuration-required" or "docker-daemon-access-required" &&
             state.Operation.DiagnosticCode is null or "operation-failed" &&
             state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration" or "prepareauthentication" or "generatesshkey" or "inspectsshkey" or "removesshkey" or "verifyrepositoryaccess");
     }
@@ -168,10 +178,12 @@ public sealed class NodeCapabilityDiscovery
                         state = state with { Installation = InstallationState.Missing, DiagnosticCode = "tool-missing" };
                     if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.DockerDaemonAccess)
                     {
-                        var daemon = await _run(executable, ["info", "--format", "{{.ServerVersion}}"], cancellationToken);
-                        state = state with { Configuration = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output)
-                            ? RequirementState.Satisfied : RequirementState.Required,
-                            DiagnosticCode = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output) ? null : "configuration-required" };
+                        var probe = DockerDaemonAccessProbe.ForCurrentProcess(executable, ["info", "--format", "{{.ServerVersion}}"]);
+                        var daemon = await _run(probe.Executable, probe.Arguments, cancellationToken);
+                        var accessible = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output);
+                        var accessDenied = daemon.Output.Contains("permission denied", StringComparison.OrdinalIgnoreCase);
+                        state = state with { Configuration = accessible ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = accessible ? null : accessDenied ? "docker-daemon-access-required" : "configuration-required" };
                     }
                     if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.GitIdentity)
                     {
@@ -276,7 +288,8 @@ public sealed class NodeCapabilityDiscovery
         {
             await process.WaitForExitAsync(timeout.Token);
             await Task.WhenAll(stdout, stderr);
-            return (process.ExitCode, await stdout);
+            var output = await stdout;
+            return (process.ExitCode, process.ExitCode == 0 ? output : await stderr);
         }
         finally
         {

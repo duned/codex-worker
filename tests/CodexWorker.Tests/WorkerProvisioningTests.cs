@@ -65,6 +65,31 @@ public sealed class WorkerProvisioningTests
     }
 
     [Fact]
+    public async Task DockerConfigurationCheckFailsWithServiceAccountRemediationWhenDaemonAccessIsDenied()
+    {
+        var discovery = new NodeCapabilityDiscovery((tool, arguments, _) =>
+        {
+            var dockerArguments = tool == "/usr/sbin/runuser" ? arguments.Skip(4).ToArray() : arguments;
+            if (tool is not ("docker" or "/usr/sbin/runuser"))
+                return Task.FromException<(int, string)>(new FileNotFoundException());
+            return Task.FromResult(dockerArguments[0] == "--version" ? (0, "Docker version 29.1.3") :
+                (1, "permission denied while trying to connect to the Docker API"));
+        });
+        var executor = new NodeProvisioningCommandExecutor(discovery, processRunner: (_, _, _) =>
+            Task.FromResult(new ProvisioningProcessResult(1, "permission denied while connecting to Docker API")));
+        var service = new WorkerProvisioningAdministrationService(new ProvisioningPolicy(), discovery,
+            new string('a', 32), executor);
+
+        var result = await service.ExecuteAsync(new("docker", ProvisioningCommandAction.CheckConfiguration));
+
+        Assert.Equal("failed", result.Status);
+        Assert.Equal(RequirementState.Required, result.Capability?.Configuration);
+        Assert.Equal(ProvisioningFailureCode.DockerDaemonAccessRequired, result.Report?.FailureDetail?.Code);
+        Assert.Contains("service account", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("grant the codex-worker", result.Remediation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task LocalDetectionWorksWithoutServerOrExecutionTools()
     {
         var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromException<(int, string)>(new FileNotFoundException()));

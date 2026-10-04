@@ -10,7 +10,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
 public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions }
 
@@ -28,6 +28,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.CapabilityDetectionFailed => "Capability detection failed.",
         ProvisioningFailureCode.PackageUnavailable => "The managed tool package is unavailable. Configure compatible node-local apt sources and refresh their indexes before retrying.",
         ProvisioningFailureCode.RepositoryAccessFailed => "Git could not read the requested repository. Check the repository identifier, network access and node credentials.",
+        ProvisioningFailureCode.DockerDaemonAccessRequired => "The Worker service account cannot access the Docker daemon. Grant the service account access through your approved Docker group or authorization policy, then rerun the configuration check.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
         _ => "Provisioning failed."
     } + (ProviderStep is ProvisioningProviderStep.Unknown ? string.Empty : $" Provider step: {ProviderStepDescription}.");
@@ -252,13 +253,22 @@ public sealed class NodeProvisioningCommandExecutor
                     _ => ["logout"]
                 };
             }
+            if (request.Action == ProvisioningCommandAction.CheckConfiguration && request.CapabilityId == "docker")
+            {
+                var probe = DockerDaemonAccessProbe.ForCurrentProcess(executable, arguments);
+                executable = probe.Executable;
+                arguments = probe.Arguments;
+            }
             var verificationResult = await _run(executable, arguments, timeout.Token);
             if (verificationResult.ExitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration && command.Request.CapabilityId == "git")
                 verificationResult = await _run("git", ["config", "--get", "user.email"], timeout.Token);
             await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
             refreshed = true;
-            return verificationResult.ExitCode == 0 ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
-                : Failed(Classify(verificationResult), Classify(verificationResult) == ProvisioningFailureCode.ProcessExited ? verificationResult.ExitCode : null);
+            if (verificationResult.ExitCode == 0)
+                return new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
+            var failureCode = request.Action == ProvisioningCommandAction.CheckConfiguration && request.CapabilityId == "docker"
+                ? ClassifyDockerAccess(verificationResult) : Classify(verificationResult);
+            return Failed(failureCode, failureCode == ProvisioningFailureCode.ProcessExited ? verificationResult.ExitCode : null);
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested)
         {
@@ -306,6 +316,10 @@ public sealed class NodeProvisioningCommandExecutor
             return ProvisioningFailureCode.PackageUnavailable;
         return ProvisioningFailureCode.ProcessExited;
     }
+
+    private static ProvisioningFailureCode ClassifyDockerAccess(ProvisioningProcessResult result) =>
+        result.StandardError.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+            ? ProvisioningFailureCode.DockerDaemonAccessRequired : Classify(result);
 
     private static async Task<ProvisioningProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
     {

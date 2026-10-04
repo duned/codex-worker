@@ -242,16 +242,19 @@ public sealed class WorkerCredentialCliTests
         Assert.False(published);
     }
 
-    private static NodeCapabilityDiscovery Discovery(bool authenticated, bool dockerDaemonAvailable = true) => new((_, arguments, _) =>
-        Task.FromResult(arguments[0] switch
+    private static NodeCapabilityDiscovery Discovery(bool authenticated, bool dockerDaemonAvailable = true) => new((tool, arguments, _) =>
+    {
+        var effectiveArguments = tool == "/usr/sbin/runuser" ? arguments.Skip(4).ToArray() : arguments;
+        return Task.FromResult(effectiveArguments[0] switch
         {
             "--list-sdks" => (0, "10.0.100 [/usr/share/dotnet/sdk]"),
             "--list-runtimes" => (0, "Microsoft.NETCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.NETCore.App]\n" +
                 "Microsoft.AspNetCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.AspNetCore.App]"),
             "info" => dockerDaemonAvailable ? (0, "27.0.0") : (1, PrivateOutput),
-            _ => (arguments.Contains("status") && !authenticated ? 1 : 0,
-                arguments.Contains("--version") ? "1.0.0" : PrivateOutput)
-        }));
+            _ => (effectiveArguments.Contains("status") && !authenticated ? 1 : 0,
+                effectiveArguments.Contains("--version") ? "1.0.0" : PrivateOutput)
+        });
+    });
 
     private static ProvisioningPolicy AllowedPolicy() => new() { Enabled = true, AllowCredentials = true, AllowNonPrivileged = true };
 

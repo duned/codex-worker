@@ -62,8 +62,11 @@ public sealed class WorkerAdministrationIntegrationTests
         var discovery = new NodeCapabilityDiscovery((tool, arguments, _) =>
         {
             probes.Add(tool + " " + string.Join(' ', arguments));
+            var effectiveArguments = tool == "/usr/sbin/runuser" ? arguments.Skip(4).ToArray() : arguments;
+            if (tool == "/usr/sbin/runuser" && (arguments.Count < 4 || arguments[2] != "--" || arguments[3] != "docker"))
+                return Task.FromException<(int, string)>(new FileNotFoundException("private-output"));
             if (!installed) return Task.FromException<(int, string)>(new FileNotFoundException("private-output"));
-            return Task.FromResult(arguments[0] switch
+            return Task.FromResult(effectiveArguments[0] switch
             {
                 "--version" => (0, "10.0.100"),
                 "--list-sdks" => (0, "10.0.100 [/sdk]"),

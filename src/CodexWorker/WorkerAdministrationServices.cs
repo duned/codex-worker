@@ -205,6 +205,9 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
                 .FirstOrDefault(candidate => candidate.Id == request.CapabilityId);
         var reason = report.Diagnostic switch
         {
+            ProvisioningDiagnostic.ProcessFailed when request.CapabilityId == "docker" &&
+                request.Action == ProvisioningCommandAction.CheckConfiguration && state?.Configuration == RequirementState.Required =>
+                "Docker daemon access could not be confirmed for the Worker service account.",
             ProvisioningDiagnostic.Unsupported when IsPrivileged(request.Action) =>
                 "Tool package operations are supported only on Debian-based Linux systems.",
             ProvisioningDiagnostic.Unsupported when NodeGitHubSetup.Handles(request) && !OperatingSystem.IsLinux() =>
@@ -220,6 +223,9 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
         };
         var remediation = report.Diagnostic switch
         {
+            ProvisioningDiagnostic.ProcessFailed when request.CapabilityId == "docker" &&
+                request.Action == ProvisioningCommandAction.CheckConfiguration && state?.Configuration == RequirementState.Required =>
+                "Run this check as codex-worker or through elevated local administration. Check that Docker is running and grant the codex-worker service account daemon access through your approved Docker group or authorization policy, then rerun 'codex-worker provision check-configuration docker'.",
             ProvisioningDiagnostic.Unsupported when IsPrivileged(request.Action) => "Run provisioning on a Debian-based Linux Worker.",
             ProvisioningDiagnostic.Unsupported when NodeGitHubSetup.Handles(request) && !OperatingSystem.IsLinux() => "Run the operation on a Linux Worker.",
             ProvisioningDiagnostic.ProcessFailed => "Resolve the local operation issue, then run 'codex-worker provision status'.",

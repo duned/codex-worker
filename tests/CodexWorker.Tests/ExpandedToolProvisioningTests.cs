@@ -72,8 +72,11 @@ public sealed class ExpandedToolProvisioningTests
     {
         var discovery = new NodeCapabilityDiscovery((tool, args, _) =>
         {
-            if (tool != "docker") return Task.FromException<(int, string)>(new FileNotFoundException());
-            return Task.FromResult(args[0] == "--version" ? (0, "Docker version 28.0.0") : (exitCode, "private-output"));
+            var dockerArgs = tool == "/usr/sbin/runuser" ? args.Skip(4).ToArray() : args;
+            if (tool is not ("docker" or "/usr/sbin/runuser"))
+                return Task.FromException<(int, string)>(new FileNotFoundException());
+            return Task.FromResult(dockerArgs[0] == "--version" ? (0, "Docker version 28.0.0") :
+                (exitCode, exitCode == 0 ? "28.0.0" : "Cannot connect to the Docker daemon"));
         });
         var state = Assert.Single(await discovery.GetAsync(), item => item.Id == "docker");
         Assert.Equal(InstallationState.Installed, state.Installation);
@@ -82,14 +85,42 @@ public sealed class ExpandedToolProvisioningTests
         Assert.Equal(exitCode == 0, CapabilityCatalog.Ready([state]));
         Assert.Equal(exitCode == 0 ? null : "configuration-required", state.DiagnosticCode);
         Assert.DoesNotContain("private-output", JsonSerializer.Serialize(state), StringComparison.Ordinal);
-        var executor = new NodeProvisioningCommandExecutor(discovery, (tool, args, _) =>
+        var executor = new NodeProvisioningCommandExecutor(discovery, processRunner: (tool, args, _) =>
         {
-            Assert.Equal("docker", tool);
-            Assert.Equal(["info", "--format", "{{.ServerVersion}}"], args);
-            return Task.FromResult(exitCode);
+            var needsWorkerIdentity = OperatingSystem.IsLinux() && Environment.UserName != "codex-worker";
+            Assert.Equal(needsWorkerIdentity ? "/usr/sbin/runuser" : "docker", tool);
+            Assert.Equal(needsWorkerIdentity ? ["-u", "codex-worker", "--", "docker", "info", "--format", "{{.ServerVersion}}"]
+                : ["info", "--format", "{{.ServerVersion}}"], args);
+            return Task.FromResult(new ProvisioningProcessResult(exitCode,
+                exitCode == 0 ? string.Empty : "permission denied while connecting to Docker API"));
         });
         Assert.Equal(exitCode == 0 ? ProvisioningCommandStatus.Succeeded : ProvisioningCommandStatus.Failed,
             (await executor.ExecuteAsync(Command("docker", ProvisioningCommandAction.CheckConfiguration), true)).Status);
+        if (exitCode != 0)
+        {
+            var report = await executor.ExecuteAsync(Command("docker", ProvisioningCommandAction.CheckConfiguration), true);
+            Assert.Equal(ProvisioningFailureCode.DockerDaemonAccessRequired, report.FailureDetail?.Code);
+            Assert.Contains("service account", report.FailureDetail?.Description ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task DockerPermissionDeniedKeepsInstallationAndReportsSpecificUnavailableConfiguration()
+    {
+        var discovery = new NodeCapabilityDiscovery((tool, args, _) =>
+        {
+            if (tool is not ("docker" or "/usr/sbin/runuser")) return Task.FromException<(int, string)>(new FileNotFoundException());
+            return Task.FromResult(args.Contains("--version") ? (0, "Docker version 29.1.3") :
+                (1, "permission denied while trying to connect to the Docker API"));
+        });
+
+        var state = Assert.Single(await discovery.GetAsync(refresh: true), item => item.Id == "docker");
+
+        Assert.Equal(InstallationState.Installed, state.Installation);
+        Assert.Equal(RequirementState.Required, state.Configuration);
+        Assert.Equal("docker-daemon-access-required", state.DiagnosticCode);
+        Assert.False(CapabilityCatalog.Evaluate(Assert.Single(CapabilityCatalog.Definitions, item => item.Id == "docker"), state).Available);
+        Assert.True(CapabilityCatalog.ValidInventory([state]));
     }
 
     [Theory]
@@ -103,10 +134,11 @@ public sealed class ExpandedToolProvisioningTests
         var discovery = new NodeCapabilityDiscovery((tool, args, _) =>
         {
             if (tool == "/usr/bin/apt-cache") return Task.FromResult((0, "Installed: 10.0.100\nCandidate: 10.0.100"));
-            if (tool is not ("dotnet" or "/usr/bin/dotnet" or "docker" or "/usr/bin/docker"))
+            if (tool is not ("dotnet" or "/usr/bin/dotnet" or "docker" or "/usr/bin/docker" or "/usr/sbin/runuser"))
                 return Task.FromException<(int, string)>(new FileNotFoundException());
             if (!installed) return Task.FromException<(int, string)>(new FileNotFoundException());
-            return Task.FromResult((0, args[0] switch
+            var effectiveArgs = tool == "/usr/sbin/runuser" ? args.Skip(4).ToArray() : args;
+            return Task.FromResult((0, effectiveArgs[0] switch
             {
                 "--list-sdks" => "10.0.100 [/sdk]",
                 "--list-runtimes" => "Microsoft.NETCore.App 10.0.100 [/runtime]\nMicrosoft.AspNetCore.App 10.0.100 [/runtime]",
@@ -218,8 +250,9 @@ public sealed class ExpandedToolProvisioningTests
                 return Task.FromResult((0, $"Installed: {installed}\nCandidate: {candidate}"));
             }
             if (tool == "/usr/bin/dpkg") return Task.FromResult((0, ""));
-            if (tool is not ("dotnet" or "docker")) return Task.FromException<(int, string)>(new FileNotFoundException());
-            return Task.FromResult((0, args[0] switch
+            if (tool is not ("dotnet" or "docker" or "/usr/sbin/runuser")) return Task.FromException<(int, string)>(new FileNotFoundException());
+            var effectiveArgs = tool == "/usr/sbin/runuser" ? args.Skip(4).ToArray() : args;
+            return Task.FromResult((0, effectiveArgs[0] switch
             {
                 "--list-sdks" => $"{installed} [/sdk]",
                 "--list-runtimes" => $"Microsoft.NETCore.App {installed} [/runtime]\nMicrosoft.AspNetCore.App {installed} [/runtime]",
