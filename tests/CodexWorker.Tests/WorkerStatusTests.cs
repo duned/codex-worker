@@ -13,13 +13,13 @@ public sealed class WorkerStatusTests
         fixture.WriteGlobal("projects:\n  directory: ./projects\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery(missingTools: true));
 
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal(0, status.Configuration.ProjectCount);
         Assert.Equal("not-ready", status.Operation.Readiness);
         Assert.DoesNotContain("configuration-invalid", status.Diagnostics);
-        Assert.Contains("codex-cli-unavailable", status.Diagnostics);
+        Assert.Contains("codex-cli:tool-missing", status.Diagnostics);
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class WorkerStatusTests
         Assert.Equal("server-dependent-unverified", status.Operation.Readiness);
         Assert.True(status.Provisioning.Enabled);
         Assert.Contains(status.Capabilities, capability => capability.Name == "git" && capability.State == "available");
-        Assert.Contains(status.Capabilities, capability => capability.Name == "docker" && capability.State == "missing");
+        Assert.Contains(status.Capabilities, capability => capability.Name == "docker" && capability.State == "available");
         Assert.Contains("server-state-unverified", status.Diagnostics);
     }
 
@@ -54,7 +54,7 @@ public sealed class WorkerStatusTests
     public async Task InvalidOrMissingConfigurationIsAStatusResultAndJsonHasVersionedContract()
     {
         using var fixture = new StatusFixture();
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery(missingTools: true));
         Assert.Equal("invalid", status.Configuration.Validity);
         Assert.Equal("configuration-not-found", status.Configuration.DiagnosticCode);
 
@@ -73,13 +73,13 @@ public sealed class WorkerStatusTests
         Directory.CreateDirectory(fixture.ProjectsPath);
         fixture.WriteValidProject();
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery(missingTools: true));
 
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal("not-ready", status.Operation.Readiness);
-        Assert.Contains("git-unavailable", status.Diagnostics);
-        Assert.Contains("github-cli-unavailable", status.Diagnostics);
-        Assert.Contains("codex-cli-unavailable", status.Diagnostics);
+        Assert.Contains("git:tool-missing", status.Diagnostics);
+        Assert.Contains("github-cli:tool-missing", status.Diagnostics);
+        Assert.Contains("codex-cli:tool-missing", status.Diagnostics);
     }
 
     [Fact]
@@ -98,6 +98,13 @@ public sealed class WorkerStatusTests
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal("local-prerequisites-present", status.Operation.Readiness);
         Assert.Empty(status.Diagnostics);
+        foreach (var name in new[] { "git", "docker", "github-cli", "codex-cli" })
+        {
+            var capability = Assert.Single(status.Capabilities, capability => capability.Name == name);
+            Assert.Equal("available", capability.State);
+            Assert.Equal(InstallationState.Installed, capability.Installation);
+            Assert.Empty(capability.BlockingReasons ?? []);
+        }
     }
 
     [Fact]
@@ -118,6 +125,90 @@ public sealed class WorkerStatusTests
     }
 
     [Fact]
+    public async Task CleanHostStatusUsesTypedBlockersAndOnlyObservesLocalState()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        var originalConfiguration = await File.ReadAllTextAsync(fixture.ConfigurationPath);
+        var commands = new List<string>();
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath,
+            DiscoveryWith(new("tool", "git", "2.43.0"), new("tool", "docker", "29.1.3")),
+            inventoryDiscovery: InventoryDiscovery(gitIdentityConfigured: false, dockerAccessible: false,
+                codexMissing: true, commands: commands));
+
+        Assert.Equal("not-ready", status.Operation.Readiness);
+        foreach (var (name, dependency) in new[] { ("git", LocalConfigurationDependencyKind.GitIdentity),
+                     ("docker", LocalConfigurationDependencyKind.DockerDaemonAccess) })
+        {
+            var capability = Assert.Single(status.Capabilities, capability => capability.Name == name);
+            Assert.Equal("blocked", capability.State);
+            Assert.Equal(InstallationState.Installed, capability.Installation);
+            Assert.Equal(RequirementState.Required, capability.Configuration);
+            Assert.Equal(dependency, capability.ConfigurationDependency);
+            Assert.Contains("configuration-required", capability.BlockingReasons ?? []);
+        }
+        var codex = Assert.Single(status.Capabilities, capability => capability.Name == "codex-cli");
+        Assert.Equal("missing", codex.State);
+        Assert.Equal(RequirementState.Unknown, codex.Authentication);
+        Assert.Contains(AuthenticationDependencyKind.CodexCliLogin, codex.AuthenticationDependencies ?? []);
+        Assert.Contains("authentication-required", codex.BlockingReasons ?? []);
+        Assert.Equal(new[] { "git:configuration-required", "codex-cli:tool-missing", "docker:configuration-required" }.Order(),
+            status.Diagnostics.Order());
+        using var output = new StringWriter();
+        WorkerStatusReporter.Write(status, false, output);
+        var text = output.ToString();
+        Assert.Contains("configuration required (GitIdentity)", text, StringComparison.Ordinal);
+        Assert.Contains("configuration required (DockerDaemonAccess)", text, StringComparison.Ordinal);
+        Assert.Contains("authentication required after installation", text, StringComparison.Ordinal);
+        Assert.Contains("Git identity is not configured", text, StringComparison.Ordinal);
+        Assert.Contains("Docker daemon is not accessible", text, StringComparison.Ordinal);
+        Assert.Contains("Codex CLI is not installed.", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Worker is not ready based on local observations.", text, StringComparison.Ordinal);
+        Assert.Equal(3, text.Split("Diagnostic:").Length - 1);
+        using var jsonOutput = new StringWriter();
+        WorkerStatusReporter.Write(status, true, jsonOutput);
+        using var json = JsonDocument.Parse(jsonOutput.ToString());
+        var git = json.RootElement.GetProperty("capabilities").EnumerateArray().Single(item => item.GetProperty("name").GetString() == "git");
+        Assert.Equal("Installed", git.GetProperty("installation").GetString());
+        Assert.Equal("GitIdentity", git.GetProperty("configurationDependency").GetString());
+        Assert.Equal(originalConfiguration, await File.ReadAllTextAsync(fixture.ConfigurationPath));
+        Assert.False(File.Exists(Path.Combine(fixture.DirectoryPath, "worker-id.token")));
+        Assert.DoesNotContain(commands, command => command.Contains("config") && !command.Contains("--get", StringComparison.Ordinal));
+        Assert.DoesNotContain(commands, command => command.Contains("login") && !command.Contains("status", StringComparison.Ordinal));
+        Assert.DoesNotContain(commands, command => command.Contains("usermod", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task DockerBlockerIsVisibleWithoutBecomingAGenericExecutionPrerequisite()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(),
+            inventoryDiscovery: InventoryDiscovery(dockerAccessible: false));
+        Assert.Equal("local-prerequisites-present", status.Operation.Readiness);
+        Assert.Equal("docker:configuration-required", Assert.Single(status.Diagnostics));
+        Assert.Contains(status.Capabilities, capability => capability.Name == "docker" && capability.State == "blocked");
+    }
+
+    [Fact]
+    public async Task InstalledCodexWithoutAuthenticationIsBlockedSeparatelyFromInstallation()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(),
+            inventoryDiscovery: InventoryDiscovery(authenticated: false));
+        var codex = Assert.Single(status.Capabilities, capability => capability.Name == "codex-cli");
+        Assert.Equal(InstallationState.Installed, codex.Installation);
+        Assert.Equal("blocked", codex.State);
+        Assert.Equal(RequirementState.Required, codex.Authentication);
+        Assert.Contains("codex-cli:authentication-required", status.Diagnostics);
+        Assert.DoesNotContain("codex-cli:tool-missing", status.Diagnostics);
+    }
+
+    [Fact]
     public async Task InvalidConfiguredPolicyIsReportedWithoutLeakingConfigurationContents()
     {
         using var fixture = new StatusFixture();
@@ -125,7 +216,7 @@ public sealed class WorkerStatusTests
         Directory.CreateDirectory(fixture.ProjectsPath);
         File.WriteAllText(Path.Combine(fixture.ProjectsPath, "invalid.yml"), "private-value: should-not-be-reported\n");
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery(missingTools: true));
 
         Assert.Equal("invalid", status.Configuration.Validity);
         Assert.Equal("configuration-invalid", status.Configuration.DiagnosticCode);
@@ -208,7 +299,7 @@ public sealed class WorkerStatusTests
         fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
         await File.WriteAllTextAsync(Path.Combine(fixture.DirectoryPath, "worker-id.server"), "https://user:private-secret@server.example/?token=private-secret");
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery(missingTools: true));
         Assert.Null(status.Registration.ServerUrl);
         Assert.Equal("invalid", status.Registration.AssociationSource);
         Assert.Contains("worker-server-association-invalid", status.Diagnostics);
@@ -235,12 +326,20 @@ public sealed class WorkerStatusTests
         });
     }
 
-    private static NodeCapabilityDiscovery InventoryDiscovery(bool gitIdentityConfigured = true) =>
+    private static NodeCapabilityDiscovery InventoryDiscovery(bool gitIdentityConfigured = true,
+        bool dockerAccessible = true, bool missingTools = false, bool codexMissing = false, bool authenticated = true,
+        List<string>? commands = null) =>
         new((executable, arguments, _) =>
         {
+            commands?.Add($"{executable} {string.Join(" ", arguments)}");
+            if ((missingTools && executable is "git" or "gh") ||
+                (missingTools || codexMissing) && (executable == "codex" || executable == CodexServiceEnvironment.Executable))
+                throw new FileNotFoundException();
+            if (arguments.Contains("info") && !dockerAccessible) return Task.FromResult((1, "permission denied"));
+            if ((arguments.Contains("auth") || arguments.Contains("login")) && !authenticated) return Task.FromResult((1, ""));
             var isGitIdentityProbe = executable == "git" && arguments.SequenceEqual(new[] { "config", "--get", "user.name" }) ||
                 executable == "git" && arguments.SequenceEqual(new[] { "config", "--get", "user.email" });
-            return Task.FromResult(isGitIdentityProbe && !gitIdentityConfigured ? (1, "") : (0, "1.0.0"));
+            return Task.FromResult(isGitIdentityProbe && !gitIdentityConfigured ? (1, "") : (0, "10.0.0"));
         });
 
     private sealed class StatusFixture : IDisposable

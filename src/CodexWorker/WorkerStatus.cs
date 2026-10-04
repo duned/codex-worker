@@ -28,12 +28,14 @@ public sealed record WorkerStatusOperation(string Lifecycle, string Readiness, s
 public sealed record WorkerStatusCapacity(int? Maximum, int? Active, string ObservationScope);
 public sealed record WorkerStatusProvisioning(bool Enabled, bool AllowNonPrivileged, bool AllowCredentials,
     int AllowedPrivilegedActionCount, int DeniedActionCount);
-public sealed record WorkerStatusCapability(string Type, string Name, string State, string? Version, string? DiagnosticCode);
+public sealed record WorkerStatusCapability(string Type, string Name, string State, string? Version, string? DiagnosticCode,
+    InstallationState? Installation = null, RequirementState? Authentication = null, RequirementState? Configuration = null,
+    LocalConfigurationDependencyKind? ConfigurationDependency = null,
+    IReadOnlyList<AuthenticationDependencyKind>? AuthenticationDependencies = null,
+    IReadOnlyList<string>? BlockingReasons = null);
 
 public static class WorkerStatusReporter
 {
-    private static readonly string[] RequiredTools = ["git", "github-cli", "codex-cli"];
-
     public static async Task<WorkerStatusDocument> CreateAsync(string configurationPath,
         WorkerCapabilityDiscovery? discovery = null, CancellationToken cancellationToken = default,
         NodeCapabilityDiscovery? inventoryDiscovery = null)
@@ -65,16 +67,36 @@ public static class WorkerStatusReporter
             if (!foundNames.Contains(name))
                 capabilities.Add(new WorkerStatusCapability(name is "dotnet" or "node" ? "runtime" : "tool", name,
                     "missing", null, "tool-missing"));
-        var missingRequired = RequiredTools.Where(name => !foundNames.Contains(name)).ToArray();
+        var inventory = await (inventoryDiscovery ?? WorkerRegistrationClient.ProvisioningDiscovery)
+            .GetAsync(cancellationToken: cancellationToken);
+        foreach (var definition in CapabilityCatalog.Definitions)
+        {
+            var index = capabilities.FindIndex(capability => capability.Name == definition.Id);
+            if (index < 0) continue;
+            var state = inventory.FirstOrDefault(state => state.Id == definition.Id) ?? CapabilityCatalog.Unknown(definition);
+            var evaluated = CapabilityCatalog.Evaluate(definition, state);
+            var summary = state.Installation == InstallationState.Missing ? "missing" :
+                evaluated.Available ? "available" : "blocked";
+            capabilities[index] = new("tool", definition.Id, summary, state.DetectedVersion, state.DiagnosticCode,
+                state.Installation, state.Authentication, state.Configuration, definition.ConfigurationDependency,
+                definition.AuthenticationDependencies, evaluated.BlockingReasons);
+        }
         var provisioning = configuration?.Worker.Provisioning;
         var diagnostics = new List<string>();
         if (diagnostic is not null) diagnostics.Add(diagnostic);
-        diagnostics.AddRange(missingRequired.Select(name => $"{name}-unavailable"));
+        foreach (var capability in capabilities.Where(capability => capability.BlockingReasons is not null))
+        {
+            foreach (var reason in capability.BlockingReasons ?? [])
+            {
+                // Installation is the first actionable step; dependency state remains visible in the summary/JSON.
+                if (capability.Installation == InstallationState.Missing && reason is "authentication-required" or "configuration-required") continue;
+                if (reason == "not-detected" && (capability.BlockingReasons ?? []).Contains("probe-failed")) continue;
+                diagnostics.Add($"{capability.Name}:{reason}");
+            }
+        }
         var registration = await ObserveRegistrationAsync(configuration, diagnostics, cancellationToken);
-        var readiness = CapabilityCatalog.ExecutionReadiness(
-            await (inventoryDiscovery ?? WorkerRegistrationClient.ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken));
-        diagnostics.AddRange(readiness.BlockingReasons);
-        var locallyReady = configuration is not null && missingRequired.Length == 0 && readiness.Available &&
+        var readiness = CapabilityCatalog.ExecutionReadiness(inventory);
+        var locallyReady = configuration is not null && readiness.Available &&
             (configuration.Projects.Ownership != "managed" ||
                 registration.State == "local-identity-present" &&
                 registration.CredentialState is ("persisted" or "environment") && registration.ServerUrl is not null);
@@ -91,7 +113,7 @@ public static class WorkerStatusReporter
             new WorkerStatusCapacity(configuration?.Worker.MaxParallelTasks, null, "active-count-not-available-outside-running-worker"),
             new WorkerStatusProvisioning(provisioning?.Enabled ?? false, provisioning?.AllowNonPrivileged ?? false,
                 provisioning?.AllowCredentials ?? false, provisioning?.AllowedPrivilegedActions.Count ?? 0,
-                provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics,
+                provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics.Distinct(StringComparer.Ordinal).ToArray(),
             new WorkerStatusRuntime(RuntimeInformation.FrameworkDescription, RuntimeInformation.ProcessArchitecture.ToString(),
                 RuntimeInformation.OSArchitecture.ToString()));
     }
@@ -163,23 +185,51 @@ public static class WorkerStatusReporter
         writer.WriteLine($"Provisioning: {(status.Provisioning.Enabled ? "enabled" : "disabled")}; non-privileged: {status.Provisioning.AllowNonPrivileged}; credentials: {status.Provisioning.AllowCredentials}; allow rules: {status.Provisioning.AllowedPrivilegedActionCount}; deny rules: {status.Provisioning.DeniedActionCount}");
         writer.WriteLine("Capabilities:");
         foreach (var capability in status.Capabilities)
-            writer.WriteLine($"  {capability.Type}/{capability.Name}: {capability.State}{(capability.Version is null ? "" : $" ({capability.Version})")}");
-        foreach (var diagnostic in status.Diagnostics)
+        {
+            var details = new List<string>();
+            if (capability.Installation is { } installation) details.Add(installation.ToString().ToLowerInvariant());
+            if (capability.ConfigurationDependency is { } dependency && capability.Configuration != RequirementState.Satisfied)
+                details.Add($"configuration required ({dependency})");
+            if (capability.AuthenticationDependencies is { Count: > 0 } && capability.Authentication != RequirementState.Satisfied)
+                details.Add(capability.Installation == InstallationState.Missing ? "authentication required after installation" : "authentication required");
+            writer.WriteLine($"  {capability.Type}/{capability.Name}: {capability.State}{(capability.Version is null ? "" : $" ({capability.Version})")}{(details.Count == 0 ? "" : $"; {string.Join(", ", details)}")}");
+        }
+        foreach (var diagnostic in status.Diagnostics.Distinct(StringComparer.Ordinal))
             writer.WriteLine($"Diagnostic: {DiagnosticText(diagnostic)}");
     }
 
-    private static string DiagnosticText(string code) => code switch
+    private static string DiagnosticText(string code)
     {
-        "configuration-not-found" => "Configuration file was not found; pass --config with a valid worker configuration path.",
-        "configuration-invalid" => "Configuration could not be validated; run 'codex-worker config validate' for details.",
-        "worker-identity-missing" => "Managed mode has no local Worker identity file; register this Worker or restore its identity before starting it.",
-        "worker-identity-invalid" or "worker-identity-unreadable" => "Local Worker identity cannot be validated; restore the existing identity or correct file access. Identity was not regenerated.",
-        "worker-credential-missing" or "worker-credential-invalid" or "worker-credential-unreadable" => "Local Worker credentials are unavailable or invalid; inspect registration and local file access. No credential was changed.",
-        "worker-server-association-invalid" or "worker-server-association-unreadable" => "Persisted Server association cannot be validated; correct the endpoint or local file access before connecting.",
-        "server-state-unverified" => "Local tools are present; Server connectivity, managed configuration, and execution readiness were not checked.",
-        "git-unavailable" => "Git is unavailable; install Git and ensure it is on PATH.",
-        "github-cli-unavailable" => "GitHub CLI is unavailable; install gh and configure authentication.",
-        "codex-cli-unavailable" => "Codex CLI is unavailable; install Codex and complete its authentication setup.",
-        _ => "Worker is not ready based on local observations."
-    };
+        var parts = code.Split(':', 2);
+        if (parts.Length == 2 && CapabilityCatalog.Definitions.FirstOrDefault(definition => definition.Id == parts[0]) is { } definition)
+            return parts[1] switch
+            {
+                "tool-missing" => $"{definition.DisplayName} is not installed.",
+                "configuration-required" when definition.ConfigurationDependency == LocalConfigurationDependencyKind.GitIdentity =>
+                    "Git identity is not configured for Worker execution.",
+                "configuration-required" when definition.ConfigurationDependency == LocalConfigurationDependencyKind.DockerDaemonAccess =>
+                    "Docker daemon is not accessible by the Worker service account; check daemon availability and service-account access.",
+                "configuration-required" => $"{definition.DisplayName} requires configuration for Worker execution.",
+                "authentication-required" => $"{definition.DisplayName} authentication is required for Worker execution.",
+                "probe-failed" => $"{definition.DisplayName} readiness could not be checked; inspect local tool and service-account access.",
+                "not-detected" => $"{definition.DisplayName} readiness has not been established; refresh capabilities.",
+                "operation-running" => $"{definition.DisplayName} has a provisioning operation in progress.",
+                "operation-failed" => $"{definition.DisplayName} has a failed provisioning operation; inspect provisioning status.",
+                _ => $"{definition.DisplayName} is not ready for Worker execution."
+            };
+        return code switch
+        {
+            "configuration-not-found" => "Configuration file was not found; pass --config with a valid worker configuration path.",
+            "configuration-invalid" => "Configuration could not be validated; run 'codex-worker config validate' for details.",
+            "worker-identity-missing" => "Managed mode has no local Worker identity file; register this Worker or restore its identity before starting it.",
+            "worker-identity-invalid" or "worker-identity-unreadable" => "Local Worker identity cannot be validated; restore the existing identity or correct file access. Identity was not regenerated.",
+            "worker-credential-missing" or "worker-credential-invalid" or "worker-credential-unreadable" => "Local Worker credentials are unavailable or invalid; inspect registration and local file access. No credential was changed.",
+            "worker-server-association-invalid" or "worker-server-association-unreadable" => "Persisted Server association cannot be validated; correct the endpoint or local file access before connecting.",
+            "server-state-unverified" => "Local prerequisites are present; Server connectivity, managed configuration, and agent execution preflight were not checked.",
+            "git-unavailable" => "Git is unavailable; install Git and ensure it is on PATH.",
+            "github-cli-unavailable" => "GitHub CLI is unavailable; install gh and configure authentication.",
+            "codex-cli-unavailable" => "Codex CLI is unavailable; install Codex and complete its authentication setup.",
+            _ => "Worker is not ready based on local observations."
+        };
+    }
 }

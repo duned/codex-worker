@@ -7,7 +7,7 @@ The existing root help alias `h` remains supported.
 
 | Command | Local behavior |
 | --- | --- |
-| `status`, `diagnostics` | The same versioned configuration, registration metadata and tool-version snapshot, with actionable human diagnostics. These observations do not contact Server, check authenticated execution readiness, or inspect the running service. Lifecycle and active capacity remain unknown. Missing configuration/tools are reported as state, with exit 0 when collection completes. |
+| `status`, `diagnostics` | The same versioned configuration, registration metadata and local capability/readiness snapshot, with actionable human diagnostics. These observations reuse typed installation, configuration and authentication checks; they do not contact Server, perform agent execution preflight, or inspect the running service. Lifecycle and active capacity remain unknown. Missing configuration/tools are reported as state, with exit 0 when collection completes. |
 | `config [show]` | Inspect redacted Worker configuration. `config --json` is equivalent to `config show --json`. |
 | `config validate` | Validate Worker and project configuration without starting execution; invalid configuration exits 2. |
 | `config set <setting> <value>` | Atomically update an existing allowlisted setting after complete validation. Protected installed configuration requires appropriate local permissions. Restart the service to apply the change. |
@@ -57,6 +57,20 @@ state distinguishes `local-identity-present`, `local-identity-missing`,
 repairs identity or credential files and never returns their secret contents.
 The `runtime` object reports the .NET framework and process/OS architectures;
 Worker version, observed capabilities and local readiness remain separate fields.
+
+For Git, Docker, GitHub CLI and Codex CLI, capability `state: "available"`
+means the shared local readiness checks passed, rather than just version detection.
+Installed tools with unsatisfied dependencies report `blocked`. The version 1 JSON
+contract retains its existing fields and adds `installation`, `authentication`,
+`configuration`, `configurationDependency`, `authenticationDependencies` and
+`blockingReasons` to these capability summaries. Other capabilities can leave
+these details null. Human output identifies missing Git identity (`GitIdentity`)
+and Docker service-account daemon access (`DockerDaemonAccess`), and separates
+missing Codex installation from its subsequent authentication requirement.
+Diagnostics give distinct blocker reasons without repeating dependency diagnostics
+when installation is the first required step. These checks never configure tools,
+change daemon permissions or log in. Docker remains a workload dependency, so its
+blocker alone does not change generic Worker execution readiness.
 
 `serverAcceptance` remains `unverified` for a configured Server: local identity,
 credentials and a persisted association do not prove successful enrollment or
