@@ -10,6 +10,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     private readonly bool _interactive = interactive ?? !Console.IsOutputRedirected;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private bool _waiting;
+    private string? _readinessBlocker;
     private long? _idleStarted;
     private CancellationTokenSource? _idleCancellation;
     private Task? _idleSpinner;
@@ -58,6 +59,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
 
     public void Waiting()
     {
+        _readinessBlocker = null;
         if (_waiting) return;
         _waiting = true;
         _idleStarted = _timeProvider.GetTimestamp();
@@ -67,6 +69,18 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
             _idleSpinner = SpinAsync("Waiting for work", _idleStarted.Value, _idleCancellation.Token);
         }
         else WriteLine("Waiting for work...", null, "○");
+    }
+
+    public async Task WaitingForPrerequisitesAsync(IReadOnlyList<string> blockingReasons)
+    {
+        ArgumentNullException.ThrowIfNull(blockingReasons);
+        var reasonText = blockingReasons.Count == 0 ? "execution-readiness-unavailable" : string.Join(", ", blockingReasons);
+        if (_waiting) await StopWaitingAsync(finalizeLine: true);
+        _waiting = false;
+        if (_readinessBlocker == reasonText) return;
+        _readinessBlocker = reasonText;
+        WriteLine("Worker online but not execution-ready", ConsoleColor.Yellow, "⚠");
+        WriteLine($"Waiting for prerequisites... · {reasonText}", ConsoleColor.Yellow, "○");
     }
 
     public async Task StopWaitingAsync(bool finalizeLine = false)

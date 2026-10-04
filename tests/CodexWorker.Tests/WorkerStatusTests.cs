@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CodexProvisioning;
 
 namespace CodexWorker.Tests;
 
@@ -12,7 +13,7 @@ public sealed class WorkerStatusTests
         fixture.WriteGlobal("projects:\n  directory: ./projects\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
 
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal(0, status.Configuration.ProjectCount);
@@ -33,7 +34,7 @@ public sealed class WorkerStatusTests
             new WorkerCapabilityContract("tool", "github-cli", "2.50.0"),
             new WorkerCapabilityContract("tool", "codex-cli", "1.2.3"));
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery);
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery, inventoryDiscovery: InventoryDiscovery());
 
         Assert.Equal(1, status.ContractVersion);
         Assert.Equal("valid", status.Configuration.Validity);
@@ -53,7 +54,7 @@ public sealed class WorkerStatusTests
     public async Task InvalidOrMissingConfigurationIsAStatusResultAndJsonHasVersionedContract()
     {
         using var fixture = new StatusFixture();
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
         Assert.Equal("invalid", status.Configuration.Validity);
         Assert.Equal("configuration-not-found", status.Configuration.DiagnosticCode);
 
@@ -72,7 +73,7 @@ public sealed class WorkerStatusTests
         Directory.CreateDirectory(fixture.ProjectsPath);
         fixture.WriteValidProject();
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
 
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal("not-ready", status.Operation.Readiness);
@@ -92,11 +93,28 @@ public sealed class WorkerStatusTests
         var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(
             new WorkerCapabilityContract("tool", "git", "2.45.0"),
             new WorkerCapabilityContract("tool", "github-cli", "2.50.0"),
-            new WorkerCapabilityContract("tool", "codex-cli", "1.2.3")));
+            new WorkerCapabilityContract("tool", "codex-cli", "1.2.3")), inventoryDiscovery: InventoryDiscovery());
 
         Assert.Equal("valid", status.Configuration.Validity);
         Assert.Equal("local-prerequisites-present", status.Operation.Readiness);
         Assert.Empty(status.Diagnostics);
+    }
+
+    [Fact]
+    public async Task StatusReportsSharedExecutionReadinessBlockerForInstalledGitWithoutIdentity()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        fixture.WriteValidProject();
+
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath,
+            DiscoveryWith(new("tool", "git"), new("tool", "github-cli"), new("tool", "codex-cli")),
+            inventoryDiscovery: InventoryDiscovery(gitIdentityConfigured: false));
+
+        Assert.Equal("not-ready", status.Operation.Readiness);
+        Assert.Contains("git:configuration-required", status.Diagnostics);
+        Assert.DoesNotContain("local-prerequisites-present", status.Diagnostics);
     }
 
     [Fact]
@@ -107,7 +125,7 @@ public sealed class WorkerStatusTests
         Directory.CreateDirectory(fixture.ProjectsPath);
         File.WriteAllText(Path.Combine(fixture.ProjectsPath, "invalid.yml"), "private-value: should-not-be-reported\n");
 
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
 
         Assert.Equal("invalid", status.Configuration.Validity);
         Assert.Equal("configuration-invalid", status.Configuration.DiagnosticCode);
@@ -156,8 +174,8 @@ public sealed class WorkerStatusTests
             if (scenario == "invalid-token") await File.WriteAllTextAsync(path + ".token", "private-invalid-token");
         }
         var discovery = DiscoveryWith(new("tool", "git"), new("tool", "github-cli"), new("tool", "codex-cli"));
-        var first = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery);
-        var restarted = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery);
+        var first = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery, inventoryDiscovery: InventoryDiscovery());
+        var restarted = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, discovery, inventoryDiscovery: InventoryDiscovery());
         Assert.Equal(expectedState, first.Registration.State);
         Assert.Equal(expectedCredential, first.Registration.CredentialState);
         Assert.Equal(first.Registration, restarted.Registration);
@@ -190,7 +208,7 @@ public sealed class WorkerStatusTests
         fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
         await File.WriteAllTextAsync(Path.Combine(fixture.DirectoryPath, "worker-id.server"), "https://user:private-secret@server.example/?token=private-secret");
-        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith());
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
         Assert.Null(status.Registration.ServerUrl);
         Assert.Equal("invalid", status.Registration.AssociationSource);
         Assert.Contains("worker-server-association-invalid", status.Diagnostics);
@@ -216,6 +234,14 @@ public sealed class WorkerStatusTests
                 : new ProcessResult(1, "", ""));
         });
     }
+
+    private static NodeCapabilityDiscovery InventoryDiscovery(bool gitIdentityConfigured = true) =>
+        new((executable, arguments, _) =>
+        {
+            var isGitIdentityProbe = executable == "git" && arguments.SequenceEqual(new[] { "config", "--get", "user.name" }) ||
+                executable == "git" && arguments.SequenceEqual(new[] { "config", "--get", "user.email" });
+            return Task.FromResult(isGitIdentityProbe && !gitIdentityConfigured ? (1, "") : (0, "1.0.0"));
+        });
 
     private sealed class StatusFixture : IDisposable
     {

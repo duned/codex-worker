@@ -1,5 +1,6 @@
 namespace CodexWorker;
 
+using CodexProvisioning;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -34,7 +35,8 @@ public static class WorkerStatusReporter
     private static readonly string[] RequiredTools = ["git", "github-cli", "codex-cli"];
 
     public static async Task<WorkerStatusDocument> CreateAsync(string configurationPath,
-        WorkerCapabilityDiscovery? discovery = null, CancellationToken cancellationToken = default)
+        WorkerCapabilityDiscovery? discovery = null, CancellationToken cancellationToken = default,
+        NodeCapabilityDiscovery? inventoryDiscovery = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configurationPath);
         var fullPath = Path.GetFullPath(configurationPath);
@@ -69,7 +71,10 @@ public static class WorkerStatusReporter
         if (diagnostic is not null) diagnostics.Add(diagnostic);
         diagnostics.AddRange(missingRequired.Select(name => $"{name}-unavailable"));
         var registration = await ObserveRegistrationAsync(configuration, diagnostics, cancellationToken);
-        var locallyReady = configuration is not null && missingRequired.Length == 0 &&
+        var readiness = CapabilityCatalog.ExecutionReadiness(
+            await (inventoryDiscovery ?? WorkerRegistrationClient.ProvisioningDiscovery).GetAsync(cancellationToken: cancellationToken));
+        diagnostics.AddRange(readiness.BlockingReasons);
+        var locallyReady = configuration is not null && missingRequired.Length == 0 && readiness.Available &&
             (configuration.Projects.Ownership != "managed" ||
                 registration.State == "local-identity-present" &&
                 registration.CredentialState is ("persisted" or "environment") && registration.ServerUrl is not null);

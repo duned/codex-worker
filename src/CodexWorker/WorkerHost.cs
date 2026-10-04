@@ -283,6 +283,7 @@ public sealed class WorkerHost
             var readiness = new ManagedCodexReadiness(agentAuthentication);
             var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
             var executionDependenciesReady = false;
+            IReadOnlyList<string> executionReadinessBlockers = [];
             async Task PublishReadinessAsync(CancellationToken token)
             {
                 heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider").ToArray();
@@ -292,6 +293,7 @@ public sealed class WorkerHost
                 var localReadiness = CapabilityCatalog.ExecutionReadiness(
                     await _registration.InventoryDiscovery.GetAsync(cancellationToken: token));
                 executionDependenciesReady = localReadiness.Available;
+                executionReadinessBlockers = localReadiness.BlockingReasons;
                 if (managedConfiguration is not null)
                 {
                     var inventory = await _registration.InventoryDiscovery.GetAsync(cancellationToken: token);
@@ -667,7 +669,15 @@ public sealed class WorkerHost
                     continue;
                 }
 
-                _output.Waiting();
+                if (!executionDependenciesReady || !agentReady || managedConfiguration?.Status.SynchronizationStatus == "error")
+                {
+                    var blockers = executionReadinessBlockers.ToList();
+                    if (!agentReady) blockers.Add(readiness.DiagnosticCode ?? "codex-execution-unavailable");
+                    if (managedConfiguration?.Status.SynchronizationStatus == "error") blockers.Add("managed-configuration-unavailable");
+                    await _output.WaitingForPrerequisitesAsync(blockers.Distinct(StringComparer.Ordinal).ToArray());
+                }
+                else
+                    _output.Waiting();
                 idleHeartbeat.EmitIfDue(_timeProvider.GetUtcNow(), _operationalLog);
                 if (!foundWork)
                 {

@@ -51,10 +51,11 @@ public interface IWorkerProvisioningAdministrationService
         Func<ProvisioningCommandReport, CancellationToken, Task>? progress = null);
 }
 
-public sealed class WorkerStatusService(WorkerCapabilityDiscovery? discovery = null) : IWorkerStatusService
+public sealed class WorkerStatusService(WorkerCapabilityDiscovery? discovery = null,
+    NodeCapabilityDiscovery? inventoryDiscovery = null) : IWorkerStatusService
 {
     public Task<WorkerStatusDocument> GetStatusAsync(string configurationPath, CancellationToken cancellationToken = default) =>
-        WorkerStatusReporter.CreateAsync(configurationPath, discovery, cancellationToken);
+        WorkerStatusReporter.CreateAsync(configurationPath, discovery, cancellationToken, inventoryDiscovery);
 }
 
 public sealed class WorkerConfigurationAdministrationService : IWorkerConfigurationAdministrationService

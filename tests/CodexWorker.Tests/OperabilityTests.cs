@@ -137,6 +137,22 @@ public sealed class OperabilityTests
     }
 
     [Fact]
+    public async Task ExecutionReadinessBlockerReplacesOrdinaryIdleOutputAndClearsAfterRecovery()
+    {
+        var writer = new StringWriter();
+        var output = new WorkerConsole(writer, interactive: false);
+        await output.WaitingForPrerequisitesAsync(["git:configuration-required"]);
+        await output.WaitingForPrerequisitesAsync(["git:configuration-required"]);
+        output.Waiting();
+
+        var text = writer.ToString();
+        Assert.Contains("Worker online but not execution-ready", text);
+        Assert.Contains("Waiting for prerequisites... · git:configuration-required", text);
+        Assert.Contains("Waiting for work...", text);
+        Assert.Equal(1, text.Split("Worker online but not execution-ready", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
     public async Task InteractiveProgressFinalizesTheSpinnerWhenCancelled()
     {
         var writer = new StringWriter();
