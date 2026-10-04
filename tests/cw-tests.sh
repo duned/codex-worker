@@ -24,13 +24,19 @@ project:
 YAML
 printf '[{"name":"Alpha","configurationPath":"%s/projects/a.yml","projectDirectory":"%s/repos/alpha","repository":"a/alpha"},{"name":"Beta","configurationPath":"%s/projects/b.yaml","projectDirectory":"%s/repos/beta","repository":"b/beta"}]\n' "$test_root" "$test_root" "$test_root" "$test_root" > "$test_root/projects.json"
 printf '[{"tagName":"v9.8.7","name":"v9.8.7","isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T00:00:00Z"}]\n' > "$test_root/releases.json"
+printf '%s\n' '{"executionId":"00000000-0000-0000-0000-000000000001","decision":"keep","reasonCode":"recovery-changes-required","message":"Workspace contains useful changes."}' > "$test_root/inspection.json"
 cat > "$bin/journalctl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CW_TEST_ROOT/journal.args"
 MOCK
 cat > "$bin/curl" <<'MOCK'
 #!/usr/bin/env bash
-cat "$CW_TEST_ROOT/projects.json"
+printf '%s\n' "$*" > "$CW_TEST_ROOT/curl.args"
+if [[ $* == *cleanup-inspection* ]]; then
+  cat "$CW_TEST_ROOT/inspection.json"
+else
+  cat "$CW_TEST_ROOT/projects.json"
+fi
 MOCK
 cat > "$bin/systemctl" <<'MOCK'
 #!/usr/bin/env bash
@@ -672,5 +678,12 @@ grep -Fq 'have diverged' "$test_root/version-diverged.out"
 [[ $(git -C "$version_diverged" show HEAD:Directory.Build.props | sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p') == 9.8.7 ]]
 
 bash "$repo_root/tests/cw-executions-tests.sh"
+inspection=$("$repo_root/cw" execution inspect 00000000-0000-0000-0000-000000000001)
+[[ $inspection == *"keep (recovery-changes-required)"* && $inspection == *"Workspace contains useful changes."* ]]
+[[ $(cat "$test_root/curl.args") == *"/api/executions/00000000-0000-0000-0000-000000000001/cleanup-inspection"* ]]
+[[ $("$repo_root/cw" execution inspect 00000000-0000-0000-0000-000000000001 --json) == $(cat "$test_root/inspection.json") ]]
+if "$repo_root/cw" execution inspect invalid > /dev/null 2>&1; then
+  echo 'execution inspect accepted invalid ID' >&2; exit 1
+fi
 
 echo 'cw tests passed'

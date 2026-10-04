@@ -18,7 +18,7 @@ public sealed class PostRebaseValidationException(string message, ValidationFail
     public ValidationFailure? Failure { get; } = failure;
 }
 
-public sealed class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
+public sealed partial class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
     string? executionWorktreeRoot = null) : IGitRepository, IDisposable
 {
     private readonly string worktreeRoot = executionWorktreeRoot ?? DefaultWorktreeRoot(repository);
@@ -499,37 +499,13 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
             if (recovery.RecoveryState is not ("recoverable" or "integration-conflict" or "cleanup-pending" or "missing") ||
                 string.IsNullOrWhiteSpace(recovery.RecoveryBaseCommit))
                 throw new WorkerInfrastructureException("Recovery metadata is incomplete; refusing cleanup.");
-            var expectedBranch = FeatureBranchName(settings, new GitHubIssue(recovery.IssueNumber, recovery.IssueTitle, "", recovery.StartedAtUtc));
-            if (recovery.AttemptNumber > 1) expectedBranch += $"-retry-{recovery.AttemptNumber}";
-            if (recovery.FeatureBranch != expectedBranch)
-                throw new WorkerInfrastructureException("Recovery branch does not match the persisted Issue identity; refusing cleanup.");
-            var root = Path.GetFullPath(worktreeRoot);
-            if (IsWithin(Path.GetFullPath(directory), root))
-                throw new WorkerInfrastructureException("Managed execution worktree root is inside the project checkout; refusing cleanup.");
-            var path = Path.GetFullPath(Path.Combine(root, recovery.ExecutionId.ToString("N")));
-            if (!IsWithin(root, path) || PathEquals(root, path))
-                throw new WorkerInfrastructureException("Recovery path is outside its managed worktree root; refusing cleanup.");
-
-            var registered = ParseWorktrees((await GitAsync(["worktree", "list", "--porcelain"], ct)).StandardOutput);
-            var registrationExists = registered.Any(item => PathEquals(item.Path, path));
-            var registration = registered.FirstOrDefault(item => PathEquals(item.Path, path));
-            if (Directory.Exists(path))
-            {
-                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                    throw new WorkerInfrastructureException("Recovery workspace path is a link; refusing cleanup.");
-                if (!registrationExists || registration.Branch != $"refs/heads/{expectedBranch}")
-                    throw new WorkerInfrastructureException("Recovery workspace is not registered to its persisted branch; refusing cleanup.");
-                var top = Path.GetFullPath((await GitAtAsync(path, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim());
-                var branch = (await GitAtAsync(path, ["branch", "--show-current"], ct)).StandardOutput.Trim();
-                var head = (await GitAtAsync(path, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
-                if (!PathEquals(top, path) || branch != expectedBranch || head != recovery.RecoveryBaseCommit)
-                    throw new WorkerInfrastructureException("Recovery workspace state differs from persisted ownership metadata; refusing cleanup.");
+            var ownership = await InspectRecoveryOwnershipAsync(recovery, ct);
+            if (ownership.Error is not null)
+                throw new WorkerInfrastructureException(ownership.Error.Message);
+            var expectedBranch = recovery.FeatureBranch;
+            var path = RecoveryWorkspacePath(recovery);
+            if (ownership.DirectoryExists)
                 await GitAsync(["worktree", "remove", "--force", path], ct);
-            }
-            else if (registrationExists)
-            {
-                throw new WorkerInfrastructureException("Recovery workspace is missing but remains registered in Git; refusing cleanup until Git state is inspected.");
-            }
 
             // show-ref --verify can report an absent ref as a fatal error on some Git
             // versions. Enumerate the expected ref prefix and require an exact match
@@ -973,12 +949,19 @@ public sealed class GitRepository(ProcessRunner runner, string directory, string
     private async Task<ProcessResult> GitAsync(IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null)
         => await GitAtAsync(directory, args, ct, allowExitCodes);
 
-    private async Task<ProcessResult> GitAtAsync(string workingDirectory, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null)
+    private async Task<ProcessResult> GitAtAsync(string workingDirectory, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null, bool readOnly = false)
     {
         try
         {
+            var environment = new Dictionary<string, string?>(await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct));
+            if (readOnly)
+            {
+                environment["GIT_OPTIONAL_LOCKS"] = "0";
+                environment["GIT_NO_LAZY_FETCH"] = "1";
+                environment["GIT_NO_REPLACE_OBJECTS"] = "1";
+            }
             var result = await runner.RunAsync("git", args, workingDirectory, TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct,
-                environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct));
+                environment: environment);
             if (result.ExitCode != 0 && !(allowExitCodes?.Contains(result.ExitCode) ?? false))
             {
                 var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;

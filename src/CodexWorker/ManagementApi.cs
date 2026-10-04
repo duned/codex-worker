@@ -194,6 +194,20 @@ public sealed class WorkerRuntimeReadModel
             Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch);
     }
 
+    public async Task<ExecutionCleanupInspection?> InspectExecutionCleanupAsync(Guid executionId, CancellationToken ct)
+    {
+        var history = await _history.ReadAllAsync(ct);
+        var entry = history.FirstOrDefault(e => e.ExecutionId == executionId);
+        if (entry is null) return null;
+        var projects = _registry.Snapshot().Where(p => p.Configuration.Project.Name == entry.Project &&
+            p.Configuration.Project.Repository == entry.Repository).ToArray();
+        if (projects.Length != 1)
+            return new(entry.ExecutionId, "review", "project-unavailable", "Execution has no unique configured project; preserve resources for review.");
+        var config = projects[0].Configuration;
+        using var git = new GitRepository(new ProcessRunner(), config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
+        return await git.InspectCleanupAsync(entry, history, ct);
+    }
+
     private static string? Outcome(string state) => state switch
     {
         "Completed" => "succeeded", "Blocked" => "blocked", "Failed" => "failed",
@@ -290,6 +304,11 @@ public static class ManagementApi
             if (issueNumber <= 0) return (IResult)Results.BadRequest();
             var entries = await model.IssueExecutionsAsync(issueNumber, context.RequestAborted);
             return entries.Count == 0 ? Results.NotFound() : Results.Ok(entries);
+        });
+        app.MapGet("/api/executions/{executionId:guid}/cleanup-inspection", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            var inspection = await model.InspectExecutionCleanupAsync(executionId, context.RequestAborted);
+            return inspection is null ? (IResult)Results.NotFound() : Results.Ok(inspection);
         });
         app.MapGet("/api/events", (int? limit, WorkerRuntimeReadModel model) => Results.Ok(model.Events.ReadRecent(limit)));
         app.MapGet("/api/events/stream", async (HttpContext context, WorkerRuntimeReadModel model) =>

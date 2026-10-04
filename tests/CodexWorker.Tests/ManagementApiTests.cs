@@ -77,6 +77,12 @@ public sealed class ManagementApiTests
             Assert.DoesNotContain("private repair output", executions.GetRawText());
             Assert.DoesNotContain("secret-value", status.GetRawText() + projects.GetRawText() + executions.GetRawText());
 
+            var inspection = JsonDocument.Parse(await client.GetStringAsync($"/api/executions/{executionId}/cleanup-inspection")).RootElement;
+            Assert.Equal("review", inspection.GetProperty("decision").GetString());
+            Assert.Equal("lineage-inconsistent", inspection.GetProperty("reasonCode").GetString());
+            using var missingExecution = await client.GetAsync($"/api/executions/{Guid.NewGuid()}/cleanup-inspection");
+            Assert.Equal(HttpStatusCode.NotFound, missingExecution.StatusCode);
+
             var capabilities = await client.GetStringAsync("/api/capabilities");
             Assert.Contains("codex-cli", capabilities);
             var events = JsonDocument.Parse(await client.GetStringAsync("/api/events")).RootElement;

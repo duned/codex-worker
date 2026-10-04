@@ -24,6 +24,7 @@ Developer and local Worker operations:
     list          List recent executions (default, at most 100)
     show ID       Show an exact execution
     show --issue NUMBER  Show all known attempts, grouped by project/repository
+  execution inspect ID [--json]  Inspect retained resources through the Worker API
   version, v      Show or safely bump the product version
   release, r      Publish the current product version or inspect releases
   help, -h, --help
@@ -723,6 +724,31 @@ except (ValueError, KeyError, TypeError, AttributeError):
   fi
 }
 
+execution_command() {
+  if [[ $# -lt 2 || $# -gt 3 || $1 != inspect || ! $2 =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+    error 'Usage: cw execution inspect EXECUTION_ID [--json]'; return 2
+  fi
+  if [[ $# == 3 && $3 != --json ]]; then
+    error 'Usage: cw execution inspect EXECUTION_ID [--json]'; return 2
+  fi
+  need_command curl || return 1
+  need_command python3 || return 1
+  local response
+  response=$(curl --fail --silent --show-error --max-time 60 "${worker_api_url%/}/api/executions/$2/cleanup-inspection") || {
+    error 'cannot inspect execution through the running Worker API'; return 1
+  }
+  if [[ $# == 3 ]]; then printf '%s\n' "$response"; return 0; fi
+  python3 -c 'import json, sys
+try:
+    result = json.load(sys.stdin)
+    print("{}: {} ({})".format(result["executionId"], result["decision"], result["reasonCode"]))
+    print(result["message"])
+    if result.get("newerExecutionId"): print("Newer attempt: " + result["newerExecutionId"])
+    if result.get("authoritativeBaseCommit"): print("Base: " + result["authoritativeBase"] + " @ " + result["authoritativeBaseCommit"])
+except (ValueError, KeyError, TypeError):
+    sys.exit(1)' <<<"$response" || { error 'Worker returned invalid inspection metadata'; return 1; }
+}
+
 main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
@@ -738,6 +764,7 @@ main() {
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
     executions|e) executions_command "$@" ;;
+    execution) execution_command "$@" ;;
     version|v) version_command "$@" ;;
     release|r) release_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;
