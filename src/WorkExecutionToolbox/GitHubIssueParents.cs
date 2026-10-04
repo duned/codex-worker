@@ -19,25 +19,9 @@ public sealed partial class GitHubIssueProvider
     {
         var resolved = await ResolveAsync(parent, cancellationToken);
         if (resolved is null) return null;
-        var children = new List<IssueSummary>();
-        var seen = new HashSet<long>();
-        // Bound total requests as well as individual payloads. Never return a silently truncated list.
-        for (var page = 1; page <= 100; page++)
-        {
-            using var document = await SendAsync(resolved.Summary.Issue.Repository, parent.Number,
-                $"/sub_issues?per_page=100&page={page.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
-                HttpMethod.Get, null, allowMissing: false, readBody: true, cancellationToken);
-            if (document is null || document.RootElement.ValueKind != JsonValueKind.Array ||
-                document.RootElement.GetArrayLength() > 100) throw InvalidResponse();
-            foreach (var element in document.RootElement.EnumerateArray())
-            {
-                var child = ParseIssue(element, resolved.Summary.Issue.Repository) ?? throw InvalidResponse();
-                if (child.DatabaseId == resolved.DatabaseId || !seen.Add(child.DatabaseId)) throw InvalidResponse();
-                children.Add(child.Summary);
-            }
-            if (document.RootElement.GetArrayLength() < 100) return children;
-        }
-        throw new GitHubIssueException(GitHubIssueFailure.InvalidResponse, "GitHub child listing exceeded the supported pagination limit.");
+        var children = await ReadRelatedIssuesAsync(resolved.Summary.Issue, "/sub_issues", cancellationToken);
+        if (children.Any(item => item.DatabaseId == resolved.DatabaseId)) throw InvalidResponse();
+        return children.Select(item => item.Summary).ToArray();
     }
 
     /// <summary>Explicitly clears the native parent. An absent parent returns Unchanged.</summary>
@@ -106,8 +90,9 @@ public sealed partial class GitHubIssueProvider
         }
     }
 
-    private async Task<ResolvedIssue?> ReadParentAsync(IssueReference child, CancellationToken cancellationToken)
+    private async Task<ResolvedIssue?> ReadParentAsync(IssueReference child, CancellationToken cancellationToken, Action? beforeRequest = null)
     {
+        beforeRequest?.Invoke();
         using var document = await SendAsync(child.Repository, child.Number, "/parent", HttpMethod.Get, null,
             allowMissing: true, readBody: true, cancellationToken);
         return document is null ? null : ParseIssue(document.RootElement, child.Repository) ?? throw InvalidResponse();

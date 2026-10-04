@@ -147,27 +147,6 @@ public sealed partial class GitHubIssueProvider
         return false;
     }
 
-    private async Task<IReadOnlyList<ResolvedIssue>> ReadBlockedByAsync(IssueReference issue, CancellationToken cancellationToken)
-    {
-        var results = new List<ResolvedIssue>();
-        var numbers = new HashSet<int>();
-        // Construct every page locally; never follow an untrusted Link URL with credentials.
-        for (var page = 1; page <= 100; page++)
-        {
-            using var document = await SendAsync(HttpMethod.Get,
-                $"repos/{issue.Repository.Repository}/issues/{issue.Number.ToString(CultureInfo.InvariantCulture)}/dependencies/blocked_by?per_page=100&page={page.ToString(CultureInfo.InvariantCulture)}",
-                null, allowMissing: false, readBody: true, cancellationToken);
-            if (document is null || document.RootElement.ValueKind != JsonValueKind.Array) throw InvalidResponse();
-            var items = document.RootElement;
-            if (items.GetArrayLength() > 100) throw InvalidResponse();
-            foreach (var item in items.EnumerateArray())
-            {
-                var resolved = ParseIssue(item, issue.Repository);
-                if (resolved is null || !numbers.Add(resolved.Summary.Issue.Number)) throw InvalidResponse();
-                results.Add(resolved);
-            }
-            if (items.GetArrayLength() < 100) return results;
-        }
-        throw new GitHubIssueException(GitHubIssueFailure.InvalidResponse, "GitHub dependency list exceeds the pagination safety limit.");
-    }
+    private Task<IReadOnlyList<ResolvedIssue>> ReadBlockedByAsync(IssueReference issue, CancellationToken cancellationToken) =>
+        ReadRelatedIssuesAsync(issue, "/dependencies/blocked_by", cancellationToken);
 }

@@ -10,7 +10,8 @@ public enum GitHubIssueFailure
     RateLimited,
     InvalidResponse,
     Transport,
-    Provider
+    Provider,
+    LimitExceeded
 }
 
 /// <summary>Safe provider diagnostics, without response bodies or credential-bearing inner exceptions.</summary>
@@ -23,7 +24,7 @@ public sealed class GitHubIssueException(GitHubIssueFailure failure, string mess
 /// GitHub.com Issue resolution. The host owns HTTP lifetime and supplies credentials;
 /// the provider never reads CLI state, environment variables or ambient repository defaults.
 /// </summary>
-public sealed partial class GitHubIssueProvider : IIssueDependencyProvider
+public sealed partial class GitHubIssueProvider : IIssueRelationshipProvider, IIssueGraphProvider
 {
     private readonly HttpClient _http;
     private readonly Func<CancellationToken, Task<string>> _getToken;
