@@ -20,6 +20,10 @@ Developer and local Worker operations:
     -f            Follow the journal
     -n COUNT      Show COUNT lines
   projects, p     List configured projects and their YAML paths
+  executions, e   Inspect Worker execution history
+    list          List recent executions (default, at most 100)
+    show ID       Show an exact execution
+    show --issue NUMBER  Show all known attempts, grouped by project/repository
   version, v      Show or safely bump the product version
   release, r      Publish the current product version or inspect releases
   help, -h, --help
@@ -627,6 +631,98 @@ except (ValueError, KeyError, TypeError, json.JSONDecodeError):
   fi
 }
 
+executions_command() {
+  need_command curl || return 1
+  need_command python3 || return 1
+  local mode=${1:-list} path='/api/executions' response status
+  case $mode in
+    list) (($# <= 1)) || { error 'usage: cw executions list'; return 2; } ;;
+    show)
+      if (($# == 3)) && [[ $2 == --issue && $3 =~ ^[1-9][0-9]*$ && ${#3} -le 10 ]] && ((10#$3 <= 2147483647)); then
+        path="/api/executions/issue/$3"
+        mode=issue
+      elif (($# == 2)) && [[ $2 =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+        path="/api/executions/$2"
+      else
+        error 'usage: cw executions show <execution-id> | cw executions show --issue <positive-number>'
+        return 2
+      fi ;;
+    *) error 'usage: cw executions list | cw executions show <execution-id> | cw executions show --issue <number>'; return 2 ;;
+  esac
+  response=$(curl --silent --show-error --connect-timeout 5 --max-time 30 --write-out $'\n%{http_code}' "${worker_api_url%/}$path" 2>/dev/null) || {
+    error 'cannot read Worker execution history: Management API unavailable; check the Worker service and CW_WORKER_API_URL'
+    return 1
+  }
+  status=${response##*$'\n'}
+  response=${response%$'\n'*}
+  if [[ $status == 404 ]]; then
+    error 'Worker execution history not found for the requested execution or Issue'
+    return 1
+  elif [[ $status != 200 ]]; then
+    error "Worker execution history API request failed (HTTP $status)"
+    return 1
+  fi
+  if ! python3 -c 'import json, sys, uuid
+mode = sys.argv[1]
+def text(value, limit=200):
+    return "".join(c if c.isprintable() else " " for c in str(value))[:limit]
+try:
+    data = json.load(sys.stdin)
+    entries = [data] if mode == "show" else data
+    if not isinstance(entries, list): raise ValueError()
+    lines = ["Executions" if mode == "list" else "Execution history"]
+    if not entries: lines.append("  No executions found.")
+    group = None
+    for e in entries:
+        if not isinstance(e, dict): raise ValueError()
+        for key in ("executionId", "project", "repository", "issueTitle", "state", "startedAtUtc"):
+            if not isinstance(e.get(key), str) or not e[key]: raise ValueError()
+        uuid.UUID(e["executionId"])
+        for key in ("issueNumber", "attemptNumber", "repairCount"):
+            if type(e.get(key)) is not int or e[key] < (0 if key == "repairCount" else 1): raise ValueError()
+        if type(e.get("resumed")) is not bool: raise ValueError()
+        for key in ("result", "completedAtUtc", "validationOutcome", "retryOfExecutionId", "featureBranch", "baseBranch", "completedBranch", "commitSha", "integrationBranch", "recoveryState", "recoveryBaseCommit", "recoveryStatus", "recoveryExpiresAtUtc", "failureReason", "reportingFailure"):
+            if e.get(key) is not None and not isinstance(e[key], str): raise ValueError()
+        if e.get("retryOfExecutionId") is not None: uuid.UUID(e["retryOfExecutionId"])
+        duration = e.get("durationMilliseconds")
+        if duration is not None and (type(duration) is not int or duration < 0): raise ValueError()
+        repairs = e.get("repairs")
+        if not isinstance(repairs, list): raise ValueError()
+        for r in repairs:
+            if not isinstance(r, dict) or type(r.get("attempt")) is not int or type(r.get("maximumAttempts")) is not int or type(r.get("passedAfterRepair")) is not bool: raise ValueError()
+        identity = (e["project"], e["repository"], e["issueNumber"])
+        if mode != "list" and group != identity:
+            lines.append("\n{} · {} · #{} {}".format(text(e["project"]), text(e["repository"]), e["issueNumber"], text(e["issueTitle"])))
+            group = identity
+        state = text(e["state"])
+        if e.get("result"): state += " / " + text(e["result"])
+        lines.append("\n  Attempt {} · {} · {}".format(e["attemptNumber"], e["executionId"], state))
+        if mode == "list":
+            lines.append("    {} · {} · #{} {}".format(text(e["project"]), text(e["repository"]), e["issueNumber"], text(e["issueTitle"])))
+        if e.get("retryOfExecutionId"):
+            lines.append("    {} {}".format("resumed from" if e["resumed"] else "retry of", e["retryOfExecutionId"]))
+        elif e["resumed"]: lines.append("    resumed")
+        timing = "    started " + text(e["startedAtUtc"])
+        timing += " · completed " + text(e["completedAtUtc"]) if e.get("completedAtUtc") else " · in progress"
+        if duration is not None: timing += " · {:.1f}s".format(duration / 1000)
+        lines.append(timing)
+        for label, key in (("feature", "featureBranch"), ("base", "baseBranch"), ("completed branch", "completedBranch"), ("commit", "commitSha"), ("integration", "integrationBranch"), ("recovery", "recoveryState"), ("recovery base", "recoveryBaseCommit"), ("recovery status", "recoveryStatus"), ("expires", "recoveryExpiresAtUtc")):
+            if mode == "list" and key not in ("recoveryState", "recoveryExpiresAtUtc"): continue
+            if e.get(key): lines.append("    {}  {}".format(label, text(e[key])))
+        lines.append("    validation {} · repairs {}".format(text(e.get("validationOutcome") or "not recorded"), e["repairCount"]))
+        if mode != "list":
+            for r in repairs:
+                lines.append("      repair {}/{} · {}".format(r["attempt"], r["maximumAttempts"], "passed" if r["passedAfterRepair"] else "did not pass"))
+        for label, key in (("failure", "failureReason"), ("reporting", "reportingFailure")):
+            if e.get(key): lines.append("    {}  {}".format(label, text(e[key], 1000)))
+    print("\n".join(lines))
+except (ValueError, KeyError, TypeError, AttributeError):
+    sys.exit(1)' "$mode" <<<"$response"; then
+    error 'Worker execution history API returned invalid execution metadata'
+    return 1
+  fi
+}
+
 main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
@@ -641,6 +737,7 @@ main() {
     restart|rs) (($# == 0)) || { error 'restart does not accept options'; help_hint; return 2; }; restart_command ;;
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
+    executions|e) executions_command "$@" ;;
     version|v) version_command "$@" ;;
     release|r) release_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;

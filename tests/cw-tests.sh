@@ -671,4 +671,6 @@ fi
 grep -Fq 'have diverged' "$test_root/version-diverged.out"
 [[ $(git -C "$version_diverged" show HEAD:Directory.Build.props | sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p') == 9.8.7 ]]
 
+bash "$repo_root/tests/cw-executions-tests.sh"
+
 echo 'cw tests passed'

@@ -213,11 +213,26 @@ public sealed class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update integration recovery snapshot", ex); }
     }
 
-    public async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default)
+    public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default) =>
+        ReadAsync(" ORDER BY started_at_utc", null, null, ct);
+
+    public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadRecentAsync(int limit, CancellationToken ct = default) =>
+        ReadAsync(" ORDER BY started_at_utc DESC, execution_id LIMIT $value", "$value", Math.Clamp(limit, 1, 500), ct);
+
+    public async Task<ExecutionHistoryEntry?> ReadExecutionAsync(Guid executionId, CancellationToken ct = default) =>
+        (await ReadAsync(" WHERE execution_id=$value", "$value", executionId.ToString(), ct)).SingleOrDefault();
+
+    public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadIssueAsync(int issueNumber, CancellationToken ct = default) =>
+        ReadAsync(" WHERE issue_number=$value ORDER BY project, repository, started_at_utc, attempt_number, execution_id",
+            "$value", issueNumber, ct);
+
+    private async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAsync(string suffix, string? parameter, object? value,
+        CancellationToken ct)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body FROM executions ORDER BY started_at_utc";
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body FROM executions" + suffix;
+        if (parameter is not null) command.Parameters.AddWithValue(parameter, value ?? DBNull.Value);
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))

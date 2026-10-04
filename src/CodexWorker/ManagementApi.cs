@@ -23,7 +23,8 @@ public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, stri
     long? DurationMilliseconds, string? ValidationOutcome, int RepairCount, IReadOnlyList<ExecutionRepairInfo> Repairs,
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
     Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null,
-    string? FailureReason = null, string? ReportingFailure = null);
+    string? FailureReason = null, string? ReportingFailure = null, string? FeatureBranch = null,
+    string? BaseBranch = null, string? CompletedBranch = null, string? CommitSha = null, string? IntegrationBranch = null);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -158,31 +159,46 @@ public sealed class WorkerRuntimeReadModel
             }).ToArray();
     }
 
-    public async Task<IReadOnlyList<ExecutionRuntimeInfo>> ExecutionsAsync(int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<ExecutionRuntimeInfo>> ExecutionsAsync(int limit, CancellationToken ct) =>
+        (await _history.ReadRecentAsync(limit, ct)).Select(ProjectExecution).ToArray();
+
+    public async Task<ExecutionRuntimeInfo?> ExecutionAsync(Guid executionId, CancellationToken ct) =>
+        await _history.ReadExecutionAsync(executionId, ct) is { } entry ? ProjectExecution(entry) : null;
+
+    public async Task<IReadOnlyList<ExecutionRuntimeInfo>> IssueExecutionsAsync(int issueNumber, CancellationToken ct) =>
+        (await _history.ReadIssueAsync(issueNumber, ct)).Select(ProjectExecution).ToArray();
+
+    private ExecutionRuntimeInfo ProjectExecution(ExecutionHistoryEntry e)
     {
-        var entries = await _history.ReadAllAsync(ct);
-        return entries.OrderByDescending(e => e.StartedAtUtc).Take(Math.Clamp(limit, 1, 500)).Select(e =>
+        var project = _registry.Snapshot().FirstOrDefault(project =>
+            string.Equals(project.Configuration.Project.Name, e.Project, StringComparison.OrdinalIgnoreCase));
+        var retentionDays = project.Configuration?.Worker.RecoveryRetentionDays ?? 7;
+        var secrets = project.Configuration?.Environment.Variables.Values.ToArray();
+        string? Diagnostic(string? value)
         {
-            var retentionDays = _registry.Snapshot()
-                .Where(project => string.Equals(project.Configuration.Project.Name, e.Project, StringComparison.OrdinalIgnoreCase))
-                .Select(project => (int?)project.Configuration.Worker.RecoveryRetentionDays)
-                .FirstOrDefault() ?? 7;
-            return new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
-                e.StartedAtUtc, e.CompletedAtUtc, e.DurationMilliseconds, e.ValidationOutcome, e.RepairCount,
-                e.Repairs.Select(repair => new ExecutionRepairInfo(repair.Attempt, repair.MaximumAttempts, repair.PassedAfterRepair)).ToArray(),
-                Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, e.RecoveryStatus,
-                e.RetryOfExecutionId, e.AttemptNumber, e.Resumed,
-                e.RecoveryState is "recoverable" or "cleanup-pending"
-                    ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc,
-                e.EffectiveModel, e.EffectiveEffort,
-                e.State is "InfrastructureFailure" or "Cancelled" ? e.FailureReason : null, e.ReportingFailure);
-        }).ToArray();
+            if (value is null) return null;
+            var safe = FailureDiagnosticRedactor.Redact(value.Split('\n')[0], secrets);
+            return safe.Length <= 1000 ? safe : safe[..1000] + "…";
+        }
+        // Task failure details can include validation/process output; retain the safe state/validation
+        // summary instead. Infrastructure and reporting diagnostics are operational metadata.
+        return new ExecutionRuntimeInfo(e.ExecutionId, e.Project, e.Repository, e.IssueNumber, e.IssueTitle, e.State,
+            e.StartedAtUtc, e.CompletedAtUtc, e.DurationMilliseconds, Diagnostic(e.ValidationOutcome), e.RepairCount,
+            e.Repairs.Select(repair => new ExecutionRepairInfo(repair.Attempt, repair.MaximumAttempts, repair.PassedAfterRepair)).ToArray(),
+            Outcome(e.State), e.RecoveryState, e.RecoveryBaseCommit, Diagnostic(e.RecoveryStatus),
+            e.RetryOfExecutionId, e.AttemptNumber, e.Resumed,
+            e.RecoveryState is "recoverable" or "cleanup-pending"
+                ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc,
+            e.EffectiveModel, e.EffectiveEffort,
+            e.State is "InfrastructureFailure" or "Cancelled" ? Diagnostic(e.FailureReason) : null,
+            Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch);
     }
 
     private static string? Outcome(string state) => state switch
     {
         "Completed" => "succeeded", "Blocked" => "blocked", "Failed" => "failed",
-        "InfrastructureFailure" => "infrastructure-failure", "Cancelled" => "cancelled", _ => null
+        "InfrastructureFailure" => "infrastructure-failure", "Cancelled" => "cancelled",
+        "IntegrationConflict" => "integration-conflict", _ => null
     };
 }
 
@@ -267,6 +283,14 @@ public static class ManagementApi
         }
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
+        app.MapGet("/api/executions/{executionId:guid}", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
+            await model.ExecutionAsync(executionId, context.RequestAborted) is { } entry ? Results.Ok(entry) : Results.NotFound());
+        app.MapGet("/api/executions/issue/{issueNumber:int}", async (int issueNumber, WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            if (issueNumber <= 0) return (IResult)Results.BadRequest();
+            var entries = await model.IssueExecutionsAsync(issueNumber, context.RequestAborted);
+            return entries.Count == 0 ? Results.NotFound() : Results.Ok(entries);
+        });
         app.MapGet("/api/events", (int? limit, WorkerRuntimeReadModel model) => Results.Ok(model.Events.ReadRecent(limit)));
         app.MapGet("/api/events/stream", async (HttpContext context, WorkerRuntimeReadModel model) =>
         {
