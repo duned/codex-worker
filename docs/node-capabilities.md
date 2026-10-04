@@ -117,14 +117,21 @@ after uninstall the command fails verification rather than deleting its files.
 Repeated operations converge through the package manager and final re-detection.
 
 Every mutation requires explicit node-local elevation authorization (including
-when already root). Non-root commands use absolute `/usr/bin/sudo -n` with fixed
-arguments. Package mutations share a local executor gate; apt also retains its
+when already root). Only effective UID zero skips elevation; usernames and
+inherited environment values do not establish filesystem privileges. Fixed apt,
+Codex npm system-prefix mutations (install, update and uninstall), and managed
+permission steps use absolute `/usr/bin/sudo -n` when elevation is needed.
+Capability detection and authentication run separately without elevation.
+Package mutations share a local executor gate; apt also retains its
 native interprocess locks. A failed step stops the sequence. Deadlines/shutdown
 cancel the child process tree; a separate bounded refresh records whatever was
 actually changed. Terminal reports contain fixed diagnostic codes, never process
 output. Inspect refreshed installation/version facts after `ProcessFailed`,
 `Cancelled`, `TimedOut` or reconciled `Interrupted`, resolve package locks/network
 or local authorization failures, and explicitly retry install/update/uninstall.
+Codex npm permission failures identify the managed prefix/cache and the failed
+provider step, with guidance to check the fixed-command sudo authorization and
+filesystem permissions; raw npm output is never returned.
 The command store's existing acknowledgement/reconciliation rules prevent
 automatic replay of an uncertain operation.
 

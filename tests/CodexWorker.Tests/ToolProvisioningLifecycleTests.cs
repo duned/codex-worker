@@ -1,6 +1,8 @@
 namespace CodexWorker.Tests;
 
 using CodexProvisioning;
+using CodexWorker;
+using System.Text.Json;
 
 public sealed class ToolProvisioningLifecycleTests
 {
@@ -160,9 +162,13 @@ public sealed class ToolProvisioningLifecycleTests
         });
         var calls = new List<(string Tool, IReadOnlyList<string> Args)>();
         var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
-            isRoot: () => true, npmAvailable: () => true,
+            isRoot: () => false, npmAvailable: () => true,
             processRunner: (tool, args, _) =>
             {
+                Assert.Equal("/usr/bin/sudo", tool);
+                Assert.Equal("-n", args[0]);
+                tool = args[1];
+                args = args.Skip(2).ToArray();
                 calls.Add((tool, args));
                 if (tool == "/usr/bin/npm" && args[0] == "install") installed = true;
                 if (tool == "/usr/bin/apt-get")
@@ -179,6 +185,108 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(RequirementState.Required, state.Authentication);
         Assert.Equal(["authentication-required"], CapabilityCatalog.Evaluate(
             CapabilityCatalog.Definitions.Single(item => item.Id == "codex-cli"), state).BlockingReasons);
+    }
+
+    [Theory]
+    [InlineData(ProvisioningCommandAction.Install, true)]
+    [InlineData(ProvisioningCommandAction.Install, false)]
+    [InlineData(ProvisioningCommandAction.Update, true)]
+    [InlineData(ProvisioningCommandAction.Update, false)]
+    [InlineData(ProvisioningCommandAction.Uninstall, true)]
+    public async Task CodexSystemMutationsUseNonInteractiveElevationOnlyForFixedProviderSteps(
+        ProvisioningCommandAction action, bool npmAvailable)
+    {
+        var calls = new List<(string Tool, IReadOnlyList<string> Args)>();
+        var discovery = new NodeCapabilityDiscovery((tool, _, _) =>
+        {
+            Assert.NotEqual("/usr/bin/sudo", tool);
+            return Task.FromException<(int, string)>(new FileNotFoundException());
+        });
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
+            isRoot: () => false, npmAvailable: () => npmAvailable,
+            processRunner: (tool, args, _) =>
+            {
+                calls.Add((tool, args));
+                return Task.FromResult(new ProvisioningProcessResult(0));
+            });
+
+        await Execute(executor, action);
+
+        var plan = ToolProvisioningProviders.Plan("codex-cli", action, npmAvailable);
+        Assert.Equal(plan.Count, calls.Count);
+        for (var index = 0; index < plan.Count; index++)
+        {
+            Assert.True(plan[index].RequiresElevation);
+            Assert.Equal("/usr/bin/sudo", calls[index].Tool);
+            Assert.Equal(["-n", plan[index].Executable, .. plan[index].Arguments], calls[index].Args);
+        }
+        var npm = Assert.Single(plan, step => step.Executable == "/usr/bin/npm");
+        Assert.Equal([action == ProvisioningCommandAction.Uninstall ? "uninstall" : "install",
+            "--global", "--prefix", "/usr/local", "--registry", "https://registry.npmjs.org",
+            "--userconfig", "/dev/null", "--globalconfig", "/dev/null",
+            "--cache", "/var/cache/codex-provisioning/npm", "--no-audit", "--no-fund",
+            action == ProvisioningCommandAction.Uninstall ? "@openai/codex" : "@openai/codex@latest"], npm.Arguments);
+        Assert.False(ToolProvisioningProviders.CandidateProbe("codex-cli").RequiresElevation);
+        Assert.False(AuthenticationDependencyProbes.Get(AuthenticationDependencyKind.CodexCliLogin).RequiresElevation);
+
+        calls.Clear();
+        await Execute(executor, ProvisioningCommandAction.CheckAuthentication);
+        var authentication = Assert.Single(calls);
+        Assert.Equal(CodexServiceEnvironment.Executable, authentication.Tool);
+        Assert.Equal(["login", "status"], authentication.Args);
+    }
+
+    [Theory]
+    [InlineData(ProvisioningCommandAction.Install)]
+    [InlineData(ProvisioningCommandAction.Update)]
+    [InlineData(ProvisioningCommandAction.Uninstall)]
+    public async Task CodexPolicyRejectsMissingAuthorizationAllowlistAndDeniedActionsBeforeMutation(ProvisioningCommandAction action)
+    {
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => throw new InvalidOperationException("Must not probe"));
+        var executor = new NodeProvisioningCommandExecutor(discovery,
+            (_, _, _) => throw new InvalidOperationException("Must not mutate"), supportsApt: () => true);
+        var request = new ProvisioningCommandRequest("server", "codex-cli", action, AllowElevation: true);
+        var key = $"tool:codex-cli:{action}".ToLowerInvariant();
+        var policy = new ProvisioningPolicy { Enabled = true, AllowNonPrivileged = true };
+
+        async Task AssertDenied(ProvisioningCommandRequest candidate) => Assert.Equal(ProvisioningDiagnostic.Denied,
+            (await WorkerProvisioning.ExecuteLocalAsync(candidate, policy, discovery, CancellationToken.None, executor: executor)).Diagnostic);
+
+        await AssertDenied(request);
+        policy.AllowedPrivilegedActions.Add(key);
+        await AssertDenied(request with { AllowElevation = false });
+        policy.DeniedActions.Add(key);
+        await AssertDenied(request);
+    }
+
+    [Theory]
+    [InlineData(ProvisioningCommandAction.Install, "npm ERR! code EACCES", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
+    [InlineData(ProvisioningCommandAction.Update, "npm ERR! code EPERM", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
+    [InlineData(ProvisioningCommandAction.Uninstall, "permission denied", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
+    [InlineData(ProvisioningCommandAction.Install, "sudo: a password is required", ProvisioningFailureCode.ElevationDenied)]
+    public async Task CodexPermissionFailuresIdentifyTheStepAndRemediationWithoutOutput(
+        ProvisioningCommandAction action, string error, ProvisioningFailureCode expected)
+    {
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromException<(int, string)>(new FileNotFoundException()));
+        var calls = 0;
+        var executor = new NodeProvisioningCommandExecutor(discovery, supportsApt: () => true,
+            isRoot: () => false, npmAvailable: () => true,
+            processRunner: (_, _, _) =>
+            {
+                calls++;
+                return Task.FromResult(new ProvisioningProcessResult(1, error + "; private-token"));
+            });
+
+        var report = await Execute(executor, action);
+
+        Assert.Equal(expected, report.FailureDetail?.Code);
+        Assert.Equal(1, calls);
+        Assert.Equal(action == ProvisioningCommandAction.Uninstall ? ProvisioningProviderStep.NpmPackageRemoval :
+            ProvisioningProviderStep.NpmPackageInstall, report.FailureDetail?.ProviderStep);
+        Assert.Contains("sudo", report.FailureDetail?.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-token", JsonSerializer.Serialize(report), StringComparison.Ordinal);
+        Assert.True(report.FailureDetail?.Description.Length < 600);
+        Assert.True(ProvisioningCommandProtocol.ValidReport(report));
     }
 
     [Fact]

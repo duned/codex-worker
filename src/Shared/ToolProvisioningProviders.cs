@@ -3,7 +3,7 @@ namespace CodexProvisioning;
 using System.Text.RegularExpressions;
 
 internal sealed record ToolProvisioningStep(string Executable, IReadOnlyList<string> Arguments,
-    ProvisioningProviderStep FailureStep = ProvisioningProviderStep.Unknown);
+    ProvisioningProviderStep FailureStep = ProvisioningProviderStep.Unknown, bool RequiresElevation = false);
 
 /// <summary>Local product policy, never caller-supplied packages, paths or shell commands.</summary>
 internal static class ToolProvisioningProviders
@@ -77,7 +77,8 @@ internal static class ToolProvisioningProviders
                 "--registry", NpmRegistry, "--userconfig", "/dev/null", "--globalconfig", "/dev/null",
                 "--cache", "/var/cache/codex-provisioning/npm", "--no-audit", "--no-fund",
                 remove ? "@openai/codex" : "@openai/codex@latest"],
-            remove ? ProvisioningProviderStep.NpmPackageRemoval : ProvisioningProviderStep.NpmPackageInstall);
+            remove ? ProvisioningProviderStep.NpmPackageRemoval : ProvisioningProviderStep.NpmPackageInstall,
+            RequiresElevation: true);
         if (remove) return [npm];
         var steps = new List<ToolProvisioningStep>();
         if (!npmAvailable)
@@ -89,11 +90,11 @@ internal static class ToolProvisioningProviders
         steps.Add(npm);
         // Packaged services use umask 077. Make only the tool and its standard
         // system parent directories traversable by the effective service account.
-        steps.Add(new("/usr/bin/chmod", ["a+rx", "/usr/local/bin", "/usr/local/lib", "/usr/local/lib/node_modules", "/usr/local/lib/node_modules/@openai"], ProvisioningProviderStep.ExecutablePermissions));
-        steps.Add(new("/usr/bin/chmod", ["-R", "a+rX", "/usr/local/lib/node_modules/@openai/codex"], ProvisioningProviderStep.ExecutablePermissions));
+        steps.Add(new("/usr/bin/chmod", ["a+rx", "/usr/local/bin", "/usr/local/lib", "/usr/local/lib/node_modules", "/usr/local/lib/node_modules/@openai"], ProvisioningProviderStep.ExecutablePermissions, RequiresElevation: true));
+        steps.Add(new("/usr/bin/chmod", ["-R", "a+rX", "/usr/local/lib/node_modules/@openai/codex"], ProvisioningProviderStep.ExecutablePermissions, RequiresElevation: true));
         return steps;
     }
 
     private static ToolProvisioningStep Apt(string operation, ProvisioningProviderStep failureStep, params string[] arguments) =>
-        new("/usr/bin/apt-get", [operation, .. arguments], failureStep);
+        new("/usr/bin/apt-get", [operation, .. arguments], failureStep, RequiresElevation: true);
 }

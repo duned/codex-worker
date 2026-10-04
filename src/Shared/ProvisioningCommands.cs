@@ -1,6 +1,7 @@
 namespace CodexProvisioning;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandAction>))]
@@ -10,7 +11,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
 public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions }
 
@@ -21,6 +22,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
     public string Description => Code switch
     {
         ProvisioningFailureCode.ElevationDenied => "Non-interactive sudo authorization was denied.",
+        ProvisioningFailureCode.SystemPrefixPermissionDenied => "npm could not mutate the managed system prefix /usr/local or cache /var/cache/codex-provisioning/npm. Check node-local non-interactive sudo authorization for the fixed npm provider commands and filesystem permissions, then retry with --allow-elevation and the action allowlisted by local provisioning policy.",
         ProvisioningFailureCode.ExecutableNotFound => "A required provisioning executable was not found.",
         ProvisioningFailureCode.ProcessExited => $"A provisioning process exited unsuccessfully{(ProcessExitCode is { } code ? $" (exit code {code})" : "")}.",
         ProvisioningFailureCode.VerificationFailed => "The provisioning process completed but capability verification failed.",
@@ -47,7 +49,13 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
 
     public bool IsValid => Enum.IsDefined(Code) && (ProcessExitCode is null or >= 0) &&
         Enum.IsDefined(ProviderStep) && (Code == ProvisioningFailureCode.ProcessExited || ProcessExitCode is null) &&
-        (Code == ProvisioningFailureCode.ProcessExited || ProviderStep == ProvisioningProviderStep.Unknown);
+        (Code switch
+        {
+            ProvisioningFailureCode.ProcessExited or ProvisioningFailureCode.ElevationDenied => true,
+            ProvisioningFailureCode.SystemPrefixPermissionDenied =>
+                ProviderStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval,
+            _ => ProviderStep == ProvisioningProviderStep.Unknown
+        });
 }
 
 /// <summary>Bounded process result. StandardError is transient and used only to classify known failures.</summary>
@@ -109,7 +117,7 @@ public static class ProvisioningCommandProtocol
 }
 
 /// <summary>Product-owned commands only. Output is drained; bounded stderr is classified transiently and never returned or logged.</summary>
-public sealed class NodeProvisioningCommandExecutor
+public sealed partial class NodeProvisioningCommandExecutor
 {
     private readonly NodeCapabilityDiscovery _discovery;
     private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>> _run;
@@ -137,7 +145,9 @@ public sealed class NodeProvisioningCommandExecutor
             ? RunAsync
             : async (executable, arguments, token) => new ProvisioningProcessResult(await run(executable, arguments, token)));
         _supportsApt = supportsApt ?? SupportsPackageProvisioning;
-        _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && Environment.UserName == "root");
+        // A username is not proof of effective filesystem privileges (for example after
+        // a service-account transition). Only effective UID zero can bypass sudo.
+        _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && NativeMethods.GetEffectiveUserId() == 0);
         _login = login ?? CodexDeviceLogin.RunAsync;
         _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/node") && File.Exists("/usr/bin/npm"));
     }
@@ -217,8 +227,9 @@ public sealed class NodeProvisioningCommandExecutor
                 foreach (var step in ToolProvisioningProviders.Plan(request.CapabilityId, request.Action,
                     request.CapabilityId == "codex-cli" && _npmAvailable()))
                 {
-                    processResult = await _run(_isRoot() ? step.Executable : "/usr/bin/sudo",
-                        _isRoot() ? step.Arguments : ["-n", step.Executable, .. step.Arguments], timeout.Token);
+                    var elevate = step.RequiresElevation && !_isRoot();
+                    processResult = await _run(elevate ? "/usr/bin/sudo" : step.Executable,
+                        elevate ? ["-n", step.Executable, .. step.Arguments] : step.Arguments, timeout.Token);
                     if (processResult.ExitCode != 0)
                     {
                         failedProviderStep = step.FailureStep;
@@ -232,11 +243,15 @@ public sealed class NodeProvisioningCommandExecutor
                 if (processResult?.ExitCode == 0 && expected == InstallationState.Installed &&
                     (observedState.Update == UpdateState.Available || !await _discovery.VerifyManagedInstallationAsync(observedState, timeout.Token)))
                     return Failed(ProvisioningFailureCode.VerificationFailed);
+                var providerFailureCode = processResult is { ExitCode: not 0 }
+                    ? Classify(processResult, failedProviderStep) : ProvisioningFailureCode.VerificationFailed;
                 return processResult?.ExitCode == 0 && observedState.Installation == expected && observedState.Health != CapabilityHealth.Error
                     ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
-                    : processResult is { ExitCode: not 0 } ? Failed(Classify(processResult),
-                        Classify(processResult) == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null,
-                        Classify(processResult) == ProvisioningFailureCode.ProcessExited ? failedProviderStep : ProvisioningProviderStep.Unknown)
+                    : processResult is { ExitCode: not 0 } ? Failed(providerFailureCode,
+                        providerFailureCode == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null,
+                        providerFailureCode is ProvisioningFailureCode.ProcessExited or
+                            ProvisioningFailureCode.ElevationDenied or ProvisioningFailureCode.SystemPrefixPermissionDenied
+                            ? failedProviderStep : ProvisioningProviderStep.Unknown)
                         : Failed(ProvisioningFailureCode.VerificationFailed);
             }
             else
@@ -303,7 +318,8 @@ public sealed class NodeProvisioningCommandExecutor
         new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed,
             FailureDetail: new ProvisioningFailureDetail(code, exitCode, providerStep));
 
-    private static ProvisioningFailureCode Classify(ProvisioningProcessResult result)
+    private static ProvisioningFailureCode Classify(ProvisioningProcessResult result,
+        ProvisioningProviderStep providerStep = ProvisioningProviderStep.Unknown)
     {
         var error = result.StandardError;
         if (error.Contains("a password is required", StringComparison.OrdinalIgnoreCase) ||
@@ -311,6 +327,11 @@ public sealed class NodeProvisioningCommandExecutor
             error.Contains("not in the sudoers", StringComparison.OrdinalIgnoreCase) ||
             error.Contains("not allowed to execute", StringComparison.OrdinalIgnoreCase))
             return ProvisioningFailureCode.ElevationDenied;
+        if (providerStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval &&
+            (error.Contains("EACCES", StringComparison.OrdinalIgnoreCase) ||
+             error.Contains("EPERM", StringComparison.OrdinalIgnoreCase) ||
+             error.Contains("permission denied", StringComparison.OrdinalIgnoreCase)))
+            return ProvisioningFailureCode.SystemPrefixPermissionDenied;
         if (error.Contains("Unable to locate package", StringComparison.OrdinalIgnoreCase) ||
             error.Contains("has no installation candidate", StringComparison.OrdinalIgnoreCase))
             return ProvisioningFailureCode.PackageUnavailable;
@@ -367,5 +388,11 @@ public sealed class NodeProvisioningCommandExecutor
     {
         var buffer = new char[1024];
         while (await reader.ReadAsync(buffer.AsMemory(), token) != 0) { }
+    }
+
+    private static partial class NativeMethods
+    {
+        [LibraryImport("libc", EntryPoint = "geteuid")]
+        internal static partial uint GetEffectiveUserId();
     }
 }
