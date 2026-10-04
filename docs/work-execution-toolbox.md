@@ -1,6 +1,6 @@
 # Work Execution Toolbox foundation
 
-`WorkExecutionToolbox` is a standalone .NET 10 library. It has no package or project dependencies on Codex Server, Codex Worker, provisioning, or `cw`. A host can reference `src/WorkExecutionToolbox/WorkExecutionToolbox.csproj` directly. The independent solution includes only the library and its test host:
+`WorkExecutionToolbox` is a standalone .NET 10 library. It has no package or project dependencies on Codex Server, Codex Worker, provisioning, or `cw`. A host can reference `src/WorkExecutionToolbox/WorkExecutionToolbox.csproj` directly. The independent solution includes the library, standalone CLI and test host:
 
 ```sh
 dotnet build src/WorkExecutionToolbox/WorkExecutionToolbox.sln
@@ -25,7 +25,7 @@ Providers preflight visibility and return typed changed, unchanged, preview, con
 
 The library neither invokes `gh` nor discovers authentication in environment variables or CLI state. Worker’s `GitHubToolboxHost` supplies the CLI boundary, invoking `gh auth token --hostname github.com` with a 30-second deadline via the existing process runner. It uses the current node-local authentication, retains no token store, and never includes CLI output or process exceptions in diagnostics. It does not log in or modify authentication. The token is applied only to the API request rather than shared HTTP default headers. HTTP client ownership remains with the host; configure its timeout and trusted handlers appropriately. Command parsing, presentation, queue eligibility and execution lifecycle stay outside the library. No provider registry or plugin system is required.
 
-The separate xUnit test project references only the library and covers repository discovery, scoped Issue resolution, input/response validation, missing Issues, pull requests, typed failures, credential redaction and cancellation through deterministic HTTP fakes. Native parent tests also cover set/clear and idempotent repeats, explicit-clear conflicts, cycles, previews, missing Issues, repository scope, pull requests, paginated direct children, API failures and post-write verification. Worker tests cover the CLI credential boundary without invoking `gh` or using live credentials.
+The separate xUnit test project references the library and independent CLI and covers repository discovery, scoped Issue resolution, input/response validation, missing Issues, pull requests, typed failures, credential redaction and cancellation through deterministic HTTP fakes. Native parent tests also cover set/clear and idempotent repeats, explicit-clear conflicts, cycles, previews, missing Issues, repository scope, pull requests, paginated direct children, API failures and post-write verification. Worker tests cover the CLI credential boundary without invoking `gh` or using live credentials.
 
 ## Native GitHub blocked-by dependencies
 
@@ -46,3 +46,122 @@ Deterministic HTTP tests cover add/remove and batch idempotency, preview, scoped
 Each expanded Issue is resolved against GitHub to verify visibility and internal identity. Graph validation rejects mismatched identities, duplicate paginated results, self-links, pull requests, cross-repository references and asymmetric parent/child or blocked-by/blocking results between included endpoints. API failures remain typed failures and cancellation propagates. Reads are not an atomic GitHub snapshot: inconsistent results can indicate concurrent edits and require a fresh read. Relations beyond the depth boundary are not validated reciprocally, and truncation cannot certify an entire repository graph as valid or acyclic.
 
 Cycle detection uses separate directed hierarchy and dependency graphs, with iterative traversal. `CycleDetected` reports detected cycles and `IsCycle` marks cycle-closing edges; a child blocked by its parent alone is valid. Graph shape, mixed edge types, shared nodes, pagination and traversal bounds, cycles, inconsistent results, pull requests, API errors, cancellation and metadata redaction have deterministic HTTP regression coverage. The provider uses GitHub’s [sub-issue](https://docs.github.com/en/rest/issues/sub-issues) and [dependency](https://docs.github.com/en/rest/issues/issue-dependencies) read endpoints only during inspection.
+
+
+## Standalone planning CLI (`wet`)
+
+The CLI references only the independent toolbox library, with no Server/Worker dependency.
+Install the .NET 10 SDK and GitHub CLI (`gh`), then build and test with the independent
+solution commands above. Package and install as a local .NET tool:
+
+```sh
+dotnet pack src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj -c Release -o /tmp/wet-packages
+dotnet tool install WorkExecutionToolbox.Cli --source /tmp/wet-packages --tool-path "$HOME/.local/share/wet"
+export PATH="$HOME/.local/share/wet:$PATH"
+wet --help
+```
+
+Use `dotnet tool update` with the same package source/tool path to install a newly
+built version, or `dotnet tool uninstall WorkExecutionToolbox.Cli --tool-path
+"$HOME/.local/share/wet"` to remove it. The package uses the shared source `Version`
+from `Directory.Build.props`; an explicit `-p:Version=VERSION` pack override does
+not edit the source version. `wet` works outside the source checkout and needs the
+.NET 10 runtime. A direct publish is also supported using the repository's
+self-contained .NET publishing convention:
+
+```sh
+dotnet publish src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj -c Release -r linux-x64 --self-contained true -o /tmp/wet-publish
+/tmp/wet-publish/WorkExecutionToolbox.Cli --help
+```
+
+Copy the **complete** publish directory to your desired installation location;
+self-contained output does not require a separately installed .NET runtime.
+No deployment, service installation or release publication is required.
+
+Authenticate once through GitHub CLI:
+
+```sh
+gh auth login --hostname github.com
+gh auth status --hostname github.com
+```
+
+The CLI invokes `gh auth token --hostname github.com` with a 30-second deadline,
+keeps credentials only in memory for the request, and never saves tokens or prints
+credential-bearing process output. It neither logs in nor modifies gh state.
+Repository permissions must allow the requested native Issue relationship operation.
+
+Every command requires `--repo owner/name`, including reads. There is no implicit
+checkout, remote, `GH_REPO`, or gh default repository selection. All positional
+arguments are positive human GitHub Issue numbers in that repository:
+
+```sh
+wet parent set 9 3 --repo owner/name
+wet parent clear 9 --repo owner/name
+wet children 3 --repo owner/name
+wet dependency add 9 3 4 --repo owner/name
+wet dependency remove 9 4 --repo owner/name
+wet relationships 9 --repo owner/name
+wet graph 9 --repo owner/name --json
+```
+
+Parent/child relationships organize Issues; they do not block execution. Setting
+Issue 3 as Issue 9's parent does not make 3 a prerequisite. `dependency add 9 3`
+means **Issue 9 is blocked by Issue 3**. Removal removes this prerequisite.
+Dependency batches accept 1–50 distinct blockers. A different existing parent
+returns conflict; explicitly clear it before assigning a replacement. The library
+preflights and verifies writes. The CLI does not add retries, rollback, scheduling,
+labels, comments or Issue state changes. `children` selects the children from the
+library's direct relationship inspection. `graph` uses the library's default
+bounded traversal and displays depth truncation and detected cycles.
+
+Options may appear anywhere. `--help` / `-h` requires no credentials or repository.
+Ctrl+C cancels pending work. HTTP requests have a 60-second timeout. After a failed,
+partial or cancelled write, read `relationships` before retrying: a write may have
+taken effect even if its response could not be verified.
+
+### JSON contract and exit codes
+
+`--json` writes one JSON object, with camelCase keys and enum string values, and
+no human progress text. Successful reads and mutation outcomes go to stdout:
+
+```json
+{"schemaVersion":1,"command":"parent set","repository":"owner/name","issue":9,"data":{"status":"changed","diagnostic":null}}
+```
+
+`data` for `children` is an array of Issue summaries; for `relationships` it has
+`issue`, `parent`, `children`, `blockedBy`, and `blocking`; for `graph` it has
+`root`, `issues`, `edges`, `isDepthTruncated`, and `cycleDetected`. Issue references
+have `repository: {repository: "owner/name"}` and `number`; summaries have `issue`,
+`title`, `state` (`open` or `closed`) and `url`. Graph edges have `fromIssueNumber`,
+`toIssueNumber`, `kind` (`parentChild` or `blockedBy`), and `isCycle`. `blockedBy`
+edges point from the blocked Issue to its prerequisite. Batch mutation data has
+`status` and `relations`, each with `blockerIssueNumber` and `result` (status and
+diagnostic). Status strings are `changed`, `unchanged`, `preview`, `conflict`,
+`failed`, or `partial`. Arrays follow provider order; callers should use numbers
+rather than positions for identity. Null fields are retained.
+
+Usage, missing Issue, provider and host errors go to stderr with empty stdout:
+
+```json
+{"schemaVersion":1,"error":{"code":"missingIssue","message":"Issue is missing or not visible in the selected repository."}}
+```
+
+Error codes are `usage`, `missingIssue`, `authorization`, `rateLimited`,
+`invalidResponse`, `transport`, `provider`, `limitExceeded`, `hostFailure`,
+`cancelled`, and `timeout`. Diagnostics are actionable text, not a parsing contract;
+use `schemaVersion`, codes and statuses for automation. Mutation outcomes remain
+on stdout even when their status gives a nonzero exit code.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Successful read or changed/unchanged mutation |
+| 1 | Provider, authentication, timeout, host or failed mutation |
+| 2 | Invalid command/options, numbers or repository |
+| 3 | Missing or invisible Issue on a read |
+| 4 | Relationship conflict requiring an explicit decision |
+| 5 | Partial or uncertain mutation; refresh before retrying |
+| 130 | User cancellation; refresh before retrying a write |
+
+CLI tests use fake library providers without live GitHub calls, covering routing,
+validation before authentication, human and versioned JSON output, graph direction,
+mutation statuses, partial batch results, missing Issues, safe failures and cancellation.

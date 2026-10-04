@@ -6,6 +6,10 @@ Linux x64 self-contained Server and Worker release archives can be built with [`
 
 Installed hosts share `sudo codex-server update` and `sudo codex-worker update`, with `--check`, `--yes` and `--json`. See [self-update behavior and scripting contract](docs/self-update.md).
 
+For standalone GitHub Issue planning, the independent `wet` CLI manages parents,
+children and blocked-by dependencies and inspects relationship graphs. See the
+[toolbox build, installation and CLI guide](docs/work-execution-toolbox.md#standalone-planning-cli-wet).
+
 ## Local developer operations
 
 From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local. You can optionally expose it through a PATH directory:

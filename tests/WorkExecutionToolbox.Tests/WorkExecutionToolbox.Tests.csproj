@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/WorkExecutionToolbox/WorkExecutionToolbox.csproj" />
+    <ProjectReference Include="../../src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj" />
     <Using Include="Xunit" />
   </ItemGroup>
 </Project>
