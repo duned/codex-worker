@@ -59,20 +59,56 @@ Cycle detection uses separate directed hierarchy and dependency graphs, with ite
 
 The CLI references only the independent toolbox library, with no Server/Worker dependency.
 Install the .NET 10 SDK and GitHub CLI (`gh`), then build and test with the independent
-solution commands above. Package and install as a local .NET tool:
+solution commands above. Ordinary builds and tests never install tools or change PATH.
+
+For repository development, use the existing `cw d` Worker deployment workflow.
+The development .NET tool convention is `$HOME/.local/share/wet` (override with
+`CW_WET_TOOL_DIR`). Explicitly prepend this directory to PATH in your development
+shell before running `cw d`; `cw` does not edit shell configuration or PATH:
 
 ```sh
-dotnet pack src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj -c Release -o /tmp/wet-packages
-dotnet tool install WorkExecutionToolbox.Cli --source /tmp/wet-packages --tool-path "$HOME/.local/share/wet"
 export PATH="$HOME/.local/share/wet:$PATH"
+cw d
+wet --version
 wet --help
 ```
 
-Use `dotnet tool update` with the same package source/tool path to install a newly
-built version, or `dotnet tool uninstall WorkExecutionToolbox.Cli --tool-path
-"$HOME/.local/share/wet"` to remove it. The package uses the shared source `Version`
-from `Directory.Build.props`; an explicit `-p:Version=VERSION` pack override does
-not edit the source version. `wet` works outside the source checkout and needs the
+`cw d` publishes Worker, packs the independent WET CLI from the configured checkout,
+and installs or replaces only `WorkExecutionToolbox.Cli` in the development tool
+directory before stopping/replacing Worker. Reinstallation uses an isolated package
+cache so source changes with the same product version are picked up. No GitHub
+authentication is required for this refresh. Packaging, installation or PATH failures
+fail the command with a diagnostic before Worker replacement. An installation failure
+can leave development WET absent; fix the reported error and rerun `cw d`.
+The existing service deployment still requires non-interactive sudo permission.
+
+Use `type -a wet` and `command -v wet` to identify installations and PATH precedence.
+`cw d` fails if PATH resolves another installation or cannot find the development
+command; prepend the configured directory and rerun. If your shell cached an older
+command path, run `hash -r` (Bash) or `rehash` (Zsh) before verification.
+Unrelated installations and published-release directories are not updated.
+
+Manual .NET tool packaging remains supported:
+
+```sh
+dotnet pack src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj -c Release -o /tmp/wet-packages
+dotnet tool install WorkExecutionToolbox.Cli --source /tmp/wet-packages --tool-path /tmp/wet-manual
+/tmp/wet-manual/wet --version
+/tmp/wet-manual/wet --help
+```
+
+The package uses the shared source `Version` from `Directory.Build.props`; an
+explicit `-p:Version=VERSION` pack override does not edit the source version.
+`wet --version`, `wet -v` and `wet v` print `wet VERSION` from assembly informational
+version metadata (excluding supplementary revision metadata). They work without a
+checkout, GitHub authentication/API access or cache initialization for .NET tools
+and published executables alike.
+
+Local regression checks are `bash tests/cw-tests.sh` (stubbed development deployment)
+and `bash tests/wet-tool-tests.sh` (.NET SDK build, packaging, temporary tool installation
+and published-executable checks). Both avoid the real development tool installation.
+
+`wet` works outside the source checkout and needs the
 .NET 10 runtime. A direct publish is also supported using the repository's
 self-contained .NET publishing convention:
 

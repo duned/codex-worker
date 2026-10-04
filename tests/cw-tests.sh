@@ -6,7 +6,8 @@ test_root=$(mktemp -d)
 trap 'rm -rf -- "$test_root"' EXIT
 bin="$test_root/bin"
 mkdir -p "$bin" "$test_root/projects" "$test_root/apps"
-export PATH="$bin:$PATH"
+export CW_WET_TOOL_DIR="$test_root/development wet"
+export PATH="$bin:$CW_WET_TOOL_DIR:$PATH"
 export CW_DEPLOY_DIR="$test_root/apps/worker"
 export CW_SERVICE_NAME=cw-test
 export CW_TEST_ROOT="$test_root"
@@ -63,14 +64,40 @@ exec "$@"
 MOCK
 cat > "$bin/dotnet" <<'MOCK'
 #!/usr/bin/env bash
-[[ ! -f $CW_TEST_ROOT/fail-publish ]] || exit 1
-printf '%s\n' "$*" > "$CW_TEST_ROOT/dotnet.args"
-while (($#)); do
-  if [[ $1 == -o ]]; then out=$2; shift 2; else shift; fi
-done
-mkdir -p "$out"
-printf '#!/bin/sh\nexit 0\n' > "$out/CodexWorker"
-chmod +x "$out/CodexWorker"
+printf '%s\n' "$*" >> "$CW_TEST_ROOT/dotnet.args"
+case "$1" in
+  publish)
+    [[ ! -f $CW_TEST_ROOT/fail-publish ]] || exit 1
+    while (($#)); do
+      if [[ $1 == -o ]]; then out=$2; shift 2; else shift; fi
+    done
+    mkdir -p "$out"
+    printf '#!/bin/sh\nexit 0\n' > "$out/CodexWorker"
+    chmod +x "$out/CodexWorker"
+    ;;
+  pack)
+    [[ ! -f $CW_TEST_ROOT/fail-pack ]] || exit 1
+    ;;
+  tool)
+    action=$2
+    while (($#)); do
+      if [[ $1 == --tool-path ]]; then tool_dir=$2; shift 2; else shift; fi
+    done
+    case "$action" in
+      list) [[ ! -f $tool_dir/wet ]] || printf 'WorkExecutionToolbox.Cli 9.8.7 wet\n' ;;
+      uninstall) rm -f "$tool_dir/wet" ;;
+      install)
+        [[ ! -f $CW_TEST_ROOT/fail-tool-install ]] || exit 1
+        [[ $NUGET_PACKAGES == */wet/nuget ]] || exit 91
+        mkdir -p "$tool_dir"
+        printf '#!/bin/sh\necho wet development\n' > "$tool_dir/wet"
+        chmod +x "$tool_dir/wet"
+        ;;
+      *) exit 92 ;;
+    esac
+    ;;
+  *) exit 93 ;;
+esac
 MOCK
 cat > "$bin/gh" <<'MOCK'
 #!/usr/bin/env bash
@@ -155,10 +182,23 @@ export CW_REPO_DIR="$fixture_repo"
   grep -Fxq -- '-u cw-test -n 23 --no-pager' "$test_root/journal.args"
   "$fixture_bin/cw" l >/dev/null
   grep -Fxq -- '-u cw-test -n 100 --no-pager' "$test_root/journal.args"
+  [[ ! -e $CW_WET_TOOL_DIR/wet ]]
+  : > "$test_root/dotnet.args"
+  gh_calls=$(wc -l < "$test_root/gh.args")
   "$fixture_bin/cw" deploy > "$test_root/symlink-deploy.out"
   grep -Fq "$fixture_repo/src/CodexWorker/CodexWorker.csproj" "$test_root/dotnet.args"
   grep -Fq '9.8.7' "$CW_DEPLOY_DIR/VERSION"
+  [[ -x $CW_WET_TOOL_DIR/wet ]]
+  ! grep -Fq 'tool uninstall' "$test_root/dotnet.args"
+  grep -Fq 'tool install WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
+  grep -Fq -- '--version 9.8.7' "$test_root/dotnet.args"
+  [[ $(wc -l < "$test_root/gh.args") == "$gh_calls" ]]
+  : > "$test_root/dotnet.args"
   "$fixture_bin/cw" d >/dev/null
+  grep -Fq 'tool uninstall WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
+  grep -Fq 'tool install WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
+  "$fixture_bin/cw" d >/dev/null
+  [[ -x $CW_WET_TOOL_DIR/wet ]]
 )
 
 mkdir -p "$test_root/invalid target"
@@ -207,6 +247,28 @@ cp -a "$fixture_repo" "$default_home/projects/codex-worker"
   env CW_REPO_DIR='~/projects/codex-worker' HOME="$default_home" "$fixture_bin/cw" v > "$test_root/tilde-version.out"
   grep -Fq "repository $default_home/projects/codex-worker" "$test_root/tilde-version.out"
 )
+
+# WET failures occur before any service mutation and never report deployment success.
+for failure in fail-pack fail-tool-install; do
+  touch "$test_root/$failure"
+  : > "$test_root/systemctl.args"
+  if "$fixture_bin/cw" d > "$test_root/wet-failure.out" 2>&1; then
+    echo 'WET refresh failure unexpectedly succeeded' >&2; exit 1
+  fi
+  grep -Fq 'rerun cw d' "$test_root/wet-failure.out"
+  ! grep -Fq 'service is active' "$test_root/wet-failure.out"
+  [[ ! -s $test_root/systemctl.args ]]
+  rm "$test_root/$failure"
+done
+# A different PATH installation must not be overwritten or reported as synchronized.
+printf '#!/bin/sh\necho unrelated wet\n' > "$bin/wet"
+chmod +x "$bin/wet"
+if "$fixture_bin/cw" d > "$test_root/wet-path.out" 2>&1; then
+  echo 'shadowed WET unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'PATH resolves wet to' "$test_root/wet-path.out"
+grep -Fq 'unrelated wet' "$bin/wet"
+rm "$bin/wet"
 
 # Restore defaults for the original-checkout command coverage below.
 export CW_DEPLOY_DIR="$test_root/apps/worker"

@@ -1,10 +1,35 @@
 using System.Text.Json;
+using System.Reflection;
 using WorkExecutionToolbox.Cli;
 
 namespace WorkExecutionToolbox.Tests;
 
 public sealed partial class ToolboxCommandTests
 {
+    [Theory]
+    [InlineData("--version")]
+    [InlineData("-v")]
+    [InlineData("v")]
+    public async Task VersionUsesAssemblyMetadataWithoutRepositoryOrProviderAccess(string argument)
+    {
+        var provider = new FakeProvider { OnCall = () => throw new InvalidOperationException("Provider accessed") };
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var exit = await ToolboxCommand.RunAsync([argument], provider, provider, output, error,
+            cancellation.Token, _ => throw new InvalidOperationException("Repository accessed"));
+        var metadata = typeof(ToolboxCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
+        Assert.NotNull(metadata);
+        Assert.Equal($"wet {metadata.InformationalVersion.Split('+')[0]}", output.ToString().Trim());
+        Assert.Equal(0, exit);
+        Assert.Empty(error.ToString());
+        Assert.Null(provider.Operation);
+        using var standaloneOutput = new StringWriter();
+        Assert.Equal(0, await ToolboxCommand.RunInformationAsync([argument], standaloneOutput));
+        Assert.Equal(output.ToString(), standaloneOutput.ToString());
+    }
+
     [Theory]
     [InlineData("parent set 9 3", "parent", true)]
     [InlineData("parent clear 9", "parent", false)]
@@ -50,6 +75,8 @@ public sealed partial class ToolboxCommandTests
     [InlineData("--repo https://github.com/owner/repo graph 9")]
     [InlineData("--repo owner/repo --repo other/repo graph 9")]
     [InlineData("--repo owner/repo --unexpected graph 9")]
+    [InlineData("v 9")]
+    [InlineData("--version --repo owner/repo")]
     [InlineData("--repo owner/repo --json --json graph 9")]
     [InlineData("--repo owner/repo --refresh --refresh graph 9")]
     [InlineData("--repo owner/repo parent set 9 3 --refresh")]

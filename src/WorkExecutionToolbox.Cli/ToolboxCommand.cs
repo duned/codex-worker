@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -21,6 +22,7 @@ public static class ToolboxCommand
         Explicit --repo overrides discovery; GH_REPO and gh defaults are never used.
         Parent/child organization does not imply execution dependencies.
         Options may appear anywhere. --help / -h shows help without authentication.
+        --version / -v / v shows the package version without repository or authentication access.
         Authenticate with: gh auth login --hostname github.com
         Exit codes: 0 success; 1 provider/operation failure; 2 usage; 3 missing Issue;
                     4 conflict; 5 partial/uncertain write; 130 cancelled.
@@ -35,16 +37,30 @@ public static class ToolboxCommand
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
-    public static async Task<int> RunAsync(string[] args, IIssueRelationshipProvider relationships,
-        IIssueGraphProvider graphs, TextWriter output, TextWriter error, CancellationToken cancellationToken = default,
-        Func<CancellationToken, Task<IReadOnlyList<string>>>? readRemoteUrls = null)
+    /// <summary>Handles commands that need no provider, cache, authentication or repository.</summary>
+    public static async Task<int?> RunInformationAsync(string[] args, TextWriter output)
     {
-        var json = args.Contains("--json", StringComparer.Ordinal);
+        if (args.Length == 1 && args[0] is "--version" or "-v" or "v")
+        {
+            var version = typeof(ToolboxCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion ?? throw new InvalidOperationException("WET assembly version metadata is missing.");
+            await output.WriteLineAsync($"wet {version.Split('+')[0]}");
+            return 0;
+        }
         if (args.Length == 0 || args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
         {
             await output.WriteLineAsync(Help);
             return 0;
         }
+        return null;
+    }
+
+    public static async Task<int> RunAsync(string[] args, IIssueRelationshipProvider relationships,
+        IIssueGraphProvider graphs, TextWriter output, TextWriter error, CancellationToken cancellationToken = default,
+        Func<CancellationToken, Task<IReadOnlyList<string>>>? readRemoteUrls = null)
+    {
+        if (await RunInformationAsync(args, output) is { } informationExit) return informationExit;
+        var json = args.Contains("--json", StringComparer.Ordinal);
         Command command;
         try { command = Parse(args); }
         catch (ArgumentException)

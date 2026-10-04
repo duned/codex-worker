@@ -6,6 +6,7 @@ readonly service_name=${CW_SERVICE_NAME:-codex-worker}
 readonly worker_api_url=${CW_WORKER_API_URL:-http://127.0.0.1:5080}
 readonly deploy_dir=${CW_DEPLOY_DIR:-$HOME/apps/codex-worker}
 readonly configured_repo_dir=${CW_REPO_DIR:-$HOME/projects/codex-worker}
+readonly wet_tool_dir=${CW_WET_TOOL_DIR:-$HOME/.local/share/wet}
 
 usage() {
   cat <<'HELP'
@@ -13,7 +14,7 @@ Usage: ./cw <command> [options]
 
 Developer and local Worker operations:
   status, s       Show repository and local Worker service status
-  deploy, d       Publish this checkout to ~/apps/codex-worker and restart the service
+  deploy, d       Refresh development WET, publish Worker and restart the service
   restart, rs     Restart the installed Worker service
   log, l          Show Worker journal (default: last 100 lines)
     -f            Follow the journal
@@ -28,10 +29,12 @@ Environment overrides:
   CW_DEPLOY_DIR     Local deployment directory (default: ~/apps/codex-worker)
   CW_SERVICE_NAME   systemd service name (default: codex-worker)
   CW_REPO_DIR       Codex Worker source repository (default: ~/projects/codex-worker)
+  CW_WET_TOOL_DIR   Development WET tool directory (default: ~/.local/share/wet)
 
 cw deploy manages a system-level Worker service and requires suitable sudo
 permission for non-interactive systemctl stop/start operations. It does not
 create a product release or change the repository product version.
+Prepend CW_WET_TOOL_DIR to PATH in your shell; deploy verifies that its wet wins.
 
 cw restart (or cw rs) restarts the installed Worker service and verifies that
 it is active before reporting success.
@@ -461,9 +464,40 @@ release_command() {
   fi
 }
 
+refresh_development_wet() {
+  local version=$1 staging=$2 installed resolved
+  printf 'Packaging development WET %s...\n' "$version"
+  # Worker publish builds the library, but does not build the independent CLI.
+  dotnet pack "$REPO_ROOT/src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj" -c Release -o "$staging/packages" || {
+    error 'WET packaging failed; development wet may be stale; fix the pack error and rerun cw d'; return 1;
+  }
+  installed=$(dotnet tool list --tool-path "$wet_tool_dir") || {
+    error "cannot inspect development WET installation at $wet_tool_dir; rerun cw d after fixing tool access"; return 1;
+  }
+  if awk 'tolower($1) == "workexecutiontoolbox.cli" { found=1 } END { exit !found }' <<< "$installed"; then
+    # Reinstall even when the source package version has not changed.
+    dotnet tool uninstall WorkExecutionToolbox.Cli --tool-path "$wet_tool_dir" || {
+      error "cannot replace development WET at $wet_tool_dir; fix tool access and rerun cw d"; return 1;
+    }
+  fi
+  # An isolated package cache prevents an older package with the same version being reused.
+  NUGET_PACKAGES="$staging/nuget" dotnet tool install WorkExecutionToolbox.Cli \
+    --source "$staging/packages" --version "$version" --tool-path "$wet_tool_dir" || {
+    error "WET installation failed at $wet_tool_dir; development wet is not synchronized; fix the install error and rerun cw d"; return 1;
+  }
+  resolved=$(command -v wet || true)
+  if [[ -z $resolved || $(readlink -f -- "$resolved") != $(readlink -f -- "$wet_tool_dir/wet") ]]; then
+    error "development WET installed at $wet_tool_dir/wet, but PATH resolves wet to ${resolved:-nothing}; prepend $wet_tool_dir to PATH and rerun cw d (use 'type -a wet' to inspect installations)"
+    return 1
+  fi
+  printf 'Development WET %s synchronized at %s/wet.\n' "$version" "$wet_tool_dir"
+}
+
 deploy_command() {
   need_command dotnet || return 1
   need_command git || return 1
+  need_command awk || return 1
+  need_command readlink || return 1
   need_command sudo || return 1
   need_command systemctl || return 1
   local version commit parent
@@ -511,6 +545,7 @@ deploy_command() {
     error 'publish succeeded but produced no CodexWorker executable or DLL'; return 1;
   }
   printf '%s\n' "$version" > "$stage/publish/VERSION"
+  refresh_development_wet "$version" "$stage/wet" || return 1
   systemctl is-active --quiet "$service_name" && was_active=true
   if [[ $was_active == true ]]; then
     service_mutation stop || return 1
