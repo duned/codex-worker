@@ -23,6 +23,22 @@ public sealed class GitHubIssueParentTests
         Assert.Null(http.DefaultRequestHeaders.Authorization);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LostWriteResponseVerifiesSetAndClearWithoutRetry(bool clear)
+    {
+        using var handler = new GraphHandler { LoseWriteResponse = true };
+        if (clear) handler.Parents[1] = 2;
+        using var http = new HttpClient(handler);
+        var result = await Provider(http).SetParentAsync(new(Issue(1), clear ? null : 2));
+        Assert.Equal(RelationshipChangeStatus.Changed, result.Status);
+        Assert.Contains("verified", result.Diagnostic);
+        Assert.DoesNotContain("sensitive-response", result.Diagnostic);
+        Assert.Single(handler.Writes);
+        Assert.Equal(clear ? null : (int?)2, (await Provider(http).GetParentAsync(Issue(1)))?.Issue.Number);
+    }
+
     [Fact]
     public async Task ExistingDifferentParentRequiresExplicitClear()
     {
@@ -129,7 +145,7 @@ public sealed class GitHubIssueParentTests
         handler.Parents[1] = 2;
         using var http = new HttpClient(handler);
         var result = await Provider(http).ClearParentAsync(Issue(1));
-        Assert.Equal(RelationshipChangeStatus.Failed, result.Status);
+        Assert.Equal(RelationshipChangeStatus.Partial, result.Status);
         Assert.Contains("could not be verified", result.Diagnostic);
     }
 
@@ -161,7 +177,7 @@ public sealed class GitHubIssueParentTests
             ? throw new HttpRequestException("sensitive-response") : null;
         using var http = new HttpClient(handler);
         var result = await Provider(http).SetParentAsync(new(Issue(1), 2));
-        Assert.Equal(RelationshipChangeStatus.Failed, result.Status);
+        Assert.Equal(RelationshipChangeStatus.Partial, result.Status);
         Assert.Contains("refresh", result.Diagnostic);
         Assert.DoesNotContain("sensitive-response", result.Diagnostic);
         handler.Override = _ => throw new HttpRequestException("sensitive-response");
@@ -254,6 +270,7 @@ public sealed class GitHubIssueParentTests
         public List<HttpMethod> Writes { get; } = [];
         public List<long> WrittenIds { get; } = [];
         public Func<HttpRequestMessage, HttpResponseMessage?>? Override { get; set; }
+        public bool LoseWriteResponse { get; init; }
         public bool IgnoreWrites { get; init; }
         public bool HideChildAfterWrite { get; init; }
         public int ListPages { get; private set; }
@@ -287,6 +304,7 @@ public sealed class GitHubIssueParentTests
                     else Parents.Remove(child);
                 }
                 if (HideChildAfterWrite) Numbers.Remove(child);
+                if (LoseWriteResponse) throw new HttpRequestException("sensitive-response");
                 return Response("{}");
             }
             if (suffix == "parent")

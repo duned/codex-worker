@@ -30,7 +30,7 @@ public sealed partial class GitHubIssueProvider
 
     /// <summary>
     /// Sets or clears the native parent, without replacing a different parent. Previews run the same
-    /// preflight checks without writing. API failures and unverified writes return Failed; refresh
+    /// preflight checks without writing. Preflight failures return Failed and unverified writes return Partial; refresh
     /// GitHub state before retrying. Cancellation propagates, including after a write was sent.
     /// </summary>
     public async Task<RelationshipChangeResult> SetParentAsync(SetParentRequest request, CancellationToken cancellationToken = default)
@@ -69,24 +69,33 @@ public sealed partial class GitHubIssueProvider
             var mutationParent = desired ?? current;
             if (mutationParent is null) throw new InvalidOperationException("A parent mutation requires a resolved parent.");
             writeAttempted = true;
-            using var ignored = await SendAsync(child.Summary.Issue.Repository, mutationParent.Summary.Issue.Number,
-                desired is null ? "/sub_issue" : "/sub_issues", desired is null ? HttpMethod.Delete : HttpMethod.Post,
-                new { sub_issue_id = child.DatabaseId }, allowMissing: false, readBody: false, cancellationToken);
+            GitHubIssueException? writeError = null;
+            try
+            {
+                using var ignored = await SendAsync(child.Summary.Issue.Repository, mutationParent.Summary.Issue.Number,
+                    desired is null ? "/sub_issue" : "/sub_issues", desired is null ? HttpMethod.Delete : HttpMethod.Post,
+                    new { sub_issue_id = child.DatabaseId }, allowMissing: false, readBody: false, cancellationToken);
+            }
+            catch (GitHubIssueException ex) { writeError = ex; }
+
+            // A lost response may follow a successful write; verify rather than replaying it.
 
             // A parent 404 alone cannot distinguish an absent relationship from a now-invisible child.
             var verifiedChild = await ResolveAsync(child.Summary.Issue, cancellationToken);
             if (verifiedChild?.DatabaseId != child.DatabaseId)
-                return Failed("GitHub accepted the write, but the child Issue could not be verified. Refresh before retrying.");
+                return new(RelationshipChangeStatus.Partial, "Parent write attempted, but the child Issue could not be verified. Refresh before retrying.");
             var actual = await ReadParentAsync(child.Summary.Issue, cancellationToken);
             return actual?.DatabaseId == desired?.DatabaseId
-                ? new(RelationshipChangeStatus.Changed)
-                : Failed("GitHub's parent relationship did not match the requested state after the write. Refresh before retrying.");
+                ? new(RelationshipChangeStatus.Changed, writeError is null ? null : "Write reported an error, but the requested state was verified.")
+                : Failed(writeError is null
+                    ? "GitHub's parent relationship did not match the requested state after the write. Refresh before retrying."
+                    : $"{writeError.Message} Requested parent state was not retained; refresh before retrying.");
         }
         catch (GitHubIssueException ex)
         {
-            return Failed(writeAttempted
-                ? $"{ex.Message} The write may have taken effect; refresh the relationship before retrying."
-                : ex.Message);
+            return writeAttempted
+                ? new(RelationshipChangeStatus.Partial, $"{ex.Message} The write may have taken effect; refresh the relationship before retrying.")
+                : Failed(ex.Message);
         }
     }
 

@@ -1,4 +1,4 @@
-# Work Execution Toolbox foundation
+# Work Execution Toolbox
 
 `WorkExecutionToolbox` is a standalone .NET 10 library. It has no package or project dependencies on Codex Server, Codex Worker, provisioning, or `cw`. A host can reference `src/WorkExecutionToolbox/WorkExecutionToolbox.csproj` directly. The independent solution includes the library, standalone CLI and test host:
 
@@ -17,7 +17,7 @@ Providers preflight visibility and return typed changed, unchanged, preview, con
 
 `IIssueProvider` defines Issue reads and is inherited by `IIssueDependencyProvider`. `GitHubIssueProvider` implements Issue reads and blocked-by operations using a host-owned `HttpClient` and an injected async credential callback. It resolves human numbers through the repository-scoped REST endpoint, keeps database IDs internal, rejects pull requests, and validates the returned number, state and repository URL. Missing or invisible Issues and pull requests return `null`. Authorization, rate-limit, transport and malformed-response failures use `GitHubIssueException` with a typed failure; cancellation propagates. Response bodies, tokens and raw underlying exceptions are excluded from diagnostics. Responses are bounded to 1 MiB. The provider implements `IIssueRelationshipProvider` and `IIssueGraphProvider`; command parsing remains outside the library.
 
-`GitHubIssueProvider.SetParentAsync` uses the existing `SetParentRequest`, and `ClearParentAsync` explicitly clears a parent. Repeated set/clear requests return `Unchanged` when the state already matches. A different parent returns `Conflict` without writing; replacement requires a separate explicit clear. Previews run visibility, scope and cycle checks without writing. Ancestors are read from GitHub and checked for cycles before assignment, with a safety bound of 1,000 ancestors. Writes use the resolved child's internal ID with GitHub's [native sub-issue endpoints](https://docs.github.com/en/rest/issues/sub-issues), never labels, body text or local storage, and never request implicit parent replacement. After a write, the provider verifies the child is still visible with the same identity and reads its native parent back. A mismatch or API error returns `Failed` with safe diagnostics; an attempted write may have taken effect, so callers must refresh before retrying. Cancellation propagates even after sending a write.
+`GitHubIssueProvider.SetParentAsync` uses the existing `SetParentRequest`, and `ClearParentAsync` explicitly clears a parent. Repeated set/clear requests return `Unchanged` when the state already matches. A different parent returns `Conflict` without writing; replacement requires a separate explicit clear. Previews run visibility, scope and cycle checks without writing. Ancestors are read from GitHub and checked for cycles before assignment, with a safety bound of 1,000 ancestors. Writes use the resolved child's internal ID with GitHub's [native sub-issue endpoints](https://docs.github.com/en/rest/issues/sub-issues), never labels, body text or local storage, and never request implicit parent replacement. After a write, the provider verifies the child is still visible with the same identity and reads its native parent back. A verified mismatch returns `Failed` with safe diagnostics. Even after a write error, the provider reads back state: a matching state returns `Changed`, while an invisible child or failed verification returns `Partial`. It never replays the write; callers must refresh before retrying uncertain results. Cancellation propagates even after sending a write.
 
 `GetParentAsync` reads the native parent; `ListChildrenAsync` lists direct children with 100-item pages. Missing Issues or pull requests return `null`; a visible parent with no children returns an empty list. Relationship payloads must contain actual Issues in the explicitly selected repository: cross-repository links, pull requests and malformed responses are rejected. Child listings are limited to 100 pages and fail rather than silently truncate at that bound. Read errors retain typed `GitHubIssueException` diagnostics. `GetRelationshipsAsync` completes the existing relationship contract by returning the direct parent, children, blocked-by prerequisites and blocking dependents from GitHub’s native endpoints. It rejects self-links and inconsistent identities across the returned lists.
 
@@ -165,3 +165,87 @@ on stdout even when their status gives a nonzero exit code.
 CLI tests use fake library providers without live GitHub calls, covering routing,
 validation before authentication, human and versioned JSON output, graph direction,
 mutation statuses, partial batch results, missing Issues, safe failures and cancellation.
+
+
+## Consume the library from another host
+
+Reference only `WorkExecutionToolbox.csproj`; no CLI, Worker or Server reference is
+needed. Supply a host-owned HTTP client and async credential provider. The callback
+below is your host's credential boundary, not a toolbox token store:
+
+```csharp
+using WorkExecutionToolbox;
+
+static async Task InspectAsync(
+    HttpClient http,
+    Func<CancellationToken, Task<string>> getToken,
+    CancellationToken cancellationToken)
+{
+    var github = new GitHubIssueProvider(http, getToken);
+    var repository = GitHubRepositoryContext.Create("owner/name");
+    var child = new IssueReference(repository, 9);
+    IIssueRelationshipProvider relationships = github;
+    var current = await relationships.GetRelationshipsAsync(child, cancellationToken);
+    // Preview validates visibility and cycles without changing GitHub.
+    var preview = await relationships.SetParentAsync(
+        new SetParentRequest(child, 3, previewOnly: true), cancellationToken);
+    IIssueGraphProvider graphs = github;
+    var graph = await graphs.GetGraphAsync(child,
+        new IssueGraphOptions { MaxDepth = 2, MaxIssues = 25 }, cancellationToken);
+}
+```
+
+For writes, use the same requests without `previewOnly`. Clear a parent with
+`new SetParentRequest(child, null)`. Add prerequisites with
+`new SetDependenciesRequest(child, [3, 4], applied: true)`; remove them with
+`applied: false`. Handle typed statuses, including `Partial`, before attempting
+another write. Read failures throw `GitHubIssueException`; cancellation propagates.
+Do not log the credential callback's results or raw host exceptions.
+
+## GitHub permissions and supported scope
+
+The provider targets GitHub.com and pins REST API version `2022-11-28`; GitHub
+Enterprise hosts are not supported. Native relationship reads require repository
+visibility and, for fine-grained credentials, Issues read permission. Mutations
+require Issues write permission and the authenticated user's access to the selected
+repository. See GitHub's [sub-issue API](https://docs.github.com/en/rest/issues/sub-issues)
+and [dependency API](https://docs.github.com/en/rest/issues/issue-dependencies).
+GitHub may reject writes because of relationship constraints or rate limits.
+The toolbox does not retry them automatically.
+
+All related Issues must belong to the selected repository. Cross-repository native
+relationships are rejected, even if GitHub supports them. Missing and invisible
+Issues cannot always be distinguished. Relationships organize and describe
+prerequisites; the toolbox does not schedule work or complete Issues.
+
+## Opt-in developer smoke test
+
+Run this workflow only against a dedicated test repository and disposable Issues
+that you control. It performs real writes. Substitute its explicit `owner/name`
+and three actual Issue numbers for the examples (parent 3, child 9, prerequisite 4).
+Start with no parent or dependencies on child 9; never use production planning
+Issues for this check. Authentication and creation of those disposable Issues are
+operator prerequisites, separate from automated validation.
+
+```sh
+wet relationships 9 --repo owner/name --json
+wet parent set 9 3 --repo owner/name --json
+wet parent set 9 3 --repo owner/name --json
+wet children 3 --repo owner/name --json
+wet dependency add 9 3 4 --repo owner/name --json
+wet dependency add 9 3 4 --repo owner/name --json
+wet relationships 9 --repo owner/name --json
+wet graph 9 --repo owner/name --json
+wet dependency remove 9 3 4 --repo owner/name --json
+wet parent clear 9 --repo owner/name --json
+wet relationships 9 --repo owner/name --json
+wet children 3 --repo owner/name --json
+```
+
+Check that the first mutations report `changed`, repeated requests report
+`unchanged`, child 9 appears under parent 3, and Issue 9's `blockedBy` contains
+3 and 4. The graph should show 3 → 9 as `parentChild` and 9 → 3 / 9 → 4 as
+`blockedBy`, without treating mixed edge kinds as a cycle. After removal, child 9
+has no parent or blockers and parent 3 no longer lists it. If any write fails,
+returns partial or is cancelled, inspect current relationships before continuing;
+cleanup must use only the disposable relationships you created.
