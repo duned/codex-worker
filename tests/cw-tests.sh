@@ -7,7 +7,12 @@ trap 'rm -rf -- "$test_root"' EXIT
 bin="$test_root/bin"
 mkdir -p "$bin" "$test_root/projects" "$test_root/apps"
 export CW_WET_TOOL_DIR="$test_root/development wet"
-export PATH="$bin:$CW_WET_TOOL_DIR:$PATH"
+export HOME="$test_root/home"
+export SHELL=/bin/bash
+mkdir -p "$HOME"
+export PATH="$bin:$HOME/.local/bin:$PATH"
+# Model a supported login setup without touching the developer's real profiles.
+printf 'export PATH=%q\n' "$PATH" > "$HOME/.bash_profile"
 export CW_DEPLOY_DIR="$test_root/apps/worker"
 export CW_SERVICE_NAME=cw-test
 export CW_TEST_ROOT="$test_root"
@@ -89,16 +94,17 @@ case "$1" in
   tool)
     action=$2
     while (($#)); do
-      if [[ $1 == --tool-path ]]; then tool_dir=$2; shift 2; else shift; fi
+      if [[ $1 == --tool-path ]]; then tool_dir=$2; shift 2; elif [[ $1 == --version ]]; then version=$2; shift 2; else shift; fi
     done
     case "$action" in
-      list) [[ ! -f $tool_dir/wet ]] || printf 'WorkExecutionToolbox.Cli 9.8.7 wet\n' ;;
+      list) [[ ! -f $tool_dir/wet ]] || printf 'WorkExecutionToolbox.Cli %s wet\n' "${CW_TEST_PACKAGE_VERSION:-$(cat "$tool_dir/version")}" ;;
       uninstall) rm -f "$tool_dir/wet" ;;
       install)
         [[ ! -f $CW_TEST_ROOT/fail-tool-install ]] || exit 1
         [[ $NUGET_PACKAGES == */wet/nuget ]] || exit 91
         mkdir -p "$tool_dir"
-        printf '#!/bin/sh\necho wet development\n' > "$tool_dir/wet"
+        printf '%s\n' "$version" > "$tool_dir/version"
+        printf '#!/bin/sh\necho wet %s\n' "${CW_TEST_WET_VERSION:-$version}" > "$tool_dir/wet"
         chmod +x "$tool_dir/wet"
         ;;
       *) exit 92 ;;
@@ -197,6 +203,9 @@ export CW_REPO_DIR="$fixture_repo"
   grep -Fq "$fixture_repo/src/CodexWorker/CodexWorker.csproj" "$test_root/dotnet.args"
   grep -Fq '9.8.7' "$CW_DEPLOY_DIR/VERSION"
   [[ -x $CW_WET_TOOL_DIR/wet ]]
+  [[ -x $HOME/.local/bin/wet && ! -L $HOME/.local/bin/wet ]]
+  [[ $(wet --version) == 'wet 9.8.7' ]]
+  [[ $(bash -lc 'wet --version') == 'wet 9.8.7' ]]
   ! grep -Fq 'tool uninstall' "$test_root/dotnet.args"
   grep -Fq 'tool install WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
   grep -Fq -- '--version 9.8.7' "$test_root/dotnet.args"
@@ -205,7 +214,9 @@ export CW_REPO_DIR="$fixture_repo"
   "$fixture_bin/cw" d >/dev/null
   grep -Fq 'tool uninstall WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
   grep -Fq 'tool install WorkExecutionToolbox.Cli' "$test_root/dotnet.args"
+  cp "$HOME/.local/bin/wet" "$test_root/launcher-before"
   "$fixture_bin/cw" d >/dev/null
+  cmp "$test_root/launcher-before" "$HOME/.local/bin/wet"
   [[ -x $CW_WET_TOOL_DIR/wet ]]
 )
 
@@ -277,6 +288,80 @@ fi
 grep -Fq 'PATH resolves wet to' "$test_root/wet-path.out"
 grep -Fq 'unrelated wet' "$bin/wet"
 rm "$bin/wet"
+
+# Managed launchers track configured tool locations, including paths with shell metacharacters.
+original_tool_dir=$CW_WET_TOOL_DIR
+export CW_WET_TOOL_DIR="$test_root/custom wet ' \$ tool"
+"$fixture_bin/cw" d >/dev/null
+[[ $(wet --version) == 'wet 9.8.7' ]]
+grep -Fq "# target: $CW_WET_TOOL_DIR/wet" "$HOME/.local/bin/wet"
+# Removing the old executable demonstrates that the launcher uses the new location.
+rm "$original_tool_dir/wet"
+[[ $(bash -lc 'wet --version') == 'wet 9.8.7' ]]
+
+# Preserve unrelated regular files and symlinks (including dangling links).
+cp "$HOME/.local/bin/wet" "$test_root/managed-launcher"
+for kind in executable symlink dangling; do
+  rm "$HOME/.local/bin/wet"
+  case $kind in
+    executable) printf '#!/bin/sh\necho independent wet\n' > "$HOME/.local/bin/wet"; chmod +x "$HOME/.local/bin/wet" ;;
+    symlink) ln -s "$CW_WET_TOOL_DIR/wet" "$HOME/.local/bin/wet" ;;
+    dangling) ln -s "$test_root/absent" "$HOME/.local/bin/wet" ;;
+  esac
+  cp -P "$HOME/.local/bin/wet" "$test_root/entry-before"
+  : > "$test_root/systemctl.args"
+  if "$fixture_bin/cw" d > "$test_root/entry-conflict.out" 2>&1; then
+    echo 'unrelated command entry unexpectedly overwritten' >&2; exit 1
+  fi
+  grep -Fq 'refusing to overwrite unrelated' "$test_root/entry-conflict.out"
+  [[ ! -s $test_root/systemctl.args ]]
+  if [[ $kind == executable ]]; then cmp "$test_root/entry-before" "$HOME/.local/bin/wet"
+  else [[ $(readlink "$test_root/entry-before") == $(readlink "$HOME/.local/bin/wet") ]]; fi
+  rm "$test_root/entry-before"
+done
+rm "$HOME/.local/bin/wet"
+cp "$test_root/managed-launcher" "$HOME/.local/bin/wet"
+
+# A current PATH export alone cannot hide a missing login PATH entry.
+cp "$HOME/.bash_profile" "$test_root/profile-before"
+printf 'export PATH=%q\n' "$bin:/usr/bin:/bin" > "$HOME/.bash_profile"
+cp "$HOME/.bash_profile" "$test_root/profile-missing"
+if "$fixture_bin/cw" d > "$test_root/login-path.out" 2>&1; then
+  echo 'missing login PATH entry unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'missing from login-shell PATH' "$test_root/login-path.out"
+grep -Fq 'shell profiles were not edited' "$test_root/login-path.out"
+cmp "$test_root/profile-missing" "$HOME/.bash_profile"
+cp "$test_root/profile-before" "$HOME/.bash_profile"
+mkdir -p "$test_root/login-other"
+printf '#!/bin/sh\necho published wet\n' > "$test_root/login-other/wet"
+chmod +x "$test_root/login-other/wet"
+printf 'export PATH=%q\n' "$test_root/login-other:$PATH" > "$HOME/.bash_profile"
+if "$fixture_bin/cw" d > "$test_root/login-shadow.out" 2>&1; then
+  echo 'shadowed login command unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'login-shell PATH resolves wet to' "$test_root/login-shadow.out"
+grep -Fq 'published wet' "$test_root/login-other/wet"
+cp "$test_root/profile-before" "$HOME/.bash_profile"
+
+# Missing current PATH is also actionable and leaves profiles untouched.
+if PATH="$bin:/usr/bin:/bin" "$fixture_bin/cw" d > "$test_root/current-path.out" 2>&1; then
+  echo 'missing current PATH entry unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'missing from PATH' "$test_root/current-path.out"
+cmp "$test_root/profile-before" "$HOME/.bash_profile"
+
+# Verify executable output as well as the tool-list package version.
+if CW_TEST_PACKAGE_VERSION=0.0.1 "$fixture_bin/cw" d > "$test_root/package-stale.out" 2>&1; then
+  echo 'stale WET package unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'package does not match repository version 9.8.7' "$test_root/package-stale.out"
+if CW_TEST_WET_VERSION=0.0.1 "$fixture_bin/cw" d > "$test_root/version-stale.out" 2>&1; then
+  echo 'stale WET version unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq 'does not report repository version 9.8.7' "$test_root/version-stale.out"
+"$fixture_bin/cw" d >/dev/null
+[[ $(wet --version) == 'wet 9.8.7' ]]
 
 # Restore defaults for the original-checkout command coverage below.
 export CW_DEPLOY_DIR="$test_root/apps/worker"

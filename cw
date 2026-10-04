@@ -43,7 +43,8 @@ Environment overrides:
 cw deploy manages a system-level Worker service and requires suitable sudo
 permission for non-interactive systemctl stop/start operations. It does not
 create a product release or change the repository product version.
-Prepend CW_WET_TOOL_DIR to PATH in your shell; deploy verifies that its wet wins.
+Deploy manages ~/.local/bin/wet; that directory must be on your login-shell PATH.
+Shell profiles are never edited. Bash and Zsh login shells are supported.
 
 cw restart (or cw rs) restarts the installed Worker service and verifies that
 it is active before reporting success.
@@ -473,8 +474,67 @@ release_command() {
   fi
 }
 
+# Exact launcher content identifies entries owned by cw, including an old tool path.
+wet_launcher() {
+  printf '#!/usr/bin/env bash\n# cw managed development WET\n# target: %s\nexec %q "$@"\n' "$1" "$1"
+}
+
+install_development_wet_command() {
+  local target=$1 command_dir=$HOME/.local/bin entry=$HOME/.local/bin/wet previous='' temporary
+  mkdir -p -- "$command_dir" || { error "cannot create user command directory: $command_dir"; return 1; }
+  if [[ -e $entry || -L $entry ]]; then
+    if [[ -f $entry && ! -L $entry ]]; then
+      previous=$(sed -n '3s/^# target: //p' "$entry")
+    fi
+    if [[ $previous != /* ]] || ! cmp -s -- "$entry" <(wet_launcher "$previous"); then
+      error "refusing to overwrite unrelated command or symlink at $entry; move it aside yourself or choose which WET installation to keep, then rerun cw d"
+      return 1
+    fi
+  fi
+  temporary=$(mktemp "$command_dir/.cw-wet.XXXXXX") || return 1
+  if ! wet_launcher "$target" > "$temporary" || ! chmod 755 "$temporary"; then
+    rm -f -- "$temporary"
+    error "cannot stage development WET command at $entry"; return 1
+  fi
+  if [[ -n ${previous:-} ]]; then
+    mv -T -- "$temporary" "$entry" || { rm -f -- "$temporary"; error "cannot update managed WET command at $entry"; return 1; }
+  else
+    # Do not overwrite a command created after the initial existence check.
+    ln -- "$temporary" "$entry" || { rm -f -- "$temporary"; error "cannot create WET command at $entry; inspect the existing entry and rerun cw d"; return 1; }
+    rm -f -- "$temporary"
+  fi
+}
+
+verify_development_wet_command() {
+  local entry=$HOME/.local/bin/wet resolved login_shell=${SHELL:-/bin/bash}
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) error "user command directory $HOME/.local/bin is missing from PATH; configure your current and login-shell PATH explicitly and rerun cw d; shell profiles were not edited"; return 1 ;;
+  esac
+  resolved=$(command -v wet || true)
+  if [[ -z $resolved || $(readlink -f -- "$resolved") != $(readlink -f -- "$entry") ]]; then
+    error "development WET command is $entry, but PATH resolves wet to ${resolved:-nothing}; put $HOME/.local/bin before other WET installations in PATH and rerun cw d (use 'type -a wet' to inspect installations)"
+    return 1
+  fi
+  case ${login_shell##*/} in
+    bash|zsh) ;;
+    *) error "cannot verify unsupported login shell $login_shell; use Bash or Zsh with $HOME/.local/bin on its login PATH and rerun cw d"; return 1 ;;
+  esac
+  "$login_shell" -lc '
+    case ":$PATH:" in
+      *":$1:"*) ;;
+      *) printf "cw: user command directory %s is missing from login-shell PATH; configure your login PATH explicitly and rerun cw d; shell profiles were not edited\n" "$1" >&2; exit 1 ;;
+    esac
+    resolved=$(command -v wet || true)
+    if [ "$resolved" != "$2" ]; then
+      printf "cw: login-shell PATH resolves wet to %s instead of %s; fix PATH precedence and rerun cw d (use type -a wet)\n" "${resolved:-nothing}" "$2" >&2
+      exit 1
+    fi
+  ' cw-wet-login "$HOME/.local/bin" "$entry" || return 1
+}
+
 refresh_development_wet() {
-  local version=$1 staging=$2 installed resolved
+  local version=$1 staging=$2 installed target reported
   printf 'Packaging development WET %s...\n' "$version"
   # Worker publish builds the library, but does not build the independent CLI.
   dotnet pack "$REPO_ROOT/src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj" -c Release -o "$staging/packages" || {
@@ -494,11 +554,18 @@ refresh_development_wet() {
     --source "$staging/packages" --version "$version" --tool-path "$wet_tool_dir" || {
     error "WET installation failed at $wet_tool_dir; development wet is not synchronized; fix the install error and rerun cw d"; return 1;
   }
-  resolved=$(command -v wet || true)
-  if [[ -z $resolved || $(readlink -f -- "$resolved") != $(readlink -f -- "$wet_tool_dir/wet") ]]; then
-    error "development WET installed at $wet_tool_dir/wet, but PATH resolves wet to ${resolved:-nothing}; prepend $wet_tool_dir to PATH and rerun cw d (use 'type -a wet' to inspect installations)"
-    return 1
-  fi
+  installed=$(dotnet tool list --tool-path "$wet_tool_dir") || { error 'cannot verify installed WET package'; return 1; }
+  awk -v version="$version" 'tolower($1) == "workexecutiontoolbox.cli" && $2 == version { found=1 } END { exit !found }' <<< "$installed" || {
+    error "installed WET package does not match repository version $version; rerun cw d"; return 1;
+  }
+  target=$(readlink -f -- "$wet_tool_dir/wet")
+  [[ -x $target && $target != *$'\n'* ]] || { error "installed WET executable is unavailable or has an unsupported path: $wet_tool_dir/wet"; return 1; }
+  reported=$("$target" --version) || { error 'installed WET version check failed; rerun cw d'; return 1; }
+  [[ $reported == "wet $version" ]] || { error "installed WET executable does not report repository version $version; rerun cw d"; return 1; }
+  install_development_wet_command "$target" || return 1
+  verify_development_wet_command || return 1
+  reported=$("$HOME/.local/bin/wet" --version) || { error 'managed WET command version check failed; rerun cw d'; return 1; }
+  [[ $reported == "wet $version" ]] || { error "managed WET command does not report repository version $version; rerun cw d"; return 1; }
   printf 'Development WET %s synchronized at %s/wet.\n' "$version" "$wet_tool_dir"
 }
 

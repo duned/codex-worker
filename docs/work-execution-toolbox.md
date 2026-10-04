@@ -63,11 +63,16 @@ solution commands above. Ordinary builds and tests never install tools or change
 
 For repository development, use the existing `cw d` Worker deployment workflow.
 The development .NET tool convention is `$HOME/.local/share/wet` (override with
-`CW_WET_TOOL_DIR`). Explicitly prepend this directory to PATH in your development
-shell before running `cw d`; `cw` does not edit shell configuration or PATH:
+`CW_WET_TOOL_DIR`). `cw d` creates an executable launcher at
+`$HOME/.local/bin/wet` pointing to that development installation. Ensure
+`$HOME/.local/bin` is on your current and login-shell PATH before running `cw d`.
+Bash and Zsh login shells are supported (selected by `SHELL`, default Bash).
+`cw` checks a fresh login shell and never edits shell profiles or PATH. If your
+login setup lacks this conventional user command directory, configure it explicitly
+in your own shell setup so it persists across SSH reconnects:
 
 ```sh
-export PATH="$HOME/.local/share/wet:$PATH"
+export PATH="$HOME/.local/bin:$PATH" # Current shell; login setup must also include it.
 cw d
 wet --version
 wet --help
@@ -83,8 +88,13 @@ can leave development WET absent; fix the reported error and rerun `cw d`.
 The existing service deployment still requires non-interactive sudo permission.
 
 Use `type -a wet` and `command -v wet` to identify installations and PATH precedence.
-`cw d` fails if PATH resolves another installation or cannot find the development
-command; prepend the configured directory and rerun. If your shell cached an older
+`cw d` checks the installed package version and `wet --version`, and fails if
+current or login-shell PATH selects another installation or cannot find the managed
+command. Put `~/.local/bin` before other WET commands and rerun. The launcher is
+recognized by its exact managed content and updated idempotently, including when
+`CW_WET_TOOL_DIR` changes. Existing unrelated files or symlinks at `~/.local/bin/wet`
+are preserved and cause an actionable failure; move them aside yourself only if you
+intend to select the development installation. If your shell cached an older
 command path, run `hash -r` (Bash) or `rehash` (Zsh) before verification.
 Unrelated installations and published-release directories are not updated.
 
