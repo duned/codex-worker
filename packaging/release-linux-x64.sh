@@ -114,6 +114,7 @@ package_app() {
   case "$name" in
     codex-worker) apphost=CodexWorker ;;
     codex-server) apphost=CodexServer ;;
+    wet) apphost=wet ;;
     *) echo "Unknown packaged application: $name" >&2; return 1 ;;
   esac
   if [[ ! -f $package_dir/$apphost || ! -x $package_dir/$apphost ]]; then
@@ -126,10 +127,11 @@ package_app() {
 
 package_app codex-server src/CodexServer/CodexServer.csproj
 package_app codex-worker src/CodexWorker/CodexWorker.csproj
+package_app wet src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj
 
 (
   cd "$output_dir"
-  sha256sum "codex-server-$version-linux-x64.tar.gz" "codex-worker-$version-linux-x64.tar.gz" > checksums.txt
+  sha256sum "codex-server-$version-linux-x64.tar.gz" "codex-worker-$version-linux-x64.tar.gz" "wet-$version-linux-x64.tar.gz" > checksums.txt
 )
 
 printf 'Created release artifacts in %s\n' "$output_dir"

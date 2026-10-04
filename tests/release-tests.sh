@@ -32,6 +32,7 @@ printf '%s\n' "$version" > "$output/assembly-version"
 if [[ ${RELEASE_CASE:-} != missing-apphost ]]; then
   apphost="${project##*/}"
   apphost="${apphost%.csproj}"
+  [[ "$project" != *WorkExecutionToolbox.Cli.csproj ]] || apphost=wet
   printf '#!/bin/sh\nexit 0\n' > "$output/$apphost"
   chmod +x "$output/$apphost"
 fi
@@ -44,6 +45,9 @@ output_dir="${output#Created release artifacts in }"
 [[ "$output_dir" == "$temp_dir"/codex-worker-artifacts.* ]]
 (cd "$output_dir" && sha256sum --check checksums.txt)
 [[ "$(tar -xOf "$output_dir/codex-server-9.8.7-linux-x64.tar.gz" ./VERSION)" == 9.8.7 ]]
+[[ "$(tar -xOf "$output_dir/wet-9.8.7-linux-x64.tar.gz" ./VERSION)" == 9.8.7 ]]
+(cd "$output_dir" && sha256sum --check checksums.txt)
+grep -Fxq "$(sha256sum "$output_dir/wet-9.8.7-linux-x64.tar.gz" | cut -d ' ' -f 1)  wet-9.8.7-linux-x64.tar.gz" "$output_dir/checksums.txt"
 [[ "$(git -C "$repo_root" status --porcelain --untracked-files=all)" == "$before_status" ]]
 rm -rf -- "$output_dir"
 
@@ -53,7 +57,10 @@ for component in server worker; do
   [[ "$(tar -xOf "$explicit_output/codex-$component-1.2.3-linux-x64.tar.gz" ./VERSION)" == 1.2.3 ]]
   [[ "$(tar -xOf "$explicit_output/codex-$component-1.2.3-linux-x64.tar.gz" ./assembly-version)" == 1.2.3 ]]
 done
+[[ "$(tar -xOf "$explicit_output/wet-1.2.3-linux-x64.tar.gz" ./VERSION)" == 1.2.3 ]]
+[[ "$(tar -xOf "$explicit_output/wet-1.2.3-linux-x64.tar.gz" ./assembly-version)" == 1.2.3 ]]
 (cd "$explicit_output" && sha256sum --check checksums.txt)
+grep -Fq 'wet-1.2.3-linux-x64.tar.gz' "$explicit_output/checksums.txt"
 mkdir "$temp_dir/worker-layout"
 tar -xzf "$explicit_output/codex-worker-1.2.3-linux-x64.tar.gz" -C "$temp_dir/worker-layout"
 [[ -x $temp_dir/worker-layout/CodexWorker ]]
@@ -128,16 +135,24 @@ fi
 case "$2" in
   create)
     [[ "$3" == v1.2.3 ]]
-    assets=("$4" "$5" "$6")
+    assets=("$4" "$5" "$6" "$7")
     [[ "$*" == *'--target 0123456789012345678901234567890123456789'* ]]
     [[ "$*" == *'--draft'* ]]
-    [[ "${assets[2]}" == */checksums.txt ]]
+    [[ "${assets[2]}" == */wet-1.2.3-linux-x64.tar.gz ]]
+    [[ "${assets[3]}" == */checksums.txt ]]
     for component in server worker; do
       archive="$(dirname "${assets[0]}")/codex-$component-1.2.3-linux-x64.tar.gz"
       [[ "$(tar -xOf "$archive" ./VERSION)" == 1.2.3 ]]
       [[ "$(tar -xOf "$archive" ./assembly-version)" == 1.2.3 ]]
     done
+    [[ "$(tar -xOf "${assets[2]}" ./VERSION)" == 1.2.3 ]]
+    [[ "$(tar -xOf "${assets[2]}" ./assembly-version)" == 1.2.3 ]]
+    wet_layout="$(mktemp -d)"
+    tar -xzf "${assets[2]}" -C "$wet_layout"
+    [[ -x "$wet_layout/wet" ]]
+    rm -rf -- "$wet_layout"
     (cd "$(dirname "${assets[0]}")" && sha256sum --check checksums.txt)
+    grep -Fq 'wet-1.2.3-linux-x64.tar.gz' "$(dirname "${assets[0]}")/checksums.txt"
     [[ ${RELEASE_CASE:-} != create-failure ]]
     ;;
   edit)

@@ -71,12 +71,17 @@ self-contained .NET publishing convention:
 
 ```sh
 dotnet publish src/WorkExecutionToolbox.Cli/WorkExecutionToolbox.Cli.csproj -c Release -r linux-x64 --self-contained true -o /tmp/wet-publish
-/tmp/wet-publish/WorkExecutionToolbox.Cli --help
+/tmp/wet-publish/wet --help
 ```
 
 Copy the **complete** publish directory to your desired installation location;
 self-contained output does not require a separately installed .NET runtime.
 No deployment, service installation or release publication is required.
+
+Each product release also publishes `wet-VERSION-linux-x64.tar.gz` as a
+self-contained Linux x64 artifact. On Ubuntu 24.04 x86_64, download and extract
+that archive, then run `wet --help`; it needs no source checkout or .NET runtime.
+See the [published release install steps](release-packaging.md#installing-published-releases).
 
 Authenticate once through GitHub CLI:
 

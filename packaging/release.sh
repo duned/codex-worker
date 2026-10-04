@@ -125,6 +125,7 @@ fi
 assets=(
   "$output_dir/codex-server-$version-linux-x64.tar.gz"
   "$output_dir/codex-worker-$version-linux-x64.tar.gz"
+  "$output_dir/wet-$version-linux-x64.tar.gz"
   "$output_dir/checksums.txt"
 )
 for asset in "${assets[@]}"; do
