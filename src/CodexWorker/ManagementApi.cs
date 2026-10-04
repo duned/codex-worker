@@ -117,7 +117,7 @@ public sealed class WorkerRuntimeReadModel
         _lifecycle = lifecycle ?? new WorkerLifecycle();
         _repositoryGates = repositoryGates ?? new(StringComparer.OrdinalIgnoreCase);
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
-        _registry = new ProjectRuntimeRegistry(projects, Events);
+        _registry = new ProjectRuntimeRegistry(projects, Events, _lifecycle);
         CompletedBranchMaintenance = new CompletedBranchMaintenanceService(_registry, history);
     }
 
@@ -126,7 +126,24 @@ public sealed class WorkerRuntimeReadModel
     public ProjectRuntimeRegistry Registry => _registry;
     public WorkerLifecycle Lifecycle => _lifecycle;
     public ExecutionCleanupService ExecutionCleanup => new(_history, _registry, repositoryGates: _repositoryGates);
-    public string State { get => _state; set => _state = value; }
+    public string State
+    {
+        get => StateFor(_lifecycle.Snapshot);
+        set => _state = value;
+    }
+
+    private string StateFor(WorkerLifecycleSnapshot lifecycle)
+    {
+        var state = _state;
+        return lifecycle.DrainRequested && state is not ("shutting-down" or "stopped" or "failed")
+            ? lifecycle.State : state;
+    }
+
+    public WorkerHeartbeatStatus HeartbeatStatus(WorkerHeartbeatStatus status)
+    {
+        var lifecycle = _lifecycle.Snapshot;
+        return status with { ActiveExecutions = lifecycle.ActiveExecutions, State = StateFor(lifecycle) };
+    }
     public WorkerConfigurationSyncStatus? ConfigurationSyncStatus => _managedConfiguration?.Status;
 
     public async Task<WorkerStatus> StatusAsync(CancellationToken ct)
@@ -134,7 +151,7 @@ public sealed class WorkerRuntimeReadModel
         var active = (await _history.ReadActiveAsync(ct)).Count;
         var projectCount = _registry.Snapshot().Count;
         var lifecycle = _lifecycle.Snapshot;
-        return new WorkerStatus(ApplicationVersion.Display, State,
+        return new WorkerStatus(ApplicationVersion.Display, StateFor(lifecycle),
             Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
             projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled),
@@ -248,20 +265,25 @@ public static class ManagementApi
         });
         app.MapPost("/api/worker/drain", (WorkerRuntimeReadModel model) =>
         {
-            model.Lifecycle.RequestDrain();
             model.Registry.DrainWorker();
-            return Results.Ok(new { draining = true, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
-                drainComplete = model.Registry.WorkerDrainComplete });
+            var lifecycle = model.Lifecycle.Snapshot;
+            return Results.Ok(new { draining = lifecycle.DrainRequested, state = lifecycle.State,
+                activeExecutionCount = lifecycle.ActiveExecutions,
+                drainComplete = lifecycle.DrainRequested && lifecycle.ActiveExecutions == 0 });
         });
         app.MapPost("/api/worker/drain/cancel", (WorkerRuntimeReadModel model) =>
         {
-            if (!model.Registry.CancelWorkerDrain(() => model.Lifecycle.CancelDrain(0)))
+            if (!model.Registry.CancelWorkerDrain())
                 return Results.Conflict(new { error = "Worker drain cannot be cancelled while executions are active or no drain is pending." });
             return Results.Ok(new { draining = false, state = model.Lifecycle.Snapshot.State });
         });
         app.MapGet("/api/worker/drain", (WorkerRuntimeReadModel model) =>
-            Results.Ok(new { draining = model.Registry.WorkerDraining, state = model.Lifecycle.Snapshot.State, activeExecutionCount = model.Registry.WorkerActiveExecutionCount,
-                drainComplete = model.Registry.WorkerDrainComplete }));
+        {
+            var lifecycle = model.Lifecycle.Snapshot;
+            return Results.Ok(new { draining = lifecycle.DrainRequested, state = lifecycle.State,
+                activeExecutionCount = lifecycle.ActiveExecutions,
+                drainComplete = lifecycle.DrainRequested && lifecycle.ActiveExecutions == 0 });
+        });
         if (projectConfigurations is not null)
         {
             app.MapPost("/api/project-configurations/reload", async (ProjectConfigurationService service, HttpContext context) =>
@@ -296,7 +318,7 @@ public static class ManagementApi
         }
         app.MapPost("/api/maintenance/completed-branches", async (CompletedBranchCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
         {
-            if (request.Apply && model.State != "drained")
+            if (request.Apply && !model.Registry.WorkerDrainComplete)
                 return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
             try
             {
@@ -329,7 +351,7 @@ public static class ManagementApi
         });
         app.MapPost("/api/executions/cleanup", async (ExecutionCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
         {
-            if (request.Apply && model.State != "drained")
+            if (request.Apply && !model.Registry.WorkerDrainComplete)
                 return (IResult)Results.Conflict(new { error = "Wait for the running Worker to complete its drain before applying cleanup." });
             try
             {

@@ -6,21 +6,28 @@ public sealed record ProjectLifecycleInfo(string Name, ProjectLifecycleState Sta
 /// <summary>Atomic process-local lifecycle and configuration snapshots used by scheduling and control APIs.</summary>
 public sealed class ProjectRuntimeRegistry
 {
-    private readonly object _gate = new();
+    private readonly object _gate;
     private readonly Dictionary<string, Entry> _projects = new(StringComparer.OrdinalIgnoreCase);
     private readonly RuntimeEventLog? _events;
-    private bool _workerDraining;
-    private int _workerActive;
+    private bool WorkerDrainRequested => Lifecycle.Snapshot.DrainRequested;
+    private int WorkerActive => Lifecycle.Snapshot.ActiveExecutions;
     private bool _maintenance;
     private long _version;
     private TaskCompletionSource<bool> _changed = NewSignal();
 
-    public ProjectRuntimeRegistry(IEnumerable<(string Path, WorkerConfiguration Configuration)> projects, RuntimeEventLog? events = null)
+    public ProjectRuntimeRegistry(IEnumerable<(string Path, WorkerConfiguration Configuration)> projects, RuntimeEventLog? events = null, WorkerLifecycle? lifecycle = null)
     {
+        Lifecycle = lifecycle ?? new WorkerLifecycle();
+        // Drain, capacity and maintenance decisions share the lifecycle lock, so a
+        // snapshot cannot expose a drain transition separately from its reservation count.
+        _gate = Lifecycle.SyncRoot;
         _events = events;
         foreach (var (path, configuration) in projects)
             _projects.Add(configuration.Project.Name, new Entry(path, configuration));
     }
+
+    /// <summary>Authoritative Worker lifecycle; reservations update its active count under the same lock.</summary>
+    public WorkerLifecycle Lifecycle { get; }
 
     public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Snapshot()
     {
@@ -32,9 +39,9 @@ public sealed class ProjectRuntimeRegistry
         lock (_gate) return _projects.Select(x => Info(x.Key, x.Value)).ToArray();
     }
 
-    public bool WorkerDraining { get { lock (_gate) return _workerDraining; } }
-    public bool WorkerDrainComplete { get { lock (_gate) return _workerDraining && _workerActive == 0; } }
-    public int WorkerActiveExecutionCount { get { lock (_gate) return _workerActive; } }
+    public bool WorkerDraining { get { lock (_gate) return WorkerDrainRequested; } }
+    public bool WorkerDrainComplete { get { lock (_gate) return WorkerDrainRequested && WorkerActive == 0; } }
+    public int WorkerActiveExecutionCount { get { lock (_gate) return WorkerActive; } }
     public long Version { get { lock (_gate) return _version; } }
     public Task WaitForChangeAsync(long observedVersion, CancellationToken ct)
     {
@@ -144,22 +151,20 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (_workerDraining) return;
-            _workerDraining = true;
+            if (WorkerDrainRequested) return;
+            Lifecycle.RequestDrain();
             _events?.Publish("worker.drain.started", "Worker drain started.");
-            if (_workerActive == 0) _events?.Publish("worker.drain.completed", "Worker drain completed.");
+            if (WorkerActive == 0) _events?.Publish("worker.drain.completed", "Worker drain completed.");
             SignalChanged();
         }
     }
 
-    public bool CancelWorkerDrain(Action cancelLifecycle)
+    public bool CancelWorkerDrain()
     {
-        ArgumentNullException.ThrowIfNull(cancelLifecycle);
         lock (_gate)
         {
-            if (!_workerDraining || _workerActive != 0 || _maintenance) return false;
-            cancelLifecycle();
-            _workerDraining = false;
+            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance) return false;
+            Lifecycle.CancelDrain(WorkerActive);
             _events?.Publish("worker.drain.cancelled", "Worker drain was cancelled.");
             SignalChanged();
             return true;
@@ -171,7 +176,7 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (!_workerDraining || _workerActive != 0 || _maintenance || _projects.Values.Any(e => e.Removing)) return null;
+            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance || _projects.Values.Any(e => e.Removing)) return null;
             _maintenance = true;
             return new MaintenanceReservation(this);
         }
@@ -197,10 +202,10 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (_workerDraining || !_projects.TryGetValue(name, out var entry) || entry.State != ProjectLifecycleState.Enabled ||
+            if (WorkerDrainRequested || _maintenance || !_projects.TryGetValue(name, out var entry) || entry.State != ProjectLifecycleState.Enabled ||
                 (expectedConfiguration is not null && !ReferenceEquals(entry.Configuration, expectedConfiguration))) return false;
             entry.Active++;
-            _workerActive++;
+            Lifecycle.SetActiveExecutions(WorkerActive + 1);
             return true;
         }
     }
@@ -209,13 +214,13 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (!_projects.TryGetValue(name, out var entry) || entry.Active == 0 || _workerActive == 0)
+            if (!_projects.TryGetValue(name, out var entry) || entry.Active == 0 || WorkerActive == 0)
                 throw new InvalidOperationException($"No active execution is registered for project '{name}'.");
             entry.Active--;
-            _workerActive--;
+            Lifecycle.SetActiveExecutions(WorkerActive - 1);
             if (entry.State == ProjectLifecycleState.Draining && entry.Active == 0)
                 _events?.Publish("project.drain.completed", "Project drain completed.", name);
-            if (_workerDraining && _workerActive == 0)
+            if (WorkerDrainRequested && WorkerActive == 0)
                 _events?.Publish("worker.drain.completed", "Worker drain completed.");
         }
     }

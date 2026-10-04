@@ -1,3 +1,9 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 using CodexWorker;
 
 namespace CodexWorker.Tests;
@@ -1721,6 +1727,70 @@ public sealed class GitWorktreeTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletedBranchMaintenanceApiAcceptsCompletedDrainAndAllowsResume(bool initiallyActive)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "maintenance-history.db"));
+        using var gate = new SemaphoreSlim(1, 1);
+        var config = new WorkerConfiguration
+        {
+            Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout }
+        };
+        var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [("project.yml", config)], history) { State = "running" };
+        model.CompletedBranchMaintenance.Register(config, git, gate);
+        const string branch = "done/example-task-17";
+        await fixture.Git("branch", branch);
+        await fixture.Git("push", "origin", branch);
+        var tip = await fixture.Git("rev-parse", branch);
+        var now = DateTimeOffset.UtcNow;
+        await history.CreateAsync(new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [],
+            tip, "main", branch, null));
+        var app = await ManagementApi.StartAsync(model, new ManagementApiSettings { ListenUrl = "http://127.0.0.1:0" }, CancellationToken.None);
+        Assert.NotNull(app);
+        try
+        {
+            var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+            Assert.NotNull(addresses);
+            using var client = new HttpClient { BaseAddress = new Uri(Assert.Single(addresses.Addresses)) };
+            var request = new CompletedBranchCleanupRequest(fixture.Checkout, 1, Apply: true, Limit: 3);
+            using var beforeDrain = await client.PostAsJsonAsync("/api/maintenance/completed-branches", request);
+            Assert.Equal(HttpStatusCode.Conflict, beforeDrain.StatusCode);
+            if (initiallyActive) Assert.True(model.Registry.TryReserve("sample"));
+            using var drain = await client.PostAsync("/api/worker/drain", null);
+            Assert.Equal(HttpStatusCode.OK, drain.StatusCode);
+            if (initiallyActive)
+            {
+                using var pendingDrain = await client.PostAsJsonAsync("/api/maintenance/completed-branches", request);
+                Assert.Equal(HttpStatusCode.Conflict, pendingDrain.StatusCode);
+                model.Registry.Release("sample");
+            }
+            using var status = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain"));
+            Assert.Equal("drained", status.RootElement.GetProperty("state").GetString());
+            Assert.True(status.RootElement.GetProperty("drainComplete").GetBoolean());
+            Assert.Equal("drained", model.State);
+            Assert.Equal("drained", model.HeartbeatStatus(new WorkerHeartbeatStatus(0, [], "running")).State);
+            using var applied = await client.PostAsJsonAsync("/api/maintenance/completed-branches", request);
+            Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+            using var result = JsonDocument.Parse(await applied.Content.ReadAsStringAsync());
+            Assert.Equal(1, result.RootElement.GetProperty("deleted").GetInt32());
+            using var cancel = await client.PostAsync("/api/worker/drain/cancel", null);
+            Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+            Assert.Equal("running", model.State);
+            Assert.True(model.Registry.TryReserve("sample"));
+            model.Registry.Release("sample");
+        }
+        finally
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task CompletedBranchMaintenanceUsesPersistedHistoryAndRepositoryGate()
     {
@@ -1755,7 +1825,7 @@ public sealed class GitWorktreeTests
         using var cancellation = new CancellationTokenSource();
         var waiting = service.CleanupAsync(request, cancellation.Token);
         Assert.False(waiting.IsCompleted);
-        Assert.False(registry.CancelWorkerDrain(() => { }));
+        Assert.False(registry.CancelWorkerDrain());
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
         Assert.Equal(tip, await fixture.Git("rev-parse", branch));
@@ -1999,13 +2069,13 @@ public sealed class GitWorktreeTests
         registry.DrainWorker();
         var pending = service.RunAsync(new(ExecutionId: id, Apply: true), CancellationToken.None);
         Assert.False(pending.IsCompleted);
-        Assert.False(registry.CancelWorkerDrain(() => { }));
+        Assert.False(registry.CancelWorkerDrain());
         await history.UpdateRecoveryAsync(id, "integration-conflict");
         gate.Release();
         var result = Assert.Single(await pending);
         Assert.Equal("authoritative-recovery", result.Inspection.ReasonCode);
         Assert.True(Directory.Exists(git.ExecutionDirectory));
-        Assert.True(registry.CancelWorkerDrain(() => { }));
+        Assert.True(registry.CancelWorkerDrain());
     }
 
     private sealed class RepositoryFixture : IDisposable

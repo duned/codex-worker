@@ -6,6 +6,8 @@ public sealed class WorkerLifecycle
     private readonly object _gate = new();
     private WorkerLifecycleSnapshot _snapshot = new(ApplicationVersion.Display, "starting", false, 0, null, "not-ready");
 
+    internal object SyncRoot => _gate;
+
     public WorkerLifecycleSnapshot Snapshot { get { lock (_gate) return _snapshot; } }
 
     public void SetReady(string readinessResult = "ready") => Update("ready", false, readinessResult: readinessResult);
@@ -20,7 +22,12 @@ public sealed class WorkerLifecycle
         }
     }
 
-    public void RequestDrain() => Update("drain-requested", true);
+    public void RequestDrain()
+    {
+        lock (_gate)
+            _snapshot = _snapshot with { State = _snapshot.ActiveExecutions == 0 ? "drained" : "drain-requested",
+                DrainRequested = true };
+    }
 
     public void CancelDrain(int activeExecutions)
     {
@@ -49,7 +56,8 @@ public sealed class WorkerLifecycle
         lock (_gate)
         {
             _snapshot = _snapshot with { ActiveExecutions = activeExecutions };
-            if (_snapshot.DrainRequested && activeExecutions == 0) _snapshot = _snapshot with { State = "drained" };
+            if (_snapshot.DrainRequested && _snapshot.State is "drained" or "drain-requested")
+                _snapshot = _snapshot with { State = activeExecutions == 0 ? "drained" : "drain-requested" };
         }
     }
 

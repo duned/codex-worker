@@ -5,6 +5,7 @@ using System.Text.Json;
 using CodexWorker;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CodexWorker.Tests;
 
@@ -40,15 +41,90 @@ public sealed class ManagementApiTests
             using var branchUndrained = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
                 new CompletedBranchCleanupRequest(directory, 30, Apply: true));
             Assert.Equal(HttpStatusCode.Conflict, branchUndrained.StatusCode);
-            model.Registry.DrainWorker();
-            using var branchStarting = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
-                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
-            Assert.Equal(HttpStatusCode.Conflict, branchStarting.StatusCode);
-            using var starting = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
-            Assert.Equal(HttpStatusCode.Conflict, starting.StatusCode);
+            // A presentation string cannot authorize destructive maintenance.
             model.State = "drained";
+            using var falseDrain = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, falseDrain.StatusCode);
+            model.State = "running";
+            using var drain = await client.PostAsync("/api/worker/drain", null);
+            Assert.Equal(HttpStatusCode.OK, drain.StatusCode);
+            using var branchWithoutProject = await client.PostAsJsonAsync("/api/maintenance/completed-branches",
+                new CompletedBranchCleanupRequest(directory, 30, Apply: true));
+            Assert.Equal(HttpStatusCode.NotFound, branchWithoutProject.StatusCode);
+            Assert.Equal("drained", model.State);
             using var applied = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
             Assert.Equal(HttpStatusCode.OK, applied.StatusCode);
+        }
+        finally
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ActiveDrainCompletesOnFinalReleaseAndCancellationRestoresScheduling()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var history = new ExecutionHistoryStore(Path.Combine(directory, "history.db"));
+        var project = new WorkerConfiguration { Project = new ProjectSettings { Name = "sample" } };
+        var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [("sample.yml", project)], history) { State = "running" };
+        Assert.True(model.Registry.TryReserve("sample"));
+        Assert.True(model.Registry.TryReserve("sample"));
+        var app = await ManagementApi.StartAsync(model, new ManagementApiSettings { ListenUrl = "http://127.0.0.1:0" }, CancellationToken.None);
+        Assert.NotNull(app);
+        try
+        {
+            var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+            Assert.NotNull(addresses);
+            var address = Assert.Single(addresses.Addresses);
+            using var client = new HttpClient { BaseAddress = new Uri(address) };
+            using var drain = await client.PostAsync("/api/worker/drain", null);
+            Assert.Equal(HttpStatusCode.OK, drain.StatusCode);
+            await AssertStatusAsync("drain-requested", 2, false);
+            using var rejected = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+            using var branchRejected = await client.PostAsJsonAsync("/api/maintenance/completed-branches", new CompletedBranchCleanupRequest(directory, 1, Apply: true));
+            Assert.Equal(HttpStatusCode.Conflict, branchRejected.StatusCode);
+            model.Registry.Release("sample");
+            await AssertStatusAsync("drain-requested", 1, false);
+            model.Registry.Release("sample");
+            await AssertStatusAsync("drained", 0, true);
+            using var accepted = await client.PostAsJsonAsync("/api/executions/cleanup", new ExecutionCleanupRequest(Stale: true, Apply: true));
+            Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+            using (var maintenance = model.Registry.TryBeginMaintenance())
+            {
+                Assert.NotNull(maintenance);
+                using var cancelRejected = await client.PostAsync("/api/worker/drain/cancel", null);
+                Assert.Equal(HttpStatusCode.Conflict, cancelRejected.StatusCode);
+                Assert.False(model.Registry.TryReserve("sample"));
+            }
+            using var cancel = await client.PostAsync("/api/worker/drain/cancel", null);
+            Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+            Assert.Equal("running", model.State);
+            Assert.False(model.Lifecycle.Snapshot.DrainRequested);
+            Assert.True(model.Registry.TryReserve("sample"));
+            model.Registry.Release("sample");
+
+            async Task AssertStatusAsync(string state, int count, bool complete)
+            {
+                using var document = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain"));
+                var status = document.RootElement;
+                Assert.True(status.GetProperty("draining").GetBoolean());
+                Assert.Equal(state, status.GetProperty("state").GetString());
+                Assert.Equal(count, status.GetProperty("activeExecutionCount").GetInt32());
+                Assert.Equal(complete, status.GetProperty("drainComplete").GetBoolean());
+                Assert.Equal(state, model.State);
+                Assert.Equal(state, model.Lifecycle.Snapshot.State);
+                var heartbeat = model.HeartbeatStatus(new WorkerHeartbeatStatus(99, [], "running"));
+                Assert.Equal(state, heartbeat.State);
+                Assert.Equal(count, heartbeat.ActiveExecutions);
+                var workerStatus = await model.StatusAsync(CancellationToken.None);
+                Assert.Equal(state, workerStatus.State);
+                Assert.Equal(state, workerStatus.LifecycleState);
+            }
         }
         finally
         {
@@ -172,7 +248,9 @@ public sealed class ManagementApiTests
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/worker/drain", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
             var workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
             Assert.True(workerDrain.GetProperty("draining").GetBoolean());
-            Assert.Equal("drain-requested", workerDrain.GetProperty("state").GetString());
+            Assert.Equal("drained", workerDrain.GetProperty("state").GetString());
+            Assert.Equal(0, workerDrain.GetProperty("activeExecutionCount").GetInt32());
+            Assert.True(workerDrain.GetProperty("drainComplete").GetBoolean());
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/worker/drain/cancel", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"))).StatusCode);
             workerDrain = JsonDocument.Parse(await client.GetStringAsync("/api/worker/drain")).RootElement;
             Assert.False(workerDrain.GetProperty("draining").GetBoolean());

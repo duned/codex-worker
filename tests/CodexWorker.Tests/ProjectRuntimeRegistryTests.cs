@@ -45,6 +45,24 @@ public sealed class ProjectRuntimeRegistryTests
     }
 
     [Fact]
+    public void IdleWorkerDrainImmediatelyUpdatesTheAuthoritativeLifecycle()
+    {
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha"))]);
+        Assert.False(registry.WorkerDrainComplete);
+        registry.DrainWorker();
+        Assert.True(registry.WorkerDraining);
+        Assert.True(registry.WorkerDrainComplete);
+        Assert.Equal("drained", registry.Lifecycle.Snapshot.State);
+        Assert.Equal(0, registry.Lifecycle.Snapshot.ActiveExecutions);
+        Assert.False(registry.TryReserve("alpha"));
+        Assert.True(registry.CancelWorkerDrain());
+        Assert.False(registry.WorkerDraining);
+        Assert.Equal("ready", registry.Lifecycle.Snapshot.State);
+        Assert.True(registry.TryReserve("alpha"));
+        registry.Release("alpha");
+    }
+
+    [Fact]
     public void WorkerDrainBlocksAllProjectsAndCompletesAfterReservationsRelease()
     {
         var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha")), ("beta.yml", Config("beta"))]);
@@ -53,8 +71,12 @@ public sealed class ProjectRuntimeRegistryTests
         registry.DrainWorker();
         Assert.False(registry.TryReserve("beta"));
         Assert.False(registry.WorkerDrainComplete);
+        Assert.Equal("drain-requested", registry.Lifecycle.Snapshot.State);
+        Assert.Equal(1, registry.Lifecycle.Snapshot.ActiveExecutions);
         registry.Release("alpha");
         Assert.True(registry.WorkerDrainComplete);
+        Assert.Equal("drained", registry.Lifecycle.Snapshot.State);
+        Assert.Equal(0, registry.Lifecycle.Snapshot.ActiveExecutions);
     }
 
     [Fact]
@@ -124,11 +146,11 @@ public sealed class ProjectRuntimeRegistryTests
             Assert.NotNull(maintenance);
             Assert.Null(registry.TryBeginMaintenance());
             Assert.False(registry.TryReserve("alpha"));
-            Assert.False(registry.CancelWorkerDrain(() => throw new InvalidOperationException("must not be invoked")));
+            Assert.False(registry.CancelWorkerDrain());
             Assert.False(registry.TryBeginRemoval("alpha"));
             Assert.Throws<ProjectConfigurationConflictException>(() => registry.ReplaceConfiguration([("alpha.yml", config)]));
         }
-        Assert.True(registry.CancelWorkerDrain(() => { }));
+        Assert.True(registry.CancelWorkerDrain());
         Assert.True(registry.TryReserve("alpha"));
         registry.Release("alpha");
     }

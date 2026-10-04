@@ -83,12 +83,17 @@ public sealed class WorkerHost
         WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), WorkerLifecycleStates.Starting);
         IReadOnlyList<WorkerCapabilityContract> heartbeatCapabilities = [];
         WorkerHeartbeatLoop? heartbeat = null;
+        WorkerHeartbeatStatus CurrentHeartbeatStatus()
+        {
+            var status = Volatile.Read(ref heartbeatStatus);
+            return runtimeReadModel?.HeartbeatStatus(status) ?? status;
+        }
         async Task ReportProvisionedCapabilitiesAsync(IReadOnlyList<WorkerCapabilityContract> capabilities, CancellationToken token)
         {
             Volatile.Write(ref heartbeatCapabilities, capabilities);
             if (_global.Server.Enabled)
             {
-                var status = Volatile.Read(ref heartbeatStatus);
+                var status = CurrentHeartbeatStatus();
                 await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
                     status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
             }
@@ -144,7 +149,7 @@ public sealed class WorkerHost
             }
             if (_global.Server.Enabled)
             {
-                heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, () => Volatile.Read(ref heartbeatStatus),
+                heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, CurrentHeartbeatStatus,
                     message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities),
                     () => managedConfiguration?.Status, _registration);
                 heartbeat.Start();
@@ -260,8 +265,11 @@ public sealed class WorkerHost
                     WorkerAuthenticationCapabilities.ForRepository(project.Configuration.Project.Repository)))
                     .Distinct().ToArray());
                 if (_global.Server.Enabled)
-                    await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks, 0,
-                        Array.Empty<string>(), WorkerLifecycleStates.Starting, token, heartbeatCapabilities, managedConfiguration?.Status);
+                {
+                    var status = CurrentHeartbeatStatus();
+                    await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
+                        status.ActiveExecutions, status.Projects, status.State, token, heartbeatCapabilities, managedConfiguration?.Status);
+                }
                 await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, token);
                 if (healthyRuntimes.Count > 0)
                 {
@@ -316,9 +324,7 @@ public sealed class WorkerHost
                     ? readiness.DiagnosticCode ?? string.Join("; ", runtimeReadModel.Registry.Status()
                         .Where(project => project.UnavailableReason is not null).Select(project => $"{project.Name}: {project.UnavailableReason}"))
                     : string.Join(", ", localReadiness.BlockingReasons));
-                runtimeReadModel.State = runtimeReadModel.Registry.WorkerDraining
-                    ? (active.Count == 0 ? WorkerLifecycleStates.Drained : WorkerLifecycleStates.Draining) :
-                    ready ? WorkerLifecycleStates.Running : WorkerLifecycleStates.NotReady;
+                runtimeReadModel.State = ready ? WorkerLifecycleStates.Running : WorkerLifecycleStates.NotReady;
                 Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = runtimeReadModel.State });
                 await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
             }
@@ -361,13 +367,6 @@ public sealed class WorkerHost
             while (!ct.IsCancellationRequested)
             {
                 var runtimeVersion = runtimeReadModel.Registry.Version;
-                if (runtimeReadModel.Registry.WorkerDraining)
-                {
-                    lifecycle.RequestDrain();
-                    lifecycle.SetActiveExecutions(active.Count);
-                    var drainState = active.Count == 0 ? "drained" : "draining";
-                    Volatile.Write(ref heartbeatStatus, heartbeatStatus with { State = drainState });
-                }
                 foreach (var completed in active.Keys.Where(task => task.IsCompleted).ToArray())
                 {
                     var project = active[completed];

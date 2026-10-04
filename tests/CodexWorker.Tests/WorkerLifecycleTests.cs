@@ -16,7 +16,7 @@ public sealed class WorkerLifecycleTests
         lifecycle.SetExecutionReadiness(false);
         lifecycle.SetExecutionReadiness(true);
         Assert.True(lifecycle.Snapshot.DrainRequested);
-        Assert.Equal("drain-requested", lifecycle.Snapshot.State);
+        Assert.Equal("drained", lifecycle.Snapshot.State);
     }
 
     [Fact]
@@ -25,8 +25,8 @@ public sealed class WorkerLifecycleTests
         var lifecycle = new WorkerLifecycle();
         lifecycle.SetReady();
 
-        lifecycle.RequestDrain();
         lifecycle.SetActiveExecutions(2);
+        lifecycle.RequestDrain();
 
         Assert.Equal("drain-requested", lifecycle.Snapshot.State);
         Assert.True(lifecycle.Snapshot.DrainRequested);
