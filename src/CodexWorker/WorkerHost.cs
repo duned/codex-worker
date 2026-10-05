@@ -957,13 +957,16 @@ public sealed class WorkerHost
     private async Task VerifyAssignmentRevisionAsync(WorkerAssignmentContract assignment, CancellationToken token)
     {
         var current = await _registration.GetManagedConfigurationAsync(_global.Server, token);
-        if (current.ContractVersion != 1 ||
-            !SameProjectRevision(assignment.Project, current.Projects.FirstOrDefault(project => project.Id == assignment.Project.Id)))
-            throw new IssuePreparationRejectedException("Managed project revision changed or was removed after assignment; execution refused.");
+        // A fresh read fences execution only when the complete catalog is valid.
+        // Checking one project alone would accept an inconsistent or duplicate snapshot.
+        ManagedConfigurationSynchronizer.ValidateSnapshot(current);
+        var definition = current.Projects.FirstOrDefault(project => project.Id == assignment.Project.Id);
+        if (definition is not { Enabled: true } || !SameProjectRevision(assignment.Project, definition))
+            throw new IssuePreparationRejectedException("Managed project revision changed, was disabled or was removed after assignment; execution refused.");
     }
 
     internal static bool SameProjectRevision(ServerProjectContract assigned, ServerProjectContract? current) =>
-        current is not null && assigned.Revision == current.Revision &&
+        current is not null && assigned.Enabled == current.Enabled && assigned.Revision == current.Revision &&
         ManagedConfigurationSynchronizer.CalculateVersion([assigned]) == ManagedConfigurationSynchronizer.CalculateVersion([current]);
 
     internal static bool MatchesManagedProject(WorkerConfiguration configuration, ServerProjectContract assigned,

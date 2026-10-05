@@ -72,6 +72,7 @@ public sealed class WorkerRegistrationTests
         Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Id = "other-project" }, [known]));
         Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Revision = 3 }, [known]));
         Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Requirements = [new("tool", "docker")] }, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Enabled = false }, [known]));
     }
 
     [Fact]

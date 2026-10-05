@@ -399,6 +399,9 @@ public sealed class ManagedWorkerReadinessTests
     [InlineData("materialization")]
     [InlineData("snapshot-stale")]
     [InlineData("execution-stale")]
+    [InlineData("execution-disabled")]
+    [InlineData("execution-invalid-version")]
+    [InlineData("execution-duplicate-project")]
     public async Task AssignmentWithNoCheckoutHasBoundedPreparationOutcome(string scenario)
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -432,9 +435,13 @@ public sealed class ManagedWorkerReadinessTests
             }
             if (path.EndsWith("/configuration", StringComparison.Ordinal))
             {
-                var current = assigned && scenario == "execution-stale" ? project with { Revision = 2 } : project;
+                var current = assigned && scenario == "execution-stale" ? project with { Revision = 2 } :
+                    assigned && scenario == "execution-disabled" ? project with { Enabled = false } : project;
+                ServerProjectContract[] projects = assigned && scenario == "execution-duplicate-project" ? [current, current] : [current];
+                var version = assigned && scenario == "execution-invalid-version" ? "invalid" :
+                    ManagedConfigurationSynchronizer.CalculateVersion(projects);
                 return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(1,
-                    ManagedConfigurationSynchronizer.CalculateVersion([current]), [current])) };
+                    version, projects)) };
             }
             if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
             {
@@ -483,7 +490,8 @@ public sealed class ManagedWorkerReadinessTests
             Assert.Equal("Failed", report.State);
             Assert.Equal(1, report.Generation);
             Assert.False(report.Recoverable);
-            Assert.Contains(scenario == "materialization" ? "local project preparation failed" : "revision",
+            Assert.Contains(scenario is "materialization" or "execution-invalid-version" or "execution-duplicate-project"
+                ? "local project preparation failed" : "revision",
                 report.Summary, StringComparison.OrdinalIgnoreCase);
             Assert.False(Directory.Exists(Path.Combine(global.ManagedProjects.CheckoutDirectory,
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(project.Id))).ToLowerInvariant())));

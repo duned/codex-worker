@@ -183,7 +183,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
     }
 
-    private static void ValidateSnapshot(ServerManagedConfigurationContract snapshot)
+    internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot)
     {
         if (snapshot.ContractVersion != 1 || string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
             snapshot.Projects is null || snapshot.Projects.Count > 1000)
