@@ -102,6 +102,11 @@ public sealed class AutomaticIssueDiscoveryService(IRegistryStore registry, Serv
                 catch (ExecutionRequestConflictException)
                 {
                     duplicates++;
+                    // Reconsider an existing queued request after blockers complete or a read recovers.
+                    // This refresh never creates work or retries a terminal execution; assignment still
+                    // performs its own authoritative check before returning work to a Worker.
+                    await github.RefreshQueuedEligibilityAsync(project.Id,
+                        int.Parse(candidate.WorkReference.Id, System.Globalization.CultureInfo.InvariantCulture), linked.Token);
                     ServerOperationalDiagnostics.Write(logger, LogLevel.Debug, "automatic-discovery", "previously-enqueued",
                         project.Id, candidate.WorkReference);
                 }

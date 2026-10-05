@@ -258,6 +258,106 @@ public sealed class AutomaticIssueDiscoveryTests
     }
 
     [Fact]
+    public async Task BlockerCompletionAndReadyLabelChangesResumeQueuedWorkThroughNormalAssignment()
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var project = await fixture.CreateProjectAsync(new(true, 30));
+        fixture.Reads.OpenDependencies.Add(1);
+        fixture.Reads.Unready.Add(2);
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Empty(await fixture.Store.GetExecutionsAsync());
+
+        fixture.Reads.OpenDependencies.Clear();
+        fixture.Reads.Unready.Clear();
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync(); // Finish the sweep.
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        var queued = Assert.Single(await fixture.Store.GetExecutionsAsync(), work => work.WorkReference.Id == "1");
+        var worker = Guid.NewGuid().ToString("N");
+        await fixture.Store.RegisterWorkerAsync(new(1, worker, "Worker", "1.0", "test", 1, []));
+        await fixture.Store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, [], []));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        Assert.False((await fixture.GitHub.RequestAssignmentAsync(request)).HasWork);
+        CodexServer.WorkerCapability[] capabilities = [new("tool", "git"), new("agent-provider", "codex"),
+            .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
+                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+        await fixture.Store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
+
+        fixture.Reads.OpenDependencies.Add(1);
+        fixture.Reads.Unready.UnionWith([2, 3]);
+        Assert.False((await fixture.GitHub.RequestAssignmentAsync(request)).HasWork);
+        Assert.Equal("blocked", (await fixture.Store.GetExecutionAsync(queued.Id))?.ManagedEligibilityState);
+        fixture.Reads.OpenDependencies.Clear();
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Equal("eligible", (await fixture.Store.GetExecutionAsync(queued.Id))?.ManagedEligibilityState);
+        var assignment = Assert.IsType<WorkAssignment>((await fixture.GitHub.RequestAssignmentAsync(request)).Assignment);
+        Assert.Equal(queued.Id, assignment.ServerExecutionId);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        Assert.True(lease.Generation > 1);
+        await fixture.Store.ReportExecutionAsync(queued.Id,
+            new(worker, assignment.AssignmentId, "local-run", "Running", "Codex", Generation: lease.Generation));
+        await fixture.Store.ReportExecutionAsync(queued.Id,
+            new(worker, assignment.AssignmentId, "local-run", "Completed", "Codex", Generation: lease.Generation));
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Single(await fixture.Store.GetExecutionsAsync(), work => work.WorkReference.Id == "1");
+        Assert.Equal("Completed", (await fixture.Store.GetExecutionAsync(queued.Id))?.State);
+        Assert.False((await fixture.GitHub.RequestAssignmentAsync(request)).HasWork);
+    }
+
+    [Fact]
+    public async Task UnavailableQueuedRefreshPreservesEligibilityAndRedactsProviderFailure()
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var project = await fixture.CreateProjectAsync(new(true, 30));
+        var queued = await fixture.GitHub.EnqueueIssueAsync(project.Id, new("issue", "1"));
+        await fixture.Store.UpdateManagedEligibilityAsync(queued.Id,
+            new("unavailable", ["Previous read unavailable."], fixture.Clock.GetUtcNow()));
+        var reads = 0;
+        fixture.Reads.BeforeGet = (_, _) =>
+        {
+            if (++reads == 2) throw new GitHubReadUnavailableException(project.Repository, "private-token", "rate-limited");
+            return Task.CompletedTask;
+        };
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Equal("unavailable", (await fixture.Store.GetExecutionAsync(queued.Id))?.ManagedEligibilityState);
+        Assert.Equal(queued.Id, Assert.Single(await fixture.Store.GetExecutionsAsync()).Id);
+        Assert.Contains(fixture.Logger.Events, entry => entry.Message.Contains("rate-limited", StringComparison.Ordinal));
+        Assert.All(fixture.Logger.Events, entry => Assert.DoesNotContain("private-token", entry.Message, StringComparison.Ordinal));
+        fixture.Reads.BeforeGet = null;
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        fixture.Clock.Advance();
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Equal("eligible", (await fixture.Store.GetExecutionAsync(queued.Id))?.ManagedEligibilityState);
+        Assert.Single(await fixture.Store.GetExecutionsAsync(), work => work.WorkReference.Id == "1");
+    }
+
+    [Fact]
+    public async Task DisabledProjectDoesNotDiscoverUntilReenabled()
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var project = await fixture.CreateProjectAsync(new(true, 30));
+        var disabled = await fixture.Store.UpdateProjectLifecycleAsync(project.Id, false, project.Revision);
+        Assert.NotNull(disabled);
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Equal(0, fixture.Reads.Pages);
+        Assert.Empty(await fixture.Store.GetExecutionsAsync());
+        await fixture.Store.UpdateProjectLifecycleAsync(project.Id, true, disabled.Revision);
+        await fixture.Cycle.RunDueCyclesAsync();
+        Assert.Equal(2, (await fixture.Store.GetExecutionsAsync()).Count);
+    }
+
+    [Fact]
     public async Task EligibilityChangesAndMissingIssuesAreSkippedThenReconsidered()
     {
         using var fixture = new Fixture();
@@ -409,6 +509,8 @@ public sealed class AutomaticIssueDiscoveryTests
         public int Pages { get; private set; }
         public List<string?> Cursors { get; } = [];
         public HashSet<int> Blocked { get; } = [];
+        public HashSet<int> Unready { get; } = [];
+        public HashSet<int> OpenDependencies { get; } = [];
         public HashSet<int> Missing { get; } = [];
         public Func<CancellationToken, Task>? BeforePage { get; set; }
         public Func<int, CancellationToken, Task>? BeforeGet { get; set; }
@@ -429,10 +531,11 @@ public sealed class AutomaticIssueDiscoveryTests
             if (BeforeGet is { } before) await before(number, cancellationToken);
             return Missing.Contains(number) ? null : Issue(project, number);
         }
-        private ManagedGitHubIssue Issue(CentralProject project, int number) => new(number, "Issue", "", "OPEN",
+        private ManagedGitHubIssue Issue(CentralProject project, int number) => ManagedGitHubIssueEligibility.Evaluate(project, new(number, "Issue", "", "OPEN",
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, $"https://github.com/{project.Repository}/issues/{number}",
-            Blocked.Contains(number) ? ["ready", "blocked"] : ["ready"], [], !Blocked.Contains(number),
-            Blocked.Contains(number) ? ["Issue has blocked label."] : []);
+            Blocked.Contains(number) ? ["ready", "blocked"] : Unready.Contains(number) ? [] : ["ready"],
+            OpenDependencies.Contains(number) ? [new(99, "Prerequisite", "OPEN", $"https://github.com/{project.Repository}/issues/99")] : [],
+            false, []));
         public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<ManagedGitHubIssue>> ListIssuesAsync(CentralProject project, GitHubIssueQuery query, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<GitHubIssueRelationships?> GetIssueRelationshipsAsync(CentralProject project, int issueNumber, CancellationToken cancellationToken = default) => throw new NotSupportedException();
