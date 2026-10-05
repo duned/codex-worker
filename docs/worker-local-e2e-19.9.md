@@ -8,6 +8,11 @@ host installation acceptance**. The production installed service and host
 credentials were not changed. Remote Server administration was not added, and
 product version metadata was not changed.
 
+The separate [managed cold-start campaign (21.6)](managed-worker-e2e.md) exercises
+a real test Server and authenticated Issue execution from zero project state.
+The isolated campaign below uses a transport fixture and does not establish that
+managed first-execution acceptance.
+
 ## Reproducible executable campaign
 
 Build the release apphost, then run:
