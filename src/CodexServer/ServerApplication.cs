@@ -111,7 +111,7 @@ public static class ServerApplication
             var nodes = new List<ProvisionableNode>();
             var local = await discovery.GetAsync(cancellationToken: context.RequestAborted);
             var serverHealth = await health.GetHealthAsync(context.RequestAborted);
-            nodes.Add(new("server", "server", "Codex Server", "connected",
+            nodes.Add(new("server", "server", settings.EffectiveDisplayName, "connected",
                 "not-applicable", local.Any(state => state.Operation.State == CapabilityOperationState.Running) ? "busy" : "ready", false,
                 CapabilityCatalog.Definitions.Select(definition => CapabilityCatalog.Describe(definition,
                     local.Single(state => state.Id == definition.Id), true)).ToArray(), serverHealth.Status));

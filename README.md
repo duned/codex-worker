@@ -268,6 +268,8 @@ Run the server independently from the worker:
 dotnet run --project src/CodexServer/CodexServer.csproj
 ```
 
+Generated Worker GitHub comments begin with `🤖 Codex Worker · <node name>`. The node name is the existing `CODEX_WORKER_DISPLAY_NAME` environment value, or the host name when unset, in both standalone and managed mode. This attribution does not change GitHub authentication or the account shown as the actor. Set `Server:DisplayName` (environment variable `Server__DisplayName`) to give a Server a stable public instance name; it defaults to the host name. Server-generated reports can use the equivalent `🧭 Codex Server · <node name>` origin. The Server currently has no generated GitHub comments/reports; its administrative Issue bodies are operator-supplied and are preserved as entered. Label mutations and commit attribution are unchanged.
+
 By default it listens on `http://127.0.0.1:5090` and stores durable state in `~/.local/share/codex-server/`. Configure it through `appsettings.json`, environment variables, or command-line configuration keys. `Server:ListenUrl` selects the interface and port; `Server:DataDirectory` is the persistent state directory. The optional `Server:DatabasePath` overrides the SQLite file location (relative paths are resolved inside the data directory). ASP.NET Core's `ASPNETCORE_ENVIRONMENT` selects the runtime mode. For example:
 
 ```sh

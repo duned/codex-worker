@@ -13,6 +13,7 @@ public static partial class ServerConfigurationMutation
 {
     private static readonly IReadOnlyDictionary<string, string> SupportedSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
+        ["DisplayName"] = "Server__DisplayName",
         ["ListenUrl"] = "Server__ListenUrl",
         ["DataDirectory"] = "Server__DataDirectory",
         ["DatabasePath"] = "Server__DatabasePath",
@@ -97,6 +98,7 @@ public static partial class ServerConfigurationMutation
     {
         switch (CanonicalSetting(setting))
         {
+            case "DisplayName": configuration.DisplayName = value; break;
             case "ListenUrl": configuration.ListenUrl = value; break;
             case "DataDirectory": configuration.DataDirectory = value; break;
             case "DatabasePath": configuration.DatabasePath = value; break;

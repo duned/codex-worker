@@ -8,6 +8,20 @@ using System.Text.Json;
 public sealed class ServerConfigurationMutationTests
 {
     [Fact]
+    public void InstanceDisplayNameCanBeConfiguredThroughInstalledEnvironmentFile()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "server.env");
+        File.WriteAllText(path, "Server__EnableLocalProvisioning=false\n");
+        var configuration = new ServerConfiguration();
+
+        ServerConfigurationMutation.Set(path, "DisplayName", "codex-server-main", configuration);
+
+        Assert.Equal("codex-server-main", configuration.MessageOrigin.DisplayName);
+        Assert.Contains("Server__DisplayName=\"codex-server-main\"\n", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ConfigSetUpdatesInstalledEnvironmentFileAtomicallyAndReportsRestartRequirement()
     {
         using var temporary = new TemporaryDirectory();

@@ -2,6 +2,10 @@ namespace CodexServer;
 
 public sealed class ServerConfiguration
 {
+    /// <summary>Public instance name; defaults to the host name when not configured.</summary>
+    public string? DisplayName { get; set; }
+    public string EffectiveDisplayName => string.IsNullOrWhiteSpace(DisplayName) ? Environment.MachineName : DisplayName;
+    public CodexProvisioning.GeneratedMessageOrigin MessageOrigin => new(CodexProvisioning.CodexComponent.Server, EffectiveDisplayName);
     public string ListenUrl { get; set; } = "http://127.0.0.1:5090";
     /// <summary>Directory for durable Server state. Relative paths are resolved from the user's home directory.</summary>
     public string DataDirectory { get; set; } = Path.Combine(
@@ -21,6 +25,8 @@ public sealed class ServerConfiguration
 
     public void Validate()
     {
+        if (DisplayName is not null && (DisplayName.Length > 200 || DisplayName.Any(char.IsControl)))
+            throw new InvalidDataException("Server:DisplayName must contain at most 200 printable characters.");
         if (!Uri.TryCreate(ListenUrl, UriKind.Absolute, out var uri) ||
             uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host) ||
             uri.Port is < 1 or > 65535 || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)

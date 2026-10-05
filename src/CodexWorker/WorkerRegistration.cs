@@ -72,6 +72,10 @@ public sealed record ExecutionLeaseRenewalContract(string WorkerId, long Generat
 /// <summary>Loads or creates a stable, random worker identifier stored with restrictive permissions.</summary>
 public static class WorkerIdentity
 {
+    public static string DisplayName =>
+        Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name
+            ? name : Environment.MachineName;
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex-worker", "worker-id");
 
@@ -216,7 +220,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
             request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
-                Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
+                WorkerIdentity.DisplayName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
                 capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken)));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -255,7 +259,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         {
             var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
             var registration = new WorkerRegistrationContract(2, identity,
-                Environment.GetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME") is { Length: > 0 } name ? name : Environment.MachineName,
+                WorkerIdentity.DisplayName,
                 ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), "api/v1/workers/register"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);

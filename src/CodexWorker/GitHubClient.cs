@@ -11,6 +11,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 {
     private readonly string repository;
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
+    private readonly CodexProvisioning.GeneratedMessageOrigin origin;
 
     public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds, bool requireManagedAuthentication = false)
         : this(repository, async (arguments, ct) => await runner.RunAsync("gh", arguments,
@@ -19,10 +20,12 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
                 requireManagedAuthentication: requireManagedAuthentication))) { }
 
     internal GitHubClient(string repository,
-        Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand)
+        Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand,
+        CodexProvisioning.GeneratedMessageOrigin? origin = null)
     {
         this.repository = repository;
         this.runCommand = runCommand;
+        this.origin = origin ?? new(CodexProvisioning.CodexComponent.Worker, WorkerIdentity.DisplayName);
     }
 
     public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
@@ -284,7 +287,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         RunGhAsync(["issue", "edit", issueNumber.ToString(), "--repo", repository, "--remove-label", label], ct);
 
     public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) =>
-        RunGhAsync(["issue", "comment", issueNumber.ToString(), "--repo", repository, "--body", comment], ct);
+        RunGhAsync(["issue", "comment", issueNumber.ToString(), "--repo", repository, "--body", origin.Format(comment)], ct);
 
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
         RunGhAsync(["issue", "close", issueNumber.ToString(), "--repo", repository], ct);
