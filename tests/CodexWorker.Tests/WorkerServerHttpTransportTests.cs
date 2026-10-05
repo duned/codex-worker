@@ -36,7 +36,10 @@ public sealed class WorkerServerHttpTransportTests
         Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", "credential-test-secret");
         try
         {
-            var settings = new WorkerServerSettings { Enabled = true, Url = origin.Url, IdentityFile = Path.Combine(temporary.Path, "identity") };
+            var identity = Path.Combine(temporary.Path, "identity");
+            var settings = new WorkerServerSettings { Enabled = true, Url = origin.Url, IdentityFile = identity };
+            // Credential delivery uses an enrolled identity and must not create one implicitly.
+            if (!bootstrap) await WorkerIdentity.LoadOrCreateAsync(identity);
             var client = new WorkerRegistrationClient(provisioningDiscovery: TestCapabilityDiscovery.Create(),
                 capabilityDiscovery: new WorkerCapabilityDiscovery((_, _, _, _, _) =>
                     Task.FromException<ProcessResult>(new FileNotFoundException())));
@@ -70,6 +73,7 @@ public sealed class WorkerServerHttpTransportTests
     {
         using var temporary = new TemporaryDirectory();
         var identity = Path.Combine(temporary.Path, "identity");
+        await WorkerIdentity.LoadOrCreateAsync(identity);
         await File.WriteAllTextAsync(identity + ".server", endpoint);
         await File.WriteAllTextAsync(identity + ".token", new string('a', 32));
         await using var server = new HttpFixture("HTTP/1.1 204 No Content\r\n\r\n");
