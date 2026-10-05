@@ -106,7 +106,7 @@ internal static class WorkerAdministrationCommand
             case "revoke-token":
                 var apiTokenRevoked = await registry.RevokeWorkerTokenAsync(workerId, cancellationToken);
                 Console.WriteLine(apiTokenRevoked
-                    ? "Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery. The shared Server registration-token fallback remains server-wide if configured."
+                    ? "Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery."
                     : "No active per-Worker API authentication token was found.");
                 break;
             case "revoke-delivery-token":

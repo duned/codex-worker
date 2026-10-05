@@ -12,7 +12,7 @@ The existing root help alias `h` remains supported.
 | `config validate` | Validate Worker and project configuration without starting execution; invalid configuration exits 2. |
 | `config set <setting> <value>` | Atomically update an existing allowlisted setting after complete validation. Protected installed configuration requires appropriate local permissions. Restart the service to apply the change. |
 | `capabilities [list]`, `capabilities refresh` | Observe typed local capability inventory or force fresh detection. Missing capabilities are inventory state. |
-| `register` | Enroll using `--token-stdin` or the existing `--token` option. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. Registration does not establish execution readiness. |
+| `register` | Enroll using `--token-stdin` or the existing `--token` option. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. `--operation enroll` is the default; `rotate`, `recover` and `associate` require a Worker- and operation-bound Server authorization. Registration does not establish execution readiness. |
 | `provision status` | Inspect capability state, typed authentication dependencies and local action policy. |
 | `provision <operation> <capability-id>` | Run an allowlisted typed operation under node-local provisioning policy. Package changes require `--allow-elevation` as well as policy permission. `verify-repository-access` requires `--repository owner/repository`. |
 | `credential status`, `credential check/login/logout <provider>` | Observe shared node-local credential state or run typed GitHub/Codex authentication under the same local policy as provisioning. Login publishes a transient browser/device challenge. |
@@ -114,8 +114,10 @@ blocker alone does not change generic Worker execution readiness.
 
 `serverAcceptance` remains `unverified` for a configured Server: local identity,
 credentials and a persisted association do not prove successful enrollment or
-detect remote revocation. A `.server` file can describe an attempted enrollment
-whose response was rejected or lost. Restart preserves that identity and token;
+detect remote revocation. New registration publishes `.server` only after a supported
+acknowledgement matching the Worker ID and authoritative credential verification.
+Older installations may retain an unverified association; verify it through an ordinary
+registration retry before relying on it. Restart preserves identity and material;
 HTTP 401/403 does not regenerate them. Managed status reports `not-ready` when
 local identity, credentials or association are invalid or unavailable, and
 `server-dependent-unverified` when local prerequisites are present. Neither state
@@ -185,3 +187,58 @@ the campaign without modifying installed services or credentials.
 The [19.10 integration review](worker-administration-integration-review-19.10.md)
 records cross-provider consistency, integration fixes and the ownership contracts
 to preserve when adding secure remote transport.
+
+## Enrollment, rotation and Server migration
+
+Stop managed work before changing credentials or association. Drain active assignments
+and stop the Worker service; revocation or rotation can otherwise interrupt lease renewal.
+Standalone mode remains independent of enrollment. Shared registration credentials are
+not accepted on Worker routes; each Worker uses its own durable credential.
+
+For a new identity, run `sudo codex-server worker-token create` on the destination
+Server, then provide its stdout securely to `codex-worker register --server URL
+--token-stdin` under the Worker service account. The authorization expires in 15 minutes
+and can enroll one previously unknown identity only. It cannot overwrite an existing
+Worker, even when that Worker's credential is revoked.
+
+For rotation, discover the stable ID using `codex-server worker list`, then run
+`sudo codex-server worker-token authorize WORKER_ID rotate`. Provide that authorization
+to `codex-worker register --server URL --operation rotate --token-stdin` using the
+existing identity file. Rotation generates fresh cryptographic material; after commit,
+the old credential is rejected. An ordinary `register` retry verifies the active
+credential without rotation or consuming another bootstrap authorization.
+
+For a missing or revoked credential, preserve/restore the original identity and use
+`worker-token authorize WORKER_ID recover` with `register --operation recover`.
+Do not delete identity or recovery files to repair authentication. Rotation and recovery
+authorizations only apply to identities already visible on that Server.
+
+To move to a different Server, authorize the same Worker ID on the destination with
+`worker-token authorize WORKER_ID associate`, then run `register --server NEW_URL
+--operation associate --token-stdin`. This also works when the destination does not yet
+know that identity. Fresh material is generated for the destination; the previous
+Server's credential is never sent there. The previous active association and material
+remain intact until the new endpoint has acknowledged and authenticated enrollment.
+After successful migration, explicitly revoke the old Server credential there; moving
+association does not grant authority to administer the previous Server. Reconfigure any
+separate credential-delivery authorization for the destination before restarting.
+
+The identity, `.token`, `.server`, and `.pending` files are owner-only on Unix. The
+pending journal retains Worker ID, endpoint, operation and fresh credential across
+failures; it never retains the operator authorization. Retrying with the **same endpoint
+and operation** authenticates that retained material first, reconciling a lost response
+without generating another credential or blindly consuming another authorization.
+Malformed, empty, unsupported or mismatched HTTP success responses preserve pending
+state and do not activate registration. A verified journal blocks runtime authentication
+until interrupted publication of the active files has completed through a retry.
+Concurrent local enrollment attempts are rejected by an exclusive file gate. Preserve
+all files and inspect the authoritative Server state if pending material no longer
+authenticates; do not replace it or start a different pending operation automatically.
+
+The Linux installer supports `--register --operation rotate|recover|associate` with
+`--token-file PATH` (or protected bootstrap-token environment input). It delegates
+association changes to registration; `--server` alone does not overwrite an enrolled
+association. Installer rollback preserves registration state because a Server commit
+cannot be undone by restoring only a local URL. Keep the same Server, operation and
+identity when retrying an interrupted installation. Start the service only after
+registration is verified; registration does not establish execution readiness.

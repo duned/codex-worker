@@ -20,7 +20,7 @@ if [[ -n $installer_source ]]; then
 fi
 
 usage() {
-  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--start] [--token-file PATH] [--git-name NAME] [--git-email EMAIL]"
+  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--operation enroll|rotate|recover|associate] [--start] [--token-file PATH] [--git-name NAME] [--git-email EMAIL]"
   echo "Install and optionally configure/register/start the Codex Worker on Ubuntu 24.04 x86_64."
   echo "For unattended registration, set CODEX_WORKER_BOOTSTRAP_TOKEN or use --token-file; tokens are never accepted as command-line values."
 }
@@ -28,6 +28,7 @@ usage() {
 requested_version=latest
 requested_server=""
 requested_capacity=""
+registration_operation=enroll
 register_requested=false
 start_requested=false
 token_file=""
@@ -57,6 +58,10 @@ while (($#)); do
       (($# >= 2)) && [[ -n $2 ]] || { echo "$1 requires a non-empty value" >&2; exit 2; }
       if [[ $1 == --git-name ]]; then requested_git_name=$2; else requested_git_email=$2; fi
       shift 2
+      ;;
+    --operation)
+      (($# >= 2)) && [[ $2 == enroll || $2 == rotate || $2 == recover || $2 == associate ]] || { echo "--operation requires enroll, rotate, recover, or associate" >&2; exit 2; }
+      registration_operation=$2; shift 2
       ;;
     --register) register_requested=true; shift ;;
     --start) start_requested=true; shift ;;
@@ -345,8 +350,6 @@ if [[ $unit_was_present == true ]] || systemctl cat codex-worker >/dev/null 2>&1
   service_was_present=true
 fi
 config_changed=false
-association_changed=false
-association_was_present=false
 if [[ -f $config_root/worker.yml ]]; then
   cp -a -- "$config_root/worker.yml" "$temporary_dir/previous.yml"
 fi
@@ -386,13 +389,6 @@ cleanup() {
         if [[ $config_changed == true && -f $temporary_dir/previous.yml ]]; then
           cp -a -- "$temporary_dir/previous.yml" "$config_root/worker.yml"
         fi
-        if [[ $association_changed == true ]]; then
-          if [[ $association_was_present == true && -f $temporary_dir/previous.server ]]; then
-            cp -a -- "$temporary_dir/previous.server" "$association_path"
-          else
-            rm -f -- "$association_path"
-          fi
-        fi
         if systemctl daemon-reload; then
           if [[ $service_was_active == true && -x $install_root/CodexWorker ]]; then
             if ! systemctl start codex-worker; then
@@ -415,7 +411,7 @@ cleanup() {
       echo "Could not stop Worker during rollback; files retained. Run: sudo systemctl stop codex-worker before retrying." >&2
     fi
     echo "The codex-worker account and data/log directories remain. Configuration remains in $config_root; identity and recovery credentials remain in $data_root/.codex-worker." >&2
-    echo "Retry: rerun install-worker.sh --version $version --register --start with the same Server URL and --token-file PATH (a protected valid bootstrap token). Keep the existing identity and credentials." >&2
+    echo "Retry: rerun install-worker.sh --version $version --register --operation $registration_operation --start with the same Server URL and --token-file PATH. Keep active and pending identity/material; a retained pending operation is reconciled before consuming another authorization." >&2
   fi
   rm -rf -- "$temporary_dir" "$stage_dir"
   exit "$status"
@@ -541,33 +537,20 @@ if [[ $server_was_set == true || $capacity_was_set == true ]]; then
   fi
   install -o root -g codex-worker -m 0640 "$config_update" "$config_root/worker.yml" || fail "could not save Worker configuration"
 fi
-if [[ $server_was_set == true ]]; then
-  # Runtime uses the persisted registration association in preference to YAML.
-  # Keep both existing representations aligned when repairing an installed
-  # Worker without re-registering it (which would require a consumed token).
-  identity_file=$(awk '
-    /^server:$/ { in_server = 1; next }
-    /^[^[:space:]]/ { in_server = 0 }
-    in_server && /^  identityFile:/ {
-      sub(/^  identityFile:[[:space:]]*/, "")
-      if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2)
-      print
-      exit
-    }
-  ' "$config_root/worker.yml")
-  identity_file=${identity_file:-$data_root/.codex-worker/worker-id}
-  [[ $identity_file == /* ]] || identity_file="$config_root/$identity_file"
-  association_path="$identity_file.server"
-  association_dir=$(dirname -- "$association_path")
-  [[ -d $association_dir ]] || fail "Worker identity directory is missing: $association_dir"
-  if [[ -f $association_path ]]; then
-    cp -a -- "$association_path" "$temporary_dir/previous.server" || fail "could not preserve the existing Worker Server association"
-    association_was_present=true
-  fi
-  association_changed=true
-  printf '%s\n' "${requested_server%/}" > "$temporary_dir/worker-server-url"
-  install -o codex-worker -g codex-worker -m 0600 "$temporary_dir/worker-server-url" "$association_path" || fail "could not update the persisted Worker Server association"
-fi
+# Enrollment owns association publication and recovery. Installer rollback must
+# never restore only the URL after a credential change committed on the Server.
+identity_file=$(awk '
+  /^server:$/ { in_server = 1; next }
+  /^[^[:space:]]/ { in_server = 0 }
+  in_server && /^  identityFile:/ {
+    sub(/^  identityFile:[[:space:]]*/, "")
+    if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2)
+    print
+    exit
+  }
+' "$config_root/worker.yml")
+identity_file=${identity_file:-$data_root/.codex-worker/worker-id}
+[[ $identity_file == /* ]] || identity_file="$config_root/$identity_file"
 if [[ $server_was_set == false ]]; then
   requested_server=$(awk '/^server:$/ { in_server = 1; next } /^[^[:space:]]/ { in_server = 0 } in_server && /^  url:/ { sub(/^  url:[[:space:]]*/, ""); if (substr($0, 1, 1) == "\"" || substr($0, 1, 1) == sprintf("%c", 39)) $0 = substr($0, 2, length($0) - 2); print; exit }' "$config_root/worker.yml")
 fi
@@ -593,7 +576,6 @@ grep -Fxq "ExecStart=$install_root/CodexWorker run --config $config_root/worker.
 if [[ $register_requested == true ]]; then
   [[ -n $requested_server ]] && validate_server_url "$requested_server" || fail "registration requires a valid server.url in Worker configuration or --server URL"
   [[ $requested_server != *codex-server.example* ]] || fail "replace the starter server.url or pass --server URL before registering"
-  identity_file="$data_root/.codex-worker/worker-id"
   capacity_for_registration=${requested_capacity:-$(awk '/^  maxParallelTasks:/ { print $2; exit }' "$config_root/worker.yml")}
   capacity_for_registration=${capacity_for_registration:-1}
   token_value=$bootstrap_token
@@ -601,8 +583,10 @@ if [[ $register_requested == true ]]; then
     IFS= read -r token_value < "$token_file" || [[ -n $token_value ]] || fail "bootstrap token file is empty"
   fi
   [[ -n $token_value ]] || fail "bootstrap token cannot be empty"
+  registration_options=()
+  if [[ $registration_operation != enroll ]]; then registration_options+=(--operation "$registration_operation"); fi
   if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$stage_dir/CodexWorker" register \
-      --server "$requested_server" --token-stdin --capacity "$capacity_for_registration" --identity-file "$identity_file"; then
+      --server "$requested_server" "${registration_options[@]}" --token-stdin --capacity "$capacity_for_registration" --identity-file "$identity_file"; then
     fail "Worker registration failed; the bootstrap token was not written to installer output"
   fi
   unset token_value bootstrap_token

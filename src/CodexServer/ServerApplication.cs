@@ -224,13 +224,15 @@ public static class ServerApplication
                 return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "missing_bootstrap_token",
                     "A Bearer registration token is required. Create a fresh registration token and retry.");
             var workerToken = context.Request.Headers["X-Codex-Worker-Token"].ToString();
-            var accepted = await store.BootstrapWorkerAsync(authorization[7..], request, workerToken, context.RequestAborted);
+            var operation = context.Request.Headers["X-Codex-Worker-Operation"].ToString();
+            if (operation.Length == 0) operation = "enroll";
+            var accepted = await store.BootstrapWorkerAsync(authorization[7..], request, workerToken, context.RequestAborted, operation);
             if (!accepted)
             {
                 return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "invalid_bootstrap_token",
                     "Worker bootstrap token is invalid, expired, or has already been used. Create a fresh registration token and retry.");
             }
-            return Results.Ok(new { workerId = request.WorkerId });
+            return Results.Ok(new CodexProvisioning.WorkerEnrollmentAcknowledgement(CodexProvisioning.WorkerEnrollmentProtocol.AcknowledgementVersion, request.WorkerId));
         });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
@@ -890,12 +892,7 @@ public static class ServerApplication
         return Results.Json(new { error, code, requestId = context.TraceIdentifier }, statusCode: statusCode);
     }
 
-    private static bool Valid(WorkerRegistrationRequest request) => request.ContractVersion is 1 or 2 &&
-        Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.DisplayName) &&
-        request.DisplayName.Length <= 200 && !string.IsNullOrWhiteSpace(request.WorkerVersion) && request.WorkerVersion.Length <= 100 &&
-        !string.IsNullOrWhiteSpace(request.Platform) && request.Platform.Length <= 300 && request.Capacity is >= 1 and <= 8 &&
-        request.Capabilities is not null && request.Capabilities.Count <= 32 &&
-        request.Capabilities.All(ValidCapability) && CapabilityCatalog.ValidInventory(request.CapabilityInventory);
+    private static bool Valid(WorkerRegistrationRequest request) => request.IsValid();
 
     private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion is 1 or 2 &&
         Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
@@ -909,11 +906,7 @@ public static class ServerApplication
         (request.ConfigurationVersion is null || (request.ConfigurationVersion.Length <= 128 && !request.ConfigurationVersion.Any(char.IsControl))) &&
         request.ActiveProjects.All(value => !string.IsNullOrWhiteSpace(value) && value.Length <= 200);
 
-    private static bool ValidCapability(WorkerCapability value) => value is not null &&
-        !string.IsNullOrWhiteSpace(value.Type) && value.Type.Length <= 40 &&
-        !string.IsNullOrWhiteSpace(value.Name) && value.Name.Length <= 100 &&
-        !value.Type.Any(char.IsControl) && !value.Name.Any(char.IsControl) &&
-        (value.Version is null || (value.Version.Length <= 100 && !value.Version.Any(char.IsControl)));
+    private static bool ValidCapability(WorkerCapability value) => WorkerRegistrationRequest.ValidCapability(value);
 
     internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects)
     {

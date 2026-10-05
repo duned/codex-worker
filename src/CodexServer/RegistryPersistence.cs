@@ -17,9 +17,9 @@ public interface IRegistryStore
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
     Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default);
+    Task<string> CreateWorkerAuthorizationAsync(string workerId, string operation, TimeSpan lifetime, CancellationToken cancellationToken = default);
     Task<bool> RevokeWorkerBootstrapTokenAsync(string token, CancellationToken cancellationToken = default);
-    Task<bool> RedeemWorkerBootstrapTokenAsync(string token, string workerId, string workerToken, CancellationToken cancellationToken = default);
-    Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default);
+    Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default, string operation = "enroll");
     Task<bool> IsWorkerTokenValidAsync(string workerId, string token, CancellationToken cancellationToken = default);
     Task<bool> RevokeWorkerTokenAsync(string workerId, CancellationToken cancellationToken = default);
     Task RegisterWorkerAsync(WorkerRegistrationRequest worker, CancellationToken cancellationToken = default);
@@ -407,7 +407,22 @@ public sealed class ProjectDisabledException(string message = "Project is disabl
 /// <summary>Versioned public registration request; intentionally independent of persistence entities.</summary>
 public sealed record WorkerRegistrationRequest(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<CapabilityState>? CapabilityInventory = null);
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null)
+{
+    internal bool IsValid() => ContractVersion is 1 or 2 && Guid.TryParseExact(WorkerId, "N", out _) &&
+        !string.IsNullOrWhiteSpace(DisplayName) && DisplayName.Length <= 200 &&
+        !string.IsNullOrWhiteSpace(WorkerVersion) && WorkerVersion.Length <= 100 &&
+        !string.IsNullOrWhiteSpace(Platform) && Platform.Length <= 300 && Capacity is >= 1 and <= 8 &&
+        Capabilities is not null && Capabilities.Count <= 32 && Capabilities.All(ValidCapability) &&
+        CapabilityCatalog.ValidInventory(CapabilityInventory);
+
+    internal static bool ValidCapability(WorkerCapability value) => value is not null &&
+        !string.IsNullOrWhiteSpace(value.Type) && value.Type.Length <= 40 &&
+        !string.IsNullOrWhiteSpace(value.Name) && value.Name.Length <= 100 &&
+        !value.Type.Any(char.IsControl) && !value.Name.Any(char.IsControl) &&
+        (value.Version is null || (value.Version.Length <= 100 && !value.Version.Any(char.IsControl)));
+
+}
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null);
@@ -493,7 +508,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc FROM execution_requests";
-    public const int CurrentSchemaVersion = 14;
+    public const int CurrentSchemaVersion = 15;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -518,7 +533,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 14);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 15);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -637,6 +652,11 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 schemaVersion = 14;
             }
+            if (schemaVersion == 14)
+            {
+                command.CommandText = "ALTER TABLE worker_bootstrap_tokens ADD COLUMN worker_id TEXT NULL; ALTER TABLE worker_bootstrap_tokens ADD COLUMN operation TEXT NOT NULL DEFAULT 'enroll'; UPDATE schema_metadata SET schema_version = 15 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
             command.CommandText = """
                 CREATE TABLE IF NOT EXISTS workers (
                     worker_id TEXT NOT NULL PRIMARY KEY,
@@ -648,7 +668,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     heartbeat_json TEXT NULL,
                     scheduling_policy TEXT NOT NULL DEFAULT 'Enabled' CHECK (scheduling_policy IN ('Enabled','Draining','Disabled'))
                 );
-                CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token_hash TEXT NOT NULL PRIMARY KEY, expires_at_utc TEXT NOT NULL, consumed_at_utc TEXT NULL);
+                CREATE TABLE IF NOT EXISTS worker_bootstrap_tokens (token_hash TEXT NOT NULL PRIMARY KEY, expires_at_utc TEXT NOT NULL, consumed_at_utc TEXT NULL, worker_id TEXT NULL, operation TEXT NOT NULL DEFAULT 'enroll');
                 CREATE TABLE IF NOT EXISTS worker_auth_tokens (worker_id TEXT NOT NULL PRIMARY KEY, token_hash TEXT NOT NULL, created_at_utc TEXT NOT NULL, revoked_at_utc TEXT NULL);
                 CREATE TABLE IF NOT EXISTS projects (
                     project_id TEXT NOT NULL PRIMARY KEY,
@@ -2153,16 +2173,28 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == CurrentSchemaVersion;
     }
 
-    public async Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default)
+    public Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default) =>
+        CreateAuthorizationAsync(null, "enroll", lifetime, cancellationToken);
+
+    public Task<string> CreateWorkerAuthorizationAsync(string workerId, string operation, TimeSpan lifetime, CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParseExact(workerId, "N", out _) || operation is not ("rotate" or "recover" or "associate"))
+            throw new ArgumentException("Authorization requires a valid Worker identity and rotate, recover, or associate operation.");
+        return CreateAuthorizationAsync(workerId, operation, lifetime, cancellationToken);
+    }
+
+    private async Task<string> CreateAuthorizationAsync(string? workerId, string operation, TimeSpan lifetime, CancellationToken cancellationToken)
     {
         if (lifetime <= TimeSpan.Zero || lifetime > TimeSpan.FromHours(24)) throw new ArgumentOutOfRangeException(nameof(lifetime));
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO worker_bootstrap_tokens (token_hash, expires_at_utc) VALUES ($hash, $expires);";
+        command.CommandText = "INSERT INTO worker_bootstrap_tokens (token_hash, expires_at_utc, worker_id, operation) VALUES ($hash, $expires, $worker, $operation);";
         command.Parameters.AddWithValue("$hash", HashToken(token));
         command.Parameters.AddWithValue("$expires", _timeProvider.GetUtcNow().Add(lifetime).ToString("O"));
+        command.Parameters.AddWithValue("$worker", (object?)workerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$operation", operation);
         await command.ExecuteNonQueryAsync(cancellationToken);
         return token;
     }
@@ -2177,39 +2209,29 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
-    public async Task<bool> RedeemWorkerBootstrapTokenAsync(string token, string workerId, string workerToken, CancellationToken cancellationToken = default)
+    public async Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default, string operation = "enroll")
     {
-        if (!Guid.TryParseExact(workerId, "N", out _) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(workerToken)) return false;
-        await using var connection = new SqliteConnection(ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "DELETE FROM worker_bootstrap_tokens WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL;";
-        command.Parameters.AddWithValue("$hash", HashToken(token));
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
-        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return false;
-        command.CommandText = "INSERT INTO worker_auth_tokens (worker_id, token_hash, created_at_utc, revoked_at_utc) VALUES ($worker,$token,$now,NULL) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash, created_at_utc=excluded.created_at_utc, revoked_at_utc=NULL;";
-        command.Parameters.Clear();
-        command.Parameters.AddWithValue("$worker", workerId);
-        command.Parameters.AddWithValue("$token", HashToken(workerToken));
-        command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToString("O"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-        return true;
-    }
-
-    public async Task<bool> BootstrapWorkerAsync(string token, WorkerRegistrationRequest worker, string workerToken, CancellationToken cancellationToken = default)
-    {
-        if (!Guid.TryParseExact(worker.WorkerId, "N", out _) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(workerToken)) return false;
+        if (worker is null || !worker.IsValid() || !WorkerEnrollmentProtocol.ValidOperation(operation) ||
+            !WorkerEnrollmentProtocol.ValidToken(token) || !WorkerEnrollmentProtocol.ValidToken(workerToken)) return false;
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
         var now = _timeProvider.GetUtcNow();
-        command.CommandText = "DELETE FROM worker_bootstrap_tokens WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL;";
+        command.CommandText = """
+            DELETE FROM worker_bootstrap_tokens
+            WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL AND operation=$operation
+                AND NOT EXISTS (SELECT 1 FROM worker_auth_tokens WHERE worker_id=$worker AND token_hash=$newToken)
+                AND ((operation='enroll' AND worker_id IS NULL
+                        AND NOT EXISTS (SELECT 1 FROM worker_auth_tokens WHERE worker_id=$worker)
+                        AND NOT EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker))
+                    OR (worker_id=$worker AND (operation='associate' OR EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker))));
+            """;
         command.Parameters.AddWithValue("$hash", HashToken(token));
+        command.Parameters.AddWithValue("$worker", worker.WorkerId);
+        command.Parameters.AddWithValue("$operation", operation);
+        command.Parameters.AddWithValue("$newToken", HashToken(workerToken));
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return false;
         command.CommandText = "INSERT INTO worker_auth_tokens (worker_id, token_hash, created_at_utc, revoked_at_utc) VALUES ($worker,$token,$now,NULL) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash, created_at_utc=excluded.created_at_utc, revoked_at_utc=NULL;";
@@ -2231,7 +2253,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
 
     public async Task<bool> IsWorkerTokenValidAsync(string workerId, string token, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(token)) return false;
+        if (!Guid.TryParseExact(workerId, "N", out _) || !WorkerEnrollmentProtocol.ValidToken(token)) return false;
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();

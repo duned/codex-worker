@@ -7,6 +7,7 @@ using static CodexWorker.WorkerServerHttpTransport;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json.Serialization;
+using System.Text.Json;
 
 /// <summary>Versioned wire contract sent to Codex Server. Contains operational metadata only.</summary>
 public sealed record WorkerRegistrationContract(
@@ -83,7 +84,9 @@ public static class WorkerIdentity
     /// <summary>Reads existing identity without creating or repairing local state.</summary>
     public static async Task<string> LoadAsync(string path, CancellationToken cancellationToken = default)
     {
+        if (new FileInfo(path).Length > 128) throw new InvalidDataException("Worker identity exceeds supported bounds.");
         var existing = (await File.ReadAllTextAsync(path, cancellationToken)).Trim();
+        RestrictFile(path);
         if (!Guid.TryParseExact(existing, "N", out _))
             throw new InvalidDataException("Worker identity file does not contain a valid identity.");
         return existing;
@@ -106,7 +109,7 @@ public static class WorkerIdentity
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await File.WriteAllTextAsync(temp, identity + Environment.NewLine, cancellationToken);
+            await WorkerRegistrationFile.WritePrivateAsync(temp, identity + Environment.NewLine, cancellationToken);
             RestrictFile(temp);
             try { WorkerRegistrationFile.Publish(temp, path); }
             catch (IOException) when (File.Exists(path))
@@ -134,13 +137,18 @@ public static class WorkerAuthentication
     internal static string ValidateToken(string token)
     {
         token = token.Trim();
-        if (token.Length is < 32 or > 4096 || token.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
+        if (!WorkerEnrollmentProtocol.ValidToken(token))
             throw new InvalidDataException("Persisted Worker authentication material is invalid. Restore the enrolled credential from protected storage; do not replace the Worker identity.");
         return token;
     }
 
-    internal static async Task<string> LoadTokenAsync(string identityPath, CancellationToken cancellationToken) =>
-        ValidateToken(await File.ReadAllTextAsync(TokenPath(identityPath), cancellationToken));
+    internal static async Task<string> LoadTokenAsync(string identityPath, CancellationToken cancellationToken)
+    {
+        var path = TokenPath(identityPath);
+        if (new FileInfo(path).Length > 4098) throw new InvalidDataException("Worker credential exceeds supported bounds.");
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        return ValidateToken(await File.ReadAllTextAsync(path, cancellationToken));
+    }
     public static async Task<string> LoadOrCreateTokenAsync(string identityPath, CancellationToken cancellationToken = default)
     {
         var path = TokenPath(identityPath);
@@ -155,7 +163,7 @@ public static class WorkerAuthentication
         var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await File.WriteAllTextAsync(temp, token, cancellationToken);
+            await WorkerRegistrationFile.WritePrivateAsync(temp, token, cancellationToken);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             try { WorkerRegistrationFile.Publish(temp, path); }
             catch (IOException) when (File.Exists(path))
@@ -169,13 +177,38 @@ public static class WorkerAuthentication
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
+    internal static (string Token, string Endpoint) GetConnection(WorkerServerSettings settings)
+    {
+        var identityPath = Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath);
+        // Capture the endpoint and credential together under the same cross-process gate
+        // used by enrollment. An in-flight request retains its original endpoint.
+        if (!Directory.Exists(Path.GetDirectoryName(identityPath))) return (GetToken(settings), settings.EffectiveUrl);
+        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.ReadWrite };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            using var registrationLock = new FileStream(identityPath + ".registration-lock", options);
+            return (GetToken(settings), settings.EffectiveUrl);
+        }
+        catch (IOException)
+        {
+            throw new WorkerStartupException("Local registration is busy or unreadable. Complete registration before managed work resumes.");
+        }
+    }
+
     public static string GetToken(WorkerServerSettings settings)
     {
         var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
         var path = TokenPath(identityPath);
+        WorkerPendingRegistration.CheckPublication(identityPath);
         try
         {
-            if (File.Exists(path)) return ValidateToken(File.ReadAllText(path));
+            if (File.Exists(path))
+            {
+                if (new FileInfo(path).Length > 4098) throw new InvalidDataException("Worker credential exceeds supported bounds.");
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                return ValidateToken(File.ReadAllText(path));
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -185,8 +218,58 @@ public static class WorkerAuthentication
     }
 }
 
+internal sealed record WorkerPendingRegistration(string WorkerId, string Endpoint, string Operation, string Token, bool Verified)
+{
+    internal static WorkerPendingRegistration? Load(string identityPath)
+    {
+        var path = Path.GetFullPath(identityPath) + ".pending";
+        if (!File.Exists(path)) return null;
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (new FileInfo(path).Length > 16 * 1024) throw new InvalidDataException("Pending registration exceeds supported bounds.");
+        WorkerPendingRegistration? pending;
+        try { pending = JsonSerializer.Deserialize<WorkerPendingRegistration>(File.ReadAllText(path)); }
+        catch (JsonException) { throw new InvalidDataException("Pending registration is invalid; retain it for operator reconciliation."); }
+        if (pending is null || !Guid.TryParseExact(pending.WorkerId, "N", out _) ||
+            !WorkerEnrollmentProtocol.ValidOperation(pending.Operation) || !WorkerEnrollmentProtocol.ValidToken(pending.Token) ||
+            string.IsNullOrWhiteSpace(pending.Endpoint))
+            throw new InvalidDataException("Pending registration is invalid; retain it for operator reconciliation.");
+        WorkerServerSettings.ValidateUrl(pending.Endpoint);
+        return pending;
+    }
+
+    internal static void CheckPublication(string identityPath)
+    {
+        if (Load(identityPath) is { Verified: true })
+            throw new WorkerStartupException("Registration publication is pending. Retry register with the original Server and operation before starting managed work.");
+    }
+}
+
 internal static partial class WorkerRegistrationFile
 {
+    internal static async Task WritePrivateAsync(string path, string content, CancellationToken cancellationToken)
+    {
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None,
+            Options = FileOptions.Asynchronous };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        await using var stream = new FileStream(path, options);
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(content.AsMemory(), cancellationToken);
+        await writer.FlushAsync(cancellationToken);
+        // The completed secret must reach disk before its name is published.
+        stream.Flush(flushToDisk: true);
+    }
+
+    internal static async Task ReplaceAsync(string path, string content, CancellationToken cancellationToken)
+    {
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await WritePrivateAsync(temp, content, cancellationToken);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
     internal static void Publish(string temporaryPath, string path)
     {
         if (OperatingSystem.IsWindows())
@@ -228,18 +311,15 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     {
         if (!settings.Enabled) return;
         var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token))
             throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
+            using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
-            request.Content = JsonContent.Create(new WorkerRegistrationContract(2, identity,
-                WorkerIdentity.DisplayName,
-                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-                capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken)));
+            request.Content = JsonContent.Create(await RegistrationAsync(identity, capacity, cancellationToken));
             using var response = await SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -247,6 +327,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}",
                     new HttpRequestException("Server registration request was rejected.", null, response.StatusCode));
             }
+            await ValidateAcknowledgementAsync(response, identity, enrollment: false, cancellationToken);
         }
         catch (WorkerStartupException) { throw; }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -256,56 +337,147 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         }
     }
 
-    public async Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, CancellationToken cancellationToken)
+    public Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, CancellationToken cancellationToken) =>
+        BootstrapAsync(settings, capacity, bootstrapToken, settings.RegistrationOperation, cancellationToken);
+
+    public async Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, string operation, CancellationToken cancellationToken)
     {
-        // Copy/paste and CRLF secret files can include surrounding whitespace.
-        // Keep internal characters intact: they must still fail authentication.
         bootstrapToken = bootstrapToken.Trim();
-        if (bootstrapToken.Length == 0 || bootstrapToken.Any(char.IsWhiteSpace))
+        if (bootstrapToken.Length is 0 or > 4096 || bootstrapToken.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
             throw new WorkerStartupException("Bootstrap token must be a single nonempty value. Copy only the token, without its description.");
         WorkerServerSettings.ValidateUrl(settings.Url);
-        var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
+        if (!WorkerEnrollmentProtocol.ValidOperation(operation) || capacity is < 1 or > 8)
+            throw new InvalidDataException("Invalid registration operation or capacity.");
+        var identityPath = Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath);
         var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath, cancellationToken);
-        var workerToken = await WorkerAuthentication.LoadOrCreateTokenAsync(identityPath, cancellationToken);
-        var urlPath = Path.GetFullPath(identityPath) + ".server";
-        await File.WriteAllTextAsync(urlPath, settings.Url.TrimEnd('/') + Environment.NewLine, cancellationToken);
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(urlPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        // A process-shared exclusive handle prevents two operators from replacing pending state.
+        var lockOptions = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
+        if (!OperatingSystem.IsWindows()) lockOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using var registrationLock = new FileStream(identityPath + ".registration-lock", lockOptions);
+        var endpoint = new Uri(settings.Url).AbsoluteUri.TrimEnd('/');
+        var urlPath = identityPath + ".server";
+        var activeEndpoint = File.Exists(urlPath) ? settings.EffectiveUrl : null;
+        if (activeEndpoint is not null) WorkerServerSettings.ValidateUrl(activeEndpoint);
+        var changingServer = activeEndpoint is not null && new Uri(activeEndpoint).AbsoluteUri.TrimEnd('/') != endpoint;
+        if (changingServer && operation != "associate")
+            throw new WorkerStartupException("Changing Server requires explicit register --operation associate authorization from the destination Server.");
+        var pendingPath = identityPath + ".pending";
+        var pending = WorkerPendingRegistration.Load(identityPath);
+        if (pending is not null && (pending.WorkerId != identity || pending.Endpoint != endpoint || pending.Operation != operation))
+            throw new WorkerStartupException("A different registration is pending. Reconcile it using its original Server and operation before starting another operation.");
+        if (pending is null && operation == "enroll" && File.Exists(WorkerAuthentication.TokenPath(identityPath)))
+        {
+            // An ordinary retry never rotates or consumes another enrollment authorization.
+            if (activeEndpoint is null)
+                throw new WorkerStartupException("Existing credential has no Server association. Use explicit recover or associate authorization; it cannot be sent to an unverified endpoint.");
+            var activeToken = await WorkerAuthentication.LoadTokenAsync(identityPath, cancellationToken);
+            await VerifyCredentialAsync(endpoint, identity, activeToken, capacity, cancellationToken);
+            await WorkerRegistrationFile.ReplaceAsync(urlPath, endpoint, cancellationToken);
+            return;
+        }
+        var retainedPending = pending is not null;
+        if (pending is null)
+        {
+            pending = new(identity, endpoint, operation, Convert.ToHexString(RandomNumberGenerator.GetBytes(32)), false);
+            await WorkerRegistrationFile.ReplaceAsync(pendingPath, JsonSerializer.Serialize(pending), cancellationToken);
+        }
         try
         {
-            var capabilities = await CapabilityDiscovery.GetCachedAsync(cancellationToken);
-            var registration = new WorkerRegistrationContract(2, identity,
-                WorkerIdentity.DisplayName,
-                ApplicationVersion.Display, $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity, capabilities, await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
-            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), "api/v1/workers/register"));
+            if (retainedPending)
+            {
+                // Probe the retained material first; a lost response must not consume a new authorization.
+                if (await TryVerifyCredentialAsync(endpoint, identity, pending.Token, capacity, cancellationToken))
+                {
+                    await PublishAsync(identityPath, pending, cancellationToken);
+                    return;
+                }
+                if (pending.Verified) throw new WorkerStartupException("Previously verified pending credential is no longer accepted. Preserve local state and reconcile with the Server operator.");
+            }
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint + "/api/v1/workers/register"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
-            request.Headers.Add("X-Codex-Worker-Token", workerToken);
-            request.Content = JsonContent.Create(registration);
+            request.Headers.Add("X-Codex-Worker-Token", pending.Token);
+            request.Headers.Add("X-Codex-Worker-Operation", operation);
+            request.Content = JsonContent.Create(await RegistrationAsync(identity, capacity, cancellationToken));
             using var response = await SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+                    await TryVerifyCredentialAsync(endpoint, identity, pending.Token, capacity, cancellationToken))
                 {
-                    // A prior request may have committed registration before its response was lost.
-                    try
-                    {
-                        await RegisterAsync(settings, capacity, cancellationToken);
-                        return;
-                    }
-                    catch (WorkerStartupException)
-                    {
-                        throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP 401 (Unauthorized). The bootstrap token is invalid, expired, or already used. Create a fresh registration token and retry. Local worker credentials were retained so a completed registration can be recovered safely.{SafeRequestContext(response, [bootstrapToken, workerToken])}");
-                    }
+                    await PublishAsync(identityPath, pending, cancellationToken);
+                    return;
                 }
-                var detail = await ReadSafeServerErrorAsync(response, cancellationToken, bootstrapToken, workerToken);
-                throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}");
+                throw new WorkerStartupException($"Codex Server bootstrap failed with HTTP {(int)response.StatusCode} ({response.StatusCode}). Authorization may be invalid, expired, used, or bound to another Worker/operation. Pending material was retained.{await ReadSafeServerErrorAsync(response, cancellationToken, bootstrapToken, pending.Token)}");
             }
+            await ValidateAcknowledgementAsync(response, identity, enrollment: true, cancellationToken);
+            await VerifyCredentialAsync(endpoint, identity, pending.Token, capacity, cancellationToken);
+            await PublishAsync(identityPath, pending, cancellationToken);
         }
-        catch (WorkerStartupException) { throw; }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or UriFormatException)
+        catch (HttpRequestException ex) when (ex.StatusCode is { } status && (int)status is >= 300 and < 400)
         {
-            throw new WorkerStartupException($"Codex Server bootstrap failed: {ex.Message}", ex);
+            throw new WorkerStartupException($"Codex Server returned HTTP {(int)status}. Redirects are disabled; configure the final Server endpoint. Pending material was retained.");
         }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException)
+        {
+            throw new WorkerStartupException("Server registration could not be verified. Pending identity and material were retained; retry the same Server and operation.");
+        }
+    }
+
+    private async Task<WorkerRegistrationContract> RegistrationAsync(string identity, int capacity, CancellationToken cancellationToken) =>
+        new(2, identity, WorkerIdentity.DisplayName, ApplicationVersion.Display,
+            $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
+            await CapabilityDiscovery.GetCachedAsync(cancellationToken), await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
+
+    private async Task<bool> TryVerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(endpoint + $"/api/v1/workers/{identity}"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Content = JsonContent.Create(await RegistrationAsync(identity, capacity, cancellationToken));
+        using var response = await SendAsync(request, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) return false;
+        if (!response.IsSuccessStatusCode) throw new WorkerStartupException($"Credential verification failed with HTTP {(int)response.StatusCode}.");
+        await ValidateAcknowledgementAsync(response, identity, enrollment: false, cancellationToken);
+        return true;
+    }
+
+    private async Task VerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
+    {
+        if (!await TryVerifyCredentialAsync(endpoint, identity, token, capacity, cancellationToken))
+            throw new WorkerStartupException("Server did not accept the retained Worker credential. Local registration material was preserved.");
+    }
+
+    private static async Task ValidateAcknowledgementAsync(HttpResponseMessage response, string identity, bool enrollment, CancellationToken cancellationToken)
+    {
+        const int maximumBytes = 64 * 1024;
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var bytes = new byte[maximumBytes + 1];
+        var count = 0;
+        while (count < bytes.Length)
+        {
+            var read = await stream.ReadAsync(bytes.AsMemory(count), cancellationToken);
+            if (read == 0) break;
+            count += read;
+        }
+        try
+        {
+            if (count > maximumBytes) throw new InvalidDataException("Registration acknowledgement exceeds the supported bound.");
+            var acknowledgement = JsonSerializer.Deserialize<WorkerEnrollmentAcknowledgement>(bytes.AsSpan(0, count), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (acknowledgement is null || acknowledgement.WorkerId != identity ||
+                (enrollment ? acknowledgement.ContractVersion != WorkerEnrollmentProtocol.AcknowledgementVersion : acknowledgement.ContractVersion is not (1 or 2)))
+                throw new InvalidDataException("Registration acknowledgement has an unsupported contract or mismatched Worker identity.");
+        }
+        catch (JsonException) { throw new InvalidDataException("Server returned an invalid registration acknowledgement. Pending material was retained."); }
+    }
+
+    private static async Task PublishAsync(string identityPath, WorkerPendingRegistration pending, CancellationToken cancellationToken)
+    {
+        // Journal verification before publishing either file. Runtime authentication refuses partial publication.
+        pending = pending with { Verified = true };
+        await WorkerRegistrationFile.ReplaceAsync(identityPath + ".pending", JsonSerializer.Serialize(pending), cancellationToken);
+        await WorkerRegistrationFile.ReplaceAsync(WorkerAuthentication.TokenPath(identityPath), pending.Token, cancellationToken);
+        await WorkerRegistrationFile.ReplaceAsync(identityPath + ".server", pending.Endpoint, cancellationToken);
+        File.Delete(identityPath + ".pending");
     }
 
     private static async Task<string> ReadSafeServerErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken,
@@ -359,10 +531,11 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         WorkerConfigurationSyncStatus? configurationSync = null)
     {
         if (!settings.Enabled) return;
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
         var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
             lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
@@ -382,11 +555,12 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             throw new ArgumentOutOfRangeException(nameof(availableCapacity), "Assignment capacity must be between zero and eight.");
         if (!workerEnabled || availableCapacity == 0 || projectCapacities.Count == 0 || projectCapacities.All(p => p.Value == 0))
             return new(false, null);
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
         var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Post,
-            new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
+            new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(new WorkerAssignmentRequestContract(identity, workerEnabled, availableCapacity, projectCapacities, integrationRecoveries));
         using var response = await SendAsync(request, cancellationToken);
@@ -482,11 +656,12 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         CancellationToken cancellationToken)
     {
         if (!settings.Enabled) throw new InvalidOperationException("Credential delivery requires managed Server mode.");
+        var connection = WorkerAuthentication.GetConnection(settings);
         var token = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Credential delivery requires CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN.");
         var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Get,
-            new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
+            new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
         request.Headers.Add("X-Worker-Credential-Token", token);
         using var response = await SendAsync(request, cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
@@ -509,9 +684,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
 
     private static HttpRequestMessage CreateAuthorizedRequest(HttpMethod method, WorkerServerSettings settings, string path)
     {
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
-        var request = new HttpRequestMessage(method, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), path));
+        var request = new HttpRequestMessage(method, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
     }
@@ -520,7 +696,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         string? stage, long generation, CancellationToken cancellationToken)
     {
         if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available before reporting execution state.");
         var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         var final = state is "Completed" or "Failed";
@@ -530,7 +707,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             state == "Completed" ? "passed" : null,
             state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict",
             Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation);
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),
             $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(report);
@@ -543,9 +720,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return null;
-        var token = WorkerAuthentication.GetToken(settings);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        var token = connection.Token;
         if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available before renewing an execution lease.");
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),
             $"api/v1/workers/{lease.WorkerId}/executions/{lease.ExecutionId}/lease/renew"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(new ExecutionLeaseRenewalContract(lease.WorkerId, lease.Generation));

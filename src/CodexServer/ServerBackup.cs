@@ -166,7 +166,7 @@ public sealed class ServerBackup(string? databasePath = null)
             throw new InvalidDataException("Backup database is missing required Worker authentication metadata tables.");
 
         await RequireColumnsAsync(connection, "worker_auth_tokens", ["worker_id", "token_hash", "created_at_utc", "revoked_at_utc"], cancellationToken);
-        await RequireColumnsAsync(connection, "worker_bootstrap_tokens", ["token_hash", "expires_at_utc", "consumed_at_utc"], cancellationToken);
+        await RequireColumnsAsync(connection, "worker_bootstrap_tokens", ["token_hash", "expires_at_utc", "consumed_at_utc", "worker_id", "operation"], cancellationToken);
         await RequireColumnsAsync(connection, "credentials", ["id", "provider", "credential_type", "secret_reference", "status", "created_at_utc", "updated_at_utc", "assigned_worker_id", "revoked_at_utc", "version", "nonce", "ciphertext", "tag"], cancellationToken);
         await RequireColumnsAsync(connection, "worker_credential_auth", ["worker_id", "token_hash", "revoked_at_utc"], cancellationToken);
 

@@ -19,6 +19,15 @@ public sealed class ServerTokenEnvironmentCollection { }
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
+    private static async Task<bool> EnrollWorkerAsync(IRegistryStore store, string authorization, string workerId, string token)
+    {
+        var existing = await store.GetWorkerAsync(workerId);
+        var registration = existing is null ? new WorkerRegistrationRequest(2, workerId, "test worker", "1.0", "test", 1, []) :
+            new WorkerRegistrationRequest(existing.ContractVersion, workerId, existing.DisplayName, existing.WorkerVersion,
+                existing.Platform, existing.Capacity, existing.Capabilities, existing.CapabilityInventory);
+        return await store.BootstrapWorkerAsync(authorization, registration, token, operation: existing is null ? "enroll" : "rotate");
+    }
+
     [Fact]
     public async Task WorkerRoutesRequireExactDurableIdentityAndRetainOwnershipChecks()
     {
@@ -264,8 +273,8 @@ public sealed class CodexServerTests
             var planHistory = await client.GetFromJsonAsync<ProvisioningPlan[]>("/api/v1/provisioning?limit=1");
             Assert.Single(Assert.IsType<ProvisioningPlan[]>(planHistory));
             Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/provisioning?offset=10001")).StatusCode);
-            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-            Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
+            var bootstrap = await registry.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+            Assert.True(await EnrollWorkerAsync(registry, bootstrap, workerId, workerToken));
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/api/v1/provisioning/commands", request with { NodeId = workerId })).StatusCode);
             await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0", "running", 0, 1, [], []));
             var queuedResponse = await client.PostAsJsonAsync("/api/v1/provisioning/commands",
@@ -438,8 +447,8 @@ public sealed class CodexServerTests
             const string workerToken = "worker-api-token-with-sufficient-entropy";
             var registry = app.Services.GetRequiredService<IRegistryStore>();
             await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(2, workerId, "admin worker", "1.0", "test", 1, []));
-            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-            Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
+            var bootstrap = await registry.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+            Assert.True(await EnrollWorkerAsync(registry, bootstrap, workerId, workerToken));
             var credentials = app.Services.GetRequiredService<ICredentialStore>();
             const string deliveryToken = "worker-delivery-token-with-sufficient-entropy";
             await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
@@ -594,17 +603,17 @@ public sealed class CodexServerTests
         await store.InitializeAsync();
         var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
         var workerId = Guid.NewGuid().ToString("N");
-        Assert.False(await store.RedeemWorkerBootstrapTokenAsync("invalid", workerId, "worker-secret"));
+        Assert.False(await EnrollWorkerAsync(store, "invalid", workerId, "worker-secret-with-sufficient-entropy"));
         clock.Advance(TimeSpan.FromMinutes(16));
-        Assert.False(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, "worker-secret"));
+        Assert.False(await EnrollWorkerAsync(store, bootstrap, workerId, "worker-secret-with-sufficient-entropy"));
 
         var validBootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
-        Assert.True(await store.RedeemWorkerBootstrapTokenAsync(validBootstrap, workerId, "worker-secret"));
-        Assert.False(await store.RedeemWorkerBootstrapTokenAsync(validBootstrap, workerId, "other-secret"));
-        Assert.True(await store.IsWorkerTokenValidAsync(workerId, "worker-secret"));
-        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "other-secret"));
+        Assert.True(await EnrollWorkerAsync(store, validBootstrap, workerId, "worker-secret-with-sufficient-entropy"));
+        Assert.False(await EnrollWorkerAsync(store, validBootstrap, workerId, "other-secret-with-sufficient-entropy"));
+        Assert.True(await store.IsWorkerTokenValidAsync(workerId, "worker-secret-with-sufficient-entropy"));
+        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "other-secret-with-sufficient-entropy"));
         Assert.True(await store.RevokeWorkerTokenAsync(workerId));
-        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "worker-secret"));
+        Assert.False(await store.IsWorkerTokenValidAsync(workerId, "worker-secret-with-sufficient-entropy"));
     }
 
     [Fact]
@@ -639,8 +648,8 @@ public sealed class CodexServerTests
         var typedCommands = new ProvisioningCommandStore(database);
         await typedCommands.InitializeAsync();
         var typedCommand = await typedCommands.CreateAsync(new(workerId, "git", ProvisioningCommandAction.Detect));
-        var workerBootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-        Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(workerBootstrap, workerId, "backup-worker-api-token"));
+        var workerBootstrap = await registry.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+        Assert.True(await EnrollWorkerAsync(registry, workerBootstrap, workerId, "backup-worker-api-token-with-sufficient-entropy"));
         await registry.SetWorkerSchedulingPolicyAsync(workerId, WorkerSchedulingPolicy.Draining);
         var credential = await credentials.CreateAsync(new CreateCredentialRequest("github", "api", new CredentialSecretInput(secret)));
         await credentials.AssignAsync(credential.Id, workerId);
@@ -823,7 +832,7 @@ public sealed class CodexServerTests
             Assert.Single(await store.GetWorkersAsync());
             Assert.True(await store.IsWorkerTokenValidAsync(identity, WorkerAuthentication.GetToken(settings)));
             await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
-            Assert.False(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, identity, WorkerAuthentication.GetToken(settings)));
+            Assert.False(await EnrollWorkerAsync(store, bootstrap, identity, WorkerAuthentication.GetToken(settings)));
             using var management = new HttpClient { BaseAddress = new Uri(url) };
             management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "bootstrap-management-secret");
             using var workers = JsonDocument.Parse(await management.GetStringAsync("/api/v1/workers"));
@@ -1020,11 +1029,9 @@ public sealed class CodexServerTests
         {
             Enabled = true, Url = url, IdentityFile = Path.Combine(temporary.Path, "worker-id")
         };
-        var failure = await Assert.ThrowsAsync<CodexWorker.WorkerStartupException>(() =>
+        var failure = await Assert.ThrowsAsync<InvalidDataException>(() =>
             new CodexWorker.WorkerRegistrationClient(client).BootstrapAsync(settings, 9, "private-bootstrap-token", CancellationToken.None));
-        Assert.Contains("HTTP 400", failure.Message);
-        Assert.Contains("capacity (1..8)", failure.Message);
-        Assert.Contains("Request ID:", failure.Message);
+        Assert.Contains("capacity", failure.Message);
         Assert.DoesNotContain("private-bootstrap-token", failure.Message, StringComparison.Ordinal);
 
         var originalOutput = Console.Out;
@@ -1070,7 +1077,7 @@ public sealed class CodexServerTests
             var settings = new WorkerServerSettings { Enabled = true, Url = url, IdentityFile = Path.Combine(temporary.Path, "worker-id") };
             var failure = await Assert.ThrowsAsync<WorkerStartupException>(() =>
                 new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, "invalid-bootstrap-token", CancellationToken.None));
-            Assert.Contains("invalid, expired, or already used", failure.Message, StringComparison.Ordinal);
+            Assert.Contains("invalid, expired, used", failure.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("invalid-bootstrap-token", failure.Message, StringComparison.Ordinal);
             Assert.Empty(await app.Services.GetRequiredService<IRegistryStore>().GetWorkersAsync());
             var freshBootstrap = await app.Services.GetRequiredService<IRegistryStore>()
@@ -1556,10 +1563,10 @@ public sealed class CodexServerTests
             await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "server.db")));
             var store = app.Services.GetRequiredService<IRegistryStore>();
             var workerId = Guid.NewGuid().ToString("N");
-            const string workerToken = "project-snapshot-worker-token";
+            const string workerToken = "project-snapshot-worker-token-with-sufficient-entropy";
             await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "snapshot worker", "1.0", "test", 1, []));
-            var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-            Assert.True(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, workerToken));
+            var bootstrap = await store.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+            Assert.True(await EnrollWorkerAsync(store, bootstrap, workerId, workerToken));
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             var definition = new CentralProjectDefinition("Widget", "team/widget", "main", "Portable definition", [new("runtime", "node", "20.1")]);
@@ -2045,8 +2052,8 @@ public sealed class CodexServerTests
         var store = new SqliteRegistryStore(database);
         await store.InitializeAsync();
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "auth worker", "1.0", "test", 1, []));
-        var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-        Assert.True(await store.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, new string('w', 40)));
+        var bootstrap = await store.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+        Assert.True(await EnrollWorkerAsync(store, bootstrap, workerId, new string('w', 40)));
         Assert.True(await store.IsWorkerTokenValidAsync(workerId, new string('w', 40)));
 
         var credentialStore = new SqliteCredentialStore(database);
@@ -2078,8 +2085,8 @@ public sealed class CodexServerTests
         var registry = new SqliteRegistryStore(database);
         await registry.InitializeAsync();
         await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "cli worker", "1.0", "test", 1, []));
-        var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
-        Assert.True(await registry.RedeemWorkerBootstrapTokenAsync(bootstrap, workerId, "cli-worker-api-token"));
+        var bootstrap = await registry.CreateWorkerAuthorizationAsync(workerId, "rotate", TimeSpan.FromMinutes(1));
+        Assert.True(await EnrollWorkerAsync(registry, bootstrap, workerId, "cli-worker-api-token-with-sufficient-entropy"));
         var credentials = new SqliteCredentialStore(database);
         await credentials.InitializeAsync();
         await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput("cli-worker-delivery-token-with-sufficient-entropy"));
@@ -2119,7 +2126,7 @@ public sealed class CodexServerTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
             await command.ExecuteNonQueryAsync();
         }
 

@@ -36,6 +36,7 @@ set -euo pipefail
 [[ $1 != --help ]] || { [[ ${APPHOST_FAIL:-false} == false ]]; exit; }
 [[ $1 == register ]]
 printf 'register\n' >> "$LIFECYCLE_ROOT/events"
+printf '%s\n' "$@" > "$LIFECYCLE_ROOT/registration-arguments"
 while (($#)); do
   if [[ $1 == --identity-file ]]; then identity=$2; shift; fi
   shift
@@ -224,9 +225,8 @@ grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
 grep -q 'do not imply execution readiness' "$LIFECYCLE_ROOT/output"
 grep -q 'not installed or configured automatically' "$LIFECYCLE_ROOT/output"
 [[ -f $LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id.credential ]]
-# Recovery after successful enrollment: the starter URL was left in YAML,
-# while runtime uses the persisted identity association. Correct it without a
-# second registration token and retain both identity and durable credentials.
+# Changing YAML alone must preserve the enrolled association and credentials.
+# Association publication belongs to verified Worker registration.
 identity=$(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id")
 credential=$(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id.credential")
 sed -i 's|url: "https://server.example"|url: https://codex-server.example/|' \
@@ -241,12 +241,19 @@ bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 \
 grep -Fxq '  url: "http://127.0.0.1:5090"' "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml" || {
   cat "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"; exit 1;
 }
-grep -Fxq 'http://127.0.0.1:5090' \
+grep -Fxq 'https://codex-server.example/' \
   "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id.server"
 [[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id") == "$identity" ]]
 [[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id.credential") == "$credential" ]]
 [[ $(grep -c '^register$' "$LIFECYCLE_ROOT/events") == "$register_count" ]]
 grep -q 'Configured Codex Server URL' "$LIFECYCLE_ROOT/output"
+# Explicit operation forwarding leaves authorization/acknowledgement to the CLI.
+CODEX_WORKER_BOOTSTRAP_TOKEN=test-token bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 \
+  --server https://destination.example --register --operation associate > "$LIFECYCLE_ROOT/output" 2>&1 || {
+  cat "$LIFECYCLE_ROOT/output"; exit 1;
+}
+grep -Fxq -- '--operation' "$LIFECYCLE_ROOT/registration-arguments"
+grep -Fxq 'associate' "$LIFECYCLE_ROOT/registration-arguments"
 for initial_state in clean broken; do
   prepare_root "$initial_state"
   if [[ $initial_state == broken ]]; then

@@ -7,6 +7,27 @@ using CodexWorker;
 public sealed class WorkerRegistrationCliTests
 {
     [Theory]
+    [InlineData("enroll")]
+    [InlineData("rotate")]
+    [InlineData("recover")]
+    [InlineData("associate")]
+    public async Task ExplicitOperationReachesRegistrationSeam(string operation)
+    {
+        using var writer = new StringWriter();
+        var invoked = false;
+        var cli = new WorkerRegistrationCli((settings, capacity, token, cancellationToken) =>
+        {
+            Assert.Equal(operation, settings.RegistrationOperation);
+            invoked = true;
+            return Task.CompletedTask;
+        }, new WorkerConsole(writer, interactive: false, errorWriter: writer), new StringReader("protected-token"), writer);
+        Assert.Equal(ProcessExitCodes.Success, await cli.ExecuteAsync(new("register", null,
+            ["--server", "https://server.example", "--operation", operation, "--token-stdin"])));
+        Assert.True(invoked);
+        Assert.DoesNotContain("protected-token", writer.ToString());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ConfigurationDefaultsAndExplicitOverridesReachEnrollmentWithoutLeakingToken(bool overrides)

@@ -160,23 +160,23 @@ internal static class WorkerTokenCommand
 {
     public static async Task RunAsync(string[] args)
     {
-        if (args.Length < 2 || args[1] is not ("create" or "revoke" or "revoke-worker") ||
+        if (args.Length < 2 || args[1] is not ("create" or "authorize" or "revoke" or "revoke-worker") ||
             args[1] == "create" && args.Length is not (2 or 3) ||
+            args[1] == "authorize" && args.Length is not (4 or 5) ||
             (args[1] is "revoke" or "revoke-worker") && args.Length is not (3 or 4))
-            throw new ArgumentException("Usage: codex-server worker-token create [database-path] | revoke <registration-token> [database-path] | revoke-worker <worker-id> [database-path]");
+            throw new ArgumentException("Usage: codex-server worker-token create [database-path] | authorize <worker-id> <rotate|recover|associate> [database-path] | revoke <registration-token> [database-path] | revoke-worker <worker-id> [database-path]");
         var configuration = new ServerConfiguration();
         var section = ServerApplication.CreateBuilder([]).Configuration.GetSection("Server");
         section.Bind(configuration);
-        var explicitDatabase = args[1] == "create" ? args.Length == 3 : args.Length == 4;
+        var databaseIndex = args[1] switch { "create" => 2, "authorize" => 4, _ => 3 };
+        var explicitDatabase = args.Length > databaseIndex;
         // The installed helper runs as the service account with the service's environment.
         // Its opt-in preserves legacy service-home defaults without overriding appsettings.
         var serviceContext = Environment.GetEnvironmentVariable("CODEX_SERVER_OPERATOR_SERVICE_CONTEXT") == "1";
         if (!explicitDatabase && !serviceContext && section["DataDirectory"] is null && section["DatabasePath"] is null)
             throw new InvalidDataException("Token commands require explicit service state configuration.");
         configuration.Validate();
-        var database = args[1] == "create"
-            ? args.Length == 3 ? Path.GetFullPath(args[2]) : configuration.ResolveDatabasePath()
-            : args.Length == 4 ? Path.GetFullPath(args[3]) : configuration.ResolveDatabasePath();
+        var database = explicitDatabase ? Path.GetFullPath(args[databaseIndex]) : configuration.ResolveDatabasePath();
         var store = new SqliteRegistryStore(database);
         await store.InitializeAsync();
         if (args[1] == "create")
@@ -185,9 +185,15 @@ internal static class WorkerTokenCommand
             Console.Error.WriteLine($"Worker registration token (valid for 15 minutes; use once). Database: {database}");
             Console.WriteLine(token);
         }
+        else if (args[1] == "authorize")
+        {
+            var token = await store.CreateWorkerAuthorizationAsync(args[2], args[3], TimeSpan.FromMinutes(15));
+            Console.Error.WriteLine("Worker operation authorization (valid for 15 minutes; use once for the specified Worker and operation). Protect stdout.");
+            Console.WriteLine(token);
+        }
         else if (args[1] == "revoke" && await store.RevokeWorkerBootstrapTokenAsync(args[2])) Console.WriteLine("Worker registration token revoked.");
         else if (args[1] == "revoke-worker" && await store.RevokeWorkerTokenAsync(args[2]))
-            Console.WriteLine("Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery. The shared Server registration-token fallback remains server-wide if configured.");
+            Console.WriteLine("Per-Worker API token revoked; calls using it are denied, and active leases may expire into recovery.");
         else Console.WriteLine("Credential was not active.");
     }
 }

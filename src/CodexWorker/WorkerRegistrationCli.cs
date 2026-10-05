@@ -14,6 +14,7 @@ public sealed class WorkerRegistrationCli(
             string? server = null, identityFile = null;
             int? requestedCapacity = null;
             var json = false;
+            var operation = "enroll";
             var readTokenFromStandardInput = false;
             var options = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 0; index < args.Count;)
@@ -30,6 +31,7 @@ public sealed class WorkerRegistrationCli(
                         readTokenFromStandardInput = true;
                         index++;
                         continue;
+                    case "--operation":
                     case "--server":
                     case "--token":
                     case "--identity-file":
@@ -37,7 +39,8 @@ public sealed class WorkerRegistrationCli(
                         if (index + 1 >= args.Count || args[index + 1].StartsWith("-", StringComparison.Ordinal) ||
                             string.IsNullOrWhiteSpace(args[index + 1]))
                             throw new ArgumentException($"Register option '{args[index]}' requires a value.");
-                        if (args[index] == "--server") server = args[index + 1];
+                        if (args[index] == "--operation") operation = args[index + 1];
+                        else if (args[index] == "--server") server = args[index + 1];
                         else if (args[index] == "--token") token = args[index + 1];
                         else if (args[index] == "--identity-file") identityFile = args[index + 1];
                         else
@@ -71,6 +74,8 @@ public sealed class WorkerRegistrationCli(
             if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Register requires --token or a nonempty token from --token-stdin.");
             var settings = new WorkerServerSettings { Enabled = true, Url = uri.ToString().TrimEnd('/'), IdentityFile = identityFile };
             settings.Validate();
+            if (!CodexProvisioning.WorkerEnrollmentProtocol.ValidOperation(operation)) throw new ArgumentException("Register operation must be enroll, rotate, recover, or associate.");
+            settings.RegistrationOperation = operation;
             await bootstrap(settings, capacity, token, shutdown.Token);
             if (json)
                 writer.WriteLine(System.Text.Json.JsonSerializer.Serialize(new

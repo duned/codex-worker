@@ -77,7 +77,7 @@ On the Server, create a single-use token (valid for 15 minutes):
 sudo codex-server worker-token create
 ```
 
-Keep the token private for the prompt in C. To open the Server dashboard, retrieve its management token with `sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env` and enter it in the dashboard token prompt.
+This token enrolls a previously unknown Worker only. Existing identities require `worker-token authorize WORKER_ID rotate|recover|associate` and the matching Worker `register --operation`; see [rotation, recovery and Server migration](docs/worker-local-administration.md#enrollment-rotation-and-server-migration). Keep the token private for the prompt in C. To open the Server dashboard, retrieve its management token with `sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env` and enter it in the dashboard token prompt.
 
 Use `sudo codex-server worker show <worker-id>` to inspect an enrolled Worker. Operators can run `worker enable`, `worker drain`, and `worker disable` with the same Worker ID. **Enabled** allows new assignments. **Draining** and **Disabled** stop new assignments; already assigned or running work keeps its current lease and may report completion. Drain remains visible as draining until the active assignment count reaches zero, then the dashboard and CLI show it as drained. Re-enable scheduling explicitly afterward. These controls do not change Worker heartbeat, readiness, capabilities, or local lifecycle.
 

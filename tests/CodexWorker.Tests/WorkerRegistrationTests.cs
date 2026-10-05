@@ -21,7 +21,7 @@ public sealed class WorkerRegistrationTests
         {
             if (hasIdentity) await WorkerIdentity.LoadOrCreateAsync(path);
             var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = path };
-            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            var handler = new CaptureHandler(HttpStatusCode.OK);
             using var client = new HttpClient(handler);
             Assert.Empty(WorkerAuthentication.GetToken(settings));
             var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).RegisterAsync(settings, 1, CancellationToken.None));
@@ -212,7 +212,7 @@ public sealed class WorkerRegistrationTests
         Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "bootstrap-test-token");
         try
         {
-            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            var handler = new CaptureHandler(HttpStatusCode.OK);
             using var client = new HttpClient(handler);
             var settings = new WorkerServerSettings
             {
@@ -242,7 +242,7 @@ public sealed class WorkerRegistrationTests
     public async Task BootstrapPersistsDurableCredentialAndServerUrlWithoutReturningEitherInPayload()
     {
         using var temporary = new TemporaryDirectory();
-        var handler = new CaptureHandler(HttpStatusCode.OK, "{\"workerId\":\"worker\"}");
+        var handler = new CaptureHandler(HttpStatusCode.OK);
         using var client = new HttpClient(handler);
         var identityPath = Path.Combine(temporary.Path, "worker-id");
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
@@ -251,11 +251,11 @@ public sealed class WorkerRegistrationTests
         var durableToken = WorkerAuthentication.GetToken(settings);
         Assert.NotEqual("one-time-bootstrap-secret", durableToken);
         Assert.Equal("https://server.example", settings.EffectiveUrl);
-        Assert.Equal("Bearer one-time-bootstrap-secret", handler.Authorization);
+        Assert.Equal("Bearer " + durableToken, handler.Authorization);
         Assert.NotNull(handler.WorkerAuthorization);
         Assert.DoesNotContain(durableToken, handler.Body, StringComparison.Ordinal);
         Assert.DoesNotContain("one-time-bootstrap-secret", handler.Body, StringComparison.Ordinal);
-        Assert.Equal($"https://server.example/api/v1/workers/register", handler.Uri);
+        Assert.Equal($"https://server.example/api/v1/workers/{await WorkerIdentity.LoadAsync(identityPath)}", handler.Uri);
         Assert.Equal(durableToken, WorkerAuthentication.GetToken(settings));
     }
 
@@ -267,7 +267,7 @@ public sealed class WorkerRegistrationTests
             Task.FromException<(int, string)>(new FileNotFoundException()));
         var capabilities = new WorkerCapabilityDiscovery((executable, _, _, _, _) =>
             Task.FromException<ProcessResult>(new InvalidOperationException($"Executable '{executable}' is not installed/resolvable in the effective service PATH.")));
-        var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+        var handler = new CaptureHandler(HttpStatusCode.OK);
         using var client = new HttpClient(handler);
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
@@ -292,7 +292,7 @@ public sealed class WorkerRegistrationTests
         try
         {
             Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", Path.Combine(temporary.Path, "absent-codex"));
-            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            var handler = new CaptureHandler(HttpStatusCode.OK);
             using var client = new HttpClient(handler);
             var identityPath = Path.Combine(temporary.Path, "worker-id");
             var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = identityPath };
@@ -426,7 +426,7 @@ public sealed class WorkerRegistrationTests
             Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/request", requestHandler.Uri);
             Assert.Equal("Bearer " + token, requestHandler.Authorization);
 
-            var reportHandler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            var reportHandler = new CaptureHandler(HttpStatusCode.OK);
             using var reportClient = new HttpClient(reportHandler);
             await new WorkerRegistrationClient(reportClient, TestCapabilityDiscovery.Create()).ReportProvisioningPlanAsync(settings, planId,
                 new ProvisioningWorkerReportContract(workerId, "Running", "git"), CancellationToken.None);
@@ -555,9 +555,16 @@ public sealed class WorkerRegistrationTests
             Method = request.Method.Method;
             Uri = request.RequestUri?.ToString();
             Authorization = request.Headers.Authorization?.ToString();
-            WorkerAuthorization = request.Headers.TryGetValues("X-Codex-Worker-Token", out var values) ? values.Single() : null;
+            if (request.Headers.TryGetValues("X-Codex-Worker-Token", out var values)) WorkerAuthorization = values.Single();
             Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            var response = new HttpResponseMessage(_statusCode) { Content = new StringContent(_responseBody ?? "") };
+            var responseBody = _responseBody;
+            if (responseBody is null && _statusCode == HttpStatusCode.OK && Body is not null)
+            {
+                using var payload = JsonDocument.Parse(Body);
+                responseBody = JsonSerializer.Serialize(new { contractVersion = request.Method == HttpMethod.Post ? 1 : 2,
+                    workerId = payload.RootElement.GetProperty("workerId").GetString() });
+            }
+            var response = new HttpResponseMessage(_statusCode) { Content = new StringContent(responseBody ?? "") };
             response.Headers.Add("X-Codex-Request-Id", "request-123");
             return response;
         }
@@ -568,12 +575,16 @@ public sealed class WorkerRegistrationTests
         public int RequestCount { get; private set; }
         public string? LastMethod { get; private set; }
         public string? LastAuthorization { get; private set; }
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
             LastMethod = request.Method.Method;
             LastAuthorization = request.Headers.Authorization?.ToString();
-            return Task.FromResult(new HttpResponseMessage(RequestCount == 1 ? HttpStatusCode.Unauthorized : HttpStatusCode.OK));
+            var body = await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadAsStringAsync(cancellationToken);
+            using var payload = JsonDocument.Parse(body);
+            return new HttpResponseMessage(RequestCount == 1 ? HttpStatusCode.Unauthorized : HttpStatusCode.OK)
+            { Content = new StringContent(JsonSerializer.Serialize(new { contractVersion = 2,
+                workerId = payload.RootElement.GetProperty("workerId").GetString() })) };
         }
     }
 

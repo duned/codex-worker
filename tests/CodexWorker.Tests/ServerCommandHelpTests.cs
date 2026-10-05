@@ -12,7 +12,7 @@ public sealed class ServerCommandHelpTests
         "projects", "projects list", "projects show", "projects create", "projects update", "projects enable", "projects disable", "projects delete",
         "executions", "executions list", "executions show", "executions cancel", "executions reconcile",
         "worker", "worker list", "worker show", "worker enable", "worker drain", "worker disable", "worker revoke-token", "worker revoke-delivery-token",
-        "worker-token", "worker-token create", "worker-token revoke", "worker-token revoke-worker",
+        "worker-token", "worker-token create", "worker-token authorize", "worker-token revoke", "worker-token revoke-worker",
         "backup", "backup export", "backup validate", "backup restore",
         "credential", "credential list", "credential show", "credential create", "credential assign", "credential replace", "credential revoke",
         "provision", "provision list", "provision show", "provision create", "provision cancel", "provision reconcile",

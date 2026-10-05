@@ -387,6 +387,7 @@ public sealed class ManagementApiSettings
 }
 public sealed class WorkerServerSettings
 {
+    internal string RegistrationOperation { get; set; } = "enroll";
     public bool Enabled { get; set; }
     public string Url { get; set; } = "";
     public int HeartbeatIntervalSeconds { get; set; } = 20;
@@ -398,6 +399,11 @@ public sealed class WorkerServerSettings
         {
             var identityPath = IdentityFile ?? WorkerIdentity.DefaultPath;
             var path = Path.GetFullPath(identityPath) + ".server";
+            if (File.Exists(path))
+            {
+                if (new FileInfo(path).Length > 2050) throw new InvalidDataException("Persisted Server association exceeds supported bounds.");
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
             var url = File.Exists(path) ? File.ReadAllText(path).Trim() : Url;
             ValidateUrl(url);
             return url;

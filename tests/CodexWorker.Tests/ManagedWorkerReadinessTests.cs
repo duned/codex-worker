@@ -638,7 +638,18 @@ public sealed class ManagedWorkerReadinessTests
 
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = await send(request, cancellationToken);
+            if (request.Method == HttpMethod.Put && response.IsSuccessStatusCode)
+            {
+                var registration = await (request.Content ?? throw new InvalidDataException("Missing registration"))
+                    .ReadFromJsonAsync<WorkerRegistrationContract>(cancellationToken);
+                Assert.NotNull(registration);
+                response.Content = JsonContent.Create(new { contractVersion = registration.ContractVersion, workerId = registration.WorkerId });
+            }
+            return response;
+        }
     }
 
     private sealed class TemporaryDirectory : IDisposable

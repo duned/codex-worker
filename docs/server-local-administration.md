@@ -24,6 +24,8 @@ codex-server worker drain <worker-id>
 codex-server worker disable <worker-id>
 codex-server worker revoke-token <worker-id>
 codex-server worker revoke-delivery-token <worker-id>
+codex-server worker-token create
+codex-server worker-token authorize <worker-id> <rotate|recover|associate>
 codex-server projects list
 codex-server projects show <project-id> --json
 codex-server projects create <definition.json>
@@ -173,12 +175,12 @@ Backup archives retain Worker and project definitions/revisions, execution metad
 
 Deployments using `CODEX_SERVER_REGISTRATION_TOKEN` must explicitly enroll each Worker before managed scheduling can resume:
 
-1. Stop the Worker service and retain its existing identity file and recovery resources. On the Server, create a short-lived one-use token with `sudo codex-server worker-token create`. Supply its value through a protected secret source rather than command arguments or shell history.
-2. Run `codex-worker register --server https://server.example --token-stdin --identity-file /path/to/existing/worker-id` as the Worker service account, with that token on standard input. Use the existing identity path to retain the registered Worker ID. For a new node, use the intended service identity path. Bootstrap stages a separate owner-only durable credential and Server association beside that file; do not copy a shared token into the `.token` file.
+1. Stop the Worker service and retain its existing identity file and recovery resources. Inspect `sudo codex-server worker list`. If the ID is already visible, create an explicit short-lived authorization with `sudo codex-server worker-token authorize WORKER_ID recover`; a general bootstrap cannot replace an existing identity. For a previously unknown/new node, use `sudo codex-server worker-token create`. Supply the authorization through a protected secret source rather than command arguments or shell history.
+2. Run `codex-worker register --server https://server.example --operation recover --token-stdin --identity-file /path/to/existing/worker-id` as the Worker service account for a known ID; use the default `enroll` operation for an unknown/new node. Retain the intended identity path. Registration stages fresh owner-only material in `.pending`, then publishes `.token` and `.server` after acknowledgement and authentication; do not copy a shared token into these files.
 3. Verify the same Worker ID with `sudo codex-server worker show <worker-id>`: API credential status must be `active`. Run `codex-worker status --config /path/to/worker.yml` as the service account and verify persisted identity and credential state. Start the service and verify successful registration updates, heartbeats, and configuration synchronization; local file presence alone does not prove Server acceptance.
 4. Remove `CODEX_SERVER_REGISTRATION_TOKEN` from both Server and Worker service environments and restart the affected services. It grants no API authority after this change.
 
-Existing enrolled Workers with active durable per-Worker credentials need no re-enrollment. Missing, invalid, unreadable, or revoked credentials stop managed requests; the Worker does not automatically enroll, replace its identity, restore revoked authorization, or schedule from a cached snapshot during an outage. Restore known valid protected local state when appropriate and involve the Server operator for revoked credentials. Explicit bootstrap must not be used to bypass revocation. Standalone mode remains available only when explicitly configured.
+Existing enrolled Workers with active durable per-Worker credentials need no re-enrollment. Missing, invalid, unreadable, or revoked credentials stop managed requests; the Worker does not automatically enroll, replace its identity, restore revoked authorization, or schedule from a cached snapshot during an outage. Restore known valid protected local state when appropriate and involve the Server operator for revoked credentials. Generic bootstrap cannot bypass revocation. Explicit operator-authorized recovery can replace revoked authentication. Follow the [enrollment, rotation and Server migration procedure](worker-local-administration.md#enrollment-rotation-and-server-migration), retaining any pending journal through retries. Standalone mode remains available only when explicitly configured.
 
 ## Configuration resolution
 
