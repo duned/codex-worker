@@ -189,9 +189,41 @@ does not affect classification. Top-level parents and parentless leaves both
 appear. Pull requests are excluded. Titles, labels, dependencies and milestones
 never determine hierarchy, and the command performs no writes.
 
-Repository pages are always fetched afresh (100 entries per page, counting pull
-requests); native parent reads reuse the existing Issue cache and command scope.
-`--refresh` bypasses cached parents while retaining stable identity checks.
+Repository listings are first-class reads in the existing persistent cache, scoped
+by repository and state. Listing membership is fresh for 30 seconds in every state,
+so newly closed Issues can be discovered promptly. A cold scan fetches 100 entries
+per page (including pull requests), saves Issue metadata and stable identities from
+those pages, and reads
+each Issue's native parent. Up to four parent reads run concurrently; failures and
+cancellation join those reads and fail the command without returning partial roots.
+No GraphQL bulk API or additional cache store is used.
+
+An expired listing with a full snapshot less than seven days old requests
+only Issues updated since the preceding scan. The timestamp overlaps by one second
+and is captured before the scan to avoid missing updates during pagination. Unchanged
+open Issues are individually rechecked using the metadata cache to detect closures,
+disappearance and changes omitted by a state-filtered update listing. Closed metadata
+and parents retain their seven-day lifetime; closed Issues removed from a filtered
+listing or made invisible may remain cached until full reconciliation. Use `--refresh`
+for an authoritative scan. Full repository reconciliation runs at
+least every seven days. `--refresh` forces full listing and parent reads while retaining
+stable identity checks and command-scope deduplication. Relationship mutations invalidate
+repository listings along with other cached reads. Atomic cache files and generation
+invalidation keep interrupted or concurrent commands from publishing partial listings
+or restoring data invalidated by a mutation. Failed required refreshes and exhausted
+bounds fail rather than silently returning an incomplete result.
+
+The previous API pattern was **P + N** requests: P repository pages plus N uncached
+native parent reads, sequentially, with no durable listing reuse. The deterministic
+201-entry mixed-state test (200 Issues, one PR, two open Issues) records **203** cold
+requests, **0** on an immediate warm scan, and **5** after open freshness expires
+(one update page, two open metadata reads and two open parent reads). A closed-only
+scan needs only an update-listing request after 30 seconds, with no parent/metadata
+requests for unchanged closed Issues within seven days. Normal incremental network cost
+scales with updated Issues and open Issues rather than all historical Issues; full
+scans and explicit refreshes remain bounded by repository size. These counts are
+stubbed HTTP measurements, not live wall-clock benchmarks.
+
 Reads are not an atomic GitHub snapshot. The default limits are 100 repository
 pages and 5,000 HTTP requests; exhausting either fails the command instead of
 returning an incomplete list. Human output includes number, state and title;

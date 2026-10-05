@@ -118,7 +118,7 @@ public sealed class GitHubIssueRootTests
             handler.ParentExists = false;
             handler.Paths.Clear();
             Assert.Equal(3, (await Create().ListRootsAsync(new("owner/repo"))).Count);
-            Assert.Single(handler.Paths);
+            Assert.Empty(handler.Paths);
             var provider = Create();
             using var scope = provider.BeginReadOperation(refresh: true);
             Assert.Equal(4, (await provider.ListRootsAsync(new("owner/repo"))).Count);
@@ -126,6 +126,220 @@ public sealed class GitHubIssueRootTests
             Assert.Equal(4, handler.Paths.Count(path => path.EndsWith("/parent", StringComparison.Ordinal)));
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task PersistentMultiPageScanRefreshesOnlyOpenOrChangedIssues()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var clock = new Clock();
+            using var handler = new Handler { Count = 201, MostlyClosed = true };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new() { DirectoryPath = directory, TimeProvider = clock });
+            var cold = await Create().ListRootsAsync(new("owner/repo"));
+            Assert.Equal(199, cold.Count);
+            Assert.Equal(203, handler.Paths.Count); // Three pages and 200 native parents, no metadata GETs.
+            handler.Paths.Clear();
+            Assert.Equal(cold, await Create().ListRootsAsync(new("owner/repo")));
+            Assert.Empty(handler.Paths);
+
+            clock.Advance(TimeSpan.FromSeconds(31));
+            Assert.Equal(cold, await Create().ListRootsAsync(new("owner/repo")));
+            Assert.Equal(5, handler.Paths.Count); // One delta page, two open metadata GETs and two parents.
+            Assert.Single(handler.Paths, path => path.Contains("since=", StringComparison.Ordinal));
+            Assert.Equal(2, handler.Paths.Count(path => path.EndsWith("/parent", StringComparison.Ordinal)));
+            handler.Paths.Clear();
+
+            clock.Advance(TimeSpan.FromDays(6));
+            handler.ChangedNumbers = [4];
+            Assert.Equal(cold, await Create().ListRootsAsync(new("owner/repo")));
+            Assert.Equal(5, handler.Paths.Count); // Updated closed metadata does not expire its parent.
+            Assert.DoesNotContain(handler.Paths, path => path.EndsWith("/4/parent", StringComparison.Ordinal));
+            handler.Paths.Clear();
+
+            var fresh = Create();
+            using (fresh.BeginReadOperation(refresh: true))
+                Assert.Equal(cold, await fresh.ListRootsAsync(new("owner/repo")));
+            Assert.Equal(203, handler.Paths.Count);
+            Assert.DoesNotContain(handler.Paths, path => path.Contains("since=", StringComparison.Ordinal));
+            handler.Paths.Clear();
+
+            clock.Advance(TimeSpan.FromDays(7));
+            Assert.Equal(cold, await Create().ListRootsAsync(new("owner/repo")));
+            Assert.Equal(203, handler.Paths.Count);
+            Assert.DoesNotContain(handler.Paths, path => path.Contains("since=", StringComparison.Ordinal));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ClosedParentsRemainFreshWhileListingDiscoversUpdates()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var clock = new Clock();
+            using var handler = new Handler { Count = 201, MostlyClosed = true };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new() { DirectoryPath = directory, TimeProvider = clock });
+            var roots = await Create().ListRootsAsync(new("owner/repo"), IssueListState.Closed);
+            Assert.Equal(198, roots.Count);
+            Assert.Equal(200, handler.Paths.Count);
+            handler.Paths.Clear();
+            clock.Advance(TimeSpan.FromDays(6));
+            Assert.Equal(roots, await Create().ListRootsAsync(new("owner/repo"), IssueListState.Closed));
+            Assert.Single(handler.Paths); // Only the update listing, no closed parent or metadata GETs.
+            handler.Paths.Clear();
+            clock.Advance(TimeSpan.FromDays(1));
+            Assert.Equal(roots, await Create().ListRootsAsync(new("owner/repo"), IssueListState.Closed));
+            Assert.Equal(200, handler.Paths.Count);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task IncrementalScanDetectsClosuresReopensAndDisappearance()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var clock = new Clock();
+            using var handler = new Handler { Count = 6, MostlyClosed = true };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new() { DirectoryPath = directory, TimeProvider = clock });
+            await Create().ListRootsAsync(new("owner/repo"));
+            handler.ClosedOverrides[1] = true;
+            handler.ClosedOverrides[3] = false;
+            handler.MissingNumbers.Add(2);
+            handler.ChangedNumbers = [1, 3];
+            handler.Paths.Clear();
+            clock.Advance(TimeSpan.FromSeconds(31));
+            var roots = await Create().ListRootsAsync(new("owner/repo"));
+            Assert.Equal(IssueState.Closed, roots.Single(issue => issue.Issue.Number == 1).State);
+            Assert.Equal(IssueState.Open, roots.Single(issue => issue.Issue.Number == 3).State);
+            Assert.DoesNotContain(roots, issue => issue.Issue.Number == 2);
+            Assert.Equal(3, handler.Paths.Count);
+            Assert.Contains(handler.Paths, path => path.EndsWith("/issues/2", StringComparison.Ordinal));
+            Assert.Contains(handler.Paths, path => path.EndsWith("/3/parent", StringComparison.Ordinal));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(IssueListState.Open)]
+    [InlineData(IssueListState.Closed)]
+    public async Task FilteredIncrementalScansDiscoverStateTransitions(IssueListState state)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var clock = new Clock();
+            using var handler = new Handler { Count = 6, MostlyClosed = true };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new() { DirectoryPath = directory, TimeProvider = clock });
+            await Create().ListRootsAsync(new("owner/repo"), state);
+            handler.ClosedOverrides[1] = true;
+            handler.ClosedOverrides[3] = false;
+            handler.ChangedNumbers = [1, 3];
+            clock.Advance(TimeSpan.FromSeconds(31));
+            var roots = await Create().ListRootsAsync(new("owner/repo"), state);
+            if (state == IssueListState.Open)
+            {
+                Assert.DoesNotContain(roots, issue => issue.Issue.Number == 1);
+                Assert.Contains(roots, issue => issue.Issue.Number == 3);
+            }
+            else Assert.Contains(roots, issue => issue.Issue.Number == 1);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task FailedPaginationCannotPublishACompleteListing()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var handler = new Handler { Count = 101 };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"), new() { DirectoryPath = directory });
+            await Assert.ThrowsAsync<GitHubIssueException>(() => Create().ListRootsAsync(new("owner/repo"),
+                options: new() { MaxPages = 1 }));
+            handler.Paths.Clear();
+            Assert.Equal(99, (await Create().ListRootsAsync(new("owner/repo"))).Count);
+            Assert.Contains(handler.Paths, path => path.EndsWith("page=2", StringComparison.Ordinal));
+            handler.Paths.Clear();
+            var error = await Assert.ThrowsAsync<GitHubIssueException>(() => Create().ListRootsAsync(new("owner/repo"),
+                options: new() { MaxPages = 1 }));
+            Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
+            Assert.Empty(handler.Paths);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task IncrementalGrowthCannotBypassPaginationBounds()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "wet-roots-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var clock = new Clock();
+            using var handler = new Handler { Count = 101, MostlyClosed = true };
+            using var http = new HttpClient(handler);
+            GitHubIssueProvider Create() => new(http, _ => Task.FromResult("test-credential"),
+                new() { DirectoryPath = directory, TimeProvider = clock });
+            await Create().ListRootsAsync(new("owner/repo"), options: new() { MaxPages = 2 });
+            handler.Count = 201;
+            handler.ChangedNumbers = Enumerable.Range(102, 100).ToArray();
+            clock.Advance(TimeSpan.FromSeconds(31));
+            var error = await Assert.ThrowsAsync<GitHubIssueException>(() => Create().ListRootsAsync(new("owner/repo"),
+                options: new() { MaxPages = 2 }));
+            Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
+            Assert.Equal(199, (await Create().ListRootsAsync(new("owner/repo"))).Count);
+            error = await Assert.ThrowsAsync<GitHubIssueException>(() => Create().ListRootsAsync(new("owner/repo"),
+                options: new() { MaxPages = 2 }));
+            Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ParentFanOutIsBoundedAndJoined()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var parents = 0;
+        using var handler = new Handler
+        {
+            Count = 20, ParentGate = release.Task,
+            OnParent = () => { if (Interlocked.Increment(ref parents) == 4) started.SetResult(); }
+        };
+        using var http = new HttpClient(handler);
+        var scan = Provider(http).ListRootsAsync(new("owner/repo"));
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(4, Volatile.Read(ref parents));
+            Assert.False(scan.IsCompleted);
+        }
+        finally
+        {
+            release.SetResult();
+            await scan;
+        }
+        Assert.Equal(19, parents);
+    }
+
+    private sealed class Clock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
     }
 
     [Theory]
@@ -197,7 +411,7 @@ public sealed class GitHubIssueRootTests
         var run = await RunAsync(["roots", "--repo", "owner/repo"], Provider(http), cancellation.Token);
         Assert.Equal(130, run.Exit);
         Assert.Empty(run.Output);
-        Assert.Equal(2, handler.Paths.Count);
+        Assert.InRange(handler.Paths.Count, 2, 5); // One page and at most four in-flight parents.
     }
 
     [Fact]
@@ -225,10 +439,15 @@ public sealed class GitHubIssueRootTests
 
     private sealed class Handler : HttpMessageHandler
     {
-        public int Count { get; init; } = 5;
+        public int Count { get; set; } = 5;
         public bool RepeatFirstPage { get; init; }
         public bool AllPullRequests { get; init; }
         public bool ParentExists { get; set; } = true;
+        public bool MostlyClosed { get; init; }
+        public int[] ChangedNumbers { get; set; } = [];
+        public Dictionary<int, bool> ClosedOverrides { get; } = [];
+        public HashSet<int> MissingNumbers { get; } = [];
+        public Task? ParentGate { get; init; }
         public int? ParentFailure { get; init; }
         public Action? OnParent { get; init; }
         public List<string> Paths { get; } = [];
@@ -237,22 +456,40 @@ public sealed class GitHubIssueRootTests
         {
             Assert.Equal(HttpMethod.Get, request.Method);
             var uri = request.RequestUri ?? throw new InvalidOperationException("Missing URI");
-            Paths.Add(uri.PathAndQuery);
+            lock (Paths) Paths.Add(uri.PathAndQuery);
             if (uri.AbsolutePath.EndsWith("/parent", StringComparison.Ordinal))
             {
                 OnParent?.Invoke();
                 cancellationToken.ThrowIfCancellationRequested();
                 if (ParentFailure is { } failure) return Task.FromResult(new HttpResponseMessage((HttpStatusCode)failure));
-                return Task.FromResult(ParentExists && uri.AbsolutePath.EndsWith("/2/parent", StringComparison.Ordinal)
-                    ? Response(JsonSerializer.Serialize(Body(1))) : new(HttpStatusCode.NotFound));
+                var response = ParentExists && uri.AbsolutePath.EndsWith("/2/parent", StringComparison.Ordinal)
+                    ? Response(JsonSerializer.Serialize(Body(1))) : new(HttpStatusCode.NotFound);
+                return ParentGate is { } gate ? WaitForParentAsync(gate, response, cancellationToken) : Task.FromResult(response);
             }
-            var page = int.Parse(uri.Query.Split("page=")[^1], CultureInfo.InvariantCulture);
+            if (uri.Query.Length == 0)
+            {
+                var number = int.Parse(uri.AbsolutePath.Split('/')[^1], CultureInfo.InvariantCulture);
+                return Task.FromResult(MissingNumbers.Contains(number) ? new(HttpStatusCode.NotFound) : Response(JsonSerializer.Serialize(Body(number))));
+            }
+            var page = int.Parse(uri.Query.TrimStart('?').Split('&').Single(part => part.StartsWith("page=", StringComparison.Ordinal))[5..], CultureInfo.InvariantCulture);
             if (RepeatFirstPage) page = 1;
             var items = Enumerable.Range(1, Count)
+                .Where(number => !MissingNumbers.Contains(number))
                 .Where(number => uri.Query.Contains("state=all", StringComparison.Ordinal) ||
-                    uri.Query.Contains(number == 4 ? "state=closed" : "state=open", StringComparison.Ordinal))
+                    uri.Query.Contains(IsClosed(number) ? "state=closed" : "state=open", StringComparison.Ordinal))
+                .Where(number => !uri.Query.Contains("since=", StringComparison.Ordinal) || ChangedNumbers.Contains(number))
                 .Skip((page - 1) * 100).Take(100).Select(Body);
             return Task.FromResult(Response(JsonSerializer.Serialize(items)));
+        }
+
+        private bool IsClosed(int number) => ClosedOverrides.TryGetValue(number, out var closed)
+            ? closed : MostlyClosed ? number > 2 : number == 4;
+
+        private static async Task<HttpResponseMessage> WaitForParentAsync(Task gate, HttpResponseMessage response,
+            CancellationToken token)
+        {
+            try { await gate.WaitAsync(token); return response; }
+            catch { response.Dispose(); throw; }
         }
 
         private Dictionary<string, object> Body(int number)
@@ -260,7 +497,7 @@ public sealed class GitHubIssueRootTests
             var body = new Dictionary<string, object>
             {
                 ["id"] = 1000 + number, ["number"] = number, ["title"] = $"Title {number}",
-                ["state"] = number == 4 ? "closed" : "open", ["html_url"] = $"https://github.com/owner/repo/issues/{number}"
+                ["state"] = IsClosed(number) ? "closed" : "open", ["html_url"] = $"https://github.com/owner/repo/issues/{number}"
             };
             if (AllPullRequests || number == 5) body["pull_request"] = new { };
             return body;

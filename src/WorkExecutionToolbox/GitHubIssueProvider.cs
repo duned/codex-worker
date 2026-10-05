@@ -78,7 +78,8 @@ public sealed partial class GitHubIssueProvider : IIssueRelationshipProvider, II
     }
 
     private async Task<GitHubIssueCache.Entry> CachedReadAsync(IssueReference issue, string kind,
-        Func<Task<(ResolvedIssue[] Issues, int Pages)>> read, CancellationToken token)
+        Func<Task<(ResolvedIssue[] Issues, int Pages)>> read, CancellationToken token,
+        Func<DateTimeOffset?>? snapshotAt = null, Func<DateTimeOffset?>? fetchedAt = null)
     {
         token.ThrowIfCancellationRequested();
         var operation = _operation.Value;
@@ -96,7 +97,7 @@ public sealed partial class GitHubIssueProvider : IIssueRelationshipProvider, II
             var generation = await _cache.CaptureAsync(issue, token);
             var (issues, pages) = await read();
             foreach (var item in issues) await _cache.RememberIdentityAsync(item, token);
-            var entry = new GitHubIssueCache.Entry(1, issue.Repository.Repository, issue.Number, kind, _cache.Now, issues, pages);
+            var entry = new GitHubIssueCache.Entry(1, issue.Repository.Repository, issue.Number, kind, fetchedAt?.Invoke() ?? _cache.Now, issues, pages, snapshotAt?.Invoke());
             // Missing or invisible Issues are not negative-cached across operations.
             if (kind != "issue" || issues.Length > 0) await _cache.StoreAsync(generation, entry, token);
             return entry;

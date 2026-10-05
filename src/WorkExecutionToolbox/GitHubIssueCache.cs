@@ -24,7 +24,7 @@ public interface ICacheAwareIssueProvider
 internal sealed class GitHubIssueCache(GitHubIssueCacheOptions options)
 {
     internal sealed record Entry(int Version, string Repository, int Number, string Kind,
-        DateTimeOffset FetchedAt, GitHubIssueProvider.ResolvedIssue[] Issues, int Pages = 0);
+        DateTimeOffset FetchedAt, GitHubIssueProvider.ResolvedIssue[] Issues, int Pages = 0, DateTimeOffset? SnapshotAt = null);
     private sealed record Identity(int Version, string Repository, int Number, long DatabaseId);
 
     public DateTimeOffset Now => options.TimeProvider.GetUtcNow();
@@ -43,7 +43,7 @@ internal sealed class GitHubIssueCache(GitHubIssueCacheOptions options)
         return Guid.TryParseExact(generation, "N", out _) ? generation : "invalid";
     }
 
-    public async Task<Entry?> ReadAsync(IssueReference issue, string kind, CancellationToken token)
+    public async Task<Entry?> ReadAsync(IssueReference issue, string kind, CancellationToken token, bool allowStaleListing = false)
     {
         if (RepositoryDirectory(issue) is not { } directory) return null;
         try
@@ -51,6 +51,7 @@ internal sealed class GitHubIssueCache(GitHubIssueCacheOptions options)
             var generation = await GenerationAsync(directory, token);
             if (generation == "invalid") return null;
             var entry = await ReadFileAsync<Entry>(Path.Combine(directory, generation, $"{issue.Number}-{kind}.json"), token);
+            var listing = kind is "repository-all" or "repository-open" or "repository-closed";
             if (entry is null || entry.Version != 1 || entry.Number != issue.Number || entry.Kind != kind ||
                 !string.Equals(entry.Repository, issue.Repository.Repository, StringComparison.OrdinalIgnoreCase) || entry.Issues is null ||
                 entry.Issues.Length > 10_000 || entry.Pages < 0 || entry.Pages > 100 ||
@@ -58,9 +59,19 @@ internal sealed class GitHubIssueCache(GitHubIssueCacheOptions options)
                 entry.Issues.Select(item => item.Summary.Issue.Number).Distinct().Count() != entry.Issues.Length ||
                 entry.Issues.Select(item => item.DatabaseId).Distinct().Count() != entry.Issues.Length ||
                 kind == "issue" && (entry.Issues.Length != 1 || entry.Issues[0].Summary.Issue.Number != issue.Number) ||
-                kind != "issue" && (entry.Pages == 0 || entry.Issues.Any(item => item.Summary.Issue.Number == issue.Number)) ||
+                kind != "issue" && (entry.Pages == 0 || !listing && entry.Issues.Any(item => item.Summary.Issue.Number == issue.Number)) ||
                 kind == "parent" && entry.Issues.Length > 1) return null;
             var age = Now - entry.FetchedAt;
+            if (listing)
+            {
+                var snapshotAge = Now - (entry.SnapshotAt ?? entry.FetchedAt);
+                if (snapshotAge < TimeSpan.Zero || snapshotAge >= TimeSpan.FromDays(7) ||
+                    entry.SnapshotAt > entry.FetchedAt ||
+                    kind == "repository-open" && entry.Issues.Any(item => item.Summary.State != IssueState.Open) ||
+                    kind == "repository-closed" && entry.Issues.Any(item => item.Summary.State != IssueState.Closed)) return null;
+                // Membership can change even in a closed-only query (newly closed Issues).
+                return age >= TimeSpan.Zero && (allowStaleListing || age < Lifetime(IssueState.Open)) ? entry : null;
+            }
             var state = kind == "issue" && entry.Issues.Length == 1 ? entry.Issues[0].Summary.State : IssueState.Open;
             // Relation lifetime is recorded by its owner's summary, never by a closed related Issue.
             if (kind != "issue")
