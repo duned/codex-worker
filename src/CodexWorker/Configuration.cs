@@ -191,7 +191,7 @@ public sealed class ProjectsSettings
 /// <summary>Machine/runtime defaults for all Server-managed projects; contains no project identity.</summary>
 public sealed class ManagedProjectRuntimeSettings
 {
-    public string CheckoutDirectory { get; set; } = "./checkouts";
+    public string CheckoutDirectory { get; set; } = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), ".codex-worker", "checkouts");
     public GitSettings Git { get; set; } = new();
     [YamlMember(Alias = "github")]
     public GitHubSettings GitHub { get; set; } = new()

@@ -20,9 +20,9 @@ projects:
   ownership: standalone
 
 # Worker-local runtime defaults used only in managed ownership. Checkout paths are
-# derived from Server project IDs beneath this root; missing checkouts remain unavailable.
+# derived from Server project IDs beneath this root; missing checkouts are cloned on assignment.
 managedProjects:
-  checkoutDirectory: ./checkouts
+  checkoutDirectory: ~/.codex-worker/checkouts
   # Same git/github/codex/validation/environment/worker sections as project YAML,
   # without project identity. git.baseBranch is always supplied by the Server.
   # Relative codex.instructionsFile paths resolve inside each derived checkout.

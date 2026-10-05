@@ -74,6 +74,7 @@ public sealed class WorkerHost
         var repositoryGates = new System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
         var discoveredCapabilities = (IReadOnlyList<WorkerCapabilityContract>)Array.Empty<WorkerCapabilityContract>();
         var validatedConfigurations = new HashSet<WorkerConfiguration>(ReferenceEqualityComparer.Instance);
+        var preparedConfigurations = new HashSet<WorkerConfiguration>(ReferenceEqualityComparer.Instance);
         string? activeProject = null;
         var operational = false;
         var nextManagedConfigurationSync = DateTimeOffset.MinValue;
@@ -226,19 +227,28 @@ public sealed class WorkerHost
                     .Select(project => new ProjectStartupPlan(
                     project.Path,
                     project.Configuration.Project.Name,
-                    async token => { activeProject = project.Configuration.Project.Name; await project.Git.ValidateStartupReadOnlyAsync(token); },
+                    async token =>
+                    {
+                        activeProject = project.Configuration.Project.Name;
+                        if (managed) await project.Git.ValidateManagedRemoteReadAsync(token);
+                        else await project.Git.ValidateStartupReadOnlyAsync(token);
+                    },
                     async token => { activeProject = project.Configuration.Project.Name; await project.GitHub.ValidateCapabilitiesAsync(token); },
                     async token =>
                     {
                         activeProject = project.Configuration.Project.Name;
-                        return await project.GitHub.FindMissingLabelsAsync(project.Configuration.GitHub.RequiredLabels, token);
+                        return managed ? Array.Empty<RequiredGitHubLabel>() : await project.GitHub.FindMissingLabelsAsync(project.Configuration.GitHub.RequiredLabels, token);
                     },
                     async (label, token) =>
                     {
                         activeProject = project.Configuration.Project.Name;
                         await project.GitHub.CreateLabelAsync(label, token);
                     },
-                    async token => { activeProject = project.Configuration.Project.Name; await project.Worker.PrepareForHostAsync(token); }
+                    async token =>
+                    {
+                        activeProject = project.Configuration.Project.Name;
+                        if (!managed) await project.Worker.PrepareForHostAsync(token);
+                    }
                 )).ToArray();
                 var startupResult = await StartupCoordinator.RunIsolatedAsync(startupPlans, token);
                 var createdLabels = startupResult.CreatedLabels;
@@ -281,13 +291,16 @@ public sealed class WorkerHost
                 {
                     await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
                 }
-                await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, token);
+                await ReconcileRecoveryAsync(healthyRuntimes.Where(project => !managed || preparedConfigurations.Contains(project.Configuration)).ToArray(), history, runtimeReadModel, token);
                 if (healthyRuntimes.Count > 0)
                 {
                     _output.GitHubCliReady();
                     _output.GitHubAuthenticationReady();
-                    _output.GitRepositoryAuthenticationReady(healthyRuntimes.Count);
-                    _output.GitHubLabelsReady(healthyRuntimes.Count, createdLabels);
+                    if (!managed)
+                    {
+                        _output.GitRepositoryAuthenticationReady(healthyRuntimes.Count);
+                        _output.GitHubLabelsReady(healthyRuntimes.Count, createdLabels);
+                    }
                     _output.GitHubDependenciesReady();
                 }
 
@@ -440,6 +453,16 @@ public sealed class WorkerHost
                 if (currentConfigurations.Count != runtimes.Count || currentConfigurations.Where((item, index) =>
                         !ReferenceEquals(item.Configuration, runtimes[index].Configuration)).Any())
                 {
+                    if (managed && active.Count == 0)
+                    {
+                        foreach (var old in runtimes.Where(project => !currentConfigurations.Any(item =>
+                            ReferenceEquals(item.Configuration, project.Configuration))))
+                        {
+                            await old.RepositoryGate.WaitAsync(executionToken);
+                            try { old.Git.Dispose(); }
+                            finally { old.RepositoryGate.Release(); }
+                        }
+                    }
                     var currentByName = runtimes.ToDictionary(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase);
                     var replacement = new List<ProjectRuntime>(currentConfigurations.Count);
                     foreach (var (path, configuration) in currentConfigurations)
@@ -533,7 +556,7 @@ public sealed class WorkerHost
                         // Treat interruption here as uncertain so shutdown preserves that state for inspection.
 
                         var integrationRecoveries = new List<CodexProvisioning.IntegrationRecoveryCandidate>();
-                        foreach (var candidate in runtimes.Where(candidate => projectCapacities.ContainsKey(ServerProjectId(candidate.Configuration.Project.Name))))
+                        foreach (var candidate in runtimes.Where(candidate => Directory.Exists(candidate.Configuration.Project.Directory) && projectCapacities.ContainsKey(ServerProjectId(candidate.Configuration.Project.Name))))
                             integrationRecoveries.AddRange(await candidate.Worker.DiscoverManagedIntegrationRecoveriesAsync(
                                 ServerProjectId(candidate.Configuration.Project.Name), executionToken));
                         var assignmentResponse = await _registration.RequestAssignmentAsync(_global.Server,
@@ -582,7 +605,42 @@ public sealed class WorkerHost
                         // Start guarding the assignment before any GitHub label/comment work in
                         // ClaimAssignedAsync; that work can itself outlive a short lease.
                         var leaseRenewal = RenewLeaseWhileActiveAsync(lease, leaseStop);
-                        try { assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token); }
+                        try
+                        {
+                            if (!preparedConfigurations.Contains(assignedProject.Configuration))
+                            {
+                                try
+                                {
+                                    await assignedProject.RepositoryGate.WaitAsync(leaseStop.Token);
+                                    try { await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token); }
+                                    finally { assignedProject.RepositoryGate.Release(); }
+                                    foreach (var label in await assignedProject.GitHub.FindMissingLabelsAsync(
+                                        assignedProject.Configuration.GitHub.RequiredLabels, leaseStop.Token))
+                                        await assignedProject.GitHub.CreateLabelAsync(label, leaseStop.Token);
+                                    await assignedProject.Worker.PrepareForHostAsync(leaseStop.Token);
+                                    await ReconcileRecoveryAsync([assignedProject], history, runtimeReadModel, leaseStop.Token);
+                                    if (runtimeReadModel.Registry.Get(assignedProject.Configuration.Project.Name) is
+                                        { State: ProjectLifecycleState.Unavailable } unavailable)
+                                        throw new IssuePreparationRejectedException(unavailable.UnavailableReason ?? "Project recovery requires inspection.");
+                                    preparedConfigurations.Add(assignedProject.Configuration);
+                                }
+                                catch (Exception ex) when (!leaseStop.IsCancellationRequested)
+                                {
+                                    var reason = "Managed project preparation failed: " + FailureDiagnosticRedactor.Redact(
+                                        ex.Message, assignedProject.Configuration.Environment.Variables.Values.ToArray());
+                                    if (reason.Length > 1000) reason = reason[..1000];
+                                    await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
+                                    runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
+                                    runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
+                                    leaseStop.Cancel();
+                                    try { await leaseRenewal; } catch (OperationCanceledException) { }
+                                    leaseStop.Dispose();
+                                    runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                                    continue;
+                                }
+                            }
+                            assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token);
+                        }
                         catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
                         {
                             leaseStop.Cancel();
