@@ -2,6 +2,10 @@
 
 Start with the [A–B–C clean-machine installation](../README.md#install-server--worker). This reference covers automation, manual enrollment, configuration, updates, removal, and troubleshooting.
 
+For separate Server and Worker machines, follow the supported
+[Ubuntu Nginx HTTPS deployment](remote-https-deployment.md), including VPN-restricted
+management, certificate renewal, firewall checks and protected enrollment sources.
+
 ## Server installation and operations
 
 On Ubuntu 24.04 x64, install the self-contained release without cloning the repository or installing .NET:

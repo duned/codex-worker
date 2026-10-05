@@ -4,6 +4,9 @@ Run this regression on a disposable deployment built from a release containing
 the managed cold-start changes. Record the exact Server/Worker artifact versions
 and checksums; the Issue series does not select or change the product version.
 This runbook describes acceptance steps, not a completed live campaign.
+For the separate-host transport setup, use the
+[HTTPS deployment recipe](remote-https-deployment.md). Record live secure remote
+acceptance through 23.6's runbook; isolated proxy checks do not establish that pass.
 See the [lifecycle integration review](managed-project-lifecycle-integration.md)
 for ownership boundaries and deterministic regression coverage across the child work.
 

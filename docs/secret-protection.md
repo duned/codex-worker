@@ -10,6 +10,9 @@ The Worker retains owner-only `.pending` enrollment material through uncertain r
 
 ## HTTP and trusted TLS proxy
 
+The supported separate-host setup is the [Ubuntu Nginx HTTPS recipe](remote-https-deployment.md),
+with checked-in proxy examples, VPN management restrictions and renewal/recovery checks.
+
 The application sets `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0` for every `/api` response, including binding/authentication failures and provisioning/login challenges. API responses have no ETag/Last-Modified validators, and conditional request headers do not select a cached representation. This covers credential delivery and bootstrap alongside operational API views. Existing caches must be purged when deploying this policy.
 
 TLS termination is a trusted component able to see decrypted bodies and authentication headers. HTTPS and application tests cannot prove that proxy operators, debug tooling, or infrastructure logs protect those values. The deployment policy coordinated with series 23.5 must exclude the entire `/api` path subtree from proxy/CDN caching, including errors, and must preserve the application's non-storage headers. Disable cache lookup and cache writes, stale serving, conditional/304 handling, and response-body capture there. Do not rely on caches automatically recognizing custom authorization headers.
