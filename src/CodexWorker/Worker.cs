@@ -11,8 +11,10 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
-    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default)
+    SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
+    WorkerRegistrationClient? registrationClient = null)
 {
+    private readonly WorkerRegistrationClient _registration = registrationClient ?? new WorkerRegistrationClient();
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
@@ -661,7 +663,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.IntegrationConflict or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
         if (serverSettings is { Enabled: true } && entry.ServerExecutionId is not null && entry.OwnershipGeneration is null)
             throw new WorkerInfrastructureException("Managed execution is missing its ownership generation.");
-        await new WorkerRegistrationClient().ReportExecutionAsync(serverSettings, entry, stateName,
+        await _registration.ReportExecutionAsync(serverSettings, entry, stateName,
             stateName == "Running" ? (state switch
             {
                 ExecutionState.Claimed => "Claiming",

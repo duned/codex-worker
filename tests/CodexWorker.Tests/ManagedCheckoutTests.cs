@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http.Json;
 using CodexWorker;
 
 namespace CodexWorker.Tests;
@@ -5,6 +7,112 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedCheckoutTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    public async Task FirstColdAssignmentPreservesLeaseGenerationInHistoryAndEveryLifecycleReport(long generation)
+    {
+        using var fixture = await Fixture.CreateAsync();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var settings = new WorkerServerSettings
+        {
+            Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(fixture.Root, "identity")
+        };
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var now = DateTimeOffset.UtcNow;
+        var project = new ServerProjectContract("central", "Central", "owner/repo", "main", "", [], 4, now, now);
+        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(fixture.Root, "snapshot.json"),
+            new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(fixture.Root, "derived") });
+        var configuration = Assert.Single(synchronizer.Apply(new(1,
+            ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]))).Configuration;
+        Assert.Equal("not-materialized", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+        Assert.False(Directory.Exists(configuration.Project.Directory));
+        var assignment = new WorkerAssignmentContract("assignment", "execution", project, new("github-issue", "17"),
+            workerId, new Dictionary<string, string>(), new("execution", workerId, generation, now, now.AddMinutes(15), "Active", 60));
+        var reports = new List<WorkerExecutionReportContract>();
+        var entries = new List<ExecutionHistoryEntry>();
+        using var handler = new ReportHandler(async (request, ct) =>
+        {
+            var report = await (request.Content ?? throw new InvalidDataException("Missing report"))
+                .ReadFromJsonAsync<WorkerExecutionReportContract>(ct);
+            reports.Add(Assert.IsType<WorkerExecutionReportContract>(report));
+            entries.Add(Assert.Single(await history.ReadAllAsync(ct)));
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        using var repository = new GitRepository(new ProcessRunner(), configuration.Project.Directory,
+            configuration.Project.Repository, configuration.Git, configuration.Worker, Path.Combine(fixture.Root, "worktrees"));
+        // Follow the host's cold-assignment preparation before claiming the assigned Issue.
+        synchronizer.RecordProjectState(project, "materializing");
+        await repository.MaterializeManagedCheckoutAsync(CancellationToken.None);
+        var instructions = Path.Combine(fixture.Root, "AGENTS.md");
+        await File.WriteAllTextAsync(instructions, "test instructions");
+        configuration.Codex.InstructionsFile = instructions;
+        var output = new WorkerConsole(new StringWriter(), interactive: false);
+        using var telegram = new TelegramNotifier(false, output);
+        var worker = new Worker(configuration, new AssignedIssueClient(), repository, new NoChangeCodex(),
+            new PassingValidation(), telegram, output, history, serverSettings: settings,
+            registrationClient: new WorkerRegistrationClient(client));
+        await worker.PrepareForHostAsync(CancellationToken.None);
+        synchronizer.RecordProjectState(project, "ready");
+
+        var execution = await worker.ClaimAssignedAsync(assignment, CancellationToken.None);
+        Assert.NotNull(execution);
+        Assert.Equal(IssueOutcomeKind.Succeeded, Assert.IsType<IssueProcessingResult>(await execution).Kind);
+
+        Assert.Equal("ready", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+        Assert.Equal("Claiming", reports[0].Stage);
+        Assert.Equal("Claimed", entries[0].State);
+        Assert.Contains(reports, report => report.Stage == "Preparing");
+        Assert.Contains(reports, report => report.Stage == "Codex");
+        Assert.Contains(reports, report => report.Stage == "Validation");
+        Assert.Contains(reports, report => report.Stage == "Integration");
+        Assert.Equal("Completed", reports[^1].State);
+        Assert.All(reports, report => Assert.Equal(generation, report.Generation));
+        Assert.All(entries, entry =>
+        {
+            Assert.Equal(generation, entry.OwnershipGeneration);
+            Assert.Equal(assignment.ServerExecutionId, entry.ServerExecutionId);
+            Assert.Equal(assignment.AssignmentId, entry.AssignmentId);
+            Assert.Equal(1, entry.AttemptNumber);
+            Assert.Null(entry.RetryOfExecutionId);
+            Assert.False(entry.Resumed);
+        });
+        Assert.Equal(generation, Assert.Single(await history.ReadAllAsync()).OwnershipGeneration);
+    }
+
+    private sealed class ReportHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            send(request, cancellationToken);
+    }
+
+    private sealed class AssignedIssueClient : IGitHubClient
+    {
+        public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
+            Task.FromResult<GitHubIssue?>(new(issueNumber, "Example task", "Task body", DateTimeOffset.UnixEpoch));
+        public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(null);
+        public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct) => Task.CompletedTask;
+        public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) => Task.CompletedTask;
+        public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class NoChangeCodex : ICodexExecutor
+    {
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
+            Task.FromResult(new CodexOutcome("success", "No changes needed", [], false, null));
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) => throw new InvalidOperationException("Unexpected repair");
+    }
+
+    private sealed class PassingValidation : IValidationRunner
+    {
+        public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct) =>
+            Task.FromResult(ValidationResult.Success);
+    }
+
     [Fact]
     public async Task ServerCatalogAuthorizesFirstMaterializationAndRevisionRetainsCheckoutAcrossRestart()
     {

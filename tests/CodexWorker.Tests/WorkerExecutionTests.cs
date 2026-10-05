@@ -17,6 +17,7 @@ public sealed class WorkerExecutionTests
         Assert.NotEqual(first.ExecutionId, second.ExecutionId);
         Assert.NotEqual(Issue.Number.ToString(), first.ExecutionId.ToString());
         Assert.Equal(ExecutionState.Created, first.State);
+        Assert.Null(first.OwnershipGeneration);
         Assert.Equal("sample", first.Project);
         Assert.Equal("owner/repo", first.Repository);
         Assert.Equal(17, first.IssueNumber);
@@ -34,11 +35,12 @@ public sealed class WorkerExecutionTests
     public void ServerAssignmentIsLinkedToTheNormalWorkerExecutionIdentity()
     {
         var execution = WorkerExecution.Create(Project, Git, Issue,
-            serverExecutionId: "server-request-123", assignmentId: "assignment-456");
+            serverExecutionId: "server-request-123", assignmentId: "assignment-456", ownershipGeneration: 7);
 
         Assert.NotEqual(Guid.Empty, execution.ExecutionId);
         Assert.Equal("server-request-123", execution.ServerExecutionId);
         Assert.Equal("assignment-456", execution.AssignmentId);
+        Assert.Equal(7, execution.OwnershipGeneration);
         Assert.Equal("feature/add-execution-context-17", execution.FeatureBranch);
     }
 

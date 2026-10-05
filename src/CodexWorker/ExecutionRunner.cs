@@ -440,7 +440,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.Model, EffectiveEffort: execution.CodexProfile?.Effort,
-            AssignmentId: execution.AssignmentId);
+            AssignmentId: execution.AssignmentId,
+            OwnershipGeneration: execution.OwnershipGeneration);
 
     private static string? Extract(string? text, string pattern)
     {

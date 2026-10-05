@@ -1083,7 +1083,8 @@ public sealed class WorkerHost
         var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
-            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken), codex, github, repositoryGate);
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken,
+                registrationClient: _registration), codex, github, repositoryGate);
     }
 
     private void PauseProjectForGitHubFailure(WorkerRuntimeReadModel runtime, string projectName,
