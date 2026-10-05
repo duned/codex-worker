@@ -1402,6 +1402,73 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `task-model` · effort: `low`", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("success", IssueOutcomeKind.Succeeded, "account-model")]
+    [InlineData("failed", IssueOutcomeKind.Failed, "account-model")]
+    [InlineData("success", IssueOutcomeKind.Succeeded, null)]
+    public async Task CliModelIsDurableAndUsedInFinalReports(string status, IssueOutcomeKind kind, string? model)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Codex.CliModel = model;
+        h.Codex.InitialOutcome = new CodexOutcome(status, "Implementation result", [], false, null);
+
+        Assert.Equal(kind, (await h.ProcessOneAsync())!.Kind);
+
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(model, entry.EffectiveModel);
+        Assert.True(entry.ModelSelectedByCli);
+        Assert.Equal("medium", entry.EffectiveEffort);
+        Assert.Null(Assert.Single(h.Codex.Profiles).Model);
+        Assert.Contains($"Codex · model {model ?? "unknown (CLI model unavailable)"} · effort medium", h.Output.ToString());
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains($"Codex model: `{model ?? "unknown (CLI model unavailable)"}` · effort: `medium`", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("restart")]
+    [InlineData("resume")]
+    public async Task CliRetryRecordsItsOwnModelWithoutTurningSourceModelIntoOverride(string mode)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.");
+        h.Codex.CliModel = "first-model";
+        h.Codex.InitialOutcome = new CodexOutcome("failed", "Partial work", [], false, null);
+        Assert.Equal(IssueOutcomeKind.Failed, (await h.ProcessOneAsync())!.Kind);
+        h.Worker.Configuration.Worker.RetryMode = mode;
+        h.Worker.Configuration.Codex.Model = "edited-project-model";
+        h.Codex.CliModel = "second-model";
+        h.Codex.InitialOutcome = Success("Completed");
+        h.GitHub.ReadyIssueCount = 2;
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())!.Kind);
+
+        Assert.All(h.Codex.Profiles, profile => Assert.Null(profile.Model));
+        var entries = await history.ReadAllAsync();
+        Assert.Equal("first-model", Assert.Single(entries, entry => entry.AttemptNumber == 1).EffectiveModel);
+        Assert.Equal("second-model", Assert.Single(entries, entry => entry.AttemptNumber == 2).EffectiveModel);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `second-model`", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CodexInfrastructureFailureRetainsObservedModelInHistoryAndInterruptionReport()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Codex.CliModel = "account-model";
+        h.Codex.InitialException = new CodexExecutionInfrastructureException("Codex process failure", "CLI failed after startup");
+
+        await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => h.ProcessOneAsync());
+
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.Equal("account-model", entry.EffectiveModel);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `account-model` · effort: `medium`", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task ImplementationAndValidationRepairUseTheSameProfile()
     {
@@ -1882,6 +1949,13 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
+        private Action<string?>? _modelObserver;
+        public string? CliModel { get; set; }
+        public ICodexExecutor WithModelObserver(Action<string?> observer)
+        {
+            _modelObserver = observer;
+            return this;
+        }
         public List<CodexExecutionProfile> Profiles { get; } = [];
         public ICodexExecutor WithProfile(CodexExecutionProfile profile)
         {
@@ -1909,6 +1983,7 @@ public sealed class WorkerV011Tests
             ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory, ct);
         private async Task<CodexOutcome> RunCoreAsync(string projectDirectory, CancellationToken ct)
         {
+            if (CliModel is not null) _modelObserver?.Invoke(CliModel);
             InitialDirectory = projectDirectory;
             RunStarted.TrySetResult();
             if (BlockRuns)

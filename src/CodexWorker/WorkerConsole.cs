@@ -128,14 +128,19 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     {
         _waiting = false;
         WriteLine(ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId), ConsoleColor.Cyan, "▶");
-        if (execution.CodexProfile is { } profile)
-            WriteLine($"Codex · model {profile.Model ?? "CLI default"} · effort {profile.Effort}", ConsoleColor.DarkGray, "↳");
+        CodexProfile(execution);
         if (execution.AttemptNumber > 1 && execution.RetryOfExecutionId is { } previousId)
         {
             var mode = execution.Resumed ? "resume" : "restart";
             WriteLine($"Attempt {execution.AttemptNumber} · {mode} from [{ExecutionFormatting.ShortId(previousId)}]",
                 ConsoleColor.DarkGray, "↳");
         }
+    }
+
+    public void CodexProfile(WorkerExecution execution)
+    {
+        if (execution.CodexProfile is { } profile)
+            WriteLine($"Codex · model {profile.EffectiveModel ?? "unknown (CLI model unavailable)"} · effort {profile.Effort}", ConsoleColor.DarkGray, "↳");
     }
 
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>

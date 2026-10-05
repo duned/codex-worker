@@ -385,7 +385,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
-                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.Model,
+                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.EffectiveModel,
                 EffectiveEffort = execution.CodexProfile?.Effort };
             var terminalState = result.Kind switch
             {
@@ -499,6 +499,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
             await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
                 $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
+                (execution.CodexProfile is { } profile ? $"Codex model: `{profile.EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{profile.Effort}`.\n\n" : "") +
                 "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n", CancellationToken.None);
             if (history is not null)
             {
@@ -751,7 +752,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
-            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.Model, EffectiveEffort: execution.CodexProfile?.Effort,
+            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
+            ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration);
 

@@ -81,6 +81,12 @@ public sealed class WorkerExecution
         return execution;
     }
 
+    internal void RecordCliModel(string? model)
+    {
+        if (CodexProfile is { Model: null } profile)
+            CodexProfile = profile with { CliModel = model };
+    }
+
     public void TransitionTo(ExecutionState next)
     {
         if (!AllowedTransitions[State].Contains(next))

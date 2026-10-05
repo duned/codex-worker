@@ -2,15 +2,19 @@ using System.Text.RegularExpressions;
 
 namespace CodexWorker;
 
-/// <summary>Settings frozen for one execution; null model delegates selection to the Codex CLI.</summary>
-public sealed record CodexExecutionProfile(string? Model, string Effort)
+/// <summary>Selection settings frozen for one execution; null Model delegates to the CLI, whose observed identity is stored separately.</summary>
+public sealed record CodexExecutionProfile(string? Model, string Effort, string? CliModel = null)
 {
+    public string? EffectiveModel => Model ?? CliModel;
+
     public static CodexExecutionProfile Resolve(string body, CodexSettings defaults, ExecutionHistoryEntry? source = null)
     {
         // Older history has no snapshot. Resolve it once using today's configured defaults,
         // without applying edited Issue metadata to recovery of an existing execution.
         if (source is not null && source.EffectiveEffort is not null)
-            return new(source.EffectiveModel, source.EffectiveEffort);
+            return source.ModelSelectedByCli
+                ? new(null, source.EffectiveEffort, source.EffectiveModel)
+                : new(source.EffectiveModel, source.EffectiveEffort);
         if (source is not null && source.FailureReason?.StartsWith("Invalid ## Codex metadata:", StringComparison.Ordinal) != true)
             return new(DefaultModel(defaults), defaults.ReasoningEffort.ToLowerInvariant());
 

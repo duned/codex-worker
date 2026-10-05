@@ -77,6 +77,7 @@ public interface IGitRepository : IDisposable
 
 public interface ICodexExecutor
 {
+    ICodexExecutor WithModelObserver(Action<string?> observer) => this;
     ICodexExecutor WithProfile(CodexExecutionProfile profile) => this;
     Task PreflightAsync(CancellationToken ct);
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct);

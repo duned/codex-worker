@@ -38,7 +38,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             sections.Add($"Execution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
         }
         if (EffectiveEffort is not null)
-            sections.Add($"Codex model: `{EffectiveModel ?? "CLI default"}` · effort: `{EffectiveEffort}`.");
+            sections.Add($"Codex model: `{EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{EffectiveEffort}`.");
         if (AttemptNumber > 1)
             sections.Add($"### Attempt history\n\nCurrent execution " +
                 (ExecutionId is { } currentId ? $"`{ExecutionFormatting.Display(currentId)}` (`{currentId}`)" : "identity unavailable") +

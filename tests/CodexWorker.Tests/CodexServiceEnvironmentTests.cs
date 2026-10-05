@@ -5,6 +5,59 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServiceEnvironmentTests
 {
+    [Theory]
+    [InlineData(null, 0)]
+    [InlineData(null, 1)]
+    [InlineData("issue-model", 0)]
+    [InlineData("project-model", 0)]
+    public async Task ActualInvocationReportsCliModelWithoutForcingSelection(string? explicitModel, int exitCode)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = CreateDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        var previousHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        try
+        {
+            var executable = Path.Combine(directory, "codex");
+            await File.WriteAllTextAsync(executable, """
+                #!/bin/sh
+                printf '%s\n' "$@" > "$0.args"
+                printf '%s' "$CODEX_HOME" > "$0.home"
+                printf 'OpenAI Codex v1\n--------\nmodel: account-model\n--------\n' >&2
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = --output-last-message ]; then shift; output=$1; fi
+                  shift
+                done
+                printf '%s' '{"status":"success","summary":"Done","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}' > "$output"
+                exit EXIT_CODE
+                """.Replace("EXIT_CODE", exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal));
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
+            Environment.SetEnvironmentVariable("CODEX_HOME", directory);
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Project instructions");
+            var observed = new List<string?>();
+            var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings { Model = explicitModel })
+                .WithModelObserver(observed.Add);
+            var issue = new GitHubIssue(1, "Task", "Task body", DateTimeOffset.UnixEpoch);
+            if (exitCode == 0) await executor.RunAsync(directory, instructions, issue, CancellationToken.None);
+            else await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => executor.RunAsync(directory, instructions, issue, CancellationToken.None));
+            if (explicitModel is null) Assert.Equal("account-model", Assert.Single(observed));
+            else Assert.Empty(observed);
+            var args = await File.ReadAllLinesAsync(executable + ".args");
+            Assert.Equal(explicitModel is not null, args.Contains("--model", StringComparer.Ordinal));
+            if (explicitModel is not null) Assert.Contains(explicitModel, args);
+            Assert.Contains("model_reasoning_effort=\"medium\"", args);
+            Assert.Equal(directory, await File.ReadAllTextAsync(executable + ".home"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous);
+            Environment.SetEnvironmentVariable("CODEX_HOME", previousHome);
+            Directory.Delete(directory, true);
+        }
+    }
+
     [Fact]
     public async Task ExecutionProfileControlsImplementationRepairIntegrationRepairAndConflictInvocations()
     {

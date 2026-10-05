@@ -22,6 +22,11 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var execution = context.Execution;
         var issue = context.Issue;
         var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
+        executionCodex = executionCodex.WithModelObserver(model =>
+        {
+            execution.RecordCliModel(model);
+            output.CodexProfile(execution);
+        });
         try
         {
             await TransitionAsync(execution, ExecutionState.Preparing, ct);
@@ -439,7 +444,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
-            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.Model, EffectiveEffort: execution.CodexProfile?.Effort,
+            ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
+            ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration);
 

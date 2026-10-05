@@ -75,6 +75,17 @@ public sealed class CodexExecutionProfileTests
     }
 
     [Fact]
+    public void ResolvedCliModelIsReportedOnRetryWithoutForcingSelection()
+    {
+        var source = Entry() with { EffectiveModel = "cli-model", EffectiveEffort = "low", ModelSelectedByCli = true };
+        var profile = CodexExecutionProfile.Resolve("## Codex\nmodel: edited", new CodexSettings { Model = "project" }, source);
+        Assert.Null(profile.Model);
+        Assert.Equal("cli-model", profile.EffectiveModel);
+        Assert.Equal("low", profile.Effort);
+        Assert.DoesNotContain("--model", CodexExecutor.BuildArguments(new CodexSettings { Model = profile.Model }, "schema", "output", "prompt"));
+    }
+
+    [Fact]
     public void LegacyRecoveryUsesProjectDefaultsWithoutApplyingIssueEdits()
     {
         Assert.Equal(new CodexExecutionProfile("project", "medium"), CodexExecutionProfile.Resolve(

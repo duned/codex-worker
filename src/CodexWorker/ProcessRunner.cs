@@ -11,7 +11,7 @@ public sealed class ProcessRunner
 
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory,
         TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null,
-        string? standardInput = null)
+        string? standardInput = null, Action<string>? standardErrorObserver = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(executable)
@@ -59,7 +59,7 @@ public sealed class ProcessRunner
         catch (Exception ex) { throw new InvalidOperationException($"Could not start '{start.FileName}' in '{workingDirectory}': {ex.Message}", ex); }
 
         var stdout = ReadLimitedAsync(process.StandardOutput, CaptureLimit);
-        var stderr = ReadLimitedAsync(process.StandardError, CaptureLimit);
+        var stderr = ReadLimitedAsync(process.StandardError, CaptureLimit, standardErrorObserver);
         using var timeoutCts = timeout is null ? null : new CancellationTokenSource(timeout.Value);
         using var linked = timeoutCts is null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
@@ -150,7 +150,7 @@ public sealed class ProcessRunner
         }
     }
 
-    private static async Task<string> ReadLimitedAsync(StreamReader reader, int limit)
+    private static async Task<string> ReadLimitedAsync(StreamReader reader, int limit, Action<string>? observer = null)
     {
         var buffer = new char[4096];
         var output = new StringBuilder(Math.Min(limit, 8192));
@@ -161,6 +161,13 @@ public sealed class ProcessRunner
             var remaining = limit - output.Length;
             if (remaining > 0) output.Append(buffer, 0, Math.Min(remaining, count));
             if (count > remaining) truncated = true;
+            // Only the bounded startup prefix is relevant to execution provenance.
+            if (observer is not null && output.Length <= 8192) observer(output.ToString());
+            else if (observer is not null)
+            {
+                observer(output.ToString(0, 8192));
+                observer = null;
+            }
         }
         if (truncated) output.Append("\n[output truncated]");
         return output.ToString();

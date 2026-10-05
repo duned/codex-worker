@@ -43,6 +43,15 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes
     }, projectEnvironment);
 
+    private Action<string?>? _modelObserver;
+
+    public ICodexExecutor WithModelObserver(Action<string?> observer)
+    {
+        var scoped = new CodexExecutor(runner, settings, projectEnvironment);
+        scoped._modelObserver = observer;
+        return scoped;
+    }
+
     private static string Executable => CodexProvisioning.CodexServiceEnvironment.Executable;
     internal const string OutputSchema = """
         {
@@ -202,11 +211,20 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             var args = BuildArguments(settings, schemaPath, outputPath, useStandardInput ? "-" : prompt);
             var environment = CodexEnvironment.Create(projectEnvironment);
             ProcessResult result;
+            var modelReported = false;
+            void ObserveStartup(string prefix)
+            {
+                if (modelReported || !string.IsNullOrWhiteSpace(settings.Model)) return;
+                var model = CodexCliModel.TryReadStartupHeader(prefix);
+                if (model is null) return;
+                modelReported = true;
+                _modelObserver?.Invoke(model);
+            }
             try
             {
                 result = await runner.RunAsync(Executable, args, projectDirectory,
                     TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables,
-                    standardInput: useStandardInput ? prompt : null);
+                    standardInput: useStandardInput ? prompt : null, standardErrorObserver: ObserveStartup);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
@@ -214,7 +232,11 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 throw new CodexExecutionInfrastructureException(ExecutionFailureCategory(ex),
                     $"Codex execution could not complete reliably: {ex.Message}", ex);
             }
-            finally { environment.Dispose(); }
+            finally
+            {
+                environment.Dispose();
+                if (!modelReported && string.IsNullOrWhiteSpace(settings.Model)) _modelObserver?.Invoke(null);
+            }
             if (result.ExitCode != 0)
                 throw new CodexExecutionInfrastructureException("Codex process failure",
                     $"Codex execution exited with code {result.ExitCode}; service/authentication/CLI failure is possible.{Diagnostics(result.StandardOutput, result.StandardError)}");
@@ -337,7 +359,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         If the changes cannot be safely reconciled, return failed or blocked with actionable reasons.
         Edit only this execution worktree. The Worker owns repair commits, revalidation and further rebases if the base advances again.
 
-        Effective Codex model: {settings.Model ?? "CLI default"}; reasoning effort: {settings.ReasoningEffort}.
+        Effective Codex model: {settings.Model ?? "unknown (selected by CLI)"}; reasoning effort: {settings.ReasoningEffort}.
         Original execution base/recovery tip: {context.OriginalBaseCommit}
         Implementation commit before reconciliation: {context.ImplementationCommit}
         Integrated base commit: {context.IntegratedBaseCommit}

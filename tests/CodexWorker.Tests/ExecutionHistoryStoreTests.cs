@@ -64,7 +64,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -85,7 +85,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -98,16 +98,43 @@ public sealed class ExecutionHistoryStoreTests
     }
 
     [Fact]
-    public async Task UpdatesCannotChangeAnExistingProfileIncludingCliDefaultSelection()
+    public async Task VersionNineMigrationRetainsCliSelectionWithoutInventingAModel()
+    {
+        using var database = new TemporaryDatabase();
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { EffectiveEffort = "low" });
+            await store.CreateAsync(Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { EffectiveModel = "explicit-model", EffectiveEffort = "high" });
+        }
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database.Path }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
+            await command.ExecuteNonQueryAsync();
+        }
+        using var migrated = new ExecutionHistoryStore(database.Path);
+        var entries = await migrated.ReadAllAsync();
+        Assert.True(Assert.Single(entries, entry => entry.EffectiveModel is null).ModelSelectedByCli);
+        Assert.False(Assert.Single(entries, entry => entry.EffectiveModel == "explicit-model").ModelSelectedByCli);
+    }
+
+    [Fact]
+    public async Task UpdatesResolveCliModelWithoutChangingEffort()
     {
         using var database = new TemporaryDatabase();
         using var store = new ExecutionHistoryStore(database.Path);
-        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { EffectiveEffort = "low" };
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { EffectiveEffort = "low", ModelSelectedByCli = true };
         await store.CreateAsync(entry);
         await store.UpdateAsync(entry with { EffectiveModel = "changed", EffectiveEffort = "high" });
         var actual = Assert.Single(await store.ReadAllAsync());
-        Assert.Null(actual.EffectiveModel);
+        Assert.Equal("changed", actual.EffectiveModel);
+        Assert.True(actual.ModelSelectedByCli);
         Assert.Equal("low", actual.EffectiveEffort);
+        await store.UpdateAsync(entry with { EffectiveModel = "another" });
+        Assert.Equal("another", Assert.Single(await store.ReadAllAsync()).EffectiveModel);
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        Assert.Equal("another", Assert.Single(await reopened.ReadAllAsync()).EffectiveModel);
     }
 
     [Theory]
@@ -236,7 +263,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(9L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(10L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);
