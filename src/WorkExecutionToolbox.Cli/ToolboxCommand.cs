@@ -12,6 +12,7 @@ public static class ToolboxCommand
         Usage: wet COMMAND [--repo owner/name] [--json] [--refresh]
           parent set CHILD... PARENT       Set one parent for 1–50 distinct children (clear before replacing).
           parent clear CHILD            Clear an organizational parent.
+          roots [--state open|closed|all] List parentless repository Issues (default all).
           children PARENT               List direct organizational children.
           dependency add ISSUE BLOCKER...     ISSUE is blocked by each BLOCKER (1–50).
           dependency remove ISSUE BLOCKER...  Remove those prerequisites.
@@ -27,7 +28,7 @@ public static class ToolboxCommand
         Exit codes: 0 success; 1 provider/operation failure; 2 usage; 3 missing Issue;
                     4 conflict; 5 partial/uncertain write; 130 cancelled.
         After a failed, partial or cancelled write, refresh relationships before retrying.
-        --refresh fetches fresh Issue data for children, relationships and graph; stable IDs stay cached.
+        --refresh fetches fresh Issue data for roots, children, relationships and graph; stable IDs stay cached.
         --json emits a versioned JSON envelope; errors go to stderr, results to stdout.
         """;
 
@@ -127,6 +128,15 @@ public static class ToolboxCommand
                         AddDiagnostic(lines, relation.Result.Diagnostic);
                     }
                     break;
+                case "roots":
+                    if (relationships is not IIssueRepositoryProvider repositories)
+                        throw new GitHubIssueException(GitHubIssueFailure.Provider, "Provider does not support repository inspection.");
+                    var roots = await repositories.ListRootsAsync(command.RepositoryContext, command.State,
+                        cancellationToken: cancellationToken);
+                    data = roots;
+                    lines.Add(command.RepositoryContext.Repository);
+                    AddIssues(lines, "Roots", roots);
+                    break;
                 case "children":
                 case "relationships":
                     var result = await relationships.GetRelationshipsAsync(command.Issue, cancellationToken);
@@ -155,7 +165,7 @@ public static class ToolboxCommand
             if (exit is 1 or 5 or 130) lines.Add("Refresh relationships before retrying a write; it may have taken effect.");
             await output.WriteLineAsync(json
                 ? JsonSerializer.Serialize(new { schemaVersion = 1, command = command.Name,
-                    repository = command.Issue.Repository.Repository, issue = command.Issue.Number, data }, JsonOptions)
+                    repository = command.RepositoryContext.Repository, issue = command.Name == "roots" ? (int?)null : command.Issue.Number, data }, JsonOptions)
                 : string.Join(Environment.NewLine, lines));
             return exit;
         }
@@ -184,31 +194,40 @@ public static class ToolboxCommand
         string? repository = null;
         var jsonSeen = false;
         var refresh = false;
+        IssueListState? state = null;
         var words = new List<string>();
         for (var i = 0; i < args.Length; i++)
         {
             if (args[i] == "--repo" && repository is null && i + 1 < args.Length)
                 repository = args[++i];
+            else if (args[i] == "--state" && state is null && i + 1 < args.Length)
+                state = args[++i] switch
+                {
+                    "open" => IssueListState.Open, "closed" => IssueListState.Closed, "all" => IssueListState.All,
+                    _ => throw new ArgumentException("Invalid state.")
+                };
             else if (args[i] == "--refresh" && !refresh) refresh = true;
             else if (args[i] == "--json" && !jsonSeen) jsonSeen = true;
             else if (args[i].StartsWith('-')) throw new ArgumentException("Unknown or duplicate option.");
             else words.Add(args[i]);
         }
-        if (words.Count < 2) throw new ArgumentException("Command required.");
+        if (words.Count < 1) throw new ArgumentException("Command required.");
         var name = words[0] is "parent" or "dependency" ? string.Join(' ', words.Take(2)) : words[0];
         var numberWords = words.Skip(name.Contains(' ') ? 2 : 1).ToArray();
         var numbers = numberWords.Select(word => int.TryParse(word, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > 0
             ? n : throw new ArgumentException("Positive Issue number required.")).ToArray();
         var valid = name switch
         {
+            "roots" => numbers.Length == 0,
             "parent set" => numbers.Length is >= 2 and <= 51,
             "parent clear" or "children" or "relationships" or "graph" => numbers.Length == 1,
             "dependency add" or "dependency remove" => numbers.Length is >= 2 and <= 51,
             _ => false
         };
-        if (refresh && name is not ("children" or "relationships" or "graph")) valid = false;
+        if (state is not null && name != "roots") valid = false;
+        if (refresh && name is not ("roots" or "children" or "relationships" or "graph")) valid = false;
         if (!valid) throw new ArgumentException("Invalid command arguments.");
-        return new Command(name, repository is null ? null : GitHubRepositoryContext.Create(repository), numbers, refresh);
+        return new Command(name, repository is null ? null : GitHubRepositoryContext.Create(repository), numbers, refresh, state ?? IssueListState.All);
     }
 
     private static void ValidateMutation(Command command)
@@ -247,8 +266,9 @@ public static class ToolboxCommand
         return exit;
     }
 
-    private sealed record Command(string Name, RepositoryContext? Repository, int[] Numbers, bool Refresh)
+    private sealed record Command(string Name, RepositoryContext? Repository, int[] Numbers, bool Refresh, IssueListState State)
     {
-        public IssueReference Issue => new(Repository ?? throw new InvalidOperationException("Repository has not been resolved."), Numbers[0]);
+        public RepositoryContext RepositoryContext => Repository ?? throw new InvalidOperationException("Repository has not been resolved.");
+        public IssueReference Issue => new(RepositoryContext, Numbers[0]);
     }
 }

@@ -162,6 +162,8 @@ All positional arguments are positive human GitHub Issue numbers in that reposit
 wet parent set 9 3 --repo owner/name
 wet parent set 9 10 3 --repo owner/name
 wet parent clear 9 --repo owner/name
+wet roots --repo owner/name
+wet roots --state open --repo owner/name --json --refresh
 wet children 3 --repo owner/name
 wet dependency add 9 3 4 --repo owner/name
 wet dependency remove 9 4 --repo owner/name
@@ -176,7 +178,28 @@ From an unambiguous GitHub.com checkout, repository discovery applies to all com
 wet parent set 9 10 3
 wet relationships 3
 wet graph 9 --json
+wet roots
 ```
+
+`wet roots [--state open|closed|all] [--repo owner/name] [--json] [--refresh]`
+lists Issues with no native GitHub parent, ordered by Issue number. The default
+is `all`, so an interactive hierarchy audit includes completed hierarchies as
+well as current work. Use `open` or `closed` to restrict Issue state; parent state
+does not affect classification. Top-level parents and parentless leaves both
+appear. Pull requests are excluded. Titles, labels, dependencies and milestones
+never determine hierarchy, and the command performs no writes.
+
+Repository pages are always fetched afresh (100 entries per page, counting pull
+requests); native parent reads reuse the existing Issue cache and command scope.
+`--refresh` bypasses cached parents while retaining stable identity checks.
+Reads are not an atomic GitHub snapshot. The default limits are 100 repository
+pages and 5,000 HTTP requests; exhausting either fails the command instead of
+returning an incomplete list. Human output includes number, state and title;
+empty results report `Roots: none` with exit code 0. JSON uses the existing
+`schemaVersion: 1` envelope with `command: "roots"`, the repository, `issue: null`,
+and a `data` array of structured Issue summaries (empty when there are no roots).
+Library hosts use `IIssueRepositoryProvider.ListRootsAsync` with optional bounded
+`IssueRootOptions`.
 
 `wet parent set CHILD... PARENT [--repo owner/name]` accepts 1–50 distinct
 children followed by one parent; duplicate children and self-parent requests are
@@ -365,7 +388,7 @@ unchanged. Missing/invisible Issues are not persistently negative-cached. Graph 
 identity, cycle, depth, Issue and edge checks remain active. HTTP request budgets count actual
 cache misses; cached lists still obey relationship pagination limits.
 
-Use `--refresh` with `children`, `relationships` or `graph` to bypass persistent mutable data.
+Use `--refresh` with `roots`, `children`, `relationships` or `graph` to bypass persistent mutable data.
 Stable identities stay cached, and equivalent reads are deduplicated within the command even
 with refresh. Refresh is rejected for mutation commands: mutation preflight and verification
 always read fresh state. Before and after each attempted write, all mutable data for the
