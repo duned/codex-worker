@@ -10,11 +10,14 @@ internal static class ManagedExecutionLog
         return safe.Length <= limit ? safe : safe[..limit] + "…";
     }
 
-    public static string Assignment(WorkerAssignmentContract assignment, string message, IReadOnlyList<string>? secrets = null) =>
+    public static string Assignment(WorkerAssignmentContract assignment, string message, IReadOnlyList<string>? secrets = null,
+        bool includeCorrelation = false) =>
+        includeCorrelation ?
         $"Managed · project {Safe(assignment.Project.Id, secrets, 128)}/{Safe(assignment.Project.Name, secrets, 128)} · " +
         $"work {Safe(assignment.Work.Type, secrets, 64)} #{Safe(assignment.Work.Id, secrets, 64)} · " +
         $"assignment {Safe(assignment.AssignmentId, secrets, 128)} · Server execution {Safe(assignment.ServerExecutionId, secrets, 128)} · " +
-        $"lease generation {assignment.Lease?.Generation.ToString() ?? "missing"} · {Safe(message, secrets)}";
+        $"lease generation {assignment.Lease?.Generation.ToString() ?? "missing"} · {Safe(message, secrets)}" :
+        $"Managed · assignment [{Safe(assignment.AssignmentId, secrets, 8)}] · {Safe(message, secrets)}";
 
     public static string Execution(ExecutionHistoryEntry entry, string message, IReadOnlyList<string>? secrets = null) =>
         $"Managed · project {Safe(entry.Project, secrets, 128)} · Issue #{entry.IssueNumber} · " +
@@ -22,9 +25,6 @@ internal static class ManagedExecutionLog
         $"Server execution {Safe(entry.ServerExecutionId ?? "missing", secrets, 128)} · " +
         $"lease generation {entry.OwnershipGeneration?.ToString() ?? "missing"} · {Safe(message, secrets)}";
 
-    public static void Write(WorkerConsole output, Action<string> operationalLog, string message)
-    {
-        output.OperationalEvent(message);
-        operationalLog(message);
-    }
+    public static string ReportCompleted(ExecutionHistoryEntry entry, string state, IReadOnlyList<string>? secrets = null) =>
+        $"Managed · execution {ExecutionFormatting.Display(entry.ExecutionId)} · Server report completed · {Safe(state, secrets)}";
 }

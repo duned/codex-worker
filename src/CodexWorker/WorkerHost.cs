@@ -31,9 +31,10 @@ public sealed class WorkerHost
         _operationalLog = operationalLog ?? (_ => { });
     }
 
-    private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null) =>
-        ManagedExecutionLog.Write(_output, _operationalLog,
-            ManagedExecutionLog.Assignment(assignment, message, configuration?.Environment.Variables.Values.ToArray()));
+    private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null,
+        bool includeCorrelation = false) =>
+        _operationalLog(ManagedExecutionLog.Assignment(assignment, message,
+            configuration?.Environment.Variables.Values.ToArray(), includeCorrelation));
 
     internal async Task RejectIncompatibleAssignmentAsync(WorkerAssignmentContract assignment,
         WorkerConfiguration configuration, ExecutionHistoryStore history, string reason, CancellationToken token)
@@ -58,7 +59,6 @@ public sealed class WorkerHost
             ServerExecutionId: assignment.ServerExecutionId, AssignmentId: assignment.AssignmentId,
             OwnershipGeneration: lease.Generation);
         await history.CreateAsync(entry, token);
-        LogAssignment(assignment, "terminal outcome Blocked · reporting to Server", configuration);
         await _registration.ReportExecutionAsync(_global.Server, entry, "Failed", null, lease.Generation, token);
         LogAssignment(assignment, "terminal outcome Blocked · Server report completed", configuration);
     }
@@ -590,7 +590,7 @@ public sealed class WorkerHost
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
                             throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
                         var assignment = assignmentResponse.Assignment!;
-                        LogAssignment(assignment, "assignment received");
+                        LogAssignment(assignment, "assignment received", includeCorrelation: true);
                         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
                             lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
                             lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
@@ -631,7 +631,6 @@ public sealed class WorkerHost
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} arrived while project '{assignment.Project.Name}' was draining; assignment remains owned by this Worker for inspection.");
                         }
-                        LogAssignment(assignment, "assignment accepted · preparing project", assignedProject.Configuration);
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
                         var leaseStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
@@ -642,9 +641,7 @@ public sealed class WorkerHost
                         {
                             try
                             {
-                                LogAssignment(assignment, $"revision {assignment.Project.Revision} verification started", assignedProject.Configuration);
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
-                                LogAssignment(assignment, $"revision {assignment.Project.Revision} verified", assignedProject.Configuration);
                                 if (!preparedConfigurations.Contains(assignedProject.Configuration))
                                 {
                                     managedConfiguration!.RecordProjectState(assignment.Project, "materializing");
@@ -652,9 +649,8 @@ public sealed class WorkerHost
                                     try
                                     {
                                         LogAssignment(assignment, Directory.Exists(assignedProject.Configuration.Project.Directory)
-                                            ? "materialization started · reusing checkout" : "materialization started · first clone", assignedProject.Configuration);
+                                            ? "checkout reuse" : "first materialization", assignedProject.Configuration);
                                         await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token);
-                                        LogAssignment(assignment, "materialization completed", assignedProject.Configuration);
                                     }
                                     finally { assignedProject.RepositoryGate.Release(); }
                                     foreach (var label in await assignedProject.GitHub.FindMissingLabelsAsync(
@@ -668,7 +664,7 @@ public sealed class WorkerHost
                                     preparedConfigurations.Add(assignedProject.Configuration);
                                     managedConfiguration!.RecordProjectState(assignment.Project, "ready");
                                 }
-                                LogAssignment(assignment, $"post-preparation revision {assignment.Project.Revision} verification started", assignedProject.Configuration);
+                                else LogAssignment(assignment, "checkout reuse", assignedProject.Configuration);
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
                                 LogAssignment(assignment, $"revision {assignment.Project.Revision} verified · project ready", assignedProject.Configuration);
                             }
@@ -690,7 +686,6 @@ public sealed class WorkerHost
                                 nextManagedConfigurationSync = DateTimeOffset.MinValue;
                                 continue;
                             }
-                            LogAssignment(assignment, "preparation completed · starting Worker execution", assignedProject.Configuration);
                             assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token);
                         }
                         catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)

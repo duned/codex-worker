@@ -16,7 +16,14 @@ public sealed class ManagedExecutionLogTests
             new ServerExecutionLeaseContract("server-execution", "worker-id", 7, now, now.AddMinutes(5), "Active"));
 
         var message = ManagedExecutionLog.Assignment(assignment,
-            "failure private-test-value token=unsafe-value\n" + new string('x', 2000), ["private-test-value"]);
+            "failure private-test-value token=unsafe-value\n" + new string('x', 2000), ["private-test-value"], includeCorrelation: true);
+
+        var transition = ManagedExecutionLog.Assignment(assignment, "revision 1 verified · project ready");
+        Assert.StartsWith("Managed · assignment [", transition, StringComparison.Ordinal);
+        Assert.EndsWith("revision 1 verified · project ready", transition, StringComparison.Ordinal);
+        Assert.DoesNotContain("Server execution", transition, StringComparison.Ordinal);
+        Assert.DoesNotContain("lease generation", transition, StringComparison.Ordinal);
+        Assert.True(transition.Length < 100);
 
         Assert.Contains("project project-id/Project [redacted]", message, StringComparison.Ordinal);
         Assert.Contains("work github-issue #17", message, StringComparison.Ordinal);

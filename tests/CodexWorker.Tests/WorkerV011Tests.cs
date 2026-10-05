@@ -47,8 +47,8 @@ public sealed class WorkerV011Tests
 
         Assert.NotNull(await h.ProcessOneAsync());
 
-        Assert.Contains(h.OperationalMessages, message => message.StartsWith("Scheduler · #17 claimed · execution [", StringComparison.Ordinal));
-        Assert.DoesNotContain("Scheduler · #17 claimed", h.Output.ToString());
+        Assert.Contains(h.OperationalMessages, message => message.StartsWith("Scheduler · Test Project / #17 claimed · execution [", StringComparison.Ordinal));
+        Assert.DoesNotContain("Scheduler · Test Project / #17 claimed", h.Output.ToString());
     }
 
     [Fact]
@@ -629,18 +629,17 @@ public sealed class WorkerV011Tests
         Assert.Equal("server-request-123", persisted.ServerExecutionId);
         Assert.Equal("assignment-456", persisted.AssignmentId);
         Assert.Equal("Completed", persisted.State);
-        var managed = h.OperationalMessages.Where(message => message.StartsWith("Managed ·", StringComparison.Ordinal)).ToArray();
-        Assert.Equal(new[] { "Claimed", "Preparing", "Implementing · Codex", "Validating", "Integrating", "Reporting" },
-            managed.Where(message => message.Contains(" · stage ", StringComparison.Ordinal))
-                .Select(message => message[(message.IndexOf(" · stage ", StringComparison.Ordinal) + " · stage ".Length)..]));
-        Assert.Contains(managed, message => message.EndsWith("terminal outcome Completed", StringComparison.Ordinal));
-        Assert.All(managed, message =>
-        {
-            Assert.Contains($"execution {persisted.ExecutionId}", message, StringComparison.Ordinal);
-            Assert.Contains("assignment assignment-456 · Server execution server-request-123 · lease generation 1", message, StringComparison.Ordinal);
-            Assert.Contains(message, h.Output.ToString(), StringComparison.Ordinal);
-            Assert.DoesNotContain("Example task", message, StringComparison.Ordinal);
-        });
+        Assert.Equal(1, persisted.OwnershipGeneration);
+        Assert.DoesNotContain(h.OperationalMessages, message => message.StartsWith("Managed ·", StringComparison.Ordinal));
+        Assert.Contains(h.OperationalMessages, message => message.StartsWith("Scheduler · Test Project / #17 claimed", StringComparison.Ordinal));
+        var lines = h.Output.ToString().Split(Environment.NewLine);
+        var started = Array.FindIndex(lines, line => line.StartsWith("▶ Issue ·", StringComparison.Ordinal));
+        Assert.True(started >= 0);
+        Assert.Equal("↳ Codex · model CLI default · effort medium", lines[started + 1]);
+        Assert.Contains(lines, line => line.Contains("Codex working OK", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("Validation OK", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("Integrating OK", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("completed ·", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -663,7 +662,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.OperationalMessages, message => message.Contains("preparation rejected", StringComparison.Ordinal) &&
             message.Contains("assignment assignment-failed · Server execution server-failed · lease generation 3", StringComparison.Ordinal) &&
             message.Contains("Checkout is dirty", StringComparison.Ordinal));
-        Assert.Contains(h.OperationalMessages, message => message.Contains("terminal outcome InfrastructureFailure", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.OperationalMessages, message => message.Contains(" · stage ", StringComparison.Ordinal));
+        Assert.DoesNotContain("Managed ·", h.Output.ToString(), StringComparison.Ordinal);
         Assert.All(h.OperationalMessages, message =>
         {
             Assert.DoesNotContain("private-test-value", message, StringComparison.Ordinal);

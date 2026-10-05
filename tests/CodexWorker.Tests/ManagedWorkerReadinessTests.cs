@@ -498,18 +498,21 @@ public sealed class ManagedWorkerReadinessTests
             Assert.Contains(managed, message => message.Contains("assignment received", StringComparison.Ordinal));
             Assert.Contains(managed, message => message.Contains("assignment rejected", StringComparison.Ordinal));
             Assert.Contains(managed, message => message.Contains("terminal outcome Blocked · Server report completed", StringComparison.Ordinal));
-            Assert.All(managed, message =>
+            var receipt = Assert.Single(managed, message => message.Contains("assignment received", StringComparison.Ordinal));
+            Assert.Contains("project opaque-central-id/Central", receipt, StringComparison.Ordinal);
+            Assert.Contains("work github-issue #17", receipt, StringComparison.Ordinal);
+            Assert.Contains("assignment assignment · Server execution execution · lease generation 1", receipt, StringComparison.Ordinal);
+            Assert.All(managed.Where(message => message != receipt), message =>
             {
-                Assert.Contains("project opaque-central-id/Central", message, StringComparison.Ordinal);
-                Assert.Contains("work github-issue #17", message, StringComparison.Ordinal);
-                Assert.Contains("assignment assignment · Server execution execution · lease generation 1", message, StringComparison.Ordinal);
-                Assert.Contains(message, output.ToString(), StringComparison.Ordinal);
+                Assert.StartsWith("Managed · assignment [", message, StringComparison.Ordinal);
+                Assert.DoesNotContain("Server execution", message, StringComparison.Ordinal);
             });
+            Assert.Equal(managed.Length, managed.Distinct(StringComparer.Ordinal).Count());
+            Assert.DoesNotContain("Managed ·", output.ToString(), StringComparison.Ordinal);
             if (scenario == "materialization")
             {
-                Assert.Contains(managed, message => message.Contains("assignment accepted", StringComparison.Ordinal));
-                Assert.Contains(managed, message => message.Contains("revision 1 verified", StringComparison.Ordinal));
-                Assert.Contains(managed, message => message.Contains("materialization started · first clone", StringComparison.Ordinal));
+                Assert.DoesNotContain(managed, message => message.Contains("project ready", StringComparison.Ordinal));
+                Assert.Contains(managed, message => message.Contains("first materialization", StringComparison.Ordinal));
                 Assert.Contains(managed, message => message.Contains("infrastructure failure before execution", StringComparison.Ordinal));
                 Assert.DoesNotContain(managed, message => message.Contains("clone unavailable", StringComparison.Ordinal));
                 Assert.DoesNotContain(managed, message => message.Contains("starting Worker execution", StringComparison.Ordinal));

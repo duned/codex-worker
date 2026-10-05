@@ -49,17 +49,34 @@ public sealed class ManagedCheckoutTests
         var instructions = Path.Combine(fixture.Root, "AGENTS.md");
         await File.WriteAllTextAsync(instructions, "test instructions");
         configuration.Codex.InstructionsFile = instructions;
-        var output = new WorkerConsole(new StringWriter(), interactive: false);
+        using var journal = new StringWriter();
+        var operationalMessages = new List<string>();
+        var output = new WorkerConsole(journal, interactive: false);
         using var telegram = new TelegramNotifier(false, output);
         var worker = new Worker(configuration, new AssignedIssueClient(), repository, new NoChangeCodex(),
             new PassingValidation(), telegram, output, history, serverSettings: settings,
-            registrationClient: new WorkerRegistrationClient(client));
+            registrationClient: new WorkerRegistrationClient(client), operationalLog: message =>
+            {
+                operationalMessages.Add(message);
+                journal.WriteLine(message);
+            });
         await worker.PrepareForHostAsync(CancellationToken.None);
         synchronizer.RecordProjectState(project, "ready");
 
         var execution = await worker.ClaimAssignedAsync(assignment, CancellationToken.None);
         Assert.NotNull(execution);
         Assert.Equal(IssueOutcomeKind.Succeeded, Assert.IsType<IssueProcessingResult>(await execution).Kind);
+
+        var completedEntry = Assert.Single(await history.ReadAllAsync());
+        var completed = Assert.Single(operationalMessages, message => message.StartsWith("Managed ·", StringComparison.Ordinal));
+        Assert.Equal($"Managed · execution {ExecutionFormatting.Display(completedEntry.ExecutionId)} · Server report completed · Completed", completed);
+        Assert.Single(journal.ToString().Split(Environment.NewLine), line => line == completed);
+        Assert.DoesNotContain(" · stage ", journal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Scheduler · Central / #17 claimed", journal.ToString(), StringComparison.Ordinal);
+        var lines = journal.ToString().Split(Environment.NewLine);
+        var started = Array.FindIndex(lines, line => line.StartsWith("▶ Issue ·", StringComparison.Ordinal));
+        Assert.True(started >= 0);
+        Assert.Equal("↳ Codex · model CLI default · effort medium", lines[started + 1]);
 
         Assert.Equal("ready", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
         Assert.Equal("Claiming", reports[0].Stage);
