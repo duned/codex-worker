@@ -56,10 +56,12 @@ public static class ServerApplication
 
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
             services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>(),
-            issueWriter: githubIssueWriteService, cacheDatabasePath: databasePath));
-        builder.Services.AddSingleton<IRegistryStore>(_ => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
+            issueWriter: githubIssueWriteService, cacheDatabasePath: databasePath,
+            logger: services.GetRequiredService<ILogger<ServerGitHubAdministrationService>>()));
+        builder.Services.AddSingleton<IRegistryStore>(services => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
-            leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds));
+            leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds,
+            logger: services.GetRequiredService<ILogger<SqliteRegistryStore>>()));
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
@@ -445,7 +447,12 @@ public static class ServerApplication
         {
             if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
             if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
+            {
+                ServerOperationalDiagnostics.Write(app.Logger, LogLevel.Information, "result-report", "identity-rejected",
+                    executionId: executionRequestId, workerId: workerId, assignmentId: report?.AssignmentId,
+                    leaseGeneration: report?.Generation, workerExecutionId: report?.WorkerExecutionId);
                 return Results.BadRequest(new { error = "Worker execution report identity is invalid." });
+            }
             try
             {
                 var updated = await store.ReportExecutionAsync(executionRequestId, report, context.RequestAborted);
@@ -772,7 +779,11 @@ public static class ServerApplication
         {
             if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
             var error = ExecutionRequestValidation.Error(request);
-            if (error is not null) return Results.BadRequest(new { error });
+            if (error is not null)
+            {
+                ServerOperationalDiagnostics.Write(app.Logger, LogLevel.Information, "enqueue", "invalid-request", request?.ProjectId, request?.WorkReference);
+                return Results.BadRequest(new { error });
+            }
             try
             {
                 var created = await github.EnqueueIssueAsync(request.ProjectId, request.WorkReference, context.RequestAborted);

@@ -1,6 +1,8 @@
 namespace CodexServer;
 
 using System.Diagnostics;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text;
 using System.Text.Json;
 
@@ -582,14 +584,16 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
 /// <summary>Coordinates explicit Server Issue reads, eligibility checks, queueing, and assignment gating.</summary>
 public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrationService
 {
+    private readonly ILogger _logger;
     private readonly IRegistryStore registry;
     private readonly IServerGitHubReadService _reads;
     private readonly TimeProvider _clock;
     private readonly IServerGitHubIssueWriteService _issueWriter;
 
     public ServerGitHubAdministrationService(IRegistryStore registry, IServerGitHubReadService github,
-        TimeProvider? timeProvider = null, IServerGitHubIssueWriteService? issueWriter = null, string? cacheDatabasePath = null)
+        TimeProvider? timeProvider = null, IServerGitHubIssueWriteService? issueWriter = null, string? cacheDatabasePath = null, ILogger<ServerGitHubAdministrationService>? logger = null)
     {
+        _logger = logger ?? NullLogger<ServerGitHubAdministrationService>.Instance;
         this.registry = registry;
         _clock = timeProvider ?? TimeProvider.System;
         _reads = github is IGitHubIssueSnapshotSource source && cacheDatabasePath is not null
@@ -890,7 +894,12 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         }
     }
 
-    public async Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
+    public Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
+        CancellationToken cancellationToken = default) =>
+        ServerOperationalDiagnostics.RunAsync(_logger, "enqueue-check", () => EnqueueIssueCoreAsync(projectId, workReference, cancellationToken),
+            cancellationToken, projectId: projectId, work: workReference);
+
+    private async Task<ExecutionRequest> EnqueueIssueCoreAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken = default)
     {
         using var readOperation = BeginReadOperation(refresh: true);
@@ -959,12 +968,19 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
             }
             catch (OperationCanceledException)
             {
+                ServerOperationalDiagnostics.Write(_logger, cancellationToken.IsCancellationRequested ? LogLevel.Debug : LogLevel.Error,
+                    "assignment-check", cancellationToken.IsCancellationRequested ? "request-cancelled" : "eligibility-check-cancelled",
+                    assignment.Project.Id, assignment.Work, assignment.ServerExecutionId, assignment.WorkerId,
+                    assignment.AssignmentId, assignment.Lease?.Generation);
                 await registry.RejectManagedAssignmentAsync(assignment.ServerExecutionId, assignment.AssignmentId, assignment.WorkerId,
                     new("unavailable", ["GitHub eligibility check was canceled."], _clock.GetUtcNow()), CancellationToken.None);
                 throw;
             }
             catch
             {
+                ServerOperationalDiagnostics.Write(_logger, LogLevel.Error, "assignment-check", "eligibility-check-failed",
+                    assignment.Project.Id, assignment.Work, assignment.ServerExecutionId, assignment.WorkerId,
+                    assignment.AssignmentId, assignment.Lease?.Generation);
                 await registry.RejectManagedAssignmentAsync(assignment.ServerExecutionId, assignment.AssignmentId, assignment.WorkerId,
                     new("unavailable", ["GitHub eligibility could not be checked."], _clock.GetUtcNow()), CancellationToken.None);
                 throw;
