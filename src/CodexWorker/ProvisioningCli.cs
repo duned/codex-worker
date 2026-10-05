@@ -156,7 +156,7 @@ public static class ProvisioningCli
         if (result.Status == "succeeded" && result.CapabilityId == "github-cli" &&
             result.Action == ProvisioningCommandAction.PrepareAuthentication)
         {
-            writer.WriteLine("Run 'codex-worker provision login github-cli --timeout-seconds 300' as the Worker service account, then open the displayed device URL in a browser and enter the one-time code.");
+            writer.WriteLine("Run 'sudo codex-worker provision login github-cli --timeout-seconds 300' to authenticate as the Worker service account, then open the displayed device URL in a browser and enter the one-time code.");
             writer.WriteLine("Then run 'codex-worker provision check-authentication github-cli'. This checks node-local login only, not provider scopes or repository write access.");
         }
         if (result.Report?.FailureDetail is { } failure) writer.WriteLine($"Failure: {failure.Description}");

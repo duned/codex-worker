@@ -41,9 +41,33 @@ written separately to stderr. No registration token is returned in output.
 Human provisioning and credential failures include the shared safe failure
 description (and process exit code when available), matching JSON `failureDetail`.
 After `provision prepare-authentication github-cli`, use
-`provision login github-cli --timeout-seconds 300` as the Worker service account
+`sudo codex-worker provision login github-cli --timeout-seconds 300`
 to complete the typed device flow; successful login still does not prove
 repository authorization or execution readiness.
+
+On packaged Linux nodes, `sudo codex-worker provision ...` (and `credential`,
+`capabilities`, `status`, and `diagnostics`) runs the fixed Worker administration
+command in a transient systemd unit as `codex-worker`. It uses the packaged
+service HOME, PATH, working directory, private umask and protected
+`/etc/codex-worker/worker.env`, including `CODEX_HOME` and
+`CODEX_WORKER_CODEX_EXECUTABLE` overrides. Operator environment variables and
+credentials are not forwarded. Login, its verification probe, authentication
+checks and logout therefore observe and mutate the same node account. The
+existing GitHub managed authentication directory remains under that account's
+home; unrelated operator credentials are not copied or removed. Package
+operations remain separate from authentication and use the existing node-local
+policy and fixed elevation helpers. A missing service context fails rather than
+falling back to the administrator's authentication. Unpackaged standalone nodes
+retain their explicitly owned caller context; Server-triggered operations already
+run inside the Worker service.
+For packaged local node administration, use sudo even when the interactive
+account is `codex-worker`: its shell may not have loaded `worker.env`.
+
+For Codex, run `sudo codex-worker provision login codex-cli`, then
+`sudo codex-worker provision check-authentication codex-cli` or
+`sudo codex-worker provision status`. `sudo -u codex-worker -H codex login status`
+also checks the service account's default home when no CODEX_HOME override is
+configured. Root's `sudo codex login status` does not establish Worker readiness.
 
 Configuration defaults to `/etc/codex-worker/worker.yml` on Linux and
 `~/.codex-worker/worker.yml` elsewhere. Use `--config <path>` to select another

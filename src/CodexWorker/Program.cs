@@ -75,6 +75,18 @@ public static class Program
             WorkerCommandHelp.Write(helpCommand);
             return ProcessExitCodes.Success;
         }
+        try
+        {
+            if (await WorkerServiceAdministrationContext.TryRunAsync(commandLine, cancellationToken) is { } serviceExitCode)
+                return serviceExitCode;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or IOException)
+        {
+            WorkerCliOutput.Failure(commandLine, output, Console.Out, "service-context-unavailable",
+                "Worker service administration could not run. Use sudo codex-worker and check the packaged service account, systemd, protected worker.env and command usage. " +
+                FailureDiagnosticRedactor.Redact(ex.Message));
+            return ProcessExitCodes.StartupFailure;
+        }
         if (commandLine.Command == "register")
         {
             using var standardInput = registrationInput is null && commandLine.Arguments.Contains("--token-stdin", StringComparer.Ordinal)
