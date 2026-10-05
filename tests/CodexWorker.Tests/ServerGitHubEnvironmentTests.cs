@@ -7,6 +7,33 @@ using System.Diagnostics;
 [Collection("ServerTokenEnvironment")]
 public sealed class ServerGitHubEnvironmentTests
 {
+    [Fact]
+    public async Task RepositoryVerificationUsesOwnedServiceContextWithoutPersistingCredentials()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var directory = new TestDirectory();
+        var setup = new NodeGitHubSetup(directory.Path, unrelatedAuthentication: () => false);
+        var prepared = await setup.ExecuteAsync(new("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, prepared.Status);
+        var start = await setup.CreateStartInfoAsync("/usr/bin/git",
+            ["ls-remote", "--", "https://github.com/owner/private.git", "HEAD"], CancellationToken.None);
+        Assert.Equal(Path.Combine(directory.Path, "github"), start.Environment["GH_CONFIG_DIR"]);
+        Assert.Equal("!gh auth git-credential", start.Environment["GIT_CONFIG_VALUE_2"]);
+        Assert.Equal("", start.Environment["GIT_CONFIG_VALUE_0"]);
+        Assert.Equal("", start.Environment["GIT_CONFIG_VALUE_1"]);
+        Assert.Equal("/dev/null", start.Environment["GIT_CONFIG_GLOBAL"]);
+        Assert.Equal("/dev/null", start.Environment["GIT_CONFIG_SYSTEM"]);
+        Assert.False(start.Environment.ContainsKey("GH_TOKEN"));
+        Assert.False(start.Environment.ContainsKey("GITHUB_TOKEN"));
+        Assert.Equal(new[] { "ls-remote", "--", "https://github.com/owner/private.git", "HEAD" }, start.ArgumentList);
+        Assert.Single(Directory.GetFiles(Path.Combine(directory.Path, "github")));
+        var shared = await NodeGitHubSetup.GitHttpsEnvironmentAsync(CancellationToken.None, directory.Path);
+        Assert.Equal(start.Environment["GH_CONFIG_DIR"], shared["GH_CONFIG_DIR"]);
+        Assert.Equal(start.Environment["GIT_CONFIG_VALUE_2"], shared["GIT_CONFIG_VALUE_2"]);
+        File.CreateSymbolicLink(Path.Combine(directory.Path, "github", "hosts.yml"), Path.Combine(directory.Path, "operator"));
+        await Assert.ThrowsAsync<IOException>(() => setup.CreateStartInfoAsync("/usr/bin/git", [], CancellationToken.None));
+    }
+
     [Theory]
     [InlineData("auth status --hostname github.com")]
     [InlineData("api repos/team/project --jq .full_name")]
@@ -64,6 +91,8 @@ public sealed class ServerGitHubEnvironmentTests
     {
         using var directory = new TestDirectory();
         if (unowned) Directory.CreateDirectory(Path.Combine(directory.Path, "github"));
+        await Assert.ThrowsAsync<IOException>(() => NodeGitHubSetup.GitHttpsEnvironmentAsync(
+            CancellationToken.None, directory.Path, requireManagedAuthentication: true));
         await Assert.ThrowsAsync<IOException>(() => ServerGitHubReadService.CreateGhStartInfoAsync(
             ["auth", "status"], CancellationToken.None, directory.Path));
         async Task<GitHubReadCommandResult> Run(IReadOnlyList<string> arguments, CancellationToken token)
@@ -89,7 +118,8 @@ public sealed class ServerGitHubEnvironmentTests
         if (!OperatingSystem.IsLinux()) return;
         using var directory = new TestDirectory();
         var setup = new NodeGitHubSetup(directory.Path, unrelatedAuthentication: () => false);
-        await setup.ExecuteAsync(new("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None);
+        var prepared = await setup.ExecuteAsync(new("server", "github-cli", ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None);
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, prepared.Status);
         var calls = new List<string>();
         async Task<GitHubReadCommandResult> Run(IReadOnlyList<string> arguments, CancellationToken token)
         {

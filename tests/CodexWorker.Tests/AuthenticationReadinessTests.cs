@@ -67,6 +67,33 @@ public sealed class AuthenticationReadinessTests
         GitHubClient.ValidateIssueWritePermission("{\"push\":true}", "team/repo");
     }
 
+    [Theory]
+    [InlineData("{\"pull\":true}")]
+    [InlineData("{\"triage\":true,\"push\":false}")]
+    public async Task PublicReadAndIssuePermissionCannotAuthorizeExecutionWithoutGitWrite(string permissions)
+    {
+        var commands = new List<string[]>();
+        var github = new GitHubClient("team/public", (arguments, _) =>
+        {
+            var command = arguments.ToArray();
+            commands.Add(command);
+            return Task.FromResult(new ProcessResult(0, command.Contains("--jq") ? permissions : "[]", ""));
+        });
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => github.ValidateCapabilitiesAsync(CancellationToken.None));
+        Assert.Contains("permission", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(commands, command => command.Contains("issue"));
+    }
+
+    [Fact]
+    public async Task DryRunWriteFailureIsReportedSeparatelyFromSuccessfulRead()
+    {
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => GitRemoteAuthenticationProbe.ValidateAsync(
+            (arguments, _) => arguments.Contains("push") ? Task.FromException(new WorkerInfrastructureException("secret")) : Task.CompletedTask,
+            "team/repo", "feature/", CancellationToken.None));
+        Assert.Contains("dry-run Git push/write", failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", failure.ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task AssignedGitHubCredentialIsPassedOverStdinAndOnlySafeResultIsReturned()
     {

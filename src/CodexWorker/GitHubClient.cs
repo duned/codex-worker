@@ -12,10 +12,11 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     private readonly string repository;
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
 
-    public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds)
+    public GitHubClient(ProcessRunner runner, string repository, int timeoutSeconds, bool requireManagedAuthentication = false)
         : this(repository, async (arguments, ct) => await runner.RunAsync("gh", arguments,
             Environment.CurrentDirectory, TimeSpan.FromSeconds(timeoutSeconds), ct,
-            environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct))) { }
+            environment: await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct,
+                requireManagedAuthentication: requireManagedAuthentication))) { }
 
     internal GitHubClient(string repository,
         Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand)
@@ -204,6 +205,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         await RunCapabilityAsync(["auth", "status"], "GitHub authentication", ct);
         var permissions = await RunCapabilityAsync(["api", $"repos/{repository}", "--jq", ".permissions"], "GitHub repository access", ct);
         ValidateIssueWritePermission(permissions.StandardOutput, repository);
+        ValidateGitWritePermission(permissions.StandardOutput);
         var issues = await RunCapabilityAsync(["issue", "list", "--repo", repository, "--state", "all", "--limit", "1", "--json", "number"], "GitHub Issue access", ct);
         try
         {
@@ -247,6 +249,20 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     private static bool HasPermission(JsonElement permissions, string name) =>
         permissions.TryGetProperty(name, out var permission) && permission.ValueKind == JsonValueKind.True;
+
+    internal static void ValidateGitWritePermission(string output)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            if (document.RootElement.ValueKind != JsonValueKind.Object || !HasPermission(document.RootElement, "push"))
+                throw new WorkerInfrastructureException("GitHub repository authentication lacks Git push/write permission.");
+        }
+        catch (JsonException)
+        {
+            throw new WorkerInfrastructureException("Could not determine GitHub repository Git push/write permission.");
+        }
+    }
 
     private async Task<ProcessResult> RunCapabilityAsync(IEnumerable<string> args, string capability, CancellationToken ct)
     {

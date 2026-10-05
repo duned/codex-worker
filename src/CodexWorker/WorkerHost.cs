@@ -1075,8 +1075,10 @@ public sealed class WorkerHost
     private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,
         ExecutionHistoryStore history, System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken)
     {
-        var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds);
-        var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker);
+        var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds,
+            requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed");
+        var git = new GitRepository(_runner, config.Project.Directory, config.Project.Repository, config.Git, config.Worker,
+            requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed");
         var codex = new CodexExecutor(_runner, config.Codex, config.Environment.Variables);
         var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));

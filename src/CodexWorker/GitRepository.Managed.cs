@@ -54,7 +54,7 @@ public sealed partial class GitRepository
         // recovery worktrees. Preserve them for inspection; a restart uses a fresh path.
         await GitAtAsync(parent, ["clone", "--origin", "origin", "--branch", settings.BaseBranch,
             "--", $"https://github.com/{repository}.git", staging], ct);
-        using (var candidate = new GitRepository(runner, staging, repository, settings, timeouts, worktreeRoot))
+        using (var candidate = new GitRepository(runner, staging, repository, settings, timeouts, worktreeRoot, requireManagedAuthentication))
             await candidate.ValidateStartupReadOnlyAsync(ct);
         ct.ThrowIfCancellationRequested();
         Directory.Move(staging, directory);

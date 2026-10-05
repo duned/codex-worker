@@ -19,7 +19,7 @@ public sealed class PostRebaseValidationException(string message, ValidationFail
 }
 
 public sealed partial class GitRepository(ProcessRunner runner, string directory, string repository, GitSettings settings, WorkerSettings timeouts,
-    string? executionWorktreeRoot = null) : IGitRepository, IDisposable
+    string? executionWorktreeRoot = null, bool requireManagedAuthentication = false) : IGitRepository, IDisposable
 {
     private readonly string worktreeRoot = executionWorktreeRoot ?? DefaultWorktreeRoot(repository);
     private string? _executionDirectory;
@@ -50,7 +50,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     /// shares repository paths and settings; base-branch integration remains a repository-level operation.
     /// </summary>
     public IGitRepository CreateExecutionRepository() =>
-        new GitRepository(runner, directory, repository, settings, timeouts, worktreeRoot);
+        new GitRepository(runner, directory, repository, settings, timeouts, worktreeRoot, requireManagedAuthentication);
 
     /// <summary>Read-only safety inspection used across every configured project before any queue is queried.</summary>
     public async Task ValidateStartupReadOnlyAsync(CancellationToken ct)
@@ -954,9 +954,13 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
 
     private async Task<ProcessResult> GitAtAsync(string workingDirectory, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null, bool readOnly = false)
     {
+        var managedCredentials = false;
+        var credentialOperation = args.FirstOrDefault() is "clone" or "ls-remote" or "fetch" or "pull" or "push";
         try
         {
-            var environment = new Dictionary<string, string?>(await CodexProvisioning.NodeGitHubSetup.GitHubEnvironmentAsync(ct));
+            var environment = new Dictionary<string, string?>(await CodexProvisioning.NodeGitHubSetup.GitHttpsEnvironmentAsync(ct,
+                requireManagedAuthentication: requireManagedAuthentication));
+            managedCredentials = environment.ContainsKey("GH_CONFIG_DIR");
             if (readOnly)
             {
                 environment["GIT_OPTIONAL_LOCKS"] = "0";
@@ -967,13 +971,18 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 environment: environment);
             if (result.ExitCode != 0 && !(allowExitCodes?.Contains(result.ExitCode) ?? false))
             {
-                var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+                var detail = managedCredentials && credentialOperation ? "Managed Git remote command failed; raw credential-helper diagnostics are withheld."
+                    : string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
                 throw new WorkerInfrastructureException($"git {string.Join(' ', args)} failed (exit {result.ExitCode}). {Tail(detail)}");
             }
             return result;
         }
         catch (OperationCanceledException ex) { throw new WorkerInfrastructureException($"Git operation was cancelled; repository state may be uncertain: {string.Join(' ', args)}", ex); }
         catch (WorkerInfrastructureException) { throw; }
+        catch (ProcessTimeoutException) when (managedCredentials && credentialOperation)
+        {
+            throw new WorkerInfrastructureException($"Managed Git command timed out; repository state may be uncertain: {string.Join(' ', args)}.");
+        }
         catch (Exception ex) { throw new WorkerInfrastructureException($"Git command failed or timed out: {string.Join(' ', args)}. {ex.Message}", ex); }
     }
 
@@ -985,9 +994,11 @@ internal static class GitRemoteAuthenticationProbe
     public static async Task ValidateAsync(Func<IEnumerable<string>, CancellationToken, Task> run,
         string repository, string featurePrefix, CancellationToken cancellationToken)
     {
+        var check = "remote read";
         try
         {
             await run(["ls-remote", "--exit-code", "origin", "HEAD"], cancellationToken);
+            check = "dry-run Git push/write";
             var probeBranch = $"{featurePrefix}auth-check-{Guid.NewGuid():N}";
             await run(["push", "--dry-run", "--porcelain", "origin", $"HEAD:refs/heads/{probeBranch}"], cancellationToken);
         }
@@ -999,7 +1010,7 @@ internal static class GitRemoteAuthenticationProbe
         catch (Exception ex) when (ex is WorkerInfrastructureException or ProcessTimeoutException or InvalidOperationException)
         {
             _ = ex;
-            throw new WorkerInfrastructureException($"Git repository authentication is unavailable for '{repository}' (remote read or dry-run write check failed).");
+            throw new WorkerInfrastructureException($"Git repository authentication is unavailable for '{repository}' ({check} check failed).");
         }
     }
 }

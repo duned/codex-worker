@@ -99,6 +99,43 @@ public sealed class ManagedCheckoutTests
         Assert.Empty(Directory.GetFiles(fixture.Checkout, "*.yml"));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PrivateBootstrapUsesManagedCredentialsBeforeCloneAndForReadWrite(bool authorized)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await Fixture.CreateAsync();
+        await fixture.RequireManagedCredentialsAsync(authorized);
+        using var repository = fixture.Repository();
+        if (!authorized)
+        {
+            var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
+                repository.ValidateManagedRemoteReadAsync(CancellationToken.None));
+            Assert.DoesNotContain("credential-sentinel", failure.ToString(), StringComparison.Ordinal);
+            await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
+                repository.MaterializeManagedCheckoutAsync(CancellationToken.None));
+            Assert.False(Directory.Exists(fixture.Checkout));
+            return;
+        }
+        await repository.ValidateManagedRemoteReadAsync(CancellationToken.None);
+        Assert.False(Directory.Exists(fixture.Checkout));
+        await repository.MaterializeManagedCheckoutAsync(CancellationToken.None);
+        await repository.ValidateRemoteAuthenticationAsync(CancellationToken.None);
+        Assert.Equal("base", await File.ReadAllTextAsync(Path.Combine(fixture.Checkout, "task.txt")));
+        Assert.Equal("https://github.com/owner/repo.git", await fixture.Git(fixture.Checkout,
+            "config", "--get", "remote.origin.url"));
+        Assert.Empty(Directory.GetDirectories(fixture.Root, "checkout.clone-*"));
+        var configuration = await fixture.Git(fixture.Checkout, "config", "--local", "--list");
+        Assert.DoesNotContain("credential-sentinel", configuration, StringComparison.Ordinal);
+        Assert.DoesNotContain("credential.helper", configuration, StringComparison.Ordinal);
+        var calls = await File.ReadAllLinesAsync(Path.Combine(fixture.Root, "authenticated-calls"));
+        Assert.Contains("clone", calls);
+        Assert.Contains("ls-remote", calls);
+        Assert.Contains("push --dry-run --porcelain", calls);
+        Assert.Contains("pull", calls);
+    }
+
     [Fact]
     public async Task CatalogAccessFailureDoesNotExposeProcessDiagnostics()
     {
@@ -215,6 +252,11 @@ public sealed class ManagedCheckoutTests
 
     private sealed class Fixture : IDisposable
     {
+        private readonly string? _previousHome = Environment.GetEnvironmentVariable("HOME");
+        private readonly string? _previousPath = Environment.GetEnvironmentVariable("PATH");
+        private readonly string? _previousToken = Environment.GetEnvironmentVariable("GH_TOKEN");
+        private readonly string? _previousGhConfig = Environment.GetEnvironmentVariable("GH_CONFIG_DIR");
+        private readonly string? _previousXdgConfig = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         private readonly string? _previousGitConfiguration = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "cw-managed-checkout", Guid.NewGuid().ToString("N"));
         public string Checkout => Path.Combine(Root, "checkout");
@@ -247,6 +289,48 @@ public sealed class ManagedCheckoutTests
             catch { fixture.Dispose(); throw; }
         }
 
+        public async Task RequireManagedCredentialsAsync(bool authorized)
+        {
+            if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+            Environment.SetEnvironmentVariable("HOME", Root);
+            Environment.SetEnvironmentVariable("GH_CONFIG_DIR", Path.Combine(Root, "operator"));
+            Environment.SetEnvironmentVariable("GH_TOKEN", "operator-token-sentinel");
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(Root, "xdg"));
+            var setup = new CodexProvisioning.NodeGitHubSetup(unrelatedAuthentication: () => false);
+            var prepared = await setup.ExecuteAsync(new("server", "github-cli", CodexProvisioning.ProvisioningCommandAction.PrepareAuthentication),
+                CancellationToken.None);
+            Assert.Equal(CodexProvisioning.ProvisioningCommandStatus.Succeeded, prepared.Status);
+            var managed = Path.Combine(CodexProvisioning.NodeGitHubSetup.DefaultRoot, "github");
+            var bin = Path.Combine(Root, "bin");
+            Directory.CreateDirectory(bin);
+            // The transport is local and deterministic, but every network operation must
+            // first obtain a credential through the real Git helper protocol.
+            await File.WriteAllTextAsync(Path.Combine(bin, "gh"), $"""
+                #!/bin/sh
+                [ "$GH_CONFIG_DIR" = '{managed}' ] || exit 1
+                [ -z "$GH_TOKEN$GITHUB_TOKEN$GH_ENTERPRISE_TOKEN$GITHUB_ENTERPRISE_TOKEN" ] || exit 1
+                [ "$*" = 'auth git-credential get' ] || exit 1
+                cat >/dev/null
+                { (authorized ? "printf 'username=worker\npassword=credential-sentinel\n'" : "exit 1") }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(bin, "git"), $$"""
+                #!/bin/sh
+                case "$1" in
+                  ls-remote|clone|push|pull|fetch)
+                    printf 'protocol=https\nhost=github.com\n\n' | /usr/bin/git credential fill >/dev/null 2>&1 || { echo credential-sentinel >&2; exit 128; }
+                    case "$1" in
+                      push) echo 'push --dry-run --porcelain' >>'{{Root}}/authenticated-calls';;
+                      *) echo "$1" >>'{{Root}}/authenticated-calls';;
+                    esac
+                    ;;
+                esac
+                exec /usr/bin/git "$@"
+                """);
+            File.SetUnixFileMode(Path.Combine(bin, "gh"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(Path.Combine(bin, "git"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("PATH", bin + Path.PathSeparator + _previousPath);
+        }
+
         public async Task<string> Git(string directory, params string[] arguments)
         {
             var result = await new ProcessRunner().RunAsync("git", arguments, directory, TimeSpan.FromSeconds(15));
@@ -257,6 +341,11 @@ public sealed class ManagedCheckoutTests
         public void Dispose()
         {
             Environment.SetEnvironmentVariable("GIT_CONFIG_GLOBAL", _previousGitConfiguration);
+            Environment.SetEnvironmentVariable("HOME", _previousHome);
+            Environment.SetEnvironmentVariable("PATH", _previousPath);
+            Environment.SetEnvironmentVariable("GH_TOKEN", _previousToken);
+            Environment.SetEnvironmentVariable("GH_CONFIG_DIR", _previousGhConfig);
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", _previousXdgConfig);
             Directory.Delete(Root, recursive: true);
         }
     }

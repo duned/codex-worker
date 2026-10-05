@@ -176,7 +176,7 @@ public sealed class ManagedWorkerReadinessTests
     {
         if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
-        temporary.EnableProjectProbes();
+        await temporary.EnableProjectProbesAsync();
         using var stop = new CancellationTokenSource();
         using var output = new StopOnStartedWriter(stop);
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", missingCapability ? [new("runtime", "unavailable-runtime")] : [], 1,
@@ -237,7 +237,7 @@ public sealed class ManagedWorkerReadinessTests
     {
         if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
-        temporary.EnableProjectProbes();
+        await temporary.EnableProjectProbesAsync();
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         ServerProjectContract[] projects = hasProject ? [project] : [];
@@ -333,7 +333,7 @@ public sealed class ManagedWorkerReadinessTests
     {
         if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
-        temporary.EnableProjectProbes();
+        await temporary.EnableProjectProbesAsync();
         using var stop = new CancellationTokenSource();
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
@@ -406,7 +406,7 @@ public sealed class ManagedWorkerReadinessTests
     {
         if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
-        temporary.EnableProjectProbes();
+        await temporary.EnableProjectProbesAsync();
         using var stop = new CancellationTokenSource();
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
@@ -614,10 +614,19 @@ public sealed class ManagedWorkerReadinessTests
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "managed-readiness-" + Guid.NewGuid().ToString("N"));
         private string? _previousPath;
+        private readonly string? _previousHome = Environment.GetEnvironmentVariable("HOME");
+        private readonly string? _previousGhConfig = Environment.GetEnvironmentVariable("GH_CONFIG_DIR");
+        private readonly string? _previousXdgConfig = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         public TemporaryDirectory() => Directory.CreateDirectory(Path);
-        public void EnableProjectProbes()
+        public async Task EnableProjectProbesAsync()
         {
             if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+            Environment.SetEnvironmentVariable("HOME", Path);
+            Environment.SetEnvironmentVariable("GH_CONFIG_DIR", System.IO.Path.Combine(Path, "operator"));
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", System.IO.Path.Combine(Path, "xdg"));
+            var prepared = await new NodeGitHubSetup().ExecuteAsync(new("server", "github-cli",
+                ProvisioningCommandAction.PrepareAuthentication), CancellationToken.None);
+            Assert.Equal(ProvisioningCommandStatus.Succeeded, prepared.Status);
             var bin = System.IO.Path.Combine(Path, "bin");
             Directory.CreateDirectory(bin);
             File.WriteAllText(System.IO.Path.Combine(bin, "git"), "#!/bin/sh\nif [ \"$1\" = ls-remote ]; then exit 0; fi\necho 'clone unavailable' >&2\nexit 1\n");
@@ -630,6 +639,9 @@ public sealed class ManagedWorkerReadinessTests
         public void Dispose()
         {
             if (_previousPath is not null) Environment.SetEnvironmentVariable("PATH", _previousPath);
+            Environment.SetEnvironmentVariable("HOME", _previousHome);
+            Environment.SetEnvironmentVariable("GH_CONFIG_DIR", _previousGhConfig);
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", _previousXdgConfig);
             Directory.Delete(Path, recursive: true);
         }
     }

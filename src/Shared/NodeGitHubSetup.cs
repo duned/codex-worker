@@ -71,7 +71,36 @@ public sealed class NodeGitHubSetup
         }
         if (HasUnrelatedAuthentication(directory)) throw new IOException("Unrelated GitHub authentication must be reconciled locally.");
         await VerifyGitHubOwnershipAsync(directory, token);
-        return new Dictionary<string, string?> { ["GH_CONFIG_DIR"] = directory };
+        return new Dictionary<string, string?>
+        {
+            ["GH_CONFIG_DIR"] = directory,
+            ["GH_TOKEN"] = null, ["GITHUB_TOKEN"] = null, ["GH_ENTERPRISE_TOKEN"] = null,
+            ["GITHUB_ENTERPRISE_TOKEN"] = null
+        };
+    }
+
+    /// <summary>Process-local HTTPS credentials, including before a checkout exists.</summary>
+    public static async Task<IReadOnlyDictionary<string, string?>> GitHttpsEnvironmentAsync(CancellationToken token,
+        string? root = null, bool requireManagedAuthentication = false)
+    {
+        var environment = new Dictionary<string, string?>(await GitHubEnvironmentAsync(token, root, requireManagedAuthentication));
+        if (!environment.ContainsKey("GH_CONFIG_DIR")) return environment;
+        // Replace inherited command-level configuration and reset helper chains. No
+        // token is read by the product or written to Git configuration/arguments.
+        foreach (var key in Environment.GetEnvironmentVariables().Keys.Cast<string>().Where(key =>
+            key.StartsWith("GIT_CONFIG_KEY_", StringComparison.Ordinal) || key.StartsWith("GIT_CONFIG_VALUE_", StringComparison.Ordinal)))
+            environment[key] = null;
+        environment["GIT_CONFIG_PARAMETERS"] = null;
+        environment["GIT_CONFIG_COUNT"] = "3";
+        environment["GIT_CONFIG_KEY_0"] = "credential.helper";
+        environment["GIT_CONFIG_VALUE_0"] = "";
+        environment["GIT_CONFIG_KEY_1"] = "credential.https://github.com.helper";
+        environment["GIT_CONFIG_VALUE_1"] = "";
+        environment["GIT_CONFIG_KEY_2"] = "credential.https://github.com.helper";
+        environment["GIT_CONFIG_VALUE_2"] = "!gh auth git-credential";
+        environment["GIT_TERMINAL_PROMPT"] = "0";
+        environment["GIT_ASKPASS"] = "/bin/false";
+        return environment;
     }
 
     public async Task<ProvisioningCommandReport> ExecuteAsync(ProvisioningCommandRequest request, CancellationToken token,
@@ -227,6 +256,8 @@ public sealed class NodeGitHubSetup
     {
         var marker = Path.Combine(directory, "managed-by-codex");
         VerifyPath(marker);
+        VerifyPath(Path.Combine(directory, "hosts.yml"));
+        VerifyPath(Path.Combine(directory, "config.yml"));
         if (!OperatingSystem.IsLinux() || File.GetUnixFileMode(directory) != DirectoryMode ||
             !File.Exists(marker) || new FileInfo(marker).Length != Ownership.Length || await File.ReadAllTextAsync(marker, token) != Ownership)
             throw new IOException("Product GitHub authentication ownership or permissions are invalid.");
@@ -253,22 +284,7 @@ public sealed class NodeGitHubSetup
 
     private async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
     {
-        using var process = new Process { StartInfo = new(executable) { UseShellExecute = false,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true } };
-        foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
-        process.StartInfo.Environment["LC_ALL"] = "C";
-        if (Path.GetFileName(executable) == "gh")
-        {
-            process.StartInfo.Environment["GH_CONFIG_DIR"] = Path.Combine(_root, "github");
-            process.StartInfo.Environment.Remove("GH_TOKEN");
-            process.StartInfo.Environment.Remove("GITHUB_TOKEN");
-        }
-        // Verification cannot inherit URL rewrites, repository identity, or SSH overrides.
-        foreach (var variable in process.StartInfo.Environment.Keys.Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToArray())
-            process.StartInfo.Environment.Remove(variable);
-        process.StartInfo.Environment["GIT_CONFIG_GLOBAL"] = "/dev/null";
-        process.StartInfo.Environment["GIT_CONFIG_SYSTEM"] = "/dev/null";
-        process.StartInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        using var process = new Process { StartInfo = await CreateStartInfoAsync(executable, arguments, token) };
         process.Start();
         process.StandardInput.Close();
         using var drain = new CancellationTokenSource();
@@ -290,6 +306,30 @@ public sealed class NodeGitHubSetup
             try { await Task.WhenAll(stdout, stderr); }
             catch (OperationCanceledException) when (drain.IsCancellationRequested) { }
         }
+    }
+
+    internal async Task<ProcessStartInfo> CreateStartInfoAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        start.Environment["LC_ALL"] = "C";
+        if (Path.GetFileName(executable) == "gh")
+        {
+            start.Environment["GH_CONFIG_DIR"] = Path.Combine(_root, "github");
+            start.Environment.Remove("GH_TOKEN");
+            start.Environment.Remove("GITHUB_TOKEN");
+        }
+        // Verification cannot inherit URL rewrites, repository identity, or SSH overrides.
+        foreach (var variable in start.Environment.Keys.Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToArray())
+            start.Environment.Remove(variable);
+        start.Environment["GIT_CONFIG_GLOBAL"] = "/dev/null";
+        start.Environment["GIT_CONFIG_SYSTEM"] = "/dev/null";
+        start.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        if (Path.GetFileName(executable) == "git")
+            foreach (var (name, value) in await GitHttpsEnvironmentAsync(token, _root))
+                if (value is null) start.Environment.Remove(name); else start.Environment[name] = value;
+        return start;
     }
 
     private static async Task<string> DrainAsync(StreamReader reader, CancellationToken token)
