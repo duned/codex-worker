@@ -53,6 +53,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void NoProjectsConfigured() => WriteLine("Managed Worker is healthy and idle · no projects configured", ConsoleColor.Cyan, "○");
     public void Shutdown(string message = "Worker stopped.") { _waiting = false; WriteLine(message, null, "■"); }
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
+    internal void OperationalEvent(string message) => WriteLine(message, null);
     public void Warning(string message) => WriteLine(message, ConsoleColor.Yellow, "⚠");
     public void RecoveryCleanupCompleted(Guid executionId) =>
         WriteLine($"Recovery resources cleaned · execution {ExecutionFormatting.Display(executionId)}", ConsoleColor.Green, "✓");

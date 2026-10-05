@@ -31,6 +31,10 @@ public sealed class WorkerHost
         _operationalLog = operationalLog ?? (_ => { });
     }
 
+    private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null) =>
+        ManagedExecutionLog.Write(_output, _operationalLog,
+            ManagedExecutionLog.Assignment(assignment, message, configuration?.Environment.Variables.Values.ToArray()));
+
     internal async Task RejectIncompatibleAssignmentAsync(WorkerAssignmentContract assignment,
         WorkerConfiguration configuration, ExecutionHistoryStore history, string reason, CancellationToken token)
     {
@@ -44,6 +48,7 @@ public sealed class WorkerHost
             entry.Repository == configuration.Project.Repository && entry.IssueNumber == issueNumber).ToArray();
         var safeReason = FailureDiagnosticRedactor.Redact(reason, configuration.Environment.Variables.Values.ToArray());
         if (safeReason.Length > 1000) safeReason = safeReason[..1000];
+        LogAssignment(assignment, $"assignment rejected · {safeReason}", configuration);
         // No Issue claim or workspace exists. Record a terminal refusal so neither local
         // recovery nor Server lease expiry mistakes it for an interrupted execution.
         var entry = new ExecutionHistoryEntry(Guid.NewGuid(), configuration.Project.Name,
@@ -53,7 +58,9 @@ public sealed class WorkerHost
             ServerExecutionId: assignment.ServerExecutionId, AssignmentId: assignment.AssignmentId,
             OwnershipGeneration: lease.Generation);
         await history.CreateAsync(entry, token);
+        LogAssignment(assignment, "terminal outcome Blocked · reporting to Server", configuration);
         await _registration.ReportExecutionAsync(_global.Server, entry, "Failed", null, lease.Generation, token);
+        LogAssignment(assignment, "terminal outcome Blocked · Server report completed", configuration);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -583,11 +590,15 @@ public sealed class WorkerHost
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
                             throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
                         var assignment = assignmentResponse.Assignment!;
+                        LogAssignment(assignment, "assignment received");
                         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
                             lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
                             lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
                             lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
+                        {
+                            LogAssignment(assignment, "assignment rejected · infrastructure failure: invalid active ownership lease");
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                        }
                         var assignedProject = runtimes.FirstOrDefault(candidate => MatchesManagedProject(candidate.Configuration, assignment.Project, managedConfiguration!.AppliedProjects));
                         if (assignedProject is null)
                         {
@@ -600,6 +611,7 @@ public sealed class WorkerHost
                                 nextManagedConfigurationSync = DateTimeOffset.MinValue;
                                 break;
                             }
+                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is outside the configured Worker registry");
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
                         }
@@ -615,9 +627,11 @@ public sealed class WorkerHost
                         }
                         if (!runtimeReadModel.Registry.TryReserve(assignedProject.Configuration.Project.Name, assignedProject.Configuration))
                         {
+                            LogAssignment(assignment, "assignment rejected · infrastructure failure: project is draining", assignedProject.Configuration);
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} arrived after project '{assignment.Project.Name}' began draining.", assignedProject.Configuration.Project.Name);
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} arrived while project '{assignment.Project.Name}' was draining; assignment remains owned by this Worker for inspection.");
                         }
+                        LogAssignment(assignment, "assignment accepted · preparing project", assignedProject.Configuration);
                         activeProject = assignedProject.Configuration.Project.Name;
                         Task<IssueProcessingResult?>? assignedExecution;
                         var leaseStop = CancellationTokenSource.CreateLinkedTokenSource(executionToken);
@@ -628,12 +642,20 @@ public sealed class WorkerHost
                         {
                             try
                             {
+                                LogAssignment(assignment, $"revision {assignment.Project.Revision} verification started", assignedProject.Configuration);
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
+                                LogAssignment(assignment, $"revision {assignment.Project.Revision} verified", assignedProject.Configuration);
                                 if (!preparedConfigurations.Contains(assignedProject.Configuration))
                                 {
                                     managedConfiguration!.RecordProjectState(assignment.Project, "materializing");
                                     await assignedProject.RepositoryGate.WaitAsync(leaseStop.Token);
-                                    try { await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token); }
+                                    try
+                                    {
+                                        LogAssignment(assignment, Directory.Exists(assignedProject.Configuration.Project.Directory)
+                                            ? "materialization started · reusing checkout" : "materialization started · first clone", assignedProject.Configuration);
+                                        await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token);
+                                        LogAssignment(assignment, "materialization completed", assignedProject.Configuration);
+                                    }
                                     finally { assignedProject.RepositoryGate.Release(); }
                                     foreach (var label in await assignedProject.GitHub.FindMissingLabelsAsync(
                                         assignedProject.Configuration.GitHub.RequiredLabels, leaseStop.Token))
@@ -646,7 +668,9 @@ public sealed class WorkerHost
                                     preparedConfigurations.Add(assignedProject.Configuration);
                                     managedConfiguration!.RecordProjectState(assignment.Project, "ready");
                                 }
+                                LogAssignment(assignment, $"post-preparation revision {assignment.Project.Revision} verification started", assignedProject.Configuration);
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
+                                LogAssignment(assignment, $"revision {assignment.Project.Revision} verified · project ready", assignedProject.Configuration);
                             }
                             catch (Exception ex) when (!leaseStop.IsCancellationRequested)
                             {
@@ -654,6 +678,7 @@ public sealed class WorkerHost
                                 var reason = $"Managed project '{assignment.Project.Id}', revision {assignment.Project.Revision}: " +
                                     (ex is IssuePreparationRejectedException ? "project revision or recovery verification rejected preparation. " : "local project preparation failed. ") +
                                     "Diagnostic: project-preparation-failed. Check checkout ownership, repository access and node configuration.";
+                                LogAssignment(assignment, $"infrastructure failure before execution · {reason}", assignedProject.Configuration);
                                 await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
                                 runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
                                 runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
@@ -665,6 +690,7 @@ public sealed class WorkerHost
                                 nextManagedConfigurationSync = DateTimeOffset.MinValue;
                                 continue;
                             }
+                            LogAssignment(assignment, "preparation completed · starting Worker execution", assignedProject.Configuration);
                             assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token);
                         }
                         catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
@@ -676,12 +702,16 @@ public sealed class WorkerHost
                                 leaseStop.Dispose();
                                 runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             }
+                            LogAssignment(assignment, $"infrastructure failure during claim · GitHub {githubFailure.FailureKind} during {githubFailure.Operation}", assignedProject.Configuration);
                             PauseProjectForGitHubFailure(runtimeReadModel, assignedProject.Configuration.Project.Name, githubFailure,
                                 "The Server assignment remains leased until expiry reconciliation.");
                             continue;
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            LogAssignment(assignment, WorkerShutdown.IsCancellation(ex)
+                                ? "execution start interrupted · ownership or cancellation requires inspection"
+                                : "infrastructure failure during execution start · inspect execution history and node configuration", assignedProject.Configuration);
                             leaseStop.Cancel();
                             try { await leaseRenewal; } catch (OperationCanceledException) { }
                             finally
@@ -700,6 +730,7 @@ public sealed class WorkerHost
                                 leaseStop.Dispose();
                                 runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
                             }
+                            LogAssignment(assignment, "infrastructure failure · assignment did not create an execution", assignedProject.Configuration);
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} did not create an execution.");
                         }
                         active.Add(assignedExecution, assignedProject);

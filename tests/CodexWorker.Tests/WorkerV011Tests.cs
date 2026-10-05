@@ -629,6 +629,48 @@ public sealed class WorkerV011Tests
         Assert.Equal("server-request-123", persisted.ServerExecutionId);
         Assert.Equal("assignment-456", persisted.AssignmentId);
         Assert.Equal("Completed", persisted.State);
+        var managed = h.OperationalMessages.Where(message => message.StartsWith("Managed ·", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(new[] { "Claimed", "Preparing", "Implementing · Codex", "Validating", "Integrating", "Reporting" },
+            managed.Where(message => message.Contains(" · stage ", StringComparison.Ordinal))
+                .Select(message => message[(message.IndexOf(" · stage ", StringComparison.Ordinal) + " · stage ".Length)..]));
+        Assert.Contains(managed, message => message.EndsWith("terminal outcome Completed", StringComparison.Ordinal));
+        Assert.All(managed, message =>
+        {
+            Assert.Contains($"execution {persisted.ExecutionId}", message, StringComparison.Ordinal);
+            Assert.Contains("assignment assignment-456 · Server execution server-request-123 · lease generation 1", message, StringComparison.Ordinal);
+            Assert.Contains(message, h.Output.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("Example task", message, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task ManagedPreExecutionFailureLogsCorrelatedRedactedReasonWithoutRunningCodex()
+    {
+        using var h = new Harness();
+        h.Worker.Configuration.Environment.Variables = new Dictionary<string, string> { ["TEST_SECRET"] = "private-test-value" };
+        h.Git.StartFailure = new ProjectCheckoutDirtyException("Checkout is dirty: private-test-value token=unsafe-value");
+        var now = DateTimeOffset.UtcNow;
+        var assignment = new WorkerAssignmentContract("assignment-failed", "server-failed",
+            new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerExecutionLeaseContract("server-failed", "worker-id", 3, now, now.AddMinutes(5), "Active"));
+
+        var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+        Assert.NotNull(execution);
+        Assert.Null(await execution);
+
+        Assert.Null(h.Codex.InitialDirectory);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("preparation rejected", StringComparison.Ordinal) &&
+            message.Contains("assignment assignment-failed · Server execution server-failed · lease generation 3", StringComparison.Ordinal) &&
+            message.Contains("Checkout is dirty", StringComparison.Ordinal));
+        Assert.Contains(h.OperationalMessages, message => message.Contains("terminal outcome InfrastructureFailure", StringComparison.Ordinal));
+        Assert.All(h.OperationalMessages, message =>
+        {
+            Assert.DoesNotContain("private-test-value", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("unsafe-value", message, StringComparison.Ordinal);
+        });
+        Assert.DoesNotContain("private-test-value", h.Output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("unsafe-value", h.Output.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

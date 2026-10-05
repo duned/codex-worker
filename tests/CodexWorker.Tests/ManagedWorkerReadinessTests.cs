@@ -421,6 +421,9 @@ public sealed class ManagedWorkerReadinessTests
             Api = new() { Enabled = false }
         };
         var assigned = false;
+        using var output = new StringWriter();
+        var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var terminalLogged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var failedObservation = new TaskCompletionSource<WorkerHeartbeatContract>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reported = new TaskCompletionSource<WorkerExecutionReportContract>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var handler = new Handler(async (request, token) =>
@@ -467,12 +470,16 @@ public sealed class ManagedWorkerReadinessTests
             return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
         });
         using var client = new HttpClient(handler);
-        var host = new WorkerHost(global, [], new WorkerConsole(new StringWriter(), interactive: false),
+        var host = new WorkerHost(global, [], new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(client,
                 new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
                 new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
             agentAuthentication: new TestProvider { Available = true },
-            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"), operationalLog: message =>
+            {
+                messages.Enqueue(message);
+                if (message.Contains("Server report completed", StringComparison.Ordinal)) terminalLogged.TrySetResult();
+            });
         var run = host.RunAsync(stop.Token);
         try
         {
@@ -485,6 +492,27 @@ public sealed class ManagedWorkerReadinessTests
                 Assert.Equal(project.Revision, observation.Revision);
                 Assert.Equal("project-preparation-failed", observation.DiagnosticCode);
                 Assert.DoesNotContain("clone unavailable", JsonSerializer.Serialize(heartbeat), StringComparison.Ordinal);
+            }
+            await terminalLogged.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            var managed = messages.Where(message => message.StartsWith("Managed ·", StringComparison.Ordinal)).ToArray();
+            Assert.Contains(managed, message => message.Contains("assignment received", StringComparison.Ordinal));
+            Assert.Contains(managed, message => message.Contains("assignment rejected", StringComparison.Ordinal));
+            Assert.Contains(managed, message => message.Contains("terminal outcome Blocked · Server report completed", StringComparison.Ordinal));
+            Assert.All(managed, message =>
+            {
+                Assert.Contains("project opaque-central-id/Central", message, StringComparison.Ordinal);
+                Assert.Contains("work github-issue #17", message, StringComparison.Ordinal);
+                Assert.Contains("assignment assignment · Server execution execution · lease generation 1", message, StringComparison.Ordinal);
+                Assert.Contains(message, output.ToString(), StringComparison.Ordinal);
+            });
+            if (scenario == "materialization")
+            {
+                Assert.Contains(managed, message => message.Contains("assignment accepted", StringComparison.Ordinal));
+                Assert.Contains(managed, message => message.Contains("revision 1 verified", StringComparison.Ordinal));
+                Assert.Contains(managed, message => message.Contains("materialization started · first clone", StringComparison.Ordinal));
+                Assert.Contains(managed, message => message.Contains("infrastructure failure before execution", StringComparison.Ordinal));
+                Assert.DoesNotContain(managed, message => message.Contains("clone unavailable", StringComparison.Ordinal));
+                Assert.DoesNotContain(managed, message => message.Contains("starting Worker execution", StringComparison.Ordinal));
             }
             Assert.False(run.IsCompleted);
             Assert.Equal("Failed", report.State);

@@ -462,6 +462,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled)
             ? $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · outcome {execution.State} · GitHub reporting failure · {safeReason}"
             : $"Execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · Issue #{issue.Number} · infrastructure failure · {safeReason}";
+        if (execution.ServerExecutionId is not null)
+            diagnostic = ManagedExecutionLog.Execution(CreateEntry(execution, null, null, null),
+                primaryGitHubFailure is not null && execution.IsTerminal &&
+                    execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled)
+                    ? $"outcome {execution.State} · GitHub reporting failure · {safeReason}"
+                    : $"infrastructure failure · {safeReason}",
+                config.Environment.Variables.Values.ToArray());
         _operationalLog(diagnostic);
         _output.Warning(diagnostic);
         if (primaryGitHubFailure is not null)
@@ -525,6 +532,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
         await RecordInfrastructureFailureAsync(execution, safeReason, recoveryState);
         var diagnostic = $"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] ({execution.ExecutionId}) · preparation rejected · {safeReason}";
+        if (execution.ServerExecutionId is not null)
+            diagnostic = ManagedExecutionLog.Execution(CreateEntry(execution, null, null, null), $"preparation rejected · {safeReason}",
+                config.Environment.Variables.Values.ToArray());
         _operationalLog(diagnostic);
         _output.Warning(diagnostic);
         // Remove eligibility before reporting so this Issue cannot repeatedly consume capacity.
@@ -659,10 +669,20 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
 
     private async Task ReportServerAsync(ExecutionHistoryEntry entry, ExecutionState state, CancellationToken ct)
     {
-        if (serverSettings is null || !serverSettings.Enabled || entry.ServerExecutionId is null) return;
+        if (entry.ServerExecutionId is null) return;
+        var terminal = state is ExecutionState.Completed or ExecutionState.Failed or ExecutionState.Blocked or
+            ExecutionState.IntegrationConflict or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled;
+        ManagedExecutionLog.Write(_output, _operationalLog, ManagedExecutionLog.Execution(entry,
+            terminal ? $"terminal outcome {state}" : $"stage {state}{(state == ExecutionState.Implementing ? " · Codex" : "")}",
+            config.Environment.Variables.Values.ToArray()));
+        if (serverSettings is null || !serverSettings.Enabled) return;
         var stateName = state == ExecutionState.Completed ? "Completed" : state is ExecutionState.Failed or ExecutionState.Blocked or ExecutionState.IntegrationConflict or ExecutionState.Superseded or ExecutionState.InfrastructureFailure or ExecutionState.Cancelled ? "Failed" : "Running";
-        if (serverSettings is { Enabled: true } && entry.ServerExecutionId is not null && entry.OwnershipGeneration is null)
+        if (entry.OwnershipGeneration is null)
+        {
+            ManagedExecutionLog.Write(_output, _operationalLog, ManagedExecutionLog.Execution(entry,
+                "infrastructure failure · Managed execution is missing its ownership generation.", config.Environment.Variables.Values.ToArray()));
             throw new WorkerInfrastructureException("Managed execution is missing its ownership generation.");
+        }
         await _registration.ReportExecutionAsync(serverSettings, entry, stateName,
             stateName == "Running" ? (state switch
             {
@@ -674,6 +694,9 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 ExecutionState.Reporting => "Reporting",
                 _ => state.ToString()
             }) : null, entry.OwnershipGeneration ?? 0, ct);
+        if (terminal)
+            ManagedExecutionLog.Write(_output, _operationalLog, ManagedExecutionLog.Execution(entry,
+                $"terminal outcome {state} · Server report completed", config.Environment.Variables.Values.ToArray()));
     }
 
     private async Task CompleteHistoryAsync(WorkerExecution execution, IssueExecutionReport report, ExecutionState state,
