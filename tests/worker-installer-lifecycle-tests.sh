@@ -134,7 +134,8 @@ export PATH="$test_dir/bin:$PATH"
 export LIFECYCLE_TEMPLATE="$repo_root/packaging/linux/worker.managed.example.yml"
 run_install() {
   CODEX_WORKER_BOOTSTRAP_TOKEN=test-token bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" \
-    --version 1.2.3 --server https://server.example --register --start > "$LIFECYCLE_ROOT/output" 2>&1
+    --version 1.2.3 --server https://server.example --register --start \
+    --git-name "Worker Tests" --git-email worker@example.invalid > "$LIFECYCLE_ROOT/output" 2>&1
 }
 run_interactive_install() {
   python3 - "$LIFECYCLE_ROOT/scripts/install-worker.sh" > "$LIFECYCLE_ROOT/output" 2>&1 <<'PY'
@@ -152,6 +153,8 @@ if pid == 0:
 
 output = bytearray()
 token_sent = False
+name_sent = False
+email_sent = False
 deadline = time.monotonic() + 30
 status = None
 while time.monotonic() < deadline:
@@ -164,6 +167,12 @@ while time.monotonic() < deadline:
         if not chunk:
             break
         output.extend(chunk)
+        if not name_sent and b"Worker Git user.name: " in output:
+            os.write(terminal, b"Interactive Worker\n")
+            name_sent = True
+        if not email_sent and b"Worker Git user.email: " in output:
+            os.write(terminal, b"interactive@example.invalid\n")
+            email_sent = True
         if not token_sent and b"Bootstrap token: " in output:
             os.write(terminal, b"test-token\n")
             token_sent = True
@@ -192,6 +201,10 @@ assert_clean_failure() {
 prepare_root success
 run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
+# Optional artifact for the .NET contract test; never a production override.
+if [[ -n ${LIFECYCLE_IDENTITY_OUTPUT:-} ]]; then
+  cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_IDENTITY_OUTPUT"
+fi
 policy="$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
 helper="$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
 [[ $(stat -c %a "$policy") == 440 && $(stat -c %a "$helper") == 755 ]]
@@ -261,14 +274,18 @@ prepare_root token-file
 printf 'test-token\n' > "$LIFECYCLE_ROOT/bootstrap-token"
 chmod 0600 "$LIFECYCLE_ROOT/bootstrap-token"
 bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 --server https://server.example \
-  --capacity 1 --register --start --token-file "$LIFECYCLE_ROOT/bootstrap-token" \
+  --capacity 1 --git-name "Worker Tests" --git-email worker@example.invalid --register --start --token-file "$LIFECYCLE_ROOT/bootstrap-token" \
   > "$LIFECYCLE_ROOT/output" 2>&1 || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
 grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
 ! grep -q test-token "$LIFECYCLE_ROOT/output"
 
 prepare_root interactive-token tty
 run_interactive_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
-grep -q 'Bootstrap token:' "$LIFECYCLE_ROOT/output"
+[[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get user.name) == 'Interactive Worker' ]]
+[[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get user.email) == interactive@example.invalid ]]
+grep -q 'Worker Git user.name:' "$LIFECYCLE_ROOT/output"
+grep -q 'Worker Git user.email:' "$LIFECYCLE_ROOT/output"
+grep -q 'Bootstrap token:'  "$LIFECYCLE_ROOT/output"
 grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
 ! grep -q test-token "$LIFECYCLE_ROOT/output"
 
@@ -336,4 +353,87 @@ grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $
   "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 grep -Fq 'NOPASSWD: CODEX_WORKER_PROVISIONING' "$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
 grep -Fq 'exec /usr/bin/env -i' "$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
+# Explicit inputs are defaults for missing values, never upgrade overrides.
+[[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get user.name) == 'Worker Tests' ]]
+cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
+bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 > "$LIFECYCLE_ROOT/output" 2>&1
+cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
+! grep -q 'Worker Git user.' "$LIFECYCLE_ROOT/output"
+
+for existing_key in user.name user.email; do
+  prepare_root "partial-$existing_key"
+  mkdir -p "$LIFECYCLE_ROOT/var/lib/codex-worker"
+  git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$existing_key" 'Existing value'
+  git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" core.editor 'existing-editor'
+  run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+  [[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get "$existing_key") == 'Existing value' ]]
+  [[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get core.editor) == existing-editor ]]
+  cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
+  if START_FAIL=true run_install; then exit 1; fi
+  cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
+done
+
+prepare_root no-worker-identity
+mkdir -p "$LIFECYCLE_ROOT/operator"
+git config --file "$LIFECYCLE_ROOT/operator/.gitconfig" user.name 'Operator identity'
+git config --file "$LIFECYCLE_ROOT/operator/.gitconfig" user.email operator@example.invalid
+cp "$LIFECYCLE_ROOT/operator/.gitconfig" "$LIFECYCLE_ROOT/operator.previous"
+if HOME="$LIFECYCLE_ROOT/operator" GIT_CONFIG_GLOBAL="$LIFECYCLE_ROOT/operator/.gitconfig" \
+  bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 > "$LIFECYCLE_ROOT/output" 2>&1; then
+  echo 'Operator identity substituted for Worker identity'; exit 1
+fi
+grep -q 'Supply --git-name NAME' "$LIFECYCLE_ROOT/output"
+[[ ! -e $LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig ]]
+cmp "$LIFECYCLE_ROOT/operator.previous" "$LIFECYCLE_ROOT/operator/.gitconfig"
+# Failure collecting the second value cannot leave a half-written identity.
+if bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 --git-name Worker > "$LIFECYCLE_ROOT/output" 2>&1; then exit 1; fi
+grep -q 'Supply --git-email EMAIL' "$LIFECYCLE_ROOT/output"
+[[ ! -e $LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig ]]
+
+prepare_root identity-write-failure
+mkdir -p "$LIFECYCLE_ROOT/var/lib/codex-worker"
+git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" user.name Existing
+cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
+# Deterministic failed atomic activation, without relying on host privileges.
+sed -i 's|runuser -u codex-worker -- mv -f --|false |' "$LIFECYCLE_ROOT/scripts/install-worker.sh"
+if run_install; then exit 1; fi
+cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
+[[ -z $(find "$LIFECYCLE_ROOT/var/lib/codex-worker" -name '.gitconfig.next.*' -print) ]]
+# Interactive completion asks only for the missing component, including upgrades.
+for existing_key in user.name user.email; do
+  prepare_root "interactive-partial-$existing_key" tty
+  mkdir -p "$LIFECYCLE_ROOT/var/lib/codex-worker"
+  git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$existing_key" 'Existing identity'
+  run_interactive_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+  ! grep -q "Worker Git $existing_key:" "$LIFECYCLE_ROOT/output"
+  [[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get "$existing_key") == 'Existing identity' ]]
+done
+prepare_root existing-interactive tty
+mkdir -p "$LIFECYCLE_ROOT/var/lib/codex-worker/projects/repository/.git"
+git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" user.name 'Existing Worker'
+git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" user.email existing@example.invalid
+git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/projects/repository/.git/config" user.name 'Repository identity'
+cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
+cp "$LIFECYCLE_ROOT/var/lib/codex-worker/projects/repository/.git/config" "$LIFECYCLE_ROOT/previous.repository-config"
+run_interactive_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+! grep -q 'Worker Git user.' "$LIFECYCLE_ROOT/output"
+cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
+cmp "$LIFECYCLE_ROOT/previous.repository-config" "$LIFECYCLE_ROOT/var/lib/codex-worker/projects/repository/.git/config"
+
+# Missing Git uses only the fixed Ubuntu package action; never a live apt call.
+cat > "$test_dir/bin/apt-get" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apt-get %s\n' "$*" >> "$LIFECYCLE_ROOT/events"
+[[ "$*" == update || "$*" == 'install -y --no-install-recommends git' ]]
+[[ ${APT_FAIL:-false} == false ]]
+STUB
+chmod +x "$test_dir/bin/apt-get"
+prepare_root missing-git
+sed -i 's/if ! command -v git >\/dev\/null 2>\&1; then/if true; then/' "$LIFECYCLE_ROOT/scripts/install-worker.sh"
+run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+grep -Fxq 'apt-get install -y --no-install-recommends git' "$LIFECYCLE_ROOT/events"
+cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
+if APT_FAIL=true run_install; then exit 1; fi
+cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
 echo 'Worker installer lifecycle checks passed.'

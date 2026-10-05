@@ -20,7 +20,7 @@ if [[ -n $installer_source ]]; then
 fi
 
 usage() {
-  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--start] [--token-file PATH]"
+  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--start] [--token-file PATH] [--git-name NAME] [--git-email EMAIL]"
   echo "Install and optionally configure/register/start the Codex Worker on Ubuntu 24.04 x86_64."
   echo "For unattended registration, set CODEX_WORKER_BOOTSTRAP_TOKEN or use --token-file; tokens are never accepted as command-line values."
 }
@@ -31,6 +31,8 @@ requested_capacity=""
 register_requested=false
 start_requested=false
 token_file=""
+requested_git_name=""
+requested_git_email=""
 server_was_set=false
 capacity_was_set=false
 while (($#)); do
@@ -50,6 +52,11 @@ while (($#)); do
     --capacity)
       (($# >= 2)) && [[ $2 =~ ^[1-8]$ ]] || { echo "--capacity must be an integer from 1 to 8" >&2; exit 2; }
       requested_capacity=$2; capacity_was_set=true; shift 2
+      ;;
+    --git-name|--git-email)
+      (($# >= 2)) && [[ -n $2 ]] || { echo "$1 requires a non-empty value" >&2; exit 2; }
+      if [[ $1 == --git-name ]]; then requested_git_name=$2; else requested_git_email=$2; fi
+      shift 2
       ;;
     --register) register_requested=true; shift ;;
     --start) start_requested=true; shift ;;
@@ -72,6 +79,66 @@ done
 fail() {
   echo "Codex Worker installation failed: $*" >&2
   exit 1
+}
+
+# Match the systemd service HOME, never the administrator's Git environment.
+worker_git() {
+  runuser -u codex-worker -- env -i HOME="$data_root" XDG_CONFIG_HOME="$data_root/.config" \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    git -C / "$@"
+}
+
+valid_git_identity_value() {
+  # One bounded printable line; whitespace-only values do not satisfy readiness.
+  [[ ${#1} -le 256 && $1 == *[![:space:]]* && $1 != *[[:cntrl:]]* ]]
+}
+
+configure_worker_git_identity() {
+  if ! command -v git >/dev/null 2>&1; then
+    command -v apt-get >/dev/null 2>&1 || fail 'Git is required to configure the Worker identity; install git and retry.'
+    apt-get update && apt-get install -y --no-install-recommends git || fail 'Could not install Git for Worker identity configuration.'
+  fi
+  local name email missing_name=false missing_email=false next_config
+  name=$(worker_git config --get user.name) || {
+    [[ $? == 1 ]] || fail 'Could not inspect Worker Git user.name.'
+    name=""
+  }
+  email=$(worker_git config --get user.email) || {
+    [[ $? == 1 ]] || fail 'Could not inspect Worker Git user.email.'
+    email=""
+  }
+  if [[ $name != *[![:space:]]* ]]; then missing_name=true; fi
+  if [[ $email != *[![:space:]]* ]]; then missing_email=true; fi
+  if [[ $missing_name == false && $missing_email == false ]]; then return; fi
+  if [[ $missing_name == true ]]; then
+    name=$requested_git_name
+    if [[ -z $name && -r /dev/tty && -w /dev/tty ]]; then
+      IFS= read -r -p "Worker Git user.name: " name </dev/tty || fail 'Could not read Worker Git name.'
+    fi
+    valid_git_identity_value "$name" || fail 'Supply --git-name NAME (1..256 printable characters) for the codex-worker service account.'
+  fi
+  if [[ $missing_email == true ]]; then
+    email=$requested_git_email
+    if [[ -z $email && -r /dev/tty && -w /dev/tty ]]; then
+      IFS= read -r -p "Worker Git user.email: " email </dev/tty || fail 'Could not read Worker Git email.'
+    fi
+    valid_git_identity_value "$email" || fail 'Supply --git-email EMAIL (1..256 printable characters) for the codex-worker service account.'
+  fi
+  # Prepare the complete file before an atomic replacement. Existing keys,
+  # includes and repository-local identities remain intact. Reject links rather
+  # than replacing an operator-managed target. Later rollback retains this valid
+  # node configuration, just as it retains the account and enrollment identity.
+  [[ ! -L $data_root/.gitconfig ]] || fail 'Worker .gitconfig is a symbolic link; configure its missing identity manually and retry.'
+  next_config=$(runuser -u codex-worker -- mktemp "$data_root/.gitconfig.next.XXXXXX") || fail 'Could not stage Worker Git configuration.'
+  if ! (
+    trap 'rm -f -- "$next_config"' EXIT
+    [[ ! -e $data_root/.gitconfig ]] || runuser -u codex-worker -- cp -- "$data_root/.gitconfig" "$next_config" || exit 1
+    if [[ $missing_name == true ]]; then worker_git config --file "$next_config" --replace-all user.name "$name" || exit 1; fi
+    if [[ $missing_email == true ]]; then worker_git config --file "$next_config" --replace-all user.email "$email" || exit 1; fi
+    runuser -u codex-worker -- mv -f -- "$next_config" "$data_root/.gitconfig"
+  ); then fail 'Could not apply Worker Git identity; previous configuration retained.'; fi
+  name=$(worker_git config --get user.name) && email=$(worker_git config --get user.email) &&
+    [[ $name == *[![:space:]]* && $email == *[![:space:]]* ]] || fail 'Worker Git identity verification failed.'
 }
 
 write_codex_provisioning_helper() {
@@ -365,6 +432,7 @@ if [[ $service_was_present == true || $service_was_active == true ]]; then
   systemctl stop codex-worker || fail "could not stop the Worker before installation"
 fi
 service_stopped=true
+configure_worker_git_identity
 config_changed=true
 
 config_was_present=false
@@ -532,5 +600,5 @@ if [[ $register_requested == true ]]; then echo "Worker registration completed."
 if [[ $start_requested == true ]]; then echo "Worker service enable/start request completed."; elif [[ $service_was_active == true ]]; then echo "Worker service was active before installation; its restart request completed."; else echo "Worker service was not started by this installation."; fi
 echo "Add project configuration and required environment values to $config_root/worker.yml and $config_root/worker.env."
 
-echo "Installation/registration do not imply execution readiness. External Git, gh, Codex CLI and service-account authentication are not installed or configured automatically."
+echo "Installation/registration do not imply execution readiness. Worker Git default identity is configured. External gh, Codex CLI and service-account authentication are not installed or configured automatically."
 echo "Service start and capability readiness are separate. Check runtime status and diagnostics: systemctl status codex-worker; journalctl -u codex-worker."
