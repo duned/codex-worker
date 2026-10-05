@@ -94,8 +94,17 @@ public sealed class WorkerHost
             if (_global.Server.Enabled)
             {
                 var status = CurrentHeartbeatStatus();
-                await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
-                    status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
+                try
+                {
+                    await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
+                        status.ActiveExecutions, status.Projects, status.State, token, capabilities, managedConfiguration?.Status);
+                }
+                catch (Exception ex) when (managedConfiguration is not null &&
+                    (ex is HttpRequestException or TaskCanceledException) && !token.IsCancellationRequested)
+                {
+                    managedConfiguration.RecordUnavailable(ex);
+                    _output.Warning($"Codex Server heartbeat is unavailable: {ex.Message}");
+                }
             }
         }
         using var shutdownRegistration = ct.Register(() =>
@@ -111,11 +120,8 @@ public sealed class WorkerHost
             heartbeatCapabilities = discoveredCapabilities;
             if (managedConfiguration?.HasCachedSnapshot == true)
             {
-                try { _ = managedConfiguration.LoadLastValid(); }
-                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
-                {
-                    managedConfiguration.RecordUnavailable(ex);
-                }
+                // Persisted state must be valid even when the Server can supply a fresh catalog.
+                _ = managedConfiguration.LoadLastValid();
             }
             if (_global.Server.Enabled)
             {
@@ -139,10 +145,9 @@ public sealed class WorkerHost
                         var desired = await registration.GetManagedConfigurationAsync(_global.Server, ct);
                         configuredProjects = managedConfiguration.Apply(desired);
                     }
-                    catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException) &&
+                    catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) &&
                         (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                     {
-                        managedConfiguration.RecordUnavailable(ex);
                         configuredProjects = LoadCachedManagedConfiguration(managedConfiguration, ex);
                     }
                 }
@@ -191,7 +196,8 @@ public sealed class WorkerHost
             if (_global.Server.Enabled)
             {
                 var registration = _registration;
-                var initialPlan = await registration.RequestProvisioningPlanAsync(_global.Server, ct);
+                var initialPlan = managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized"
+                    ? null : await registration.RequestProvisioningPlanAsync(_global.Server, ct);
                 if (initialPlan is not null)
                 {
                     runtimeReadModel.Events.Publish("provisioning.started", $"Provisioning plan {initialPlan.Id} started.");
@@ -209,7 +215,14 @@ public sealed class WorkerHost
 
             async Task InitializeProjectsAsync(CancellationToken token)
             {
-                var startupPlans = runtimes.Where(project => !validatedConfigurations.Contains(project.Configuration))
+                var pendingProjects = runtimes.Where(project => !validatedConfigurations.Contains(project.Configuration)).ToArray();
+                foreach (var project in pendingProjects.Where(project => managed && !Directory.Exists(project.Configuration.Project.Directory)))
+                {
+                    const string reason = "Managed checkout is not materialized; project execution is unavailable.";
+                    runtimeReadModel.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                    _output.Warning($"Project '{project.Configuration.Project.Name}' is unavailable: {reason}");
+                }
+                var startupPlans = pendingProjects.Where(project => !managed || Directory.Exists(project.Configuration.Project.Directory))
                     .Select(project => new ProjectStartupPlan(
                     project.Path,
                     project.Configuration.Project.Name,
@@ -266,9 +279,7 @@ public sealed class WorkerHost
                     .Distinct().ToArray());
                 if (_global.Server.Enabled)
                 {
-                    var status = CurrentHeartbeatStatus();
-                    await _registration.HeartbeatAsync(_global.Server, _global.Worker.MaxParallelTasks,
-                        status.ActiveExecutions, status.Projects, status.State, token, heartbeatCapabilities, managedConfiguration?.Status);
+                    await ReportProvisionedCapabilitiesAsync(heartbeatCapabilities, token);
                 }
                 await ReconcileRecoveryAsync(healthyRuntimes, history, runtimeReadModel, token);
                 if (healthyRuntimes.Count > 0)
@@ -317,10 +328,12 @@ public sealed class WorkerHost
                             project.Configuration, eligibility);
                     }
                 }
-                var ready = agentReady && executionDependenciesReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
+                var ready = agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
                     (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration) &&
                         runtimeReadModel.Registry.Get(project.Configuration.Project.Name)?.State != ProjectLifecycleState.Unavailable));
-                lifecycle.SetExecutionReadiness(ready, localReadiness.Available
+                lifecycle.SetExecutionReadiness(ready, managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized"
+                    ? "Managed Server configuration is unavailable; cached projects do not authorize execution."
+                    : localReadiness.Available
                     ? readiness.DiagnosticCode ?? string.Join("; ", runtimeReadModel.Registry.Status()
                         .Where(project => project.UnavailableReason is not null).Select(project => $"{project.Name}: {project.UnavailableReason}"))
                     : string.Join(", ", localReadiness.BlockingReasons));
@@ -456,7 +469,8 @@ public sealed class WorkerHost
                 }
 
                 var foundWork = false;
-                if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining)
+                if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
+                    managedConfiguration?.Status.SynchronizationStatus == "synchronized")
                 {
                     var registration = _registration;
                     if (await registration.ExecuteProvisioningCommandAsync(_global.Server, _global.Worker.Provisioning,
@@ -494,7 +508,7 @@ public sealed class WorkerHost
                 }
                 agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
                 await PublishReadinessAsync(executionToken);
-                while (agentReady && executionDependenciesReady && managedConfiguration?.Status.SynchronizationStatus != "error" &&
+                while (agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
                     !ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
                 {
                     if (_global.Projects.Ownership == "managed")
@@ -669,11 +683,11 @@ public sealed class WorkerHost
                     continue;
                 }
 
-                if (!executionDependenciesReady || !agentReady || managedConfiguration?.Status.SynchronizationStatus == "error")
+                if (!executionDependenciesReady || !agentReady || managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized")
                 {
                     var blockers = executionReadinessBlockers.ToList();
                     if (!agentReady) blockers.Add(readiness.DiagnosticCode ?? "codex-execution-unavailable");
-                    if (managedConfiguration?.Status.SynchronizationStatus == "error") blockers.Add("managed-configuration-unavailable");
+                    if (managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized") blockers.Add("managed-configuration-unavailable");
                     await _output.WaitingForPrerequisitesAsync(blockers.Distinct(StringComparer.Ordinal).ToArray());
                 }
                 else

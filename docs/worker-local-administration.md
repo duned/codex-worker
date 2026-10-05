@@ -107,7 +107,18 @@ managed and standalone mode. Local provisioning failures return typed outcomes;
 the resulting capability observations determine readiness. An empty standalone project
 directory can be used while preparing the node. Configured projects still require
 their normal checkout and GitHub safety checks before scheduling, and an absent
-standalone checkout remains a startup configuration error. Provision tools and
+standalone checkout remains a startup configuration error.
+
+Managed Workers need no local
+project YAML or checkout at startup: the validated Server catalog is retained
+while unmaterialized projects report `Unavailable`. The control API, heartbeats,
+capability reporting and provisioning remain online; `not-ready` describes
+execution readiness, not process failure. On Server loss, a valid cached catalog
+keeps the Worker observable but cannot authorize new assignments. Synchronization
+must succeed again before execution becomes eligible. Invalid Server contracts
+and corrupted persisted catalogs still fail startup.
+
+Provision tools and
 authenticate as the Worker service account, then restart the service or wait for
 the cached observations to refresh. An unchanged failed Codex preflight is not
 automatically retried; restart after resolving its cause.

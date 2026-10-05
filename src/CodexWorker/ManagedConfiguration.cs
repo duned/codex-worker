@@ -47,7 +47,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
     {
         lock (_gate) _status = _status with
         {
-            SynchronizationStatus = _status.Error is null ? "unavailable" : "error",
+            SynchronizationStatus = _status.SynchronizationStatus == "error" ? "error" : "unavailable",
             Error = _status.Error ?? SafeError(exception)
         };
     }

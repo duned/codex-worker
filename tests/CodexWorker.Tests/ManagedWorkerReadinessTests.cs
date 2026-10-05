@@ -207,6 +207,211 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal("Central", Assert.Single(cached.LoadLastValid()).Configuration.Project.Name);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnmaterializedCatalogSurvivesRestartOutageAndReconnect(bool hasProject)
+    {
+        using var temporary = new TemporaryDirectory();
+        var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        ServerProjectContract[] projects = hasProject ? [project] : [];
+        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        var global = new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed", Directory = Path.Combine(temporary.Path, "absent-projects") },
+            ManagedProjects = new() { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") },
+            Api = new() { ListenUrl = $"http://127.0.0.1:{port}" }
+        };
+        using var management = new HttpClient { BaseAddress = new Uri(global.Api.ListenUrl) };
+
+        // Each run retains the identity and catalog but never creates a checkout or YAML.
+        foreach (var offline in new[] { false, true, false })
+        {
+            using var stop = new CancellationTokenSource();
+            using var output = new StartedWriter();
+            var heartbeats = 0;
+            var provisioningRequests = 0;
+            using var handler = new Handler(async (request, token) =>
+            {
+                var path = request.RequestUri?.AbsolutePath ?? "";
+                Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
+                if (offline) throw new HttpRequestException("Server offline");
+                if (path.EndsWith("/configuration", StringComparison.Ordinal))
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) };
+                if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+                {
+                    var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat"))
+                        .ReadFromJsonAsync<WorkerHeartbeatContract>(token);
+                    Assert.NotNull(heartbeat);
+                    Assert.Equal(0, heartbeat.ActiveExecutions);
+                    Assert.NotEmpty(heartbeat.Capabilities);
+                    Interlocked.Increment(ref heartbeats);
+                }
+                if (path.EndsWith("/provisioning/request", StringComparison.Ordinal))
+                    Interlocked.Increment(ref provisioningRequests);
+                return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+            });
+            using var client = new HttpClient(handler);
+            var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0")));
+            var capabilities = new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")));
+            var host = new WorkerHost(global, ProjectConfigurationDiscovery.LoadForWorker(global),
+                new WorkerConsole(output, interactive: false),
+                registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
+                agentAuthentication: new TestProvider { Available = true });
+            var run = host.RunAsync(stop.Token);
+            try
+            {
+                await output.Started.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                Assert.False(run.IsCompleted);
+                var status = await management.GetFromJsonAsync<WorkerStatus>("/api/status");
+                Assert.NotNull(status);
+                Assert.Equal(hasProject || offline ? "not-ready" : "running", status.State);
+                Assert.Equal(hasProject ? 1 : 0, status.ConfiguredProjectCount);
+                Assert.Equal(0, status.EnabledProjectCount);
+                var runtimeProjects = await management.GetFromJsonAsync<ProjectRuntimeInfo[]>("/api/projects");
+                Assert.NotNull(runtimeProjects);
+                if (hasProject)
+                {
+                    var runtime = Assert.Single(runtimeProjects);
+                    Assert.Equal("Unavailable", runtime.State);
+                    Assert.Contains("not materialized", runtime.UnavailableReason ?? "", StringComparison.Ordinal);
+                }
+                else Assert.Empty(runtimeProjects);
+                Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
+                if (!offline)
+                {
+                    Assert.True(Volatile.Read(ref heartbeats) > 0);
+                    Assert.True(Volatile.Read(ref provisioningRequests) > 0);
+                }
+            }
+            finally
+            {
+                stop.Cancel();
+                await run.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CachedUnmaterializedProjectReconnectsWithoutRestartOrAssignment()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var stop = new CancellationTokenSource();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var global = new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed" },
+            ManagedProjects = new() { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") },
+            Worker = new() { PollingSeconds = 1 }, Api = new() { Enabled = false }
+        };
+        var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        new ManagedConfigurationSynchronizer(settings.IdentityFile + ".configuration.json", global.ManagedProjects).Apply(snapshot);
+        var requests = 0;
+        var cachedHeartbeat = false;
+        var reconnected = false;
+        using var handler = new Handler(async (request, token) =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
+            if (path.EndsWith("/configuration", StringComparison.Ordinal))
+            {
+                if (++requests <= 2) throw new HttpRequestException("Server offline");
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) };
+            }
+            if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat"))
+                    .ReadFromJsonAsync<WorkerHeartbeatContract>(token);
+                Assert.NotNull(heartbeat);
+                cachedHeartbeat |= heartbeat.ConfigurationSynchronization == "unavailable";
+                if (requests >= 3 && heartbeat.ConfigurationSynchronization == "synchronized")
+                {
+                    Assert.Equal("not-ready", heartbeat.LifecycleState);
+                    reconnected = true;
+                    stop.Cancel();
+                }
+            }
+            return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        var host = new WorkerHost(global, [], new WorkerConsole(new StringWriter(), interactive: false),
+            timeProvider: new AdvancingClock(),
+            registrationClient: new WorkerRegistrationClient(client,
+                new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
+                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
+            agentAuthentication: new TestProvider { Available = true });
+        try
+        {
+            await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(cachedHeartbeat);
+            Assert.True(reconnected);
+            Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
+        }
+        finally { stop.Cancel(); }
+    }
+
+    private sealed class AdvancingClock : TimeProvider
+    {
+        private long _ticks = DateTimeOffset.UnixEpoch.Ticks;
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerMinute), TimeSpan.Zero);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InvalidServerContractOrCorruptCacheStillFailsStartup(bool corruptCache)
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var runtime = new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") };
+        var cache = settings.IdentityFile + ".configuration.json";
+        var valid = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
+        new ManagedConfigurationSynchronizer(cache, runtime).Apply(valid);
+        if (corruptCache) await File.WriteAllTextAsync(cache, "{}");
+        using var handler = new Handler((request, _) => Task.FromResult(
+            request.RequestUri?.AbsolutePath.EndsWith("/configuration", StringComparison.Ordinal) == true
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(valid with { ContractVersion = 99 }) }
+                : new HttpResponseMessage(HttpStatusCode.OK)));
+        using var client = new HttpClient(handler);
+        var host = new WorkerHost(new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed" }, ManagedProjects = runtime,
+            Api = new() { Enabled = false }
+        }, [], new WorkerConsole(new StringWriter(), interactive: false),
+            registrationClient: new WorkerRegistrationClient(client,
+                new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
+                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))));
+
+        await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
+    }
+
+    private sealed class StartedWriter : StringWriter
+    {
+        public TaskCompletionSource<bool> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override void Write(string? value)
+        {
+            base.Write(value);
+            if (value?.Contains("Worker started.", StringComparison.Ordinal) == true) Started.TrySetResult(true);
+        }
+    }
+
     [Fact]
     public async Task FailedPreflightIsRetriedOnlyAfterExplicitRefreshAndCancellationPropagates()
     {

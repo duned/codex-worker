@@ -118,6 +118,8 @@ public sealed class ManagedConfigurationTests
         var snapshot = fixture.Snapshot(1);
         firstProcess.Apply(snapshot);
         firstProcess.RecordUnavailable(new HttpRequestException("offline"));
+        firstProcess.RecordUnavailable(new HttpRequestException("still offline"));
+        Assert.Equal("unavailable", firstProcess.Status.SynchronizationStatus);
 
         var restartedProcess = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var restored = restartedProcess.LoadLastValid().Single().Configuration;
