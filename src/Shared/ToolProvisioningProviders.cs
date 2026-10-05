@@ -8,6 +8,7 @@ internal sealed record ToolProvisioningStep(string Executable, IReadOnlyList<str
 /// <summary>Local product policy, never caller-supplied packages, paths or shell commands.</summary>
 internal static class ToolProvisioningProviders
 {
+    internal const string CodexHelper = "/usr/local/libexec/codex-provisioning-codex";
     internal const string NpmRegistry = "https://registry.npmjs.org";
     internal static string? AptPackage(string id) => id switch
     {
@@ -56,7 +57,7 @@ internal static class ToolProvisioningProviders
     internal static ToolProvisioningStep CandidateProbe(string id) => AptPackage(id) is { } package
         ? new("/usr/bin/apt-cache", ["policy", package])
         : id == "codex-cli" ? new("/usr/bin/npm", ["view", "@openai/codex@latest", "version", "--global",
-            "--registry", NpmRegistry, "--userconfig", "/dev/null", "--globalconfig", "/dev/null"]) : throw new InvalidOperationException("Unsupported tool provider.");
+            "--registry", NpmRegistry, "--userconfig", "/dev/null"]) : throw new InvalidOperationException("Unsupported tool provider.");
 
     internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action,
         bool npmAvailable = false)
@@ -70,13 +71,9 @@ internal static class ToolProvisioningProviders
                             ? ["-y", "--no-install-recommends", package, "openssh-client"]
                             : ["-y", "--no-install-recommends", package])];
         if (id != "codex-cli") throw new InvalidOperationException("Unsupported tool provider.");
-        // Use the stable official npm channel, a system prefix and private product cache.
-        // No nvm, shell initialization, operator HOME, npmrc, purge or autoremove.
-        var npm = new ToolProvisioningStep("/usr/bin/npm",
-            [remove ? "uninstall" : "install", "--global", "--prefix", "/usr/local",
-                "--registry", NpmRegistry, "--userconfig", "/dev/null", "--globalconfig", "/dev/null",
-                "--cache", "/var/cache/codex-provisioning/npm", "--no-audit", "--no-fund",
-                remove ? "@openai/codex" : "@openai/codex@latest"],
+        // The root-owned helper accepts only these two fixed operations. It prepares
+        // the isolated npm cache and uses a readable installation umask.
+        var npm = new ToolProvisioningStep(CodexHelper, [remove ? "uninstall" : "install"],
             remove ? ProvisioningProviderStep.NpmPackageRemoval : ProvisioningProviderStep.NpmPackageInstall,
             RequiresElevation: true);
         if (remove) return [npm];
@@ -88,10 +85,6 @@ internal static class ToolProvisioningProviders
                 "-y", "--no-install-recommends", "nodejs", "npm"));
         }
         steps.Add(npm);
-        // Packaged services use umask 077. Make only the tool and its standard
-        // system parent directories traversable by the effective service account.
-        steps.Add(new("/usr/bin/chmod", ["a+rx", "/usr/local/bin", "/usr/local/lib", "/usr/local/lib/node_modules", "/usr/local/lib/node_modules/@openai"], ProvisioningProviderStep.ExecutablePermissions, RequiresElevation: true));
-        steps.Add(new("/usr/bin/chmod", ["-R", "a+rX", "/usr/local/lib/node_modules/@openai/codex"], ProvisioningProviderStep.ExecutablePermissions, RequiresElevation: true));
         return steps;
     }
 

@@ -160,7 +160,11 @@ uninstall_server() {
   if [[ ${EUID} -ne 0 && -z $test_root ]]; then fail 'run as root.'; fi
   command -v systemctl >/dev/null 2>&1 || fail 'required command not found: systemctl'
   remove_service
-  remove_path "$provisioning_sudoers" 'local provisioning sudoers policy'
+  remove_path "$provisioning_sudoers" 'provisioning privilege policy'
+  if [[ ! -e ${test_root}/etc/sudoers.d/codex-worker-provisioning ]]; then
+    remove_path "${test_root}/usr/local/libexec/codex-provisioning-codex" 'Codex provisioning helper'
+    remove_path "${test_root}/var/cache/codex-provisioning" 'Codex provisioning cache'
+  fi
   remove_path "$install_root" 'installed Server releases'
   remove_path "${test_root}/usr/local/bin/codex-server" 'Server operator helper'
   remove_path "$log_root" 'Server logs'

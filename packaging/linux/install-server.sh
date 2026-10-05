@@ -17,7 +17,14 @@ github_cli_executable=/usr/bin/gh
 server_helper=/usr/local/bin/codex-server
 readonly provisioning_sudoers=/etc/sudoers.d/codex-server-provisioning
 
+provisioning_changed=false
 cleanup() {
+  local status=$?
+  if ((status != 0)) && [[ $provisioning_changed == true ]]; then
+    if [[ -e $temporary_dir/previous.provisioning ]]; then cp -a --remove-destination "$temporary_dir/previous.provisioning" "$provisioning_sudoers"; else rm -f "$provisioning_sudoers"; fi
+    if [[ -e $temporary_dir/previous.codex-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.codex-helper" /usr/local/libexec/codex-provisioning-codex; else rm -f /usr/local/libexec/codex-provisioning-codex; fi
+  fi
+  [[ -z ${temporary_dir:-} ]] || rm -rf "$temporary_dir"
   if [[ $bootstrap_restore_needed == true ]]; then
     set +e
     restore_bootstrap_policy
@@ -169,9 +176,46 @@ ensure_server_environment() (
   ensure_credential_encryption_key "$environment_file"
 )
 
+write_codex_provisioning_helper() {
+  cat <<'EOF'
+#!/bin/bash -p
+set -euo pipefail
+# Only fixed product operations; no paths, packages or extra arguments accepted.
+[[ $EUID == 0 && $# == 1 ]] || exit 2
+case "$1" in
+  install) package=@openai/codex@latest ;;
+  uninstall) package=@openai/codex ;;
+  *) exit 2 ;;
+esac
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 0022
+# Reject links at product-owned boundaries before privileged writes.
+for path in /var/cache/codex-provisioning /var/cache/codex-provisioning/npm /var/cache/codex-provisioning/npmrc; do
+  if [[ -L $path || ( -e $path && $(/usr/bin/stat -c %u "$path") != 0 ) ]]; then
+    echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+  fi
+  if [[ -e $path ]]; then
+    mode=$(/usr/bin/stat -c %a "$path")
+    if (( (8#$mode & 0022) != 0 )); then echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1; fi
+  fi
+done
+/usr/bin/install -d -o root -g root -m 0700 /var/cache/codex-provisioning /var/cache/codex-provisioning/npm || {
+  echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+}
+/usr/bin/install -o root -g root -m 0600 /dev/null /var/cache/codex-provisioning/npmrc || {
+  echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+}
+# Separate config files work on stock npm 9. No caller environment or npmrc.
+exec /usr/bin/env -i HOME=/var/cache/codex-provisioning PATH=/usr/bin:/bin LC_ALL=C \
+  /usr/bin/npm "$1" --global --prefix /usr/local --registry https://registry.npmjs.org \
+  --userconfig /dev/null --globalconfig /var/cache/codex-provisioning/npmrc \
+  --cache /var/cache/codex-provisioning/npm --no-audit --no-fund --umask 0022 "$package"
+EOF
+}
+
 write_provisioning_sudoers() {
   cat <<'EOF'
-# Managed by the Codex Server installer. Do not add commands here.
+# Managed by the Codex Server installer. No arbitrary commands.
 Cmnd_Alias CODEX_SERVER_PROVISIONING = \
     /usr/bin/apt-get update, \
     /usr/bin/apt-get install -y --no-install-recommends git openssh-client, \
@@ -179,30 +223,35 @@ Cmnd_Alias CODEX_SERVER_PROVISIONING = \
     /usr/bin/apt-get install -y --no-install-recommends nodejs npm, \
     /usr/bin/apt-get remove -y git, \
     /usr/bin/apt-get remove -y gh, \
-    /usr/bin/npm install --global --prefix /usr/local --registry https\://registry.npmjs.org --userconfig /dev/null --globalconfig /dev/null --cache /var/cache/codex-provisioning/npm --no-audit --no-fund "@openai/codex@latest", \
-    /usr/bin/npm uninstall --global --prefix /usr/local --registry https\://registry.npmjs.org --userconfig /dev/null --globalconfig /dev/null --cache /var/cache/codex-provisioning/npm --no-audit --no-fund "@openai/codex", \
-    /usr/bin/chmod a+rx /usr/local/bin /usr/local/lib /usr/local/lib/node_modules /usr/local/lib/node_modules/@openai, \
-    /usr/bin/chmod -R a+rX /usr/local/lib/node_modules/@openai/codex
+    /usr/local/libexec/codex-provisioning-codex install, \
+    /usr/local/libexec/codex-provisioning-codex uninstall
 codex-server ALL=(root) NOPASSWD: CODEX_SERVER_PROVISIONING
 EOF
 }
 
 install_provisioning_sudoers() {
-  command -v visudo >/dev/null 2>&1 || fail 'visudo is required to validate the local provisioning privilege policy.'
-  local temporary_policy
-  temporary_policy="$(mktemp /etc/sudoers.d/.codex-server-provisioning.XXXXXX)" || fail 'Could not create the temporary provisioning privilege policy.'
-  if ! write_provisioning_sudoers > "$temporary_policy"; then
-    rm -f -- "$temporary_policy"
-    fail 'Could not generate the local provisioning privilege policy.'
-  fi
+  command -v visudo >/dev/null 2>&1 || fail 'visudo is required to validate provisioning policy (install sudo).'
+  local temporary_policy temporary_helper
+  temporary_dir=$(mktemp -d)
+  temporary_policy=$(mktemp /etc/sudoers.d/.codex-server-provisioning.XXXXXX)
+  temporary_helper=$(mktemp "$temporary_dir/codex-helper.XXXXXX")
+  write_provisioning_sudoers > "$temporary_policy"
+  write_codex_provisioning_helper > "$temporary_helper"
   chown root:root "$temporary_policy"
   chmod 0440 "$temporary_policy"
-  if ! visudo -cf "$temporary_policy" >/dev/null; then
+  if ! visudo -cf "$temporary_policy" >/dev/null || ! bash -n "$temporary_helper"; then
     rm -f -- "$temporary_policy"
-    fail 'The generated local provisioning privilege policy did not pass visudo validation.'
+    fail 'Generated provisioning policy/helper failed validation.'
   fi
-  mv -f -- "$temporary_policy" "$provisioning_sudoers"
-  visudo -c >/dev/null || fail 'The installed sudoers configuration did not pass visudo validation.'
+  # Save both resources before replacement so installer failure restores upgrades.
+  [[ ! -e $provisioning_sudoers ]] || cp -a "$provisioning_sudoers" "$temporary_dir/previous.provisioning"
+  [[ ! -e /usr/local/libexec/codex-provisioning-codex ]] || cp -a /usr/local/libexec/codex-provisioning-codex "$temporary_dir/previous.codex-helper"
+  provisioning_changed=true
+  install -d -o root -g root -m 0755 /usr/local/libexec
+  install -o root -g root -m 0755 "$temporary_helper" /usr/local/libexec/.codex-provisioning-codex.next
+  mv -f /usr/local/libexec/.codex-provisioning-codex.next /usr/local/libexec/codex-provisioning-codex
+  mv -f "$temporary_policy" "$provisioning_sudoers"
+  visudo -c >/dev/null || fail 'Installed sudoers configuration failed validation.'
 }
 
 read_server_boolean() {

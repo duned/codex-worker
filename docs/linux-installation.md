@@ -168,7 +168,7 @@ Inspect status, validate or update configuration, and list or refresh capability
 /opt/codex-worker/CodexWorker config show --config /srv/codex-worker/worker.yml
 ```
 
-`config set` updates only its documented settings and validates the complete YAML before replacing it. Provisioning mutations require both an enabled local policy, an allowlisted action key, and an explicit `--allow-elevation`; on Linux, a non-root invocation also needs non-interactive sudo permission for the product-owned package commands. For example, as an administrator:
+`config set` updates only its documented settings and validates the complete YAML before replacing it. Provisioning mutations require both an enabled local policy, an allowlisted action key, and an explicit `--allow-elevation`; the normal Worker installer installs and validates `/etc/sudoers.d/codex-worker-provisioning` for non-interactive elevation of the fixed product operations. The service continues to run as `codex-worker`. The installer requires sudo/visudo; policy validation failure fails installation. For example, as an administrator:
 
 ```sh
 sudo /opt/codex-worker/CodexWorker config set worker.provisioning.enabled true
@@ -179,6 +179,12 @@ sudo /opt/codex-worker/CodexWorker provision install git --allow-elevation --jso
 sudo /opt/codex-worker/CodexWorker provision upgrade git --allow-elevation
 sudo /opt/codex-worker/CodexWorker provision uninstall git --allow-elevation
 ```
+
+Codex install and upgrade both install the official `@openai/codex@latest` package from `https://registry.npmjs.org` into `/usr/local`; uninstall removes that same managed package. The root-owned `/usr/local/libexec/codex-provisioning-codex` helper accepts only `install` or `uninstall`, with no additional arguments. It prepares `/var/cache/codex-provisioning` and its npm cache as root-owned mode 0700, and an empty global npm configuration as mode 0600. npm runs with a clean environment, separate user/global configuration paths and umask 0022. There is no generic npm, chmod or shell permission in the service account's sudo policy. Candidate probes stay unprivileged. Existing Codex login state is independent of package installation.
+
+For Codex, allowlist `tool:codex-cli:install`, `tool:codex-cli:update`, and `tool:codex-cli:uninstall` as needed, then use `sudo codex-worker provision install codex-cli --allow-elevation`. The equivalent Server command must set `allowElevation=true` and still passes Worker-local policy. Verify the executable as the service account with `sudo -u codex-worker -H sh -lc 'command -v codex && codex --version'`, and inspect `provision status`. Without an existing login, installation should report installed and authentication-required.
+
+Worker upgrades replace the helper and validated privilege policy and restore their previous contents on installation failure. Uninstall, including without purge, removes the Worker's privilege policy. The shared Codex helper/cache are removed when neither the Worker nor Server installer privilege policy remains; installed external tools and Codex authentication are retained.
 
 Supported typed actions include capability detection, package install/upgrade/uninstall, Git configuration checks, GitHub CLI authentication setup and checks, and bounded SSH key/repository-access operations. Package operations are available on Debian-based Linux systems; this installer supports Ubuntu 24.04 x86_64. A denied operation reports the controlling Worker policy and a remediation. `--json` writes versioned status, configuration, capability-inventory, and provisioning contracts to standard output; progress for interactive authentication remains separate from the final JSON result. The commands do not expose shell text or caller-selected packages.
 

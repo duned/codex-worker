@@ -168,6 +168,11 @@ uninstall_worker() {
   if [[ ${EUID} -ne 0 && -z $test_root ]]; then fail 'run as root.'; fi
   command -v systemctl >/dev/null 2>&1 || fail 'required command not found: systemctl'
   remove_service
+  remove_path "${test_root}/etc/sudoers.d/codex-worker-provisioning" 'provisioning privilege policy'
+  if [[ ! -e ${test_root}/etc/sudoers.d/codex-server-provisioning ]]; then
+    remove_path "${test_root}/usr/local/libexec/codex-provisioning-codex" 'Codex provisioning helper'
+    remove_path "${test_root}/var/cache/codex-provisioning" 'Codex provisioning cache'
+  fi
   remove_worker_releases
   local command_path="${test_root}/usr/local/bin/codex-worker"
   # Remove only the installer-owned alias; retain unrelated operator commands.

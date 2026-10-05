@@ -6,6 +6,7 @@ readonly install_root=/opt/codex-worker
 readonly config_root=/etc/codex-worker
 readonly data_root=/var/lib/codex-worker
 readonly archive_name_prefix=codex-worker
+readonly provisioning_sudoers=/etc/sudoers.d/codex-worker-provisioning
 
 # When Bash reads this installer from stdin (for example through curl | sudo bash),
 # BASH_SOURCE has no entry. In that case the systemd unit is fetched from GitHub.
@@ -71,6 +72,89 @@ done
 fail() {
   echo "Codex Worker installation failed: $*" >&2
   exit 1
+}
+
+write_codex_provisioning_helper() {
+  cat <<'EOF'
+#!/bin/bash -p
+set -euo pipefail
+# Only fixed product operations; no paths, packages or extra arguments accepted.
+[[ $EUID == 0 && $# == 1 ]] || exit 2
+case "$1" in
+  install) package=@openai/codex@latest ;;
+  uninstall) package=@openai/codex ;;
+  *) exit 2 ;;
+esac
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 0022
+# Reject links at product-owned boundaries before privileged writes.
+for path in /var/cache/codex-provisioning /var/cache/codex-provisioning/npm /var/cache/codex-provisioning/npmrc; do
+  if [[ -L $path || ( -e $path && $(/usr/bin/stat -c %u "$path") != 0 ) ]]; then
+    echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+  fi
+  if [[ -e $path ]]; then
+    mode=$(/usr/bin/stat -c %a "$path")
+    if (( (8#$mode & 0022) != 0 )); then echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1; fi
+  fi
+done
+/usr/bin/install -d -o root -g root -m 0700 /var/cache/codex-provisioning /var/cache/codex-provisioning/npm || {
+  echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+}
+/usr/bin/install -o root -g root -m 0600 /dev/null /var/cache/codex-provisioning/npmrc || {
+  echo 'CODEX_CACHE_PREPARATION_FAILED' >&2; exit 1;
+}
+# Separate config files work on stock npm 9. No caller environment or npmrc.
+exec /usr/bin/env -i HOME=/var/cache/codex-provisioning PATH=/usr/bin:/bin LC_ALL=C \
+  /usr/bin/npm "$1" --global --prefix /usr/local --registry https://registry.npmjs.org \
+  --userconfig /dev/null --globalconfig /var/cache/codex-provisioning/npmrc \
+  --cache /var/cache/codex-provisioning/npm --no-audit --no-fund --umask 0022 "$package"
+EOF
+}
+
+write_provisioning_sudoers() {
+  cat <<'EOF'
+# Managed by the Codex Worker installer. No arbitrary commands.
+Cmnd_Alias CODEX_WORKER_PROVISIONING = \
+    /usr/bin/apt-get update, \
+    /usr/bin/apt-get install -y --no-install-recommends git openssh-client, \
+    /usr/bin/apt-get install -y --no-install-recommends gh, \
+    /usr/bin/apt-get install -y --no-install-recommends nodejs npm, \
+    /usr/bin/apt-get install -y --no-install-recommends dotnet-sdk-10.0, \
+    /usr/bin/apt-get install -y --no-install-recommends aspnetcore-runtime-10.0, \
+    /usr/bin/apt-get install -y --no-install-recommends docker.io, \
+    /usr/bin/apt-get remove -y git, \
+    /usr/bin/apt-get remove -y gh, \
+    /usr/bin/apt-get remove -y dotnet-sdk-10.0, \
+    /usr/bin/apt-get remove -y aspnetcore-runtime-10.0, \
+    /usr/bin/apt-get remove -y docker.io, \
+    /usr/local/libexec/codex-provisioning-codex install, \
+    /usr/local/libexec/codex-provisioning-codex uninstall
+codex-worker ALL=(root) NOPASSWD: CODEX_WORKER_PROVISIONING
+EOF
+}
+
+install_provisioning_sudoers() {
+  command -v visudo >/dev/null 2>&1 || fail 'visudo is required to validate provisioning policy (install sudo).'
+  local temporary_policy temporary_helper
+  temporary_policy=$(mktemp /etc/sudoers.d/.codex-worker-provisioning.XXXXXX)
+  temporary_helper=$(mktemp "$temporary_dir/codex-helper.XXXXXX")
+  write_provisioning_sudoers > "$temporary_policy"
+  write_codex_provisioning_helper > "$temporary_helper"
+  chown root:root "$temporary_policy"
+  chmod 0440 "$temporary_policy"
+  if ! visudo -cf "$temporary_policy" >/dev/null || ! bash -n "$temporary_helper"; then
+    rm -f -- "$temporary_policy"
+    fail 'Generated provisioning policy/helper failed validation.'
+  fi
+  # Save both resources before replacement so installer failure restores upgrades.
+  [[ ! -e $provisioning_sudoers ]] || cp -a "$provisioning_sudoers" "$temporary_dir/previous.provisioning"
+  [[ ! -e /usr/local/libexec/codex-provisioning-codex ]] || cp -a /usr/local/libexec/codex-provisioning-codex "$temporary_dir/previous.codex-helper"
+  provisioning_changed=true
+  install -d -o root -g root -m 0755 /usr/local/libexec
+  install -o root -g root -m 0755 "$temporary_helper" /usr/local/libexec/.codex-provisioning-codex.next
+  mv -f /usr/local/libexec/.codex-provisioning-codex.next /usr/local/libexec/codex-provisioning-codex
+  mv -f "$temporary_policy" "$provisioning_sudoers"
+  visudo -c >/dev/null || fail 'Installed sudoers configuration failed validation.'
 }
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -165,8 +249,15 @@ if [[ -f $config_root/worker.yml ]]; then
   cp -a -- "$config_root/worker.yml" "$temporary_dir/previous.yml"
 fi
 
+provisioning_changed=false
 cleanup() {
   local status=$?
+  if ((status != 0)) && [[ $provisioning_changed == true ]]; then
+    if [[ -e $temporary_dir/previous.provisioning ]]; then cp -a --remove-destination "$temporary_dir/previous.provisioning" "$provisioning_sudoers";
+    else rm -f "$provisioning_sudoers"; fi
+    if [[ -e $temporary_dir/previous.codex-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.codex-helper" /usr/local/libexec/codex-provisioning-codex;
+    else rm -f /usr/local/libexec/codex-provisioning-codex; fi
+  fi
   if ((status != 0)) && [[ $service_stopped == true ]]; then
     # Stop any partially started service before changing its executable or unit.
     if [[ $service_was_present == false && $unit_changed == false ]] || systemctl stop codex-worker; then
@@ -418,6 +509,8 @@ swap_started=true
 if ! mv -- "$stage_dir" "$install_root"; then
   fail "could not activate Worker $version"
 fi
+
+install_provisioning_sudoers
 
 unit_changed=true
 install -o root -g root -m 0644 "$temporary_dir/codex-worker.service" "$unit_path" || fail "could not install the systemd unit"

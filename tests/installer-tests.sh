@@ -41,6 +41,7 @@ fi
 grep -q 'unknown option' "$temp_dir/unknown-uninstall-option.txt"
 
 bash "$repo_root/tests/uninstaller-lifecycle-tests.sh"
+bash "$repo_root/tests/codex-provisioning-helper-tests.sh"
 
 if bash "$worker_installer" --capacity 9 >"$temp_dir/invalid-capacity.txt" 2>&1; then
   echo 'Worker installer accepted an out-of-range capacity.' >&2
@@ -188,7 +189,7 @@ write_provisioning_sudoers > "$temp_dir/codex-server-provisioning.sudoers"
 grep -Fq 'codex-server ALL=(root) NOPASSWD: CODEX_SERVER_PROVISIONING' "$temp_dir/codex-server-provisioning.sudoers"
 grep -Fq '/usr/bin/apt-get install -y --no-install-recommends gh' "$temp_dir/codex-server-provisioning.sudoers"
 grep -Fq '/usr/bin/apt-get install -y --no-install-recommends git openssh-client' "$temp_dir/codex-server-provisioning.sudoers"
-grep -Fq '/usr/bin/npm install --global --prefix /usr/local' "$temp_dir/codex-server-provisioning.sudoers"
+grep -Fq '/usr/local/libexec/codex-provisioning-codex install' "$temp_dir/codex-server-provisioning.sudoers"
 ! grep -Eq 'NOPASSWD:[[:space:]]*ALL|/usr/bin/apt-get([[:space:]]|$)(,|$)' "$temp_dir/codex-server-provisioning.sudoers"
 grep -Fq 'sudoers.d/codex-server-provisioning' "$installer"
 grep -Fq 'chown root:root "$temporary_policy"' "$installer"

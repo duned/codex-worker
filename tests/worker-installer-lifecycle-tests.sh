@@ -13,13 +13,15 @@ prepare_root() {
   if [[ ${2:-} == tty ]]; then tty_rewrite=''; fi
   export LIFECYCLE_ROOT="$test_dir/$1"
   mkdir -p "$LIFECYCLE_ROOT/opt" "$LIFECYCLE_ROOT/etc/systemd/system" \
-    "$LIFECYCLE_ROOT/var/log" "$LIFECYCLE_ROOT/scripts"
+    "$LIFECYCLE_ROOT/var/log" "$LIFECYCLE_ROOT/scripts" "$LIFECYCLE_ROOT/etc/sudoers.d"
   printf 'ID=ubuntu\nVERSION_ID=24.04\n' > "$LIFECYCLE_ROOT/etc/os-release"
   sed -e "s|/opt/codex-worker|$LIFECYCLE_ROOT/opt/codex-worker|g" \
     -e "s|/etc/codex-worker|$LIFECYCLE_ROOT/etc/codex-worker|g" \
     -e "s|/var/lib/codex-worker|$LIFECYCLE_ROOT/var/lib/codex-worker|g" \
     -e "s|/var/log/codex-worker|$LIFECYCLE_ROOT/var/log/codex-worker|g" \
     -e "s|/etc/systemd/system|$LIFECYCLE_ROOT/etc/systemd/system|g" \
+    -e "s|/etc/sudoers.d|$LIFECYCLE_ROOT/etc/sudoers.d|g" \
+    -e "s|/usr/local/libexec|$LIFECYCLE_ROOT/usr/local/libexec|g" \
     -e "s|/usr/local/bin|$LIFECYCLE_ROOT/usr/local/bin|g" \
     -e "s|/etc/os-release|$LIFECYCLE_ROOT/etc/os-release|g" \
     -e 's/${EUID} -ne 0/1 -ne 1/g' -e "$tty_rewrite" \
@@ -75,6 +77,12 @@ while (($#)); do
   case $1 in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac
 done
 "$REAL_INSTALL" "${args[@]}"
+STUB
+cat > "$test_dir/bin/visudo" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'visudo %s\n' "$*" >> "$LIFECYCLE_ROOT/events"
+[[ ${VISUDO_FAIL:-false} == false ]]
 STUB
 cat > "$test_dir/bin/runuser" <<'STUB'
 #!/usr/bin/env bash
@@ -184,6 +192,14 @@ assert_clean_failure() {
 prepare_root success
 run_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
+policy="$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
+helper="$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
+[[ $(stat -c %a "$policy") == 440 && $(stat -c %a "$helper") == 755 ]]
+grep -Fq 'codex-worker ALL=(root) NOPASSWD: CODEX_WORKER_PROVISIONING' "$policy"
+grep -Fq 'visudo -cf' "$LIFECYCLE_ROOT/events"
+! grep -Eq '/usr/bin/(npm|chmod)|/bin/(bash|sh)|NOPASSWD: ALL|\*' "$policy"
+cp "$policy" "$LIFECYCLE_ROOT/installed.policy"
+cp "$helper" "$LIFECYCLE_ROOT/installed.helper"
 [[ $(readlink "$LIFECYCLE_ROOT/usr/local/bin/codex-worker") == "$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker" ]]
 [[ $(grep -n '^register$' "$LIFECYCLE_ROOT/events" | cut -d: -f1) -lt \
    $(grep -n '^enable --now' "$LIFECYCLE_ROOT/events" | cut -d: -f1) ]]
@@ -259,6 +275,12 @@ grep -q 'Worker registration completed' "$LIFECYCLE_ROOT/output"
 prepare_root start-failure
 if START_FAIL=true run_install; then echo 'Start failure accepted'; exit 1; fi
 assert_clean_failure
+[[ ! -e $LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning &&
+   ! -e $LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex ]]
+prepare_root policy-failure
+if VISUDO_FAIL=true run_install; then echo 'Invalid policy accepted'; exit 1; fi
+assert_clean_failure
+[[ ! -e $LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning ]]
 for prerequisite in apphost unit-path; do
   prepare_root "$prerequisite"
   if [[ $prerequisite == unit-path ]]; then
@@ -288,12 +310,17 @@ if REGISTRATION_FAIL=true run_install; then exit 1; fi
 [[ $(cat "$LIFECYCLE_ROOT/opt/codex-worker/VERSION") == previous ]]
 sed "s|$LIFECYCLE_ROOT/var/lib/codex-worker|/var/lib/codex-worker|g" \
   "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml" | diff -u "$LIFECYCLE_TEMPLATE" -
+mkdir -p "$LIFECYCLE_ROOT/usr/local/libexec"
+printf '# previous policy\n' > "$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
+printf '# previous helper\n' > "$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
 # Also exercise rollback after both the runtime and service unit were replaced.
 sed -i 's/RestartSec=5/RestartSec=17/' "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 cp "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service" "$LIFECYCLE_ROOT/previous.service"
 if START_FAIL=true run_install; then exit 1; fi
 [[ -f $LIFECYCLE_ROOT/active && -f $LIFECYCLE_ROOT/enabled ]]
 [[ $(cat "$LIFECYCLE_ROOT/opt/codex-worker/VERSION") == previous ]]
+grep -Fxq '# previous policy' "$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
+grep -Fxq '# previous helper' "$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
 cmp "$LIFECYCLE_ROOT/previous.service" "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 sed "s|$LIFECYCLE_ROOT/var/lib/codex-worker|/var/lib/codex-worker|g" \
   "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml" | diff -u "$LIFECYCLE_TEMPLATE" -
@@ -307,4 +334,6 @@ grep -Fxq "  identityFile: $LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/wo
 [[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id") == "$identity" ]]
 grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $LIFECYCLE_ROOT/etc/codex-worker/worker.yml" \
   "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
+grep -Fq 'NOPASSWD: CODEX_WORKER_PROVISIONING' "$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
+grep -Fq 'exec /usr/bin/env -i' "$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
 echo 'Worker installer lifecycle checks passed.'

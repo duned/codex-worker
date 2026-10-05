@@ -11,7 +11,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
 public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions }
 
@@ -22,9 +22,12 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
     public string Description => Code switch
     {
         ProvisioningFailureCode.ElevationDenied when ProviderStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval =>
-            "Non-interactive sudo authorization was denied. Authorize the fixed npm system-prefix command through node-local sudo policy, or invoke local provisioning as an administrator with --allow-elevation. The action must still be allowlisted by local provisioning policy.",
+            "Non-interactive sudo authorization was denied. Authorize the fixed product Codex helper through node-local sudo policy, or invoke local provisioning as an administrator with --allow-elevation. The action must still be allowlisted by local provisioning policy.",
         ProvisioningFailureCode.ElevationDenied => "Non-interactive sudo authorization was denied.",
-        ProvisioningFailureCode.SystemPrefixPermissionDenied => "npm could not mutate the managed system prefix /usr/local or cache /var/cache/codex-provisioning/npm. Check node-local non-interactive sudo authorization for the fixed npm provider commands and filesystem permissions, then retry with --allow-elevation and the action allowlisted by local provisioning policy.",
+        ProvisioningFailureCode.SystemPrefixPermissionDenied => "npm could not mutate the managed system prefix /usr/local or cache /var/cache/codex-provisioning/npm. Check node-local non-interactive sudo authorization for the fixed product Codex helper and filesystem permissions, then retry with --allow-elevation and the action allowlisted by local provisioning policy.",
+        ProvisioningFailureCode.ProviderConfigurationFailed => "npm configuration is invalid. Repair or reinstall the product provisioning helper.",
+        ProvisioningFailureCode.RegistryUnavailable => "npm could not reach the official registry. Check node DNS, network and registry availability.",
+        ProvisioningFailureCode.CachePreparationFailed => "The root-owned product npm cache could not be prepared. Check its ownership, links and filesystem availability.",
         ProvisioningFailureCode.ExecutableNotFound => "A required provisioning executable was not found.",
         ProvisioningFailureCode.ProcessExited => $"A provisioning process exited unsuccessfully{(ProcessExitCode is { } code ? $" (exit code {code})" : "")}.",
         ProvisioningFailureCode.VerificationFailed => "The provisioning process completed but capability verification failed.",
@@ -54,7 +57,8 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         (Code switch
         {
             ProvisioningFailureCode.ProcessExited or ProvisioningFailureCode.ElevationDenied => true,
-            ProvisioningFailureCode.SystemPrefixPermissionDenied =>
+            ProvisioningFailureCode.SystemPrefixPermissionDenied or ProvisioningFailureCode.ProviderConfigurationFailed or
+                ProvisioningFailureCode.RegistryUnavailable or ProvisioningFailureCode.CachePreparationFailed =>
                 ProviderStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval,
             _ => ProviderStep == ProvisioningProviderStep.Unknown
         });
@@ -252,7 +256,9 @@ public sealed partial class NodeProvisioningCommandExecutor
                     : processResult is { ExitCode: not 0 } ? Failed(providerFailureCode,
                         providerFailureCode == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null,
                         providerFailureCode is ProvisioningFailureCode.ProcessExited or
-                            ProvisioningFailureCode.ElevationDenied or ProvisioningFailureCode.SystemPrefixPermissionDenied
+                            ProvisioningFailureCode.ElevationDenied or ProvisioningFailureCode.SystemPrefixPermissionDenied or
+                            ProvisioningFailureCode.ProviderConfigurationFailed or ProvisioningFailureCode.RegistryUnavailable or
+                            ProvisioningFailureCode.CachePreparationFailed
                             ? failedProviderStep : ProvisioningProviderStep.Unknown)
                         : Failed(ProvisioningFailureCode.VerificationFailed);
             }
@@ -329,6 +335,17 @@ public sealed partial class NodeProvisioningCommandExecutor
             error.Contains("not in the sudoers", StringComparison.OrdinalIgnoreCase) ||
             error.Contains("not allowed to execute", StringComparison.OrdinalIgnoreCase))
             return ProvisioningFailureCode.ElevationDenied;
+        if (providerStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval)
+        {
+            if (error.Contains("CODEX_CACHE_PREPARATION_FAILED", StringComparison.Ordinal))
+                return ProvisioningFailureCode.CachePreparationFailed;
+            if (error.Contains("double-loading config", StringComparison.OrdinalIgnoreCase) ||
+                error.Contains("ERR_INVALID_ARG", StringComparison.OrdinalIgnoreCase))
+                return ProvisioningFailureCode.ProviderConfigurationFailed;
+            if (new[] { "EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "ECONNRESET" }
+                .Any(code => error.Contains(code, StringComparison.Ordinal)))
+                return ProvisioningFailureCode.RegistryUnavailable;
+        }
         if (providerStep is ProvisioningProviderStep.NpmPackageInstall or ProvisioningProviderStep.NpmPackageRemoval &&
             (error.Contains("EACCES", StringComparison.OrdinalIgnoreCase) ||
              error.Contains("EPERM", StringComparison.OrdinalIgnoreCase) ||

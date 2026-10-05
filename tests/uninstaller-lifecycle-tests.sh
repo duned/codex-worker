@@ -122,6 +122,8 @@ prepare() {
     mkdir -p "$root/etc/sudoers.d"
     touch "$root/etc/sudoers.d/codex-server-provisioning"
   fi
+  mkdir -p "$root/etc/sudoers.d" "$root/usr/local/libexec" "$root/var/cache/codex-provisioning/npm"
+  touch "$root/etc/sudoers.d/$TEST_SERVICE-provisioning" "$root/usr/local/libexec/codex-provisioning-codex" "$root/var/cache/codex-provisioning/npm/state"
   # Enable account cleanup in a relocated copy, with every account tool mocked.
   sed 's/if \[\[ -n $test_root \]\]; then/if false; then/' \
     "$repo_root/packaging/linux/uninstall-$component.sh" > "$root/uninstall.sh"
@@ -150,7 +152,9 @@ run_uninstall() {
 }
 assert_final() {
   [[ ! -e $unit && ! -L $link && ! -e $root/active && ! -e $root/cached ]]
-  if [[ $component == server ]]; then [[ ! -e $root/etc/sudoers.d/codex-server-provisioning ]]; fi
+  [[ ! -e $root/etc/sudoers.d/$TEST_SERVICE-provisioning &&
+     ! -e $root/usr/local/libexec/codex-provisioning-codex &&
+     ! -e $root/var/cache/codex-provisioning ]]
   for path in "$root/opt/$TEST_SERVICE" "$root/var/log/$TEST_SERVICE" "$root/run/$TEST_SERVICE" \
     "$root/usr/local/bin/$TEST_SERVICE" "$root/opt/$TEST_SERVICE.previous."* \
     "$root/opt/$TEST_SERVICE.failed."* "$root/opt/$TEST_SERVICE.next."*; do
@@ -202,6 +206,16 @@ for component in worker server; do
     echo 'Uninstaller accepted failed final systemd state' >&2; exit 1
   fi
   grep -q 'remains loaded' "$root/output"
+  prepare shared-helper
+  other=worker; [[ $component != worker ]] || other=server
+  touch "$root/etc/sudoers.d/codex-$other-provisioning"
+  run_uninstall --purge > "$root/output" 2>&1
+  [[ ! -e $root/etc/sudoers.d/$TEST_SERVICE-provisioning &&
+     -e $root/usr/local/libexec/codex-provisioning-codex &&
+     -e $root/var/cache/codex-provisioning/npm/state ]]
+  rm "$root/etc/sudoers.d/codex-$other-provisioning"
+  run_uninstall --purge > "$root/repeat" 2>&1
+  [[ ! -e $root/usr/local/libexec/codex-provisioning-codex && ! -e $root/var/cache/codex-provisioning ]]
   prepare custom-account
   CUSTOM_ACCOUNT=true run_uninstall --purge > "$root/output" 2>&1
   [[ -e $root/user && -e $root/group ]]

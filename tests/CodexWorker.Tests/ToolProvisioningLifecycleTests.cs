@@ -59,10 +59,11 @@ public sealed class ToolProvisioningLifecycleTests
     }
 
     [Theory]
-    [InlineData("git", "git")]
-    [InlineData("github-cli", "gh")]
-    [InlineData("codex-cli", "codex")]
-    public async Task LifecycleConvergesAfterRepeatsFailuresInterruptionAndReinstallation(string id, string executable)
+    [InlineData("git", "git", true)]
+    [InlineData("github-cli", "gh", true)]
+    [InlineData("codex-cli", "codex", true)]
+    [InlineData("codex-cli", "codex", false)]
+    public async Task LifecycleConvergesAfterRepeatsFailuresInterruptionAndReinstallation(string id, string executable, bool isRoot)
     {
         string? installed = null;
         var available = "1.0.0";
@@ -85,8 +86,15 @@ public sealed class ToolProvisioningLifecycleTests
         var calls = new List<(string Tool, IReadOnlyList<string> Args)>();
         var executor = new NodeProvisioningCommandExecutor(discovery, (tool, args, token) =>
         {
+            if (!isRoot)
+            {
+                Assert.Equal("/usr/bin/sudo", tool);
+                Assert.Equal("-n", args[0]);
+                tool = args[1];
+                args = args.Skip(2).ToArray();
+            }
             calls.Add((tool, args));
-            var target = id == "codex-cli" ? tool == "/usr/bin/npm" : args.Contains(executable);
+            var target = id == "codex-cli" ? tool == ToolProvisioningProviders.CodexHelper : args.Contains(executable);
             if (target)
             {
                 installed = args[0] is "remove" or "uninstall" ? null : available;
@@ -98,7 +106,7 @@ public sealed class ToolProvisioningLifecycleTests
                 if (fail) return Task.FromResult(1);
             }
             return Task.FromResult(0);
-        }, () => true, () => true, () => true);
+        }, () => true, () => isRoot, () => true);
 
         async Task<ProvisioningCommandReport> Execute(ProvisioningCommandAction action, CancellationToken token = default)
         {
@@ -144,7 +152,7 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.DoesNotContain(calls, call => call.Args.Any(arg => arg is "purge" or "autoremove" or "logout" or "--force"));
         if (id == "codex-cli")
         {
-            Assert.Contains(calls, call => call.Tool == "/usr/bin/npm" && call.Args.Contains("@openai/codex@latest") && call.Args.Contains("/usr/local"));
+            Assert.Contains(calls, call => call.Tool == ToolProvisioningProviders.CodexHelper && call.Args.Contains("install"));
             Assert.DoesNotContain(calls, call => call.Tool == "/usr/bin/apt-get");
         }
     }
@@ -170,7 +178,7 @@ public sealed class ToolProvisioningLifecycleTests
                 tool = args[1];
                 args = args.Skip(2).ToArray();
                 calls.Add((tool, args));
-                if (tool == "/usr/bin/npm" && args[0] == "install") installed = true;
+                if (tool == ToolProvisioningProviders.CodexHelper && args[0] == "install") installed = true;
                 if (tool == "/usr/bin/apt-get")
                     return Task.FromResult(new ProvisioningProcessResult(1, "apt index service unavailable"));
                 return Task.FromResult(new ProvisioningProcessResult(0));
@@ -179,7 +187,7 @@ public sealed class ToolProvisioningLifecycleTests
 
         Assert.Equal(ProvisioningCommandStatus.Succeeded, report.Status);
         Assert.DoesNotContain(calls, call => call.Tool == "/usr/bin/apt-get");
-        Assert.Contains(calls, call => call.Tool == "/usr/bin/npm" && call.Args.Contains("@openai/codex@latest"));
+        Assert.Contains(calls, call => call.Tool == ToolProvisioningProviders.CodexHelper && call.Args.Contains("install"));
         var state = Assert.Single(await discovery.GetAsync(), item => item.Id == "codex-cli");
         Assert.Equal(InstallationState.Installed, state.Installation);
         Assert.Equal(RequirementState.Required, state.Authentication);
@@ -225,12 +233,11 @@ public sealed class ToolProvisioningLifecycleTests
             Assert.Equal(isRoot ? plan[index].Executable : "/usr/bin/sudo", calls[index].Tool);
             Assert.Equal(isRoot ? plan[index].Arguments : ["-n", plan[index].Executable, .. plan[index].Arguments], calls[index].Args);
         }
-        var npm = Assert.Single(plan, step => step.Executable == "/usr/bin/npm");
-        Assert.Equal([action == ProvisioningCommandAction.Uninstall ? "uninstall" : "install",
-            "--global", "--prefix", "/usr/local", "--registry", "https://registry.npmjs.org",
-            "--userconfig", "/dev/null", "--globalconfig", "/dev/null",
-            "--cache", "/var/cache/codex-provisioning/npm", "--no-audit", "--no-fund",
-            action == ProvisioningCommandAction.Uninstall ? "@openai/codex" : "@openai/codex@latest"], npm.Arguments);
+        var npm = Assert.Single(plan, step => step.Executable == ToolProvisioningProviders.CodexHelper);
+        Assert.Equal([action == ProvisioningCommandAction.Uninstall ? "uninstall" : "install"], npm.Arguments);
+        var probe = ToolProvisioningProviders.CandidateProbe("codex-cli");
+        Assert.Contains("--userconfig", probe.Arguments);
+        Assert.DoesNotContain("--globalconfig", probe.Arguments);
         Assert.False(ToolProvisioningProviders.CandidateProbe("codex-cli").RequiresElevation);
         Assert.False(AuthenticationDependencyProbes.Get(AuthenticationDependencyKind.CodexCliLogin).RequiresElevation);
 
@@ -269,6 +276,9 @@ public sealed class ToolProvisioningLifecycleTests
     }
 
     [Theory]
+    [InlineData(ProvisioningCommandAction.Install, "Error: double-loading config /dev/null", ProvisioningFailureCode.ProviderConfigurationFailed)]
+    [InlineData(ProvisioningCommandAction.Update, "npm ERR! code EAI_AGAIN", ProvisioningFailureCode.RegistryUnavailable)]
+    [InlineData(ProvisioningCommandAction.Install, "CODEX_CACHE_PREPARATION_FAILED", ProvisioningFailureCode.CachePreparationFailed)]
     [InlineData(ProvisioningCommandAction.Install, "npm ERR! code EACCES", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
     [InlineData(ProvisioningCommandAction.Update, "npm ERR! code EPERM", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
     [InlineData(ProvisioningCommandAction.Uninstall, "permission denied", ProvisioningFailureCode.SystemPrefixPermissionDenied)]
@@ -292,9 +302,12 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(1, calls);
         Assert.Equal(action == ProvisioningCommandAction.Uninstall ? ProvisioningProviderStep.NpmPackageRemoval :
             ProvisioningProviderStep.NpmPackageInstall, report.FailureDetail?.ProviderStep);
-        Assert.Contains("sudo", report.FailureDetail?.Description, StringComparison.Ordinal);
-        Assert.Contains("--allow-elevation", report.FailureDetail?.Description, StringComparison.Ordinal);
-        Assert.Contains("local provisioning policy", report.FailureDetail?.Description, StringComparison.Ordinal);
+        if (expected is ProvisioningFailureCode.ElevationDenied or ProvisioningFailureCode.SystemPrefixPermissionDenied)
+        {
+            Assert.Contains("sudo", report.FailureDetail?.Description, StringComparison.Ordinal);
+            Assert.Contains("--allow-elevation", report.FailureDetail?.Description, StringComparison.Ordinal);
+            Assert.Contains("local provisioning policy", report.FailureDetail?.Description, StringComparison.Ordinal);
+        }
         Assert.DoesNotContain("private-token", JsonSerializer.Serialize(report), StringComparison.Ordinal);
         Assert.True(report.FailureDetail?.Description.Length < 600);
         Assert.True(ProvisioningCommandProtocol.ValidReport(report));
