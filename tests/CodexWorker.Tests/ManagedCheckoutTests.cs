@@ -76,7 +76,10 @@ public sealed class ManagedCheckoutTests
         var lines = journal.ToString().Split(Environment.NewLine);
         var started = Array.FindIndex(lines, line => line.StartsWith("▶ Issue ·", StringComparison.Ordinal));
         Assert.True(started >= 0);
-        Assert.Equal("↳ Codex · model CLI default · effort medium", lines[started + 1]);
+        Assert.Equal("↳ Codex · model unknown (CLI model unavailable) · effort medium", lines[started + 1]);
+        Assert.Null(completedEntry.EffectiveModel);
+        Assert.True(completedEntry.ModelSelectedByCli);
+        Assert.Equal("medium", completedEntry.EffectiveEffort);
 
         Assert.Equal("ready", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
         Assert.Equal("Claiming", reports[0].Stage);

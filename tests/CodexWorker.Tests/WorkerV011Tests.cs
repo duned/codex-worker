@@ -635,7 +635,10 @@ public sealed class WorkerV011Tests
         var lines = h.Output.ToString().Split(Environment.NewLine);
         var started = Array.FindIndex(lines, line => line.StartsWith("▶ Issue ·", StringComparison.Ordinal));
         Assert.True(started >= 0);
-        Assert.Equal("↳ Codex · model CLI default · effort medium", lines[started + 1]);
+        Assert.Equal("↳ Codex · model unknown (CLI model unavailable) · effort medium", lines[started + 1]);
+        Assert.Null(persisted.EffectiveModel);
+        Assert.True(persisted.ModelSelectedByCli);
+        Assert.Equal("medium", persisted.EffectiveEffort);
         Assert.Contains(lines, line => line.Contains("Codex working OK", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("Validation OK", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("Integrating OK", StringComparison.Ordinal));
