@@ -48,7 +48,7 @@ public sealed class GeneratedMessageOriginTests
 
             await client.CommentAsync(7, report, CancellationToken.None);
 
-            Assert.Equal($"🤖 Codex Worker · {displayName}\n\n{report}", await File.ReadAllTextAsync(executable + ".body"));
+            Assert.Equal($"🤖 Codex Worker · {displayName}\n{GeneratedMessageOrigin.WorkerMarker}\n\n{report}", await File.ReadAllTextAsync(executable + ".body"));
             Assert.Equal(displayName, WorkerIdentity.DisplayName);
         }
         finally
@@ -75,7 +75,7 @@ public sealed class GeneratedMessageOriginTests
         await client.CloseAsync(7, CancellationToken.None);
 
         Assert.Equal(new[] { "issue", "comment", "7", "--repo", "owner/repo", "--body",
-            $"🤖 Codex Worker · codex2-vm\n\n{report}" }, calls[0]);
+            $"🤖 Codex Worker · codex2-vm\n{GeneratedMessageOrigin.WorkerMarker}\n\n{report}" }, calls[0]);
         Assert.Equal(new[] { "issue", "edit", "7", "--repo", "owner/repo", "--remove-label", "working", "--add-label", "done" }, calls[1]);
         Assert.Equal(new[] { "issue", "close", "7", "--repo", "owner/repo" }, calls[2]);
     }
@@ -93,7 +93,7 @@ public sealed class GeneratedMessageOriginTests
 
         Assert.Equal(CodexComponent.Server, configuration.MessageOrigin.Component);
         Assert.Equal(expected, configuration.MessageOrigin.DisplayName);
-        Assert.Equal($"🧭 Codex Server · {expected}\n\n### Report", configuration.MessageOrigin.Format("### Report"));
+        Assert.Equal($"🧭 Codex Server · {expected}\n{GeneratedMessageOrigin.ServerMarker}\n\n### Report", configuration.MessageOrigin.Format("### Report"));
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class GeneratedMessageOriginTests
     {
         var origin = new GeneratedMessageOrigin(CodexComponent.Worker, "node\n<script>@team_*[link]");
 
-        Assert.Equal("🤖 Codex Worker · node &lt;script&gt;&#64;team&#95;&#42;&#91;link&#93;\n\nReport", origin.Format("Report"));
+        Assert.Equal($"🤖 Codex Worker · node &lt;script&gt;&#64;team&#95;&#42;&#91;link&#93;\n{GeneratedMessageOrigin.WorkerMarker}\n\nReport", origin.Format("Report"));
     }
 
     private sealed class TestDirectory : IDisposable

@@ -1676,6 +1676,8 @@ public sealed class GitWorktreeTests
 
     private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
     {
+        public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
+            IReadOnlyList<string>? secretValues = null) => Task.FromResult("");
         private int _number = 16;
         public List<(int Issue, string Label)> Labels { get; } = [];
         public List<(int Issue, string Body)> Comments { get; } = [];

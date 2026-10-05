@@ -189,6 +189,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             }
             _operationalLog($"Integration recovery discovered · {config.Project.Name} · Issue #{issue.Number} · original execution {source.ExecutionId}");
             source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
+            issue = await PrepareCommentContextAsync(issue, ct);
             var execution = WorkerExecution.Create(config.Project, config.Git, issue,
                 retryOfExecutionId: source.ExecutionId, attemptNumber: allHistory.Where(entry =>
                     entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number)
@@ -301,6 +302,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         var retryOf = !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
+        issue = await PrepareCommentContextAsync(issue, ct);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
             ownershipGeneration: ownershipGeneration, codexSettings: config.Codex, settingsSource: retryOf);
@@ -364,6 +366,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             throw;
         }
     }
+
+    private async Task<GitHubIssue> PrepareCommentContextAsync(GitHubIssue issue, CancellationToken ct) =>
+        issue with { CommentContext = await github.GetIssueCommentContextAsync(issue.Number, ct,
+            config.Environment.Variables.Values.ToArray()) };
 
     private static bool IsTerminalIntegrationConflict(ExecutionHistoryEntry entry) =>
         entry.State == "IntegrationConflict" ||

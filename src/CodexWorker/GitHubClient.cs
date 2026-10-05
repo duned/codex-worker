@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt,
-    IReadOnlyList<string>? Labels = null);
+    IReadOnlyList<string>? Labels = null, string CommentContext = "");
 public sealed record GitHubIssueState(bool IsOpen, IReadOnlyList<string> Labels);
 public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
@@ -87,6 +87,86 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         {
             throw ReadFailure("issue view", issueNumber,
                 $"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    public async Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
+        IReadOnlyList<string>? secretValues = null)
+    {
+        if (issueNumber <= 0) throw new WorkerInfrastructureException("GitHub Issue number must be positive.");
+        var issuePath = $"repos/{repository}/issues/{issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        var countResult = await ReadCommentCommandAsync(["api", issuePath, "--jq", ".comments"], cancellationToken);
+        if (!int.TryParse(countResult.StandardOutput.Trim(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var count) || count < 0)
+            throw CommentReadFailure(issueNumber);
+        if (count == 0) return "";
+
+        // Project each small REST page before process capture. Inspect provenance before bounding bodies,
+        // including markers beyond the body limit. Even JSON escaping fits the bounded process output.
+        var projection = $$"""
+            [.[] | (.body // "") as $body | {
+              id, author: (.user.login // "[deleted]"), createdAt: .created_at,
+              generated: ($body | split("\n") | map(rtrimstr("\r")) | any(. == "{{CodexProvisioning.GeneratedMessageOrigin.WorkerMarker}}" or . == "{{CodexProvisioning.GeneratedMessageOrigin.ServerMarker}}")),
+              truncated: (($body | length) > {{IssueCommentContext.MaximumCommentCharacters}}),
+              body: $body[:{{IssueCommentContext.MaximumCommentCharacters}}]
+            }]
+            """;
+        var comments = new List<GitHubIssueComment>();
+        var scanned = 0;
+        var page = (count - 1) / IssueCommentContext.PageSize + 1;
+        var unscanned = count;
+        while (page > 0 && scanned < IssueCommentContext.MaximumScannedComments && comments.Count < IssueCommentContext.MaximumComments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = await ReadCommentCommandAsync(["api", $"{issuePath}/comments?per_page={IssueCommentContext.PageSize}&page={page}",
+                "--jq", projection], cancellationToken);
+            try
+            {
+                using var document = JsonDocument.Parse(result.StandardOutput);
+                var items = document.RootElement;
+                var expectedCount = unscanned - (page - 1) * IssueCommentContext.PageSize;
+                // The newest page may have filled since the count read; use only the snapshot's prefix.
+                if (items.GetArrayLength() < expectedCount || items.GetArrayLength() > IssueCommentContext.PageSize)
+                    throw CommentReadFailure(issueNumber);
+                var pageItems = items.EnumerateArray().Take(expectedCount)
+                    .TakeLast(IssueCommentContext.MaximumScannedComments - scanned).ToArray();
+                foreach (var item in pageItems)
+                {
+                    if (item.GetProperty("generated").GetBoolean()) continue;
+                    var id = item.GetProperty("id").GetInt64();
+                    var author = item.GetProperty("author").GetString();
+                    var body = item.GetProperty("body").GetString();
+                    var timestamp = item.GetProperty("createdAt").GetDateTimeOffset();
+                    if (id <= 0 || string.IsNullOrWhiteSpace(author) || author.Length > 100 || author.Any(char.IsControl) || body is null)
+                        throw CommentReadFailure(issueNumber);
+                    comments.Add(new(id, author, timestamp, body, item.GetProperty("truncated").GetBoolean()));
+                }
+                scanned += pageItems.Length;
+                unscanned -= pageItems.Length;
+                page--;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+            {
+                // Never attach malformed comment payloads or parse diagnostics to operational reports.
+                throw CommentReadFailure(issueNumber);
+            }
+        }
+        return IssueCommentContext.Build(comments, scanTruncated: unscanned > 0, secretValues: secretValues);
+    }
+
+    private static GitHubOperationException CommentReadFailure(int issueNumber) =>
+        new("Issue comments read", issueNumber, false, GitHubFailureKind.Unknown, GitHubRemoteState.NotApplicable,
+            $"Could not reliably read comment context for Issue #{issueNumber}; no incomplete or cached context will be used.");
+
+    private async Task<ProcessResult> ReadCommentCommandAsync(IEnumerable<string> arguments, CancellationToken ct)
+    {
+        try { return await RunGhAsync(arguments, ct, allowGracefulCancellation: true); }
+        catch (GitHubOperationException failure)
+        {
+            // Process timeouts retain captured stdout in their exception message. Keep typed transport
+            // semantics, but never copy comment payloads into logs/reports through an exception chain.
+            throw new GitHubOperationException("Issue comments read", failure.IssueNumber, false, failure.FailureKind,
+                failure.RemoteState, $"GitHub comment context read failed for Issue #{failure.IssueNumber} ({failure.FailureKind}); no incomplete or cached context will be used.");
         }
     }
 

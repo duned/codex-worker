@@ -5,6 +5,96 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerV011Tests
 {
+    [Theory]
+    [InlineData(false, "restart")]
+    [InlineData(false, "resume")]
+    [InlineData(true, "restart")]
+    [InlineData(true, "resume")]
+    public async Task BlockedRetryFetchesNewUnblockContextForStandaloneAndManagedWork(bool managed, string retryMode)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Worker.Configuration.Worker.RetryMode = retryMode;
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.");
+        h.GitHub.CommentContext = "Original human clarification";
+        h.Codex.InitialOutcome = new("blocked", "Need authorization", [], true, "Authorize this task?", "human_input");
+
+        async Task<IssueProcessingResult?> RunAttemptAsync(int attempt)
+        {
+            if (!managed) return await h.ProcessOneAsync();
+            var now = DateTimeOffset.UtcNow;
+            var id = $"server-{attempt}";
+            var assignment = new WorkerAssignmentContract($"assignment-{attempt}", id,
+                new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+                new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+                new ServerExecutionLeaseContract(id, "worker-id", 1, now, now.AddMinutes(5), "Active"));
+            var task = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+            Assert.NotNull(task);
+            return await task;
+        }
+
+        Assert.Equal(IssueOutcomeKind.Blocked, (await RunAttemptAsync(1))?.Kind);
+        var source = Assert.Single(await history.ReadAllAsync());
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Updated description" };
+        h.GitHub.CommentContext = "Original human clarification\nNew unblock authorization";
+        h.Codex.InitialOutcome = Success("Completed authorized task");
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await RunAttemptAsync(2))?.Kind);
+
+        Assert.Equal(2, h.GitHub.CommentFetches);
+        Assert.Equal("Original human clarification", h.Codex.Issues[0].CommentContext);
+        Assert.Contains("New unblock authorization", h.Codex.Issues[1].CommentContext);
+        Assert.Equal("Updated description", h.Codex.Issues[1].Body);
+        var retry = (await history.ReadAllAsync()).Single(entry => entry.AttemptNumber == 2);
+        Assert.Equal(source.ExecutionId, retry.RetryOfExecutionId);
+        Assert.Equal(retryMode == "resume", retry.Resumed);
+        Assert.DoesNotContain("New unblock authorization", System.Text.Json.JsonSerializer.Serialize(await history.ReadAllAsync()));
+        Assert.DoesNotContain("New unblock authorization", h.Output.ToString());
+        Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("New unblock authorization", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunningExecutionKeepsItsPreparedCommentSnapshot()
+    {
+        using var h = new Harness();
+        h.GitHub.CommentContext = "prepared clarification";
+        h.Codex.BlockRuns = true;
+        var claimed = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
+        Assert.NotNull(claimed);
+        await h.Codex.BlockedRunStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        h.GitHub.CommentContext = "later comment";
+        h.Codex.ReleaseRuns.TrySetResult();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await claimed)?.Kind);
+
+        Assert.Equal("prepared clarification", Assert.Single(h.Codex.Issues).CommentContext);
+        Assert.Equal(1, h.GitHub.CommentFetches);
+    }
+
+    [Fact]
+    public async Task CommentFetchFailurePreventsClaimAndWorkspaceMutationAndCanBeFetchedAgain()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.CommentFetchFailure = new GitHubOperationException("Issue comments read", 17, false,
+            GitHubFailureKind.TransientProvider, GitHubRemoteState.NotApplicable, "GitHub unavailable");
+
+        await Assert.ThrowsAsync<GitHubOperationException>(() => h.ProcessOneAsync());
+
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Empty(await history.ReadAllAsync());
+        h.GitHub.ReadyIssueCount = 2;
+        h.GitHub.CommentFetchFailure = null;
+        h.GitHub.CommentContext = "fresh instructions";
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Equal("fresh instructions", Assert.Single(h.Codex.Issues).CommentContext);
+    }
+
     [Fact]
     public async Task RejectedIntegrationRecoveryIsJournaledAndReported()
     {
@@ -1812,6 +1902,15 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeGitHub(List<string> events, CancellationTokenSource cancellation) : IGitHubClient
     {
+        public string CommentContext { get; set; } = "";
+        public Exception? CommentFetchFailure { get; set; }
+        public int CommentFetches { get; private set; }
+        public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
+            IReadOnlyList<string>? secretValues = null)
+        {
+            CommentFetches++;
+            return CommentFetchFailure is null ? Task.FromResult(CommentContext) : Task.FromException<string>(CommentFetchFailure);
+        }
         private int _returned;
         public int ReadyIssueCount { get; set; } = 1;
         public bool ReturnIssueOnFirstQuery { get; set; } = true;
@@ -1952,6 +2051,7 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
+        public List<GitHubIssue> Issues { get; } = [];
         private Action<string?>? _modelObserver;
         public string? CliModel { get; set; }
         public ICodexExecutor WithModelObserver(Action<string?> observer)
@@ -1981,9 +2081,13 @@ public sealed class WorkerV011Tests
             return PreflightException is null ? Task.CompletedTask : Task.FromException(PreflightException);
         }
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
-            RunCoreAsync(projectDirectory, ct);
+            RunAsync(projectDirectory, instructionsFile, issue, null, false, 1, ct);
         public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
-            ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunCoreAsync(projectDirectory, ct);
+            ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct)
+        {
+            Issues.Add(issue);
+            return RunCoreAsync(projectDirectory, ct);
+        }
         private async Task<CodexOutcome> RunCoreAsync(string projectDirectory, CancellationToken ct)
         {
             if (CliModel is not null) _modelObserver?.Invoke(CliModel);

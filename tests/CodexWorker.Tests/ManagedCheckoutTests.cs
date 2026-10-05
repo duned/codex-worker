@@ -110,6 +110,8 @@ public sealed class ManagedCheckoutTests
 
     private sealed class AssignedIssueClient : IGitHubClient
     {
+        public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
+            IReadOnlyList<string>? secretValues = null) => Task.FromResult("");
         public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
             Task.FromResult<GitHubIssue?>(new(issueNumber, "Example task", "Task body", DateTimeOffset.UnixEpoch));
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) => Task.FromResult<GitHubIssue?>(null);

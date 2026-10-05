@@ -9,6 +9,13 @@ public enum CodexComponent
 /// <summary>Public operational attribution, independent of authentication and internal node IDs.</summary>
 public sealed record GeneratedMessageOrigin
 {
+    public const string WorkerMarker = "<!-- codex-generated:v1 component=worker -->";
+    public const string ServerMarker = "<!-- codex-generated:v1 component=server -->";
+
+    /// <summary>Only explicit product metadata establishes automatic provenance, never the author or visible heading.</summary>
+    public static bool IsGenerated(string content) => content.Split('\n')
+        .Any(line => line.TrimEnd('\r') is WorkerMarker or ServerMarker);
+
     public CodexComponent Component { get; }
     public string DisplayName { get; }
 
@@ -40,6 +47,7 @@ public sealed record GeneratedMessageOrigin
             });
         }
         var component = Component == CodexComponent.Worker ? "🤖 Codex Worker" : "🧭 Codex Server";
-        return $"{component} · {name}\n\n{content}";
+        var marker = Component == CodexComponent.Worker ? WorkerMarker : ServerMarker;
+        return $"{component} · {name}\n{marker}\n\n{content}";
     }
 }
