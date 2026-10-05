@@ -10,13 +10,14 @@ internal static class ServerOperationalDiagnostics
     internal static void Write(ILogger logger, LogLevel level, string operation, string reasonCode,
         string? projectId = null, WorkReference? work = null, string? executionId = null,
         string? workerId = null, string? assignmentId = null, long? leaseGeneration = null,
-        string? workerExecutionId = null)
+        string? workerExecutionId = null, IReadOnlyList<string>? reasons = null)
     {
         if (!logger.IsEnabled(level)) return;
         logger.Log(level, new EventId(2201, "ServerOperationalDecision"),
-            "Server {Operation}: {ReasonCode}; project {ProjectId}; work {WorkReference}; execution {ExecutionId}; worker {WorkerId}; assignment {AssignmentId}; lease generation {LeaseGeneration}; worker execution {WorkerExecutionId}",
+            "Server {Operation}: {ReasonCode}; project {ProjectId}; work {WorkReference}; execution {ExecutionId}; worker {WorkerId}; assignment {AssignmentId}; lease generation {LeaseGeneration}; worker execution {WorkerExecutionId}; reasons {Reasons}",
             operation, reasonCode, Safe(projectId), Safe(work?.Url ?? (work is null ? null : work.Type + ":" + work.Id)), Safe(executionId), Safe(workerId),
-            Safe(assignmentId), leaseGeneration, Safe(workerExecutionId));
+            Safe(assignmentId), leaseGeneration, Safe(workerExecutionId),
+            reasons is null ? null : string.Join("; ", reasons.Take(10).Select(Safe)));
     }
 
     // Defense in depth for identifiers from rejected requests and historical records. A URL is

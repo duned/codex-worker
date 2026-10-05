@@ -116,10 +116,8 @@ public sealed class GitHubIssueReadProvider(IGitHubIssueSnapshotSource source, s
     {
         var page = await source.ListDiscoveryIssueNumbersAsync(project, query, cancellationToken);
         var snapshots = await GetSnapshotsAsync(project, page.Numbers, cancellationToken);
-        if (page.Numbers.Any(number => !snapshots.ContainsKey(number)))
-            throw new GitHubReadUnavailableException(project.Repository,
-                "A discovered Issue is no longer readable; retry discovery.", "read-unavailable");
-        return new(page.Numbers.Distinct().Order().Select(number => snapshots[number].Issue).ToArray(), page.NextCursor);
+        return new(page.Numbers.Distinct().Order().Where(snapshots.ContainsKey).Select(number => snapshots[number].Issue).ToArray(),
+            page.NextCursor, page.Numbers.Where(number => !snapshots.ContainsKey(number)).Distinct().ToArray());
     }
 
     public async Task PrefetchAsync(CentralProject project, IReadOnlyList<int> numbers, CancellationToken cancellationToken) =>

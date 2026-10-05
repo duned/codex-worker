@@ -87,13 +87,14 @@ public sealed class GitHubIssueReadProviderTests
     }
 
     [Fact]
-    public async Task DiscoveryDoesNotReturnPartialPageWhenAnIssueDisappears()
+    public async Task DiscoveryReportsMissingIssueWithoutAuthorizingIt()
     {
         using var directory = new TemporaryDirectory();
         var source = new Source { Count = 2, OmitLast = true };
         var provider = new GitHubIssueReadProvider(source, directory.Database);
-        var error = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => provider.ReadDiscoveryPageAsync(Project(), new()));
-        Assert.Equal("read-unavailable", error.Code);
+        var page = await provider.ReadDiscoveryPageAsync(Project(), new());
+        Assert.Equal(1, Assert.Single(page.Issues).Number);
+        Assert.Equal(2, Assert.Single(page.MissingNumbers ?? []));
     }
 
     [Fact]

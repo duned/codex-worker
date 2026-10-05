@@ -1,0 +1,15 @@
+{
+  "name": "Example project",
+  "repository": "example-owner/example-repository",
+  "defaultBranch": "main",
+  "description": "Server-owned managed project definition",
+  "requirements": [],
+  "issueReadyLabel": "ready",
+  "issueBlockedLabel": "blocked",
+  "automaticDiscovery": {
+    "enabled": false,
+    "intervalSeconds": 300,
+    "pageSize": 25,
+    "deadlineSeconds": 120
+  }
+}

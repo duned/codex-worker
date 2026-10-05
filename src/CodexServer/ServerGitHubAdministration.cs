@@ -644,6 +644,10 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                 "GitHub discovery exceeded its 120 second deadline.", "query-timeout");
         }
         cancellationToken.ThrowIfCancellationRequested();
+        if (page.Issues.Count + (page.MissingNumbers?.Count ?? 0) > query.Limit ||
+            page.Issues.Any(issue => issue.Number <= 0) || page.MissingNumbers?.Any(number => number <= 0) == true ||
+            page.NextCursor is { } next && (next == query.After || GitHubIssueDiscoveryValidation.Error(new(After: next)) is not null))
+            throw new GitHubReadUnavailableException(project.Repository, "Discovery returned an invalid page.", "invalid-response");
         var repository = project.Repository.ToLowerInvariant();
         var candidates = page.Issues.DistinctBy(issue => issue.Number).OrderBy(issue => issue.Number).Select(issue =>
         {
@@ -659,7 +663,10 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
             return new ManagedGitHubIssueCandidate(reference, evaluated.IsEligible ? "eligible" : "ineligible",
                 evaluated.EligibilityReasons);
         }).ToArray();
-        return new(project.Id, repository, candidates, page.NextCursor, page.NextCursor is null);
+        var missing = (page.MissingNumbers ?? []).Select(number => new ManagedGitHubIssueCandidate(
+            new("github-issue", number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                $"https://github.com/{repository}/issues/{number}"), "ineligible", ["Issue is missing or no longer readable."]));
+        return new(project.Id, repository, candidates.Concat(missing).ToArray(), page.NextCursor, page.NextCursor is null);
     }
 
     public async Task<ManagedGitHubIssue?> GetIssueAsync(string projectId, int issueNumber, CancellationToken cancellationToken = default)
@@ -896,23 +903,31 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
 
     public Task<ExecutionRequest> EnqueueIssueAsync(string projectId, WorkReference workReference,
         CancellationToken cancellationToken = default) =>
-        ServerOperationalDiagnostics.RunAsync(_logger, "enqueue-check", () => EnqueueIssueCoreAsync(projectId, workReference, cancellationToken),
+        ServerOperationalDiagnostics.RunAsync(_logger, "enqueue-check", () => EnqueueIssueCoreAsync(projectId, workReference, cancellationToken, null),
             cancellationToken, projectId: projectId, work: workReference);
 
+    public Task<ExecutionRequest> EnqueueIssueAsync(CentralProject discoveredProject, WorkReference workReference,
+        CancellationToken cancellationToken = default) =>
+        EnqueueIssueCoreAsync(discoveredProject.Id, workReference, cancellationToken, discoveredProject);
+
     private async Task<ExecutionRequest> EnqueueIssueCoreAsync(string projectId, WorkReference workReference,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken, CentralProject? discoveredProject)
     {
         using var readOperation = BeginReadOperation(refresh: true);
         var project = await registry.GetProjectAsync(projectId, cancellationToken)
             ?? throw new KeyNotFoundException($"Project '{projectId}' was not found.");
         if (!project.Enabled) throw new ProjectDisabledException();
+        if (discoveredProject is not null && (discoveredProject.Revision != project.Revision ||
+            discoveredProject.CreatedAtUtc != project.CreatedAtUtc))
+            throw new ProjectRevisionConflictException(project.Revision);
+        if (discoveredProject is not null && project.AutomaticDiscovery?.Enabled != true) throw new ProjectDisabledException();
         var canonical = ExecutionRequestValidation.Canonicalize(workReference, project.Repository);
         var issueNumber = int.Parse(canonical.Id, System.Globalization.CultureInfo.InvariantCulture);
         var issue = await _reads.GetIssueAsync(project, issueNumber, cancellationToken)
             ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
         if (!issue.IsEligible) throw new ManagedIssueIneligibleException(issue);
         var url = $"https://github.com/{project.Repository}/issues/{canonical.Id}";
-        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url)), cancellationToken);
+        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url), project.Revision, discoveredProject is not null, project.CreatedAtUtc), cancellationToken);
         return await registry.UpdateManagedEligibilityAsync(created.Id,
             new("eligible", [], _clock.GetUtcNow()), cancellationToken) ?? created;
     }

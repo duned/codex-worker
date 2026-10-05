@@ -4,7 +4,8 @@ using System.Text.Json;
 
 public sealed record GitHubIssueDiscoveryQuery(int Limit = 50, string? After = null);
 public sealed record GitHubIssueNumberPage(IReadOnlyList<int> Numbers, string? NextCursor);
-public sealed record ManagedGitHubIssuePage(IReadOnlyList<ManagedGitHubIssue> Issues, string? NextCursor);
+public sealed record ManagedGitHubIssuePage(IReadOnlyList<ManagedGitHubIssue> Issues, string? NextCursor,
+    IReadOnlyList<int>? MissingNumbers = null);
 public sealed record ManagedGitHubIssueCandidate(WorkReference WorkReference, string Classification,
     IReadOnlyList<string> Reasons);
 public sealed record ManagedGitHubIssueDiscovery(string ProjectId, string Repository,
@@ -65,15 +66,14 @@ public sealed partial class ServerGitHubReadService
     {
         var page = await ListDiscoveryIssueNumbersAsync(project, query, cancellationToken);
         var issues = new List<ManagedGitHubIssue>();
+        var missing = new List<int>();
         foreach (var batch in page.Numbers.Chunk(10))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var snapshots = await ReadSnapshotsAsync(project, batch.ToDictionary(number => number, _ => (string?)null), cancellationToken);
-            if (batch.Any(number => !snapshots.Any(snapshot => snapshot.Issue.Number == number)))
-                throw new GitHubReadUnavailableException(project.Repository,
-                    "A discovered Issue is no longer readable; retry discovery.", "read-unavailable");
+            missing.AddRange(batch.Where(number => !snapshots.Any(snapshot => snapshot.Issue.Number == number)));
             issues.AddRange(snapshots.Select(snapshot => ManagedGitHubIssueEligibility.Evaluate(project, snapshot.Issue)));
         }
-        return new(issues, page.NextCursor);
+        return new(issues, page.NextCursor, missing);
     }
 }

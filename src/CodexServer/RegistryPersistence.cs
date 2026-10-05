@@ -61,7 +61,9 @@ public interface IRegistryStore
 }
 
 public sealed record WorkReference(string Type, string Id, string? Url = null);
-public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference);
+public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference,
+    [property: JsonIgnore] long? ExpectedProjectRevision = null, [property: JsonIgnore] bool AutomaticDiscovery = false,
+    [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null);
 public sealed record ManagedEligibilityUpdate(string State, IReadOnlyList<string> Reasons, DateTimeOffset CheckedAtUtc);
 public sealed record ExecutionQuery(string? ProjectId = null, string? State = null, string? WorkType = null,
     string? WorkId = null, int Limit = 50, int Offset = 0);
@@ -246,11 +248,11 @@ public static class ExecutionAdministrationValidation
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement>? Requirements = null, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null);
 public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
@@ -332,6 +334,8 @@ public static class CentralProjectValidation
         if (value.IssueReadyLabel is { } ready && value.IssueBlockedLabel is { } blocked &&
             string.Equals(ready.Trim(), blocked.Trim(), StringComparison.OrdinalIgnoreCase))
             return "issueReadyLabel and issueBlockedLabel must be different.";
+        if (value.AutomaticDiscovery is { } discovery && AutomaticIssueDiscoveryValidation.Error(discovery) is { } discoveryError)
+            return discoveryError;
         if (value.Requirements is null) return null;
         if (value.Requirements.Count > 64) return "requirements must contain at most 64 entries.";
         var normalized = new HashSet<string>(StringComparer.Ordinal);
@@ -717,6 +721,17 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 );
                 CREATE INDEX IF NOT EXISTS ix_provisioning_plans_worker_state ON provisioning_plans (worker_id, state, created_at_utc);
                 CREATE INDEX IF NOT EXISTS ix_provisioning_plans_history ON provisioning_plans (created_at_utc DESC, id DESC);
+                -- Preserve canonical repository identity for supported pre-existing requests that omitted a URL.
+                -- Do this while the owning project still exists; later project edits/deletion must not reidentify history.
+                UPDATE execution_requests SET work_reference_json = json_set(work_reference_json, '$.url',
+                    'https://github.com/' || (SELECT json_extract(configuration_json, '$.repository') FROM projects
+                        WHERE project_id=execution_requests.project_id) || '/issues/' || CAST(CAST(trim(work_id) AS INTEGER) AS TEXT))
+                WHERE json_extract(work_reference_json, '$.url') IS NULL
+                  AND lower(trim(work_type)) IN ('issue','github-issue')
+                  AND trim(work_id) NOT GLOB '*[^0-9]*'
+                  AND CAST(trim(work_id) AS INTEGER) BETWEEN 1 AND 2147483647
+                  AND EXISTS (SELECT 1 FROM projects WHERE project_id=execution_requests.project_id);
+                CREATE INDEX IF NOT EXISTS ix_execution_requests_issue_number ON execution_requests (CAST(trim(work_id) AS INTEGER));
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -752,33 +767,36 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await projectReader.DisposeAsync();
         if (!project.Enabled) throw new ProjectDisabledException();
 
+        if (request.ExpectedProjectRevision is { } revision && revision != project.Revision ||
+            request.ExpectedProjectCreatedAtUtc is { } createdAt && createdAt != project.CreatedAtUtc)
+            throw new ProjectRevisionConflictException(project.Revision);
+        if (request.AutomaticDiscovery && (request.ExpectedProjectRevision is null || request.ExpectedProjectCreatedAtUtc is null || project.AutomaticDiscovery?.Enabled != true))
+            throw new ProjectDisabledException();
         var canonicalWork = ExecutionRequestValidation.Canonicalize(request.WorkReference, project.Repository);
-        var diagnosticWork = canonicalWork with { Url = $"https://github.com/{project.Repository}/issues/{canonicalWork.Id}" };
+        canonicalWork = canonicalWork with { Url = $"https://github.com/{project.Repository}/issues/{canonicalWork.Id}" };
+        var diagnosticWork = canonicalWork;
         command.Parameters.Clear();
-        command.CommandText = "SELECT id, work_reference_json FROM execution_requests WHERE project_id=$projectId AND (state IN ('Queued','Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain'));";
-        command.Parameters.AddWithValue("$projectId", request.ProjectId);
-        await using (var activeReader = await command.ExecuteReaderAsync(cancellationToken))
+        command.CommandText = """
+            SELECT id FROM execution_requests
+            WHERE CAST(trim(work_id) AS INTEGER)=$number
+              AND trim(work_id) NOT GLOB '*[^0-9]*'
+              AND lower(trim(work_type)) IN ('issue','github-issue')
+              AND (lower(json_extract(work_reference_json, '$.url'))=$url OR
+                (json_extract(work_reference_json, '$.url') IS NULL AND project_id IN
+                  (SELECT project_id FROM projects WHERE lower(json_extract(configuration_json, '$.repository'))=$repository)))
+              AND ($automatic OR state IN ('Queued','Assigned','Running') OR
+                (state='Failed' AND recovery_state='LeaseExpiredUncertain'))
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$number", int.Parse(canonicalWork.Id, System.Globalization.CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$url", diagnosticWork.Url?.ToLowerInvariant() ?? throw new InvalidDataException("Canonical Issue URL is missing."));
+        command.Parameters.AddWithValue("$repository", project.Repository.ToLowerInvariant());
+        command.Parameters.AddWithValue("$automatic", request.AutomaticDiscovery);
+        if (await command.ExecuteScalarAsync(cancellationToken) is string existingId)
         {
-            while (await activeReader.ReadAsync(cancellationToken))
-            {
-                var existing = JsonSerializer.Deserialize<WorkReference>(activeReader.GetString(1), ProjectJson);
-                if (existing is null) throw new InvalidDataException("Stored work reference is invalid.");
-                try
-                {
-                    var existingCanonical = ExecutionRequestValidation.NormalizeIdentity(existing);
-                    if (existingCanonical.Type == canonicalWork.Type && existingCanonical.Id == canonicalWork.Id)
-                    {
-                        ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "enqueue", "duplicate-active-work",
-                            request.ProjectId, diagnosticWork, activeReader.GetString(0));
-                        throw new ExecutionRequestConflictException();
-                    }
-                }
-                catch (InvalidDataException)
-                {
-                    // Historical records that do not use the supported Issue contract remain visible,
-                    // but cannot collide with or be used to reserve a supported Issue.
-                }
-            }
+            ServerOperationalDiagnostics.Write(_logger, request.AutomaticDiscovery ? LogLevel.Debug : LogLevel.Information,
+                "enqueue", request.AutomaticDiscovery ? "previously-enqueued" : "duplicate-active-work", request.ProjectId, diagnosticWork, existingId);
+            throw new ExecutionRequestConflictException();
         }
 
         command.Parameters.Clear();
@@ -795,7 +813,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
-            ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "enqueue", "duplicate-active-work", request.ProjectId, diagnosticWork);
+            ServerOperationalDiagnostics.Write(_logger, request.AutomaticDiscovery ? LogLevel.Debug : LogLevel.Information, "enqueue", "duplicate-active-work", request.ProjectId, diagnosticWork);
             throw new ExecutionRequestConflictException();
         }
         await transaction.CommitAsync(cancellationToken);
@@ -1871,7 +1889,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
             definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now,
-            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel));
+            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -1894,7 +1912,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
@@ -1902,6 +1920,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize((definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), ProjectJson));
         write.Parameters.AddWithValue("$readyLabel", (object?)NormalizeLabel(definition.IssueReadyLabel) ?? DBNull.Value);
         write.Parameters.AddWithValue("$blockedLabel", (object?)NormalizeLabel(definition.IssueBlockedLabel) ?? DBNull.Value);
+        write.Parameters.AddWithValue("$discovery", JsonSerializer.Serialize(definition.AutomaticDiscovery, ProjectJson));
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         write.Parameters.AddWithValue("$updated", now.ToString("O"));
         write.Parameters.AddWithValue("$id", projectId);

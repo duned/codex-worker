@@ -54,10 +54,12 @@ public static class ServerApplication
         builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
         builder.Services.AddSingleton<IServerGitHubReadService>(githubReadService ?? new ServerGitHubReadService());
 
-        builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
+        builder.Services.AddSingleton<ServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
             services.GetRequiredService<IRegistryStore>(), services.GetRequiredService<IServerGitHubReadService>(),
             issueWriter: githubIssueWriteService, cacheDatabasePath: databasePath,
             logger: services.GetRequiredService<ILogger<ServerGitHubAdministrationService>>()));
+        builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => services.GetRequiredService<ServerGitHubAdministrationService>());
+        builder.Services.AddHostedService<AutomaticIssueDiscoveryService>();
         builder.Services.AddSingleton<IRegistryStore>(services => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds,
@@ -699,6 +701,7 @@ public static class ServerApplication
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
             catch (ExecutionRequestConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (ManagedIssueIneligibleException ex) { return Results.Conflict(new { error = ex.Message, reasons = ex.Issue.EligibilityReasons }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
@@ -792,6 +795,7 @@ public static class ServerApplication
             catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ProjectDisabledException ex) { return Results.Conflict(new { error = ex.Message }); }
+            catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
             catch (ExecutionRequestConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (ManagedIssueIneligibleException ex) { return Results.Conflict(new { error = ex.Message, reasons = ex.Issue.EligibilityReasons }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }

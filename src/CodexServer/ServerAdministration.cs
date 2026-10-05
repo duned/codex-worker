@@ -985,6 +985,11 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
             foreach (var reason in exception.Issue.EligibilityReasons) _error.WriteLine($"- {reason}");
             return ServerAdministrationExitCodes.Conflict;
         }
+        catch (ProjectRevisionConflictException exception)
+        {
+            _error.WriteLine(exception.Message);
+            return ServerAdministrationExitCodes.Conflict;
+        }
         catch (ExecutionRequestConflictException exception)
         {
             _error.WriteLine(exception.Message);
