@@ -140,7 +140,7 @@ public sealed class ServerGitHubAdministrationTests
     {
         var service = RelationshipReadService(new(1, "", $"gh: request failed (HTTP {status}) private-token"));
         var exception = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.GetIssueRelationshipsAsync(Project(), 7));
-        Assert.Equal("read-failed", exception.Code);
+        Assert.Equal(status == 401 ? "authentication-failed" : "read-failed", exception.Code);
         Assert.Contains($"HTTP status {status}", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
     }
@@ -597,7 +597,20 @@ public sealed class ServerGitHubAdministrationTests
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/v1/projects/{project.Id}/github/issues")).StatusCode);
+            using var unauthorizedDiscovery = await client.GetAsync($"/api/v1/projects/{project.Id}/github/discovery");
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorizedDiscovery.StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", managementToken);
+            using var invalidDiscovery = await client.GetAsync($"/api/v1/projects/{project.Id}/github/discovery?limit=101");
+            Assert.Equal(HttpStatusCode.BadRequest, invalidDiscovery.StatusCode);
+            using var missingDiscovery = await client.GetAsync("/api/v1/projects/missing/github/discovery");
+            Assert.Equal(HttpStatusCode.NotFound, missingDiscovery.StatusCode);
+            using var discoveryResponse = await client.GetAsync($"/api/v1/projects/{project.Id}/github/discovery");
+            Assert.Equal(HttpStatusCode.OK, discoveryResponse.StatusCode);
+            var discovery = await discoveryResponse.Content.ReadFromJsonAsync<ManagedGitHubIssueDiscovery>();
+            Assert.NotNull(discovery);
+            Assert.Equal(new[] { "ineligible", "eligible", "ineligible" }, discovery.Candidates.Select(candidate => candidate.Classification));
+            Assert.True(discovery.IsComplete);
+            Assert.Empty(await registry.GetExecutionsAsync());
             Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync($"/api/v1/projects/{project.Id}/github/issues?limit=101")).StatusCode);
             using var detailResponse = await client.GetAsync($"/api/v1/projects/{project.Id}/github/issues/23");
             Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
@@ -911,6 +924,9 @@ public sealed class ServerGitHubAdministrationTests
 
     private sealed class FakeServerGitHubReadService(GitHubReadUnavailableException? failure = null) : IServerGitHubReadService
     {
+        public async Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project,
+            GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken = default) =>
+            new(await ListIssuesAsync(project, new("open", query.Limit, project.IssueReadyLabel), cancellationToken), null);
         private readonly Dictionary<(string Repository, int Number), ManagedGitHubIssue> _issues = [];
         private readonly Dictionary<(string Repository, int Number), GitHubIssueRelationships> _relationships = [];
         public void Add(string repository, ManagedGitHubIssue issue) => _issues[(repository, issue.Number)] = issue;
@@ -1069,6 +1085,9 @@ public sealed class ServerGitHubAdministrationTests
 
 public sealed class AlwaysEligibleServerGitHubReadService : IServerGitHubReadService
 {
+    public Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project,
+        GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ManagedGitHubIssuePage([], null));
     public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) =>
         Task.FromResult(new GitHubRepositoryAccess(project.Repository, true, true, "read-only access", DateTimeOffset.UnixEpoch));
 

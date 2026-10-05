@@ -84,7 +84,19 @@ public sealed partial class ServerGitHubReadService
         {
             using var document = JsonDocument.Parse(response.StandardOutput);
             if (document.RootElement.TryGetProperty("errors", out var errors) &&
-                (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() != 0)) throw new JsonException("GraphQL errors.");
+                (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() != 0))
+            {
+                var types = errors.ValueKind == JsonValueKind.Array
+                    ? errors.EnumerateArray().Where(error => error.ValueKind == JsonValueKind.Object)
+                        .Select(error => error.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String
+                            ? type.GetString() : null).ToArray()
+                    : [];
+                var code = types.Contains("RATE_LIMITED") ? "rate-limited" :
+                    types.Contains("UNAUTHORIZED") ? "authentication-failed" :
+                    types.Contains("FORBIDDEN") ? "read-failed" : "invalid-response";
+                throw new GitHubReadUnavailableException(repository,
+                    $"GitHub snapshot query failed for '{repository}'.", code);
+            }
             return document.RootElement.GetProperty("data").Clone();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)

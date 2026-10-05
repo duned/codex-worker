@@ -281,6 +281,13 @@ public sealed class LocalServerAdministrationService(ServerConfiguration configu
         return await RequireGitHubAdministration().ListIssuesAsync(projectId, query, cancellationToken);
     }
 
+    public async Task<ManagedGitHubIssueDiscovery?> DiscoverIssuesAsync(string projectId, GitHubIssueDiscoveryQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsurePersistenceAvailableAsync(cancellationToken);
+        return await RequireGitHubAdministration().DiscoverIssuesAsync(projectId, query, cancellationToken);
+    }
+
     public async Task<ManagedGitHubIssue?> GetIssueAsync(string projectId, int issueNumber,
         CancellationToken cancellationToken = default)
     {

@@ -12,6 +12,8 @@ public sealed record GitHubIssueSnapshot(GitHubIssueIdentity Identity, ManagedGi
 /// <summary>Raw transport seam. A batch returns metadata and relationships together.</summary>
 public interface IGitHubIssueSnapshotSource : IServerGitHubReadService
 {
+    Task<GitHubIssueNumberPage> ListDiscoveryIssueNumbersAsync(CentralProject project,
+        GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<int>> ListIssueNumbersAsync(CentralProject project, GitHubIssueQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<GitHubIssueSnapshot>> ReadSnapshotsAsync(CentralProject project,
         IReadOnlyDictionary<int, string?> identities, CancellationToken cancellationToken);
@@ -107,6 +109,17 @@ public sealed class GitHubIssueReadProvider(IGitHubIssueSnapshotSource source, s
         var numbers = await source.ListIssueNumbersAsync(project, query, cancellationToken);
         var snapshots = await GetSnapshotsAsync(project, numbers, cancellationToken);
         return numbers.Where(snapshots.ContainsKey).Select(number => snapshots[number].Issue).ToArray();
+    }
+
+    public async Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project,
+        GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken = default)
+    {
+        var page = await source.ListDiscoveryIssueNumbersAsync(project, query, cancellationToken);
+        var snapshots = await GetSnapshotsAsync(project, page.Numbers, cancellationToken);
+        if (page.Numbers.Any(number => !snapshots.ContainsKey(number)))
+            throw new GitHubReadUnavailableException(project.Repository,
+                "A discovered Issue is no longer readable; retry discovery.", "read-unavailable");
+        return new(page.Numbers.Distinct().Order().Select(number => snapshots[number].Issue).ToArray(), page.NextCursor);
     }
 
     public async Task PrefetchAsync(CentralProject project, IReadOnlyList<int> numbers, CancellationToken cancellationToken) =>

@@ -536,6 +536,20 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
+        app.MapGet("/api/v1/projects/{projectId}/github/discovery", async (string projectId, int? limit, string? after,
+            HttpContext context, ServerConfiguration settings, IServerGitHubAdministrationService github) =>
+        {
+            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            var query = new GitHubIssueDiscoveryQuery(limit ?? 50, after);
+            if (GitHubIssueDiscoveryValidation.Error(query) is { } error) return Results.BadRequest(new { error });
+            try
+            {
+                var result = await github.DiscoverIssuesAsync(projectId, query, context.RequestAborted);
+                return result is null ? Results.NotFound() : Results.Ok(result);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
+        });
         app.MapGet("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}", async (string projectId, int issueNumber,
             HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {

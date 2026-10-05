@@ -51,6 +51,8 @@ public sealed class ManagedIssueIneligibleException(ManagedGitHubIssue issue)
 
 public interface IServerGitHubReadService
 {
+    Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project, GitHubIssueDiscoveryQuery query,
+        CancellationToken cancellationToken = default);
     Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ManagedGitHubIssue>> ListIssuesAsync(CentralProject project, GitHubIssueQuery query,
         CancellationToken cancellationToken = default);
@@ -62,6 +64,8 @@ public interface IServerGitHubReadService
 
 public interface IServerGitHubAdministrationService
 {
+    Task<ManagedGitHubIssueDiscovery?> DiscoverIssuesAsync(string projectId, GitHubIssueDiscoveryQuery query,
+        CancellationToken cancellationToken = default);
     IDisposable? BeginReadOperation(bool refresh = false) => null;
     Task PrefetchIssueReadsAsync(string projectId, IReadOnlyList<int> issueNumbers, CancellationToken cancellationToken) => Task.CompletedTask;
     Task<GitHubRepositoryAccess?> CheckAccessAsync(string projectId, CancellationToken cancellationToken = default);
@@ -428,7 +432,17 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
 
     private static GitHubReadUnavailableException CreateReadFailure(string repository, GitHubReadCommandResult result, string operation) =>
         new(repository, $"{operation} failed for repository '{repository}' (gh exit {result.ExitCode}).{SafeReadFailureDetail(result.StandardError)} Check Server service-account authentication and repository read access.",
-            "read-failed");
+            ReadFailureCode(result.StandardError));
+
+    private static string ReadFailureCode(string error) =>
+        error.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || error.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase)
+            ? "rate-limited"
+            : error.Contains("Bad credentials", StringComparison.OrdinalIgnoreCase) ||
+              error.Contains("Requires authentication", StringComparison.OrdinalIgnoreCase) ||
+              error.Contains("gh auth login", StringComparison.OrdinalIgnoreCase) ||
+              error.Contains("not logged into", StringComparison.OrdinalIgnoreCase) ||
+              error.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase)
+                ? "authentication-failed" : "read-failed";
 
     private static string SafeReadFailureDetail(string error)
     {
@@ -607,6 +621,41 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         if (GitHubIssueQueryValidation.Error(query) is { } queryError) throw new InvalidDataException(queryError);
         var project = await registry.GetProjectAsync(projectId, cancellationToken);
         return project is null ? null : await _reads.ListIssuesAsync(project, query, cancellationToken);
+    }
+
+    public async Task<ManagedGitHubIssueDiscovery?> DiscoverIssuesAsync(string projectId, GitHubIssueDiscoveryQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (GitHubIssueDiscoveryValidation.Error(query) is { } error) throw new InvalidDataException(error);
+        var project = await registry.GetProjectAsync(projectId, cancellationToken);
+        if (project is null) return null;
+        using var operation = BeginReadOperation();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(120), _clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        ManagedGitHubIssuePage page;
+        try { page = await _reads.ReadDiscoveryPageAsync(project, query, linked.Token); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new GitHubReadUnavailableException(project.Repository,
+                "GitHub discovery exceeded its 120 second deadline.", "query-timeout");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        var repository = project.Repository.ToLowerInvariant();
+        var candidates = page.Issues.DistinctBy(issue => issue.Number).OrderBy(issue => issue.Number).Select(issue =>
+        {
+            var evaluated = ManagedGitHubIssueEligibility.Evaluate(project, issue);
+            var number = issue.Number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            WorkReference reference;
+            try { reference = ExecutionRequestValidation.Canonicalize(new("github-issue", number, issue.Url), repository); }
+            catch (InvalidDataException ex)
+            {
+                throw new GitHubReadUnavailableException(repository, "Discovery returned an invalid repository Issue identity.",
+                    "invalid-response", ex);
+            }
+            return new ManagedGitHubIssueCandidate(reference, evaluated.IsEligible ? "eligible" : "ineligible",
+                evaluated.EligibilityReasons);
+        }).ToArray();
+        return new(project.Id, repository, candidates, page.NextCursor, page.NextCursor is null);
     }
 
     public async Task<ManagedGitHubIssue?> GetIssueAsync(string projectId, int issueNumber, CancellationToken cancellationToken = default)

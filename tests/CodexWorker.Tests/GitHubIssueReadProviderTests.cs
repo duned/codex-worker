@@ -6,6 +6,97 @@ using System.Text.Json;
 public sealed class GitHubIssueReadProviderTests
 {
     [Fact]
+    public async Task DiscoveryUsesBatchesCacheFreshnessAndAliasPolicyWithoutCreatingExecutions()
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var first = await registry.CreateProjectAsync(new("First", "TEAM/PROJECT", "main", "",
+            IssueReadyLabel: "custom-ready", IssueBlockedLabel: "hold"));
+        var alias = first with { Repository = "team/project", IssueBlockedLabel = "other-hold" };
+        var clock = new Clock();
+        var source = new Source { Count = 12, Labels = ["custom-ready", "hold"], NextCursor = "later" };
+        var provider = new GitHubIssueReadProvider(source, directory.Database, clock);
+        var service = new ServerGitHubAdministrationService(registry, provider, clock);
+        var result = await service.DiscoverIssuesAsync(first.Id, new(12));
+        Assert.NotNull(result);
+        Assert.False(result.IsComplete);
+        Assert.Equal("later", result.NextCursor);
+        Assert.Equal("team/project", result.Repository);
+        Assert.Equal(12, result.Candidates.Count);
+        Assert.All(result.Candidates, candidate =>
+        {
+            Assert.Equal("ineligible", candidate.Classification);
+            Assert.Contains("Issue has blocked label 'hold'.", candidate.Reasons);
+            Assert.Equal("github-issue", candidate.WorkReference.Type);
+            Assert.StartsWith("https://github.com/team/project/issues/", candidate.WorkReference.Url, StringComparison.Ordinal);
+        });
+        Assert.Equal(2, source.Batches.Count);
+        Assert.Equal(10, source.Batches[0].Count);
+        var aliasPage = await provider.ReadDiscoveryPageAsync(alias, new(12, "later"));
+        Assert.All(aliasPage.Issues, issue => Assert.True(issue.IsEligible));
+        Assert.Equal(2, source.Batches.Count);
+        source.Labels = [];
+        clock.Advance(TimeSpan.FromSeconds(31));
+        aliasPage = await provider.ReadDiscoveryPageAsync(alias, new(12));
+        Assert.All(aliasPage.Issues, issue => Assert.Contains("Issue is missing ready label 'custom-ready'.", issue.EligibilityReasons));
+        Assert.Equal(4, source.Batches.Count);
+        Assert.Empty(await registry.ListExecutionsAsync(new()));
+    }
+
+    [Theory]
+    [InlineData("OPEN", "open", "ineligible")]
+    [InlineData("OPEN", "closed", "eligible")]
+    [InlineData("CLOSED", "closed", "ineligible")]
+    public async Task DiscoveryReevaluatesStateAndNativeDependenciesIgnoresHierarchyAndDeduplicates(
+        string state, string blockerState, string classification)
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "team/project", "main", "", IssueReadyLabel: "ready"));
+        var source = new Source { State = state, Labels = ["ready"], BlockerState = blockerState,
+            DuplicateDiscovery = true, Overlap = true };
+        var service = new ServerGitHubAdministrationService(registry, new GitHubIssueReadProvider(source, directory.Database));
+        var result = await service.DiscoverIssuesAsync(project.Id, new());
+        Assert.NotNull(result);
+        Assert.True(result.IsComplete);
+        Assert.Equal(classification, Assert.Single(result.Candidates).Classification);
+        Assert.Single(source.Batches);
+    }
+
+    [Theory]
+    [InlineData("read-unavailable")]
+    [InlineData("rate-limited")]
+    [InlineData("authentication-failed")]
+    public async Task DiscoveryFailsClosedWhenStaleSnapshotCannotRefresh(string code)
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        var source = new Source();
+        var clock = new Clock();
+        var service = new ServerGitHubAdministrationService(registry, new GitHubIssueReadProvider(source, directory.Database, clock));
+        Assert.NotNull(await service.DiscoverIssuesAsync(project.Id, new()));
+        clock.Advance(TimeSpan.FromSeconds(31));
+        source.Failure = new(project.Repository, "Read unavailable", code);
+        var error = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.DiscoverIssuesAsync(project.Id, new()));
+        Assert.Equal(code, error.Code);
+        Assert.Empty(await registry.GetExecutionsAsync());
+    }
+
+    [Fact]
+    public async Task DiscoveryDoesNotReturnPartialPageWhenAnIssueDisappears()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = new Source { Count = 2, OmitLast = true };
+        var provider = new GitHubIssueReadProvider(source, directory.Database);
+        var error = await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => provider.ReadDiscoveryPageAsync(Project(), new()));
+        Assert.Equal("read-unavailable", error.Code);
+    }
+
+    [Fact]
     public async Task IdentitiesSurviveRestartRefreshAndRepositoryAliasesWithoutCollisions()
     {
         using var directory = new TemporaryDirectory();
@@ -298,10 +389,20 @@ public sealed class GitHubIssueReadProviderTests
 
     private sealed class Source : IGitHubIssueSnapshotSource
     {
+        public Task<GitHubIssueNumberPage> ListDiscoveryIssueNumbersAsync(CentralProject project,
+            GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(new GitHubIssueNumberPage(DuplicateDiscovery ? [1, 1] : Enumerable.Range(1, Count).ToArray(), NextCursor));
+        public Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project,
+            GitHubIssueDiscoveryQuery query, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public List<IReadOnlyDictionary<int, string?>> Batches { get; } = [];
         public string State { get; set; } = "OPEN";
         public IReadOnlyList<string> Labels { get; set; } = ["codex-ready"];
         public int Count { get; init; } = 1;
+        public GitHubReadUnavailableException? Failure { get; set; }
+        public bool OmitLast { get; init; }
+        public bool DuplicateDiscovery { get; init; }
+        public string? NextCursor { get; init; }
+        public string? BlockerState { get; init; }
         public bool Overlap { get; init; }
         public int? KnownReference { get; init; }
         public Task<IReadOnlyList<int>> ListIssueNumbersAsync(CentralProject project, GitHubIssueQuery query, CancellationToken cancellationToken) =>
@@ -310,6 +411,8 @@ public sealed class GitHubIssueReadProviderTests
         public Task<IReadOnlyList<GitHubIssueSnapshot>> ReadSnapshotsAsync(CentralProject project,
             IReadOnlyDictionary<int, string?> identities, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Failure is { } failure) throw failure;
             Batches.Add(identities);
             GitHubRelationshipIssue Reference(int number) => new(number, "Issue " + number, State.ToLowerInvariant(),
                 $"https://github.com/{project.Repository}/issues/{number}") { Labels = Labels };
@@ -318,14 +421,16 @@ public sealed class GitHubIssueReadProviderTests
             {
                 var number = pair.Key;
                 var issue = new ManagedGitHubIssue(number, "Issue " + number, "", State, DateTimeOffset.UnixEpoch,
-                    DateTimeOffset.UnixEpoch, Reference(number).Url, Labels, [], true, []);
+                    DateTimeOffset.UnixEpoch, Reference(number).Url, Labels,
+                    BlockerState is { } blockerState ? [new(2, "Prerequisite", blockerState, "https://github.com/team/project/issues/2")] : [],
+                    true, []);
                 var children = Overlap && number == 1 ? new[] { Reference(2), Reference(3) } : [];
                 var blockers = Overlap && number == 1 ? new[] { Reference(2) } : [];
                 var relationships = new GitHubIssueRelationships(1, project.Repository, number, Reference(number),
                     Overlap && number != 1 ? Reference(1) : null, children, blockers, []);
                 var known = children.Select(child => child.Number).Append(number).Append(KnownReference ?? number).Distinct().ToDictionary(id => id, Identity);
                 return new GitHubIssueSnapshot(Identity(number), issue, relationships, known);
-            }).ToArray());
+            }).Where(snapshot => !OmitLast || snapshot.Issue.Number != Count).ToArray());
         }
 
         public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) => throw new NotSupportedException();
