@@ -20,6 +20,112 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task WorkerRoutesRequireExactDurableIdentityAndRetainOwnershipChecks()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "isolation.db");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        var priorRegistration = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        const string managementToken = "isolation-management-token";
+        const string legacyToken = "isolation-legacy-shared-token";
+        const string tokenA = "individual-worker-a-token-with-entropy";
+        const string tokenB = "individual-worker-b-token-with-entropy";
+        const string deliveryToken = "isolated-credential-delivery-token";
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", managementToken);
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", legacyToken);
+        var workerA = Guid.NewGuid().ToString("N");
+        var workerB = Guid.NewGuid().ToString("N");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, database));
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            WorkerRegistrationRequest Registration(string id) => new(2, id, id, "1.0", "test", 1, []);
+            foreach (var (id, token) in new[] { (workerA, tokenA), (workerB, tokenB) })
+            {
+                var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+                Assert.True(await store.BootstrapWorkerAsync(bootstrap, Registration(id), token));
+            }
+            var unusedBootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+            await app.Services.GetRequiredService<ICredentialStore>().SetWorkerDeliveryTokenAsync(workerB, new CredentialSecretInput(deliveryToken));
+            var plan = await store.CreateProvisioningPlanAsync(new CreateProvisioningPlanRequest(workerB, []));
+            var commands = app.Services.GetRequiredService<ProvisioningCommandStore>();
+            var command = await commands.CreateAsync(new(workerB, "git", ProvisioningCommandAction.Detect));
+            var project = await store.CreateProjectAsync(new CentralProjectDefinition("Isolation", "team/isolation", "main", "", []));
+            var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "1")));
+            // Registry assignment is deterministic and uses the established readiness contract.
+            WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+            await store.RegisterWorkerAsync(Registration(workerB) with { Capabilities = capabilities });
+            await store.HeartbeatWorkerAsync(new(2, workerB, "1.0", "running", 0, 1, capabilities, []));
+            var assigned = (await store.RequestAssignmentAsync(new(workerB, true, 1, new Dictionary<string, int> { [project.Id] = 1 }))).Assignment;
+            Assert.NotNull(assigned);
+            Assert.NotNull(assigned.Lease);
+            var report = new WorkerExecutionReport(workerB, assigned.AssignmentId, "run-b", "Running", "Codex", Generation: assigned.Lease.Generation);
+            var renewal = new ExecutionLeaseRenewal(workerB, assigned.Lease.Generation);
+            var commandReport = new ProvisioningCommandReport(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
+            (HttpMethod Method, string Path, object? Body)[] Routes(string pathId, string bodyId) =>
+            [
+                (HttpMethod.Put, $"/api/v1/workers/{pathId}", Registration(bodyId)),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/heartbeat", new WorkerHeartbeatRequest(2, bodyId, "1.0", "running", 0, 1, [], [])),
+                (HttpMethod.Get, $"/api/v1/workers/{pathId}/configuration", null),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/assignments/request", new WorkerAssignmentRequest(bodyId, true, 1, new Dictionary<string, int>())),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/executions/{queued.Id}/report", report with { WorkerId = bodyId }),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/executions/{queued.Id}/lease/renew", renewal with { WorkerId = bodyId }),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/provisioning/request", null),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/provisioning/{plan.Id}/report", new ProvisioningWorkerReport(bodyId, "Completed")),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/provisioning/commands/request", null),
+                (HttpMethod.Post, $"/api/v1/workers/{pathId}/provisioning/commands/{command.Id}/report", commandReport)
+            ];
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            async Task AssertRoutes(string token, string pathId, string bodyId, HttpStatusCode expected, bool bodiesOnly = false)
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                foreach (var route in Routes(pathId, bodyId))
+                {
+                    if (bodiesOnly && (route.Body is null || route.Body is ProvisioningCommandReport)) continue;
+                    using var request = new HttpRequestMessage(route.Method, route.Path);
+                    if (route.Body is not null) request.Content = JsonContent.Create(route.Body, route.Body.GetType());
+                    using var response = await client.SendAsync(request);
+                    Assert.Equal(expected, response.StatusCode);
+                }
+            }
+            foreach (var token in new[] { tokenA, managementToken, legacyToken, deliveryToken, unusedBootstrap, "invalid-token" })
+                await AssertRoutes(token, workerB, workerB, HttpStatusCode.Unauthorized);
+            await AssertRoutes(tokenB, workerB, workerA, HttpStatusCode.BadRequest, bodiesOnly: true);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenA);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/workers")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/v1/projects", new CentralProjectDefinition("Denied", "team/denied", "main", "", []))).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/executions/{queued.Id}/report", report with { WorkerId = workerA })).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/executions/{queued.Id}/lease/renew", renewal with { WorkerId = workerA })).StatusCode);
+            await store.AcceptProvisioningPlanAsync(workerB);
+            await commands.ClaimAsync(workerB);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/provisioning/{plan.Id}/report", new ProvisioningWorkerReport(workerA, "Completed"))).StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/v1/workers/{workerA}/provisioning/commands/{command.Id}/report", commandReport)).StatusCode);
+            Assert.Equal("Assigned", (await store.GetExecutionAsync(queued.Id))?.State);
+            Assert.Equal(assigned.Lease, (await store.GetExecutionAsync(queued.Id))?.Lease);
+            Assert.Equal("Accepted", (await store.GetProvisioningPlanAsync(plan.Id))?.State);
+            Assert.Equal(ProvisioningCommandStatus.Running, (await commands.GetAsync(command.Id))?.Status);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenB);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/v1/workers/{workerB}/configuration")).StatusCode);
+            await store.RevokeWorkerTokenAsync(workerB);
+            await AssertRoutes(tokenB, workerB, workerB, HttpStatusCode.Unauthorized);
+            await app.StopAsync();
+            await app.DisposeAsync();
+            await using var restarted = await ServerApplication.BuildAsync(Args(url, database));
+            await restarted.StartAsync();
+            await AssertRoutes(tokenB, workerB, workerB, HttpStatusCode.Unauthorized);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokenA);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/v1/workers/{workerA}/configuration")).StatusCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", priorRegistration);
+        }
+    }
+
+    [Fact]
     public async Task ManagedObservationsSurviveRegistryStorageAndRemainDistinctFromServerEligibility()
     {
         using var temporary = new TemporaryDirectory();
@@ -358,7 +464,7 @@ public sealed class CodexServerTests
             workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", workerToken);
             Assert.Equal(HttpStatusCode.Unauthorized, (await workerClient.GetAsync($"/api/v1/workers/{workerId}/configuration")).StatusCode);
             workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "shared-worker-registration-token");
-            Assert.Equal(HttpStatusCode.OK, (await workerClient.GetAsync($"/api/v1/workers/{workerId}/configuration")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await workerClient.GetAsync($"/api/v1/workers/{workerId}/configuration")).StatusCode);
 
             using var deliveryStatus = await management.GetAsync($"/api/v1/workers/{workerId}/credential-access");
             Assert.Equal("active", (await deliveryStatus.Content.ReadFromJsonAsync<WorkerDeliveryAuthorizationStatus>())!.Status);
@@ -997,10 +1103,13 @@ public sealed class CodexServerTests
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
             {
                 var workerId = Guid.NewGuid().ToString("N");
+                var registry = app.Services.GetRequiredService<IRegistryStore>();
+                var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+                Assert.True(await registry.BootstrapWorkerAsync(bootstrap, new WorkerRegistrationRequest(1, workerId, "test worker", "1.2.3", "test", 2, []), "individual-worker-token-with-sufficient-entropy"));
                 var request = new { contractVersion = 1, workerId, displayName = "test worker", workerVersion = "1.2.3",
                     platform = "test", capacity = 2, capabilities = new[] { "git", "codex-cli" } };
                 Assert.Equal(HttpStatusCode.Unauthorized, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-worker-token-with-sufficient-entropy");
                 Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", request)).StatusCode);
                 request = new { contractVersion = 1, workerId, displayName = "renamed worker", workerVersion = "1.2.4",
                     platform = "test", capacity = 3, capabilities = new[] { "git", "updated" } };
@@ -1009,7 +1118,7 @@ public sealed class CodexServerTests
                     activeExecutions = 1, maximumCapacity = 3, capabilities = new[] { "git", "updated" }, activeProjects = new[] { "project-a" } };
                 client.DefaultRequestHeaders.Authorization = null;
                 Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-worker-token-with-sufficient-entropy");
                 Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
                 Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat", heartbeat)).StatusCode);
                 client.DefaultRequestHeaders.Authorization = null;
@@ -1039,13 +1148,15 @@ public sealed class CodexServerTests
                 var otherId = Guid.NewGuid().ToString("N");
                 var other = new { contractVersion = 1, workerId = otherId, displayName = "second", workerVersion = "1.2.3",
                     platform = "test", capacity = 1, capabilities = new[] { "git" } };
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
+                var otherBootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+                Assert.True(await registry.BootstrapWorkerAsync(otherBootstrap, new WorkerRegistrationRequest(1, otherId, "second", "1.2.3", "test", 1, []), "second-worker-token-with-sufficient-entropy"));
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "second-worker-token-with-sufficient-entropy");
                 Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{otherId}", other)).StatusCode);
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
                 using var twoWorkers = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.Equal(2, twoWorkers.RootElement.GetArrayLength());
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-registration-token");
-                Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/v1/workers/{Guid.NewGuid():N}", request)).StatusCode);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-worker-token-with-sufficient-entropy");
+                Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync($"/api/v1/workers/{workerId}", other)).StatusCode);
             }
             await app.StopAsync();
             await app.DisposeAsync();
@@ -2418,21 +2529,31 @@ public sealed class CodexServerTests
             await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(beta.Id, new WorkReference("issue", "3")));
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
             {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-assignment-token-" + workerB);
                 foreach (var id in new[] { workerA, workerB })
                 {
                     var registration = new WorkerRegistrationRequest(1, id, id, "1.0", "test", 2, Capabilities(id));
+                    var bootstrap = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+                    Assert.True(await store.BootstrapWorkerAsync(bootstrap, registration, "individual-assignment-token-" + id));
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-assignment-token-" + id);
                     Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync($"/api/v1/workers/{id}", registration)).StatusCode);
                 }
-                async Task Heartbeat(string id, string state) => Assert.Equal(HttpStatusCode.OK,
+                async Task Heartbeat(string id, string state)
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-assignment-token-" + id);
+                    Assert.Equal(HttpStatusCode.OK,
                     (await client.PostAsJsonAsync($"/api/v1/workers/{id}/heartbeat",
                         new WorkerHeartbeatRequest(1, id, "1.0", state, 0, 2, Capabilities(id), []))).StatusCode);
+                }
                 await Heartbeat(workerA, "running");
                 await Heartbeat(workerB, "draining");
 
-                async Task<HttpResponseMessage> Request(string id, bool enabled, int capacity, Dictionary<string, int> projectCapacities) =>
-                    await client.PostAsJsonAsync($"/api/v1/workers/{id}/assignments/request",
+                async Task<HttpResponseMessage> Request(string id, bool enabled, int capacity, Dictionary<string, int> projectCapacities)
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-assignment-token-" + id);
+                    return await client.PostAsJsonAsync($"/api/v1/workers/{id}/assignments/request",
                         new WorkerAssignmentRequest(id, enabled, capacity, projectCapacities));
+                }
 
                 using var disabled = await Request(workerA, false, 2, new() { [alpha.Id] = 2 });
                 Assert.False((await disabled.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);
@@ -2494,7 +2615,7 @@ public sealed class CodexServerTests
             Assert.Equal(workerA, retained.AssignedWorkerId);
             using (var client = new HttpClient { BaseAddress = new Uri(url) })
             {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "assignment-test-token");
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "individual-assignment-token-" + workerB);
                 using var noWork = await client.PostAsJsonAsync($"/api/v1/workers/{workerB}/assignments/request",
                     new WorkerAssignmentRequest(workerB, true, 2, new Dictionary<string, int> { [alphaId] = 2 }));
                 Assert.False((await noWork.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!.HasWork);

@@ -271,6 +271,7 @@ public sealed class WorkerStatusTests
 
     [Theory]
     [InlineData("missing", "local-identity-missing", "missing")]
+    [InlineData("legacy-environment", "local-identity-missing", "missing")]
     [InlineData("invalid-identity", "local-identity-invalid", "persisted")]
     [InlineData("invalid-token", "local-identity-present", "invalid")]
     [InlineData("valid", "local-identity-present", "persisted")]
@@ -283,7 +284,8 @@ public sealed class WorkerStatusTests
         var path = Path.Combine(fixture.DirectoryPath, "worker-id");
         string? identity = null;
         string? secret = null;
-        if (scenario != "missing")
+        if (scenario == "legacy-environment") Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "legacy-status-secret");
+        if (scenario is not ("missing" or "legacy-environment"))
         {
             identity = await WorkerIdentity.LoadOrCreateAsync(path);
             secret = await WorkerAuthentication.LoadOrCreateTokenAsync(path);
@@ -300,17 +302,18 @@ public sealed class WorkerStatusTests
         Assert.Equal("unverified", first.Registration.ServerAcceptance);
         Assert.Equal("not-checked", first.Registration.ServerConnectivity);
         Assert.Equal(scenario == "valid" ? "server-dependent-unverified" : "not-ready", first.Operation.Readiness);
-        Assert.Equal(scenario == "missing" ? "https://server.example" : "https://associated.example", first.Registration.ServerUrl);
+        Assert.Equal(scenario is "missing" or "legacy-environment" ? "https://server.example" : "https://associated.example", first.Registration.ServerUrl);
         Assert.NotNull(first.Runtime);
-        Assert.Equal(scenario is "missing" or "invalid-identity" ? null : identity, first.Registration.WorkerId);
+        Assert.Equal(scenario is "missing" or "legacy-environment" or "invalid-identity" ? null : identity, first.Registration.WorkerId);
         foreach (var json in new[] { false, true })
         {
             using var output = new StringWriter();
             WorkerStatusReporter.Write(first, json, output);
             Assert.DoesNotContain("private-invalid", output.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("legacy-status-secret", output.ToString(), StringComparison.Ordinal);
             if (secret is not null) Assert.DoesNotContain(secret, output.ToString(), StringComparison.Ordinal);
         }
-        if (scenario == "missing")
+        if (scenario is "missing" or "legacy-environment")
         {
             Assert.False(File.Exists(path));
             Assert.False(File.Exists(path + ".token"));

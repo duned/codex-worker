@@ -9,6 +9,33 @@ namespace CodexWorker.Tests;
 public sealed class WorkerRegistrationTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingLocalEnrollmentNeverUsesSharedTokenOrCreatesState(bool hasIdentity)
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "worker-id");
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "legacy-secret-value");
+        try
+        {
+            if (hasIdentity) await WorkerIdentity.LoadOrCreateAsync(path);
+            var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = path };
+            var handler = new CaptureHandler(HttpStatusCode.OK, "{}");
+            using var client = new HttpClient(handler);
+            Assert.Empty(WorkerAuthentication.GetToken(settings));
+            var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => new WorkerRegistrationClient(client).RegisterAsync(settings, 1, CancellationToken.None));
+            Assert.Contains(hasIdentity ? "per-Worker API credential" : "identity", failure.Message);
+            Assert.DoesNotContain("legacy-secret-value", failure.Message, StringComparison.Ordinal);
+            Assert.Null(handler.Uri);
+            Assert.Equal(hasIdentity, File.Exists(path));
+            Assert.False(File.Exists(path + ".token"));
+            Assert.False(File.Exists(path + ".server"));
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
+    }
+
+    [Theory]
     [InlineData("   ")]
     [InlineData("token description")]
     [InlineData("token\tvalue")]
@@ -83,6 +110,9 @@ public sealed class WorkerRegistrationTests
         Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "secret-test-value");
         try
         {
+            var identityPath = Path.Combine(temporary.Path, "worker-id");
+            await WorkerIdentity.LoadOrCreateAsync(identityPath);
+            var token = await WorkerAuthentication.LoadOrCreateTokenAsync(identityPath);
             var handler = new CaptureHandler();
             using var client = new HttpClient(handler);
             var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
@@ -90,7 +120,7 @@ public sealed class WorkerRegistrationTests
                 new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") },
                 2, CancellationToken.None));
             Assert.Contains("HTTP 503", failure.Message);
-            Assert.Equal("Bearer secret-test-value", handler.Authorization);
+            Assert.Equal("Bearer " + token, handler.Authorization);
             Assert.DoesNotContain("secret-test-value", handler.Body, StringComparison.Ordinal);
             using var json = JsonDocument.Parse(handler.Body!);
             Assert.Equal(2, json.RootElement.GetProperty("contractVersion").GetInt32());
@@ -127,6 +157,7 @@ public sealed class WorkerRegistrationTests
     {
         using var temporary = new TemporaryDirectory();
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
         var token = await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
         var handler = new CaptureHandler(HttpStatusCode.BadRequest,
             JsonSerializer.Serialize(new { error = $"Capacity must be 1..8; credential={token}; password=hidden; https://user:hidden@host" }));
@@ -191,6 +222,8 @@ public sealed class WorkerRegistrationTests
             };
             var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
 
+            await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+            await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
             await registration.RegisterAsync(settings, 1, CancellationToken.None);
             var firstIdentity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
             var firstUri = handler.Uri;
@@ -316,6 +349,7 @@ public sealed class WorkerRegistrationTests
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
             var registration = new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create());
             var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile!);
+            var token = await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
             var noCapacity = await registration.RequestAssignmentAsync(settings, true, 0,
                 new Dictionary<string, int> { ["compiler"] = 1 }, CancellationToken.None);
             Assert.False(noCapacity.HasWork);
@@ -326,7 +360,7 @@ public sealed class WorkerRegistrationTests
             Assert.False(response.HasWork);
             Assert.Equal("POST", handler.Method);
             Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{identity}/assignments/request", handler.Uri);
-            Assert.Equal("Bearer assignment-secret", handler.Authorization);
+            Assert.Equal("Bearer " + token, handler.Authorization);
             using var payload = JsonDocument.Parse(handler.Body!);
             Assert.Equal(identity, payload.RootElement.GetProperty("workerId").GetString());
             Assert.Equal(1, payload.RootElement.GetProperty("availableCapacity").GetInt32());
@@ -339,20 +373,22 @@ public sealed class WorkerRegistrationTests
     [Fact]
     public async Task LeaseRenewalUsesExecutionWorkerAndGenerationAndSurfacesStaleOwnership()
     {
+        using var temporary = new TemporaryDirectory();
         var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN");
         Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", "lease-secret");
         try
         {
             var handler = new CaptureHandler(HttpStatusCode.Conflict, "{\"error\":\"stale\"}");
             using var client = new HttpClient(handler);
-            var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090" };
+            var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+            var token = await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
             var lease = new ServerExecutionLeaseContract("execution-123", "worker-456", 7,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(15), "Active", 60);
             var renewed = await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).RenewExecutionLeaseAsync(settings, lease, CancellationToken.None);
             Assert.Null(renewed);
             Assert.Equal("POST", handler.Method);
             Assert.Equal("http://127.0.0.1:5090/api/v1/workers/worker-456/executions/execution-123/lease/renew", handler.Uri);
-            Assert.Equal("Bearer lease-secret", handler.Authorization);
+            Assert.Equal("Bearer " + token, handler.Authorization);
             using var payload = JsonDocument.Parse(handler.Body!);
             Assert.Equal("worker-456", payload.RootElement.GetProperty("workerId").GetString());
             Assert.Equal(7, payload.RootElement.GetProperty("generation").GetInt64());
@@ -383,11 +419,12 @@ public sealed class WorkerRegistrationTests
             var requestHandler = new CaptureHandler(HttpStatusCode.OK, JsonSerializer.Serialize(plan));
             using var requestClient = new HttpClient(requestHandler);
             var settings = new WorkerServerSettings { Enabled = true, Url = "http://127.0.0.1:5090", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+            var token = await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
             var registration = new WorkerRegistrationClient(requestClient, TestCapabilityDiscovery.Create());
             var received = await registration.RequestProvisioningPlanAsync(settings, CancellationToken.None);
             Assert.Equal(planId, received!.Id);
             Assert.Equal($"http://127.0.0.1:5090/api/v1/workers/{workerId}/provisioning/request", requestHandler.Uri);
-            Assert.Equal("Bearer provisioning-secret", requestHandler.Authorization);
+            Assert.Equal("Bearer " + token, requestHandler.Authorization);
 
             var reportHandler = new CaptureHandler(HttpStatusCode.OK, "{}");
             using var reportClient = new HttpClient(reportHandler);

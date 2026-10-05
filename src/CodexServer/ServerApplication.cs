@@ -111,7 +111,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/nodes", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
             NodeCapabilityDiscovery discovery, IServerHealthService health, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var nodes = new List<ProvisionableNode>();
             var local = await discovery.GetAsync(cancellationToken: context.RequestAborted);
             var serverHealth = await health.GetHealthAsync(context.RequestAborted);
@@ -128,13 +128,13 @@ public static class ServerApplication
         app.MapPost("/api/v1/nodes/server/capabilities/refresh", async (HttpContext context, ServerConfiguration settings,
             NodeCapabilityDiscovery discovery) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Ok(await discovery.GetAsync(refresh: true, cancellationToken: context.RequestAborted));
         });
         app.MapPost("/api/v1/provisioning/commands", async (ProvisioningCommandRequest request, HttpContext context,
             ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (!ProvisioningCommandProtocol.Valid(request) || !ProvisioningCommandProtocol.Supported(request))
                 return Results.BadRequest(new { error = "Unsupported or invalid provisioning action." });
             if (request.NodeId != "server")
@@ -153,7 +153,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/provisioning/commands", async (HttpContext context, ServerConfiguration settings,
             ProvisioningCommandStore commands, int? limit, int? offset) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var pageLimit = limit ?? 100;
             var pageOffset = offset ?? 0;
             if (pageLimit is < 1 or > 100 || pageOffset is < 0 or > 10_000)
@@ -162,13 +162,13 @@ public static class ServerApplication
         });
         app.MapGet("/api/v1/provisioning/commands/{id}", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var operation = await commands.GetAsync(id, context.RequestAborted);
             return operation is null ? Results.NotFound() : Results.Ok(operation);
         });
         app.MapPost("/api/v1/provisioning/commands/{id}/cancel", async (string id, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             try
             {
                 var operation = await commands.CancelAsync(id, context.RequestAborted);
@@ -178,7 +178,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/provisioning/commands/{id}/reconcile", async (string id, bool nodeQuiescent, HttpContext context, ServerConfiguration settings, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (!nodeQuiescent) return Results.BadRequest(new { error = "Verify that the node operation has stopped before reconciliation." });
             try
             {
@@ -190,7 +190,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/provisioning/commands/request", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, registry, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, registry, workerId)) return WorkerUnauthorized();
             var worker = await registry.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null || worker.Availability == "stale") return Results.NoContent();
             var operation = await commands.ClaimAsync(workerId, context.RequestAborted);
@@ -199,7 +199,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/provisioning/commands/{id}/report", async (string workerId, string id,
             ProvisioningCommandReport report, HttpContext context, ServerConfiguration settings, IRegistryStore registry, ProvisioningCommandStore commands) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, registry, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, registry, workerId)) return WorkerUnauthorized();
             if (!Guid.TryParseExact(workerId, "N", out _) || await registry.GetWorkerAsync(workerId, context.RequestAborted) is null)
                 return Results.NotFound();
             try
@@ -234,7 +234,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || request.Secret is null) return Results.BadRequest(new { error = "Credential metadata and secret are required." });
             try
             {
@@ -246,19 +246,19 @@ public static class ServerApplication
         });
         app.MapGet("/api/v1/credentials", async (HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Ok(await store.ListAsync(context.RequestAborted));
         });
         app.MapGet("/api/v1/credentials/{credentialId}", async (string credentialId, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var credential = await store.GetAsync(credentialId, context.RequestAborted);
             return credential is null ? Results.NotFound() : Results.Ok(credential);
         });
         app.MapPut("/api/v1/credentials/{credentialId}/assignment", async (string credentialId, CredentialAssignmentRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore registry, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || !Guid.TryParseExact(request.WorkerId, "N", out _)) return Results.BadRequest(new { error = "Worker identity is invalid." });
             if (await registry.GetWorkerAsync(request.WorkerId, context.RequestAborted) is null) return Results.NotFound();
             var credential = await store.AssignAsync(credentialId, request.WorkerId, context.RequestAborted);
@@ -267,7 +267,7 @@ public static class ServerApplication
         app.MapPut("/api/v1/workers/{workerId}/credential-access", async (string workerId, CredentialSecretInput token,
             HttpContext context, ServerConfiguration settings, IRegistryStore registry, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (token is null || await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             try { await store.SetWorkerDeliveryTokenAsync(workerId, token, context.RequestAborted); }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -276,14 +276,14 @@ public static class ServerApplication
         app.MapGet("/api/v1/workers/{workerId}/credential-access", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore registry, ICredentialStore credentials) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             return Results.Ok(await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId, context.RequestAborted));
         });
         app.MapPost("/api/v1/workers/{workerId}/credential-access/revoke", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore registry, ICredentialStore credentials) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await registry.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             await credentials.RevokeWorkerDeliveryTokenAsync(workerId, context.RequestAborted);
             return Results.Ok(await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId, context.RequestAborted));
@@ -300,14 +300,14 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/credentials/{credentialId}/revoke", async (string credentialId, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var credential = await store.RevokeAsync(credentialId, context.RequestAborted);
             return credential is null ? Results.NotFound() : Results.Ok(credential);
         });
         app.MapPut("/api/v1/credentials/{credentialId}/secret", async (string credentialId, CredentialSecretInput secret,
             HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             try
             {
                 var credential = await store.ReplaceSecretAsync(credentialId, secret, context.RequestAborted);
@@ -332,7 +332,7 @@ public static class ServerApplication
         app.MapPut("/api/v1/workers/{workerId}", async (string workerId, WorkerRegistrationRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
                 return RegistrationError(app, context, StatusCodes.Status400BadRequest, "invalid_worker_registration",
                     "Invalid worker registration contract. Check that workerId matches the URL, capacity is 1..8, contractVersion is 1 or 2, and metadata and capabilities satisfy the registration limits.");
@@ -342,7 +342,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/heartbeat", async (string workerId, WorkerHeartbeatRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (!string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) || !Valid(request))
                 return Results.BadRequest(new { error = "Invalid worker heartbeat contract." });
             try { await store.HeartbeatWorkerAsync(request, context.RequestAborted); }
@@ -352,7 +352,7 @@ public static class ServerApplication
         app.MapPut("/api/v1/workers/{workerId}/scheduling-policy", async (string workerId, WorkerSchedulingPolicyRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || !WorkerSchedulingPolicy.IsValid(request.Policy))
                 return Results.BadRequest(new { error = "Policy must be Enabled, Draining, or Disabled." });
             try
@@ -365,7 +365,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/authentication/revoke", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
             await store.RevokeWorkerTokenAsync(workerId, context.RequestAborted);
@@ -374,7 +374,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/assignments/request", async (string workerId, WorkerAssignmentRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (request is null || !string.Equals(workerId, request.WorkerId, StringComparison.Ordinal) ||
                 request.AvailableCapacity is < 0 or > 8 || request.ProjectCapacities is null ||
                 request.ProjectCapacities.Count > 128 || request.ProjectCapacities.Any(p => string.IsNullOrWhiteSpace(p.Key) || p.Key.Length > 80 || p.Value is < 0 or > 8))
@@ -385,7 +385,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/workers/{workerId}/provisioning/request", async (string workerId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (!Guid.TryParseExact(workerId, "N", out _)) return Results.BadRequest(new { error = "Worker identity is invalid." });
             var plan = await store.AcceptProvisioningPlanAsync(workerId, context.RequestAborted);
             return plan is null ? Results.NoContent() : Results.Ok(plan);
@@ -393,7 +393,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/provisioning/{planId}/report", async (string workerId, string planId, ProvisioningWorkerReport report,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "Worker provisioning report identity is invalid." });
             try
@@ -407,7 +407,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/provisioning", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
             int? limit, int? offset) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var pageLimit = limit ?? 100;
             var pageOffset = offset ?? 0;
             if (pageLimit is < 1 or > 100 || pageOffset is < 0 or > 10_000)
@@ -416,14 +416,14 @@ public static class ServerApplication
         });
         app.MapGet("/api/v1/provisioning/{planId}", async (string planId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var plan = await store.GetProvisioningPlanAsync(planId, context.RequestAborted);
             return plan is null ? Results.NotFound() : Results.Ok(plan);
         });
         app.MapPost("/api/v1/provisioning/{planId}/state", async (string planId, ProvisioningStateTransition transition,
             HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             try
             {
                 var updated = await store.TransitionProvisioningPlanAsync(planId, transition, context.RequestAborted);
@@ -434,7 +434,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/provisioning", async (CreateProvisioningPlanRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var error = ProvisioningPlanValidation.Error(request);
             if (error is not null) return Results.BadRequest(new { error });
             try
@@ -447,7 +447,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionRequestId}/report", async (string workerId, string executionRequestId,
             WorkerExecutionReport report, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (report is null || !string.Equals(workerId, report.WorkerId, StringComparison.Ordinal))
             {
                 ServerOperationalDiagnostics.Write(app.Logger, LogLevel.Information, "result-report", "identity-rejected",
@@ -466,7 +466,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/workers/{workerId}/executions/{executionId}/lease/renew", async (string workerId, string executionId,
             ExecutionLeaseRenewal renewal, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (renewal is null || !string.Equals(workerId, renewal.WorkerId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "Execution lease renewal identity is invalid." });
             try
@@ -478,19 +478,19 @@ public static class ServerApplication
         });
         app.MapGet("/api/v1/workers", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Ok(await store.GetWorkersAsync(context.RequestAborted));
         });
         app.MapGet("/api/v1/workers/{workerId}", async (string workerId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
         app.MapGet("/api/v1/workers/{workerId}/diagnostics", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store, ProvisioningCommandStore commands) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
@@ -502,7 +502,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!await AuthorizedWorkerAsync(context, settings, store, workerId)) return Results.Unauthorized();
+            if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
             if (await store.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var version = ManagedConfigurationVersion(projects);
@@ -510,25 +510,25 @@ public static class ServerApplication
         });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             await StreamWorkerUpdatesAsync(context, store);
             return Results.Empty;
         });
         app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Ok(await store.GetProjectsAsync(context.RequestAborted));
         });
         app.MapGet("/api/v1/projects/{projectId}", async (string projectId, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var project = await store.GetProjectAsync(projectId, context.RequestAborted);
             return project is null ? Results.NotFound() : Results.Ok(project);
         });
         app.MapGet("/api/v1/projects/{projectId}/github/access", async (string projectId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             try { return Results.Ok(await github.CheckAccessAsync(projectId, context.RequestAborted)); }
             catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: StatusCodes.Status503ServiceUnavailable); }
@@ -537,7 +537,7 @@ public static class ServerApplication
             string? label, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             var query = new GitHubIssueQuery(state ?? "open", limit ?? 50, label);
             if (GitHubIssueQueryValidation.Error(query) is { } queryError) return Results.BadRequest(new { error = queryError });
@@ -548,7 +548,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/projects/{projectId}/github/discovery", async (string projectId, int? limit, string? after,
             HttpContext context, ServerConfiguration settings, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var query = new GitHubIssueDiscoveryQuery(limit ?? 50, after);
             if (GitHubIssueDiscoveryValidation.Error(query) is { } error) return Results.BadRequest(new { error });
             try
@@ -562,7 +562,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/projects/{projectId}/github/issues/{issueNumber:int}", async (string projectId, int issueNumber,
             HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
@@ -577,7 +577,7 @@ public static class ServerApplication
             int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
@@ -591,7 +591,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/projects/{projectId}/github/issues", async (string projectId, GitHubIssueCreateRequest request,
             HttpContext context, ServerConfiguration settings, IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (GitHubIssueMutationValidation.CreateError(request) is { } error) return Results.BadRequest(new { error });
             try
@@ -607,7 +607,7 @@ public static class ServerApplication
             GitHubIssueUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             if (GitHubIssueMutationValidation.UpdateError(request) is { } error) return Results.BadRequest(new { error });
@@ -621,7 +621,7 @@ public static class ServerApplication
             int issueNumber, GitHubIssueLabelRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try { return Results.Ok(await github.SetIssueLabelAsync(projectId, issueNumber, request, context.RequestAborted)); }
@@ -634,7 +634,7 @@ public static class ServerApplication
             int issueNumber, GitHubIssueDependencyRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             try { return Results.Ok(await github.SetIssueBlockedByAsync(projectId, issueNumber, request, context.RequestAborted)); }
             catch (GitHubIssueNotFoundException) { return Results.NotFound(); }
@@ -646,7 +646,7 @@ public static class ServerApplication
             int issueNumber, GitHubIssueParentRequest request, HttpContext context, ServerConfiguration settings,
             IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (request is null) return Results.BadRequest(new { error = "Issue parent request is required." });
             if (GitHubIssueMutationValidation.ParentError(issueNumber, request.ParentIssueNumber) is { } error)
@@ -661,7 +661,7 @@ public static class ServerApplication
             int issueNumber, GitHubIssueSubIssueBatchRequest request, HttpContext context, ServerConfiguration settings,
             IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (request is null) return Results.BadRequest(new { error = "Sub-issue batch request is required." });
             if (GitHubIssueMutationValidation.BatchIssueNumbersError(issueNumber, request.ChildIssueNumbers, "sub-issue") is { } error)
@@ -676,7 +676,7 @@ public static class ServerApplication
             int issueNumber, GitHubIssueDependencyBatchRequest request, HttpContext context, ServerConfiguration settings,
             IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (await store.GetProjectAsync(projectId, context.RequestAborted) is null) return Results.NotFound();
             if (request is null) return Results.BadRequest(new { error = "Issue dependency batch request is required." });
             if (GitHubIssueMutationValidation.BatchIssueNumbersError(issueNumber, request.BlockerIssueNumbers, "dependency") is { } error)
@@ -691,7 +691,7 @@ public static class ServerApplication
             int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
             {
@@ -710,7 +710,7 @@ public static class ServerApplication
             int issueNumber, HttpContext context, ServerConfiguration settings, IRegistryStore store,
             IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
             {
@@ -722,7 +722,7 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/projects", async (CentralProjectDefinition definition, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var error = CentralProjectValidation.Error(definition);
             if (error is not null) return Results.BadRequest(new { error });
             try { return Results.Created($"/api/v1/projects/{CentralProjectValidation.IdFor(definition.Name)}", await store.CreateProjectAsync(definition, context.RequestAborted)); }
@@ -730,7 +730,7 @@ public static class ServerApplication
         });
         app.MapPut("/api/v1/projects/{projectId}", async (string projectId, ProjectUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var error = CentralProjectValidation.Error(request.Definition);
             if (error is not null || request.ExpectedRevision < 1) return Results.BadRequest(new { error = error ?? "expectedRevision must be positive." });
             try
@@ -743,7 +743,7 @@ public static class ServerApplication
         });
         app.MapPut("/api/v1/projects/{projectId}/lifecycle", async (string projectId, ProjectLifecycleUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request.ExpectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
             try
             {
@@ -755,7 +755,7 @@ public static class ServerApplication
         });
         app.MapDelete("/api/v1/projects/{projectId}", async (string projectId, long expectedRevision, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (expectedRevision < 1) return Results.BadRequest(new { error = "expectedRevision must be positive." });
             try { return await store.RemoveProjectAsync(projectId, expectedRevision, context.RequestAborted) ? Results.NoContent() : Results.NotFound(); }
             catch (ProjectRevisionConflictException ex) { return Results.Conflict(new { error = ex.Message, currentRevision = ex.CurrentRevision }); }
@@ -764,7 +764,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/executions", async (string? projectId, string? state, string? workType, string? workId,
             int? limit, int? offset, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var query = new ExecutionQuery(projectId, state, workType, workId, limit ?? 50, offset ?? 0);
             var error = ExecutionAdministrationValidation.QueryError(query);
             if (error is not null) return Results.BadRequest(new { error });
@@ -773,14 +773,14 @@ public static class ServerApplication
         app.MapGet("/api/v1/executions/{executionRequestId}", async (string executionRequestId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var execution = await store.GetExecutionAsync(executionRequestId, context.RequestAborted);
             return execution is null ? Results.NotFound() : Results.Ok(execution);
         });
         app.MapPost("/api/v1/executions", async (EnqueueExecutionRequest request, HttpContext context, ServerConfiguration settings,
             IRegistryStore store, IServerGitHubAdministrationService github) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var error = ExecutionRequestValidation.Error(request);
             if (error is not null)
             {
@@ -802,14 +802,14 @@ public static class ServerApplication
         });
         app.MapPost("/api/v1/executions/{executionRequestId}/state", async (string executionRequestId, HttpContext context, ServerConfiguration settings) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return Results.Json(new { error = "Execution states are owned by Worker assignment and report contracts. Use queued cancellation or uncertain execution reconciliation." },
                 statusCode: StatusCodes.Status410Gone);
         });
         app.MapPost("/api/v1/executions/{executionRequestId}/cancel", async (string executionRequestId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             try
             {
                 var execution = await store.CancelQueuedExecutionAsync(executionRequestId, context.RequestAborted);
@@ -820,7 +820,7 @@ public static class ServerApplication
         app.MapPost("/api/v1/executions/{executionRequestId}/reconcile", async (string executionRequestId,
             ExecutionReconciliationRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
-            if (!Authorized(context, settings, management: true)) return Results.Unauthorized();
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             try
             {
                 var result = await store.ReconcileUncertainExecutionAsync(executionRequestId, request, context.RequestAborted);
@@ -860,18 +860,22 @@ public static class ServerApplication
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
     }
 
-    private static async Task<bool> AuthorizedWorkerAsync(HttpContext context, ServerConfiguration configuration, IRegistryStore store, string workerId)
+    private static IResult WorkerUnauthorized() => Results.Json(new
     {
-        if (Authorized(context, configuration)) return true;
+        error = "Worker API credential is missing, invalid, revoked, or belongs to another Worker. Verify the enrolled identity and durable credential with the Server operator."
+    }, statusCode: StatusCodes.Status401Unauthorized);
+
+    private static async Task<bool> AuthorizedWorkerAsync(HttpContext context, IRegistryStore store, string workerId)
+    {
         var supplied = context.Request.Headers.Authorization.ToString();
         const string prefix = "Bearer ";
         return supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
             await store.IsWorkerTokenValidAsync(workerId, supplied[prefix.Length..], context.RequestAborted);
     }
 
-    private static bool Authorized(HttpContext context, ServerConfiguration configuration, bool management = false)
+    private static bool AuthorizedManagement(HttpContext context, ServerConfiguration configuration)
     {
-        var expected = management ? configuration.ManagementToken : configuration.RegistrationToken;
+        var expected = configuration.ManagementToken;
         var supplied = context.Request.Headers.Authorization.ToString();
         const string prefix = "Bearer ";
         if (string.IsNullOrWhiteSpace(expected) || !supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;

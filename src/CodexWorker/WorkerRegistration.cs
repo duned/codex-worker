@@ -135,7 +135,7 @@ public static class WorkerAuthentication
     {
         token = token.Trim();
         if (token.Length is < 32 or > 4096 || token.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
-            throw new InvalidDataException("Persisted Worker authentication material is invalid.");
+            throw new InvalidDataException("Persisted Worker authentication material is invalid. Restore the enrolled credential from protected storage; do not replace the Worker identity.");
         return token;
     }
 
@@ -173,8 +173,15 @@ public static class WorkerAuthentication
     {
         var identityPath = settings.IdentityFile ?? WorkerIdentity.DefaultPath;
         var path = TokenPath(identityPath);
-        if (File.Exists(path)) return ValidateToken(File.ReadAllText(path));
-        return Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN") ?? "";
+        try
+        {
+            if (File.Exists(path)) return ValidateToken(File.ReadAllText(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new WorkerStartupException("Persisted Worker API credential is unreadable. Check service-account access to the enrolled credential; do not replace the Worker identity.");
+        }
+        return "";
     }
 }
 
@@ -220,10 +227,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     public async Task RegisterAsync(WorkerServerSettings settings, int capacity, CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return;
-        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         var token = WorkerAuthentication.GetToken(settings);
         if (string.IsNullOrWhiteSpace(token))
-            throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
+            throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}"));
@@ -353,8 +360,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     {
         if (!settings.Enabled) return;
         var token = WorkerAuthentication.GetToken(settings);
-        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
-        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
+        var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
@@ -376,8 +383,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         if (!workerEnabled || availableCapacity == 0 || projectCapacities.Count == 0 || projectCapacities.All(p => p.Value == 0))
             return new(false, null);
         var token = WorkerAuthentication.GetToken(settings);
-        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
-        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
+        var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Post,
             new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/assignments/request"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -393,7 +400,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         CancellationToken cancellationToken)
     {
         if (!settings.Enabled) throw new InvalidOperationException("Managed configuration requires Server mode.");
-        var identity = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{identity}/configuration");
         using var response = await SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -413,7 +420,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         CancellationToken cancellationToken, Func<CancellationToken, Task>? beforeCapabilityMutation = null)
     {
         if (!settings.Enabled) return false;
-        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/request");
         using var response = await SendAsync(request, cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return false;
@@ -450,7 +457,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     public async Task<ProvisioningPlanContract?> RequestProvisioningPlanAsync(WorkerServerSettings settings, CancellationToken cancellationToken)
     {
         if (!settings.Enabled) return null;
-        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/request");
         using var response = await SendAsync(request, cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NoContent) return null;
@@ -477,7 +484,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         if (!settings.Enabled) throw new InvalidOperationException("Credential delivery requires managed Server mode.");
         var token = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
         if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Credential delivery requires CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN.");
-        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Get,
             new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));
         request.Headers.Add("X-Worker-Credential-Token", token);
@@ -491,10 +498,19 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         return credential;
     }
 
+    private static async Task<string> LoadRegisteredIdentityAsync(WorkerServerSettings settings, CancellationToken cancellationToken)
+    {
+        try { return await WorkerIdentity.LoadAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            throw new WorkerStartupException("Managed Worker identity is missing, invalid, or unreadable. Restore the enrolled identity from protected storage; use codex-worker register only for explicit enrollment.");
+        }
+    }
+
     private static HttpRequestMessage CreateAuthorizedRequest(HttpMethod method, WorkerServerSettings settings, string path)
     {
         var token = WorkerAuthentication.GetToken(settings);
-        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN.");
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available.");
         var request = new HttpRequestMessage(method, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
@@ -505,8 +521,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     {
         if (!settings.Enabled || entry.ServerExecutionId is null || entry.AssignmentId is null) return;
         var token = WorkerAuthentication.GetToken(settings);
-        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to report execution state.");
-        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile ?? WorkerIdentity.DefaultPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available before reporting execution state.");
+        var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         var final = state is "Completed" or "Failed";
         var report = new WorkerExecutionReportContract(workerId, entry.AssignmentId, entry.ExecutionId.ToString(), state,
             stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
@@ -528,7 +544,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     {
         if (!settings.Enabled) return null;
         var token = WorkerAuthentication.GetToken(settings);
-        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires CODEX_SERVER_REGISTRATION_TOKEN to renew an execution lease.");
+        if (string.IsNullOrWhiteSpace(token)) throw new HttpRequestException("Managed mode requires a durable per-Worker API credential. Use codex-worker register for explicit enrollment; restore existing enrolled credentials when available before renewing an execution lease.");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(settings.EffectiveUrl.TrimEnd('/') + "/"),
             $"api/v1/workers/{lease.WorkerId}/executions/{lease.ExecutionId}/lease/renew"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);

@@ -41,7 +41,7 @@ api:
   listenUrl: http://127.0.0.1:5080
   eventHistoryLimit: 500
 
-# Optional managed registration. Set CODEX_SERVER_REGISTRATION_TOKEN in the worker environment.
+# Optional managed registration. Enroll using codex-worker register; normal requests require the durable per-Worker credential.
 # The Server registry API and dashboard use the separate CODEX_SERVER_MANAGEMENT_TOKEN.
 # server:
 #   enabled: true

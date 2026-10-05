@@ -159,7 +159,7 @@ public static class WorkerStatusReporter
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             credentialState = ex is FileNotFoundException or DirectoryNotFoundException
-                ? string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN")) ? "missing" : "environment"
+                ? "missing"
                 : ex is InvalidDataException ? "invalid" : "unreadable";
         }
         if (credentialState is "missing" or "invalid" or "unreadable") diagnostics.Add($"worker-credential-{credentialState}");
