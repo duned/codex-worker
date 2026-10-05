@@ -30,11 +30,23 @@ public static class SecretSanitizer
     {
         ArgumentNullException.ThrowIfNull(value);
         if (maximumLength < 0) throw new ArgumentOutOfRangeException(nameof(maximumLength));
-        var safe = System.Text.RegularExpressions.Regex.Replace(value,
-            "(?i)(token|password|secret|credential|api[_-]?key)(\\s*[:=]\\s*)[^\\s,;]+", "$1$2[redacted]");
-        safe = System.Text.RegularExpressions.Regex.Replace(safe, "(?i)\\bBearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer [redacted]");
+        var safe = Redact(value);
         safe = new string(safe.Where(character => !char.IsControl(character)).ToArray());
         return safe[..Math.Min(safe.Length, maximumLength)];
+    }
+
+    public static string Redact(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        // Redact complete header values before generic key/value matching, including
+        // custom bootstrap/delivery headers and quoted JSON diagnostic fields.
+        var safe = System.Text.RegularExpressions.Regex.Replace(value,
+            @"(?im)(authorization|x-codex-worker-token|x-worker-credential-token)(\s*:\s*)[^\r\n]+", "$1$2[redacted]");
+        safe = System.Text.RegularExpressions.Regex.Replace(safe, @"(?i)\bBearer\s+\S+", "Bearer [redacted]");
+        safe = System.Text.RegularExpressions.Regex.Replace(safe,
+            """(?i)(token|password|secret|credential|api[_-]?key|connectionstring|authorization)(["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s,;]+)""", "$1$2[redacted]");
+        safe = System.Text.RegularExpressions.Regex.Replace(safe, @"(?i)(https?://[^:/\s]+):[^@/\s]+@", "$1:[redacted]@");
+        return safe;
     }
 }
 

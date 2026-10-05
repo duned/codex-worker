@@ -367,6 +367,15 @@ public sealed class CodexServerTests
             await credentials.SetWorkerDeliveryTokenAsync(workerId, new CredentialSecretInput(deliveryToken));
             await app.StartAsync();
 
+            static void AssertNonStorage(HttpResponseMessage response)
+            {
+                Assert.True(response.Headers.CacheControl?.NoStore);
+                Assert.Contains(response.Headers.Pragma, value => value.Name == "no-cache");
+                Assert.Equal("0", Assert.Single(response.Content.Headers.GetValues("Expires")));
+                Assert.Null(response.Headers.ETag);
+                Assert.Null(response.Content.Headers.LastModified);
+                Assert.NotEqual(HttpStatusCode.NotModified, response.StatusCode);
+            }
             using var management = new HttpClient { BaseAddress = new Uri(url) };
             Assert.Equal(HttpStatusCode.Unauthorized, (await management.GetAsync("/api/v1/credentials")).StatusCode);
             management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", managementToken);
@@ -375,6 +384,7 @@ public sealed class CodexServerTests
                 provider = "test-provider", type = "api-token", secret = new { value = originalSecret }
             });
             Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+            AssertNonStorage(createdResponse);
             var created = await createdResponse.Content.ReadFromJsonAsync<CredentialMetadata>();
             Assert.NotNull(created);
             var createBody = await createdResponse.Content.ReadAsStringAsync();
@@ -388,21 +398,36 @@ public sealed class CodexServerTests
             using var showResponse = await management.GetAsync($"/api/v1/credentials/{created.Id}");
             Assert.Equal(created, await showResponse.Content.ReadFromJsonAsync<CredentialMetadata>());
 
+            using var malformed = await management.PostAsync("/api/v1/credentials", new StringContent("{", System.Text.Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+            AssertNonStorage(malformed);
             using var assignment = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
                 new CredentialAssignmentRequest(workerId));
             var assigned = await assignment.Content.ReadFromJsonAsync<CredentialMetadata>();
             Assert.Equal(workerId, assigned?.AssignedWorkerId);
             using var delivery = new HttpClient { BaseAddress = new Uri(url) };
+            delivery.DefaultRequestHeaders.TryAddWithoutValidation("If-None-Match", "*");
+            delivery.DefaultRequestHeaders.IfModifiedSince = new DateTimeOffset(2099, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            using var unauthorized = await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}");
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            AssertNonStorage(unauthorized);
+            Assert.DoesNotContain(originalSecret, await unauthorized.Content.ReadAsStringAsync());
             delivery.DefaultRequestHeaders.Add("X-Worker-Credential-Token", deliveryToken);
             using var reassignment = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
                 new CredentialAssignmentRequest(otherWorkerId));
             Assert.Equal(HttpStatusCode.OK, reassignment.StatusCode);
-            Assert.Equal(HttpStatusCode.NotFound,
-                (await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}")).StatusCode);
+            using (var denied = await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}"))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+                AssertNonStorage(denied);
+                Assert.DoesNotContain(originalSecret, await denied.Content.ReadAsStringAsync());
+                Assert.DoesNotContain(replacementSecret, await denied.Content.ReadAsStringAsync());
+            }
             using var assignBack = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/assignment",
                 new CredentialAssignmentRequest(workerId));
             using var delivered = await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}");
             Assert.Equal(HttpStatusCode.OK, delivered.StatusCode);
+            AssertNonStorage(delivered);
             Assert.Equal(originalSecret, (await delivered.Content.ReadFromJsonAsync<CredentialDeliveryResponse>())?.Secret);
 
             using var replace = await management.PutAsJsonAsync($"/api/v1/credentials/{created.Id}/secret",
@@ -417,8 +442,13 @@ public sealed class CodexServerTests
             var revoked = await revoke.Content.ReadFromJsonAsync<CredentialMetadata>();
             Assert.Equal("Revoked", revoked?.Status);
             Assert.Null(revoked?.AssignedWorkerId);
-            Assert.Equal(HttpStatusCode.NotFound,
-                (await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}")).StatusCode);
+            using (var denied = await delivery.GetAsync($"/api/v1/workers/{workerId}/credentials/{created.Id}"))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+                AssertNonStorage(denied);
+                Assert.DoesNotContain(originalSecret, await denied.Content.ReadAsStringAsync());
+                Assert.DoesNotContain(replacementSecret, await denied.Content.ReadAsStringAsync());
+            }
             await app.StopAsync();
         }
         finally
@@ -426,6 +456,56 @@ public sealed class CodexServerTests
             Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
             Environment.SetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY", priorEncryptionKey);
         }
+    }
+
+    [Fact]
+    public async Task BootstrapAndTransientLoginResponsesProhibitStorageIncludingRejections()
+    {
+        using var temporary = new TemporaryDirectory();
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        const string managementToken = "SENTINEL-management-secret";
+        const string apiToken = "SENTINEL-worker-api-secret-with-sufficient-entropy";
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", managementToken);
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "transient.db")));
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var workerId = Guid.NewGuid().ToString("N");
+            var registration = new WorkerRegistrationRequest(2, workerId, "worker", "1.0", "test", 1, []);
+            using var denied = await client.PostAsJsonAsync("/api/v1/workers/register", registration);
+            Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            Assert.True(denied.Headers.CacheControl?.NoStore);
+            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bootstrap);
+            client.DefaultRequestHeaders.Add("X-Codex-Worker-Token", apiToken);
+            using var enrolled = await client.PostAsJsonAsync("/api/v1/workers/register", registration);
+            Assert.Equal(HttpStatusCode.OK, enrolled.StatusCode);
+            Assert.True(enrolled.Headers.CacheControl?.NoStore);
+            Assert.DoesNotContain(apiToken, await enrolled.Content.ReadAsStringAsync());
+            Assert.DoesNotContain(bootstrap, await enrolled.Content.ReadAsStringAsync());
+            using var reused = await client.PostAsJsonAsync("/api/v1/workers/register", registration);
+            Assert.Equal(HttpStatusCode.Unauthorized, reused.StatusCode);
+            Assert.True(reused.Headers.CacheControl?.NoStore);
+            Assert.DoesNotContain(apiToken, await reused.Content.ReadAsStringAsync());
+            Assert.DoesNotContain(bootstrap, await reused.Content.ReadAsStringAsync());
+
+            var commands = app.Services.GetRequiredService<ProvisioningCommandStore>();
+            var command = await commands.CreateAsync(new(workerId, "github-cli", ProvisioningCommandAction.Login));
+            await commands.ClaimAsync(workerId);
+            await commands.ReportAsync(command.Id, workerId, new(ProvisioningCommandStatus.Running,
+                ProvisioningDiagnostic.Executing, LoginInstructions: new("https://github.com/login/device", "ABCD-1234")));
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", managementToken);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("If-None-Match", "*");
+            using var challenge = await client.GetAsync($"/api/v1/provisioning/commands/{command.Id}");
+            Assert.Equal(HttpStatusCode.OK, challenge.StatusCode);
+            Assert.True(challenge.Headers.CacheControl?.NoStore);
+            Assert.Null(challenge.Headers.ETag);
+            Assert.Contains("ABCD-1234", await challenge.Content.ReadAsStringAsync());
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
     [Fact]
@@ -680,6 +760,9 @@ public sealed class CodexServerTests
             Assert.DoesNotContain(secret, databaseContents, StringComparison.Ordinal);
             Assert.DoesNotContain("second-backup-credential-secret", databaseContents, StringComparison.Ordinal);
             Assert.DoesNotContain(deliveryToken, databaseContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(workerBootstrap, databaseContents, StringComparison.Ordinal);
+            Assert.DoesNotContain("backup-worker-api-token-with-sufficient-entropy", databaseContents, StringComparison.Ordinal);
+            Assert.DoesNotContain(encryptionKey, databaseContents, StringComparison.Ordinal);
         }
 
         await new ServerBackup(restoredDatabase).RestoreOfflineAsync(archivePath);
@@ -1019,6 +1102,7 @@ public sealed class CodexServerTests
         using var json = JsonDocument.Parse(body);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
         Assert.Equal("invalid_worker_registration", json.RootElement.GetProperty("code").GetString());
         Assert.Contains("capacity (1..8)", json.RootElement.GetProperty("error").GetString());
         Assert.Equal(response.Headers.GetValues("X-Codex-Request-Id").Single(), json.RootElement.GetProperty("requestId").GetString());
@@ -1043,8 +1127,9 @@ public sealed class CodexServerTests
             Environment.SetEnvironmentVariable("CODEX_WORKER_DISPLAY_NAME", new string('x', 201));
             Console.SetOut(capture);
             Console.SetError(capture);
-            var exitCode = await CodexWorker.Program.Main(["register", "--server", url, "--token", "private-bootstrap-token",
-                "--identity-file", Path.Combine(temporary.Path, "cli-worker-id")]);
+            using var registrationInput = new StringReader("private-bootstrap-token");
+            var exitCode = await CodexWorker.Program.RunAsync(["register", "--server", url, "--token-stdin",
+                "--identity-file", Path.Combine(temporary.Path, "cli-worker-id")], CancellationToken.None, registrationInput);
             Assert.Equal(CodexWorker.ProcessExitCodes.StartupFailure, exitCode);
         }
         finally

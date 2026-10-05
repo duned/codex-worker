@@ -8,6 +8,22 @@ using CodexWorker;
 
 public sealed class SharedCredentialServicesTests
 {
+    [Theory]
+    [InlineData("X-Codex-Worker-Token: SENTINEL-bootstrap-secret")]
+    [InlineData("X-Worker-Credential-Token: SENTINEL-delivery-secret")]
+    [InlineData("Authorization: Bearer SENTINEL-api-secret")]
+    [InlineData("{\"secret\":\"SENTINEL secret with spaces\"}")]
+    [InlineData("password='SENTINEL password with spaces'")]
+    public void SharedRedactionRemovesHeaderAndQuotedSecretsBeforeBounding(string value)
+    {
+        var safe = SecretSanitizer.Sanitize(value, 1000);
+        Assert.DoesNotContain("SENTINEL", safe);
+        Assert.DoesNotContain("with spaces", safe);
+        Assert.Contains("[redacted]", safe);
+        Assert.True(SecretSanitizer.Sanitize(value, 10).Length <= 10);
+        Assert.DoesNotContain("SENTINEL", FailureDiagnosticRedactor.Redact(value));
+    }
+
     [Fact]
     public async Task ServerStorageAndWorkerAuthenticationComposeTheSharedCredentialContract()
     {

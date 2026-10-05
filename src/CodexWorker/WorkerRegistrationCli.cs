@@ -11,6 +11,9 @@ public sealed class WorkerRegistrationCli(
         var args = commandLine.Arguments;
         try
         {
+            // Reject before configuration, stdin, identity publication or network access.
+            if (args.Any(argument => argument == "--token" || argument.StartsWith("--token=", StringComparison.Ordinal)))
+                throw new ArgumentException("--token is no longer supported because command-line values can appear in process listings and shell history. Use --token-stdin with a protected secret source; disable shell tracing.");
             string? server = null, identityFile = null;
             int? requestedCapacity = null;
             var json = false;
@@ -33,7 +36,6 @@ public sealed class WorkerRegistrationCli(
                         continue;
                     case "--operation":
                     case "--server":
-                    case "--token":
                     case "--identity-file":
                     case "--capacity":
                         if (index + 1 >= args.Count || args[index + 1].StartsWith("-", StringComparison.Ordinal) ||
@@ -41,7 +43,6 @@ public sealed class WorkerRegistrationCli(
                             throw new ArgumentException($"Register option '{args[index]}' requires a value.");
                         if (args[index] == "--operation") operation = args[index + 1];
                         else if (args[index] == "--server") server = args[index + 1];
-                        else if (args[index] == "--token") token = args[index + 1];
                         else if (args[index] == "--identity-file") identityFile = args[index + 1];
                         else
                         {
@@ -54,7 +55,6 @@ public sealed class WorkerRegistrationCli(
                     default: throw new ArgumentException("Unknown register option. Use the documented options below.");
                 }
             }
-            if (readTokenFromStandardInput && token is not null) throw new ArgumentException("Specify only one bootstrap token source.");
             GlobalWorkerConfiguration? configuration = null;
             var path = commandLine.ConfigurationPath ?? WorkerCommandLine.DefaultConfigurationPath;
             if (commandLine.ConfigurationPath is not null || File.Exists(path))
@@ -71,7 +71,7 @@ public sealed class WorkerRegistrationCli(
             // the wait as well: a late input result has no enrollment or lifecycle side effects.
             if (readTokenFromStandardInput)
                 token = await input.ReadLineAsync(shutdown.Token).AsTask().WaitAsync(shutdown.Token);
-            if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Register requires --token or a nonempty token from --token-stdin.");
+            if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Register requires a nonempty token from --token-stdin.");
             var settings = new WorkerServerSettings { Enabled = true, Url = uri.ToString().TrimEnd('/'), IdentityFile = identityFile };
             settings.Validate();
             if (!CodexProvisioning.WorkerEnrollmentProtocol.ValidOperation(operation)) throw new ArgumentException("Register operation must be enroll, rotate, recover, or associate.");

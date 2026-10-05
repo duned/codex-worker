@@ -83,25 +83,34 @@ public sealed class WorkerRegistrationCliTests
     }
 
     [Theory]
-    [InlineData("sensitive-bootstrap")]
-    [InlineData("abc")]
-    [InlineData("  sensitive-bootstrap  ")]
-    public async Task EnrollmentFailureIsVersionedRedactedAndDoesNotMixHumanOutputIntoJson(string token)
+    [InlineData("sensitive-bootstrap", true)]
+    [InlineData("abc", true)]
+    [InlineData("  sensitive-bootstrap  ", true)]
+    [InlineData("sensitive-bootstrap", false)]
+    [InlineData("abc", false)]
+    [InlineData("  sensitive-bootstrap  ", false)]
+    public async Task EnrollmentFailureIsVersionedRedactedAndDoesNotMixHumanOutputIntoJson(string token, bool json)
     {
         var stdout = new StringWriter();
         var stderr = new StringWriter();
         var cli = new WorkerRegistrationCli((_, _, _, _) =>
             Task.FromException(new WorkerStartupException($"Rejected {token.Trim()}")),
-            new WorkerConsole(stdout, interactive: false, errorWriter: stderr), new StringReader(""), stdout);
+            new WorkerConsole(stdout, interactive: false, errorWriter: stderr), new StringReader(token + "\n"), stdout);
 
-        var exitCode = await cli.ExecuteAsync(new("register", null,
-            ["--server", "https://server.example", "--token", token, "--json"]));
+        string[] arguments = json ? ["--server", "https://server.example", "--token-stdin", "--json"] :
+            ["--server", "https://server.example", "--token-stdin"];
+        var exitCode = await cli.ExecuteAsync(new("register", null, arguments));
 
         Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
-        using var result = JsonDocument.Parse(stdout.ToString());
-        Assert.Equal("registration-failed", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
+        if (json)
+        {
+            using var result = JsonDocument.Parse(stdout.ToString());
+            Assert.Equal("registration-failed", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
+            Assert.Equal("", stderr.ToString());
+        }
+        else Assert.Contains("Worker registration failed", stderr.ToString());
         Assert.DoesNotContain(token.Trim(), stdout.ToString());
-        Assert.Equal("", stderr.ToString());
+        Assert.DoesNotContain(token.Trim(), stderr.ToString());
     }
 
     [Fact]
@@ -163,12 +172,48 @@ public sealed class WorkerRegistrationCliTests
         }, new WorkerConsole(stdout, interactive: false), new StringReader(""), stdout);
 
         var exitCode = await cli.ExecuteAsync(new("register", Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.yml"),
-            ["--server", "https://server.example", "--token", "sensitive-bootstrap", "--json"]));
+            ["--server", "https://server.example", "--token-stdin", "--json"]));
 
         Assert.Equal(ProcessExitCodes.StartupFailure, exitCode);
         Assert.Equal(0, calls);
         using var result = JsonDocument.Parse(stdout.ToString());
         Assert.Equal("failed", result.RootElement.GetProperty("status").GetString());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CommandLineTokenIsRejectedBeforeConfigurationInputOrEnrollment(bool json, bool equalsSyntax)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"rejected-registration-{Guid.NewGuid():N}");
+        var identity = Path.Combine(directory, "worker-id");
+        using var writer = new StringWriter();
+        var calls = 0;
+        using var input = new PendingReader();
+        var cli = new WorkerRegistrationCli((_, _, _, _) =>
+        {
+            calls++;
+            return Task.CompletedTask;
+        }, new WorkerConsole(writer, interactive: false, errorWriter: writer), input, writer);
+        const string sentinel = "SENTINEL-command-line-secret";
+        string[] tokenArguments = equalsSyntax ? ["--token=" + sentinel] : ["--token", sentinel];
+        var arguments = new List<string> { "--identity-file", identity, "--token-stdin" };
+        arguments.AddRange(tokenArguments);
+        if (json) arguments.Add("--json");
+        var result = await cli.ExecuteAsync(new("register", Path.Combine(directory, "missing.yml"), arguments));
+        Assert.Equal(ProcessExitCodes.StartupFailure, result);
+        Assert.Equal(0, calls);
+        Assert.False(input.Started.Task.IsCompleted);
+        Assert.False(Directory.Exists(directory));
+        Assert.Contains("--token is no longer supported", writer.ToString());
+        Assert.DoesNotContain(sentinel, writer.ToString());
+        if (json)
+        {
+            using var document = JsonDocument.Parse(writer.ToString());
+            Assert.Equal("failed", document.RootElement.GetProperty("status").GetString());
+        }
     }
 
     private sealed class CancellationReader : TextReader

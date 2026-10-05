@@ -770,11 +770,20 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                if (!_degraded) report?.Invoke($"Codex Server heartbeat connectivity degraded: {ex.Message}");
+                if (!_degraded) report?.Invoke($"Codex Server heartbeat connectivity degraded ({FailureCategory(ex)}); check Server connectivity and enrolled Worker API authorization.");
                 _degraded = true;
             }
         } while (await timer.WaitForNextTickAsync(_stop.Token).ConfigureAwait(false));
     }
+
+    // Exception messages can include remote diagnostics or authentication material.
+    private static string FailureCategory(Exception exception) => exception switch
+    {
+        HttpRequestException { StatusCode: { } status } => $"HTTP {(int)status}",
+        OperationCanceledException => "cancelled or timed out",
+        IOException or UnauthorizedAccessException => "local enrollment state unavailable",
+        _ => "request failed"
+    };
 
     public async Task StopAsync()
     {
@@ -782,7 +791,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
         if (_run is not null) try { await _run.ConfigureAwait(false); } catch (OperationCanceledException) { }
         try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), WorkerLifecycleStates.Stopped, CancellationToken.None,
             capabilities?.Invoke(), configurationSync?.Invoke()); }
-        catch (Exception ex) { if (!_degraded) report?.Invoke($"Codex Server final heartbeat failed: {ex.Message}"); }
+        catch (Exception ex) { if (!_degraded) report?.Invoke($"Codex Server final heartbeat failed ({FailureCategory(ex)}); check Server connectivity and enrolled Worker API authorization."); }
         _stop.Dispose();
     }
 }

@@ -153,7 +153,7 @@ public sealed class CommandLineTests
 
         Assert.Equal(ProcessExitCodes.Success, exitCode);
         Assert.Contains("--server <url>", output);
-        Assert.Contains("--token <registration-token>", output);
+        Assert.DoesNotContain("--token <registration-token>", output);
         Assert.Contains("--identity-file <path>", output);
         Assert.Contains("--token-stdin", output);
         Assert.Contains("--capacity <1..8>", output);

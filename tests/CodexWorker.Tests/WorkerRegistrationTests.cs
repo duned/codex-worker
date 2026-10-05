@@ -536,6 +536,52 @@ public sealed class WorkerRegistrationTests
         Assert.False(File.Exists(path + ".server"));
     }
 
+    [Fact]
+    public async Task DeliveryFailureRedactsCustomHeaderTokenFromBoundedErrors()
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        const string sentinel = "SENTINEL-delivery-secret-with-sufficient-entropy";
+        var prior = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", sentinel);
+        try
+        {
+            using var client = new HttpClient(new CaptureHandler(HttpStatusCode.Unauthorized,
+                JsonSerializer.Serialize(new { error = $"Rejected {sentinel}" })));
+            var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
+                new WorkerRegistrationClient(client).RetrieveCredentialAsync(settings, "credential", CancellationToken.None));
+            Assert.Contains("HTTP 401", error.Message);
+            Assert.DoesNotContain(sentinel, error.ToString());
+            Assert.True(error.Message.Length < 1000);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", prior); }
+    }
+
+    [Fact]
+    public async Task HeartbeatPollingNotificationsDoNotExposeRawServerFailure()
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        const string sentinel = "SENTINEL-unlabelled-provider-output";
+        using var client = new HttpClient(new CaptureHandler(HttpStatusCode.BadRequest,
+            JsonSerializer.Serialize(new { error = sentinel })));
+        var notification = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loop = new WorkerHeartbeatLoop(settings, 1, () => new(0, [], "idle"),
+            message => notification.TrySetResult(message), client: new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()));
+        loop.Start();
+        try
+        {
+            var message = await notification.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains("connectivity degraded", message);
+            Assert.DoesNotContain(sentinel, message);
+        }
+        finally { await loop.StopAsync(); }
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

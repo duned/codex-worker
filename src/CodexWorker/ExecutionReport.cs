@@ -161,10 +161,7 @@ internal static class FailureDiagnosticRedactor
 {
     public static string Redact(string value, IReadOnlyList<string>? secretValues = null)
     {
-        var safe = System.Text.RegularExpressions.Regex.Replace(value,
-            @"(?i)(token|password|secret|credential|api[_-]?key|connectionstring|authorization)(\s*[:=]\s*)[^\s,;]+", "$1$2[redacted]");
-        safe = System.Text.RegularExpressions.Regex.Replace(safe, @"(?i)\bBearer\s+\S+", "Bearer [redacted]");
-        safe = System.Text.RegularExpressions.Regex.Replace(safe, @"(?i)(https?://[^:/\s]+):[^@/\s]+@", "$1:[redacted]@");
+        var safe = CodexProvisioning.SecretSanitizer.Redact(value);
         if (secretValues is not null)
             foreach (var secret in secretValues.Where(item => item.Length >= 4).Distinct(StringComparer.Ordinal))
                 safe = safe.Replace(secret, "[redacted]", StringComparison.Ordinal);

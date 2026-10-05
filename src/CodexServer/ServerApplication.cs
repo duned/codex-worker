@@ -76,6 +76,23 @@ public static class ServerApplication
         app.Use(async (context, next) =>
         {
             context.Response.Headers["X-Codex-Request-Id"] = context.TraceIdentifier;
+            // All control-plane API responses can include private state or transient login
+            // challenges. Set this before binding/authentication so errors are covered too.
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.OnStarting(() =>
+                {
+                    context.Response.Headers.CacheControl = "no-store";
+                    context.Response.Headers.Pragma = "no-cache";
+                    context.Response.Headers.Expires = "0";
+                    context.Response.Headers.Remove("ETag");
+                    context.Response.Headers.Remove("Last-Modified");
+                    return Task.CompletedTask;
+                });
+                // The API has no conditional representation: never reuse a cached secret.
+                context.Request.Headers.Remove("If-None-Match");
+                context.Request.Headers.Remove("If-Modified-Since");
+            }
             await next(context);
         });
         try

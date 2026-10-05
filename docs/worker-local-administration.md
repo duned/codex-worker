@@ -12,7 +12,7 @@ The existing root help alias `h` remains supported.
 | `config validate` | Validate Worker and project configuration without starting execution; invalid configuration exits 2. |
 | `config set <setting> <value>` | Atomically update an existing allowlisted setting after complete validation. Protected installed configuration requires appropriate local permissions. Restart the service to apply the change. |
 | `capabilities [list]`, `capabilities refresh` | Observe typed local capability inventory or force fresh detection. Missing capabilities are inventory state. |
-| `register` | Enroll using `--token-stdin` or the existing `--token` option. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. `--operation enroll` is the default; `rotate`, `recover` and `associate` require a Worker- and operation-bound Server authorization. Registration does not establish execution readiness. |
+| `register` | Enroll using `--token-stdin` from a protected secret source. Credential-valued `--token` arguments are rejected. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. `--operation enroll` is the default; `rotate`, `recover` and `associate` require a Worker- and operation-bound Server authorization. Registration does not establish execution readiness. |
 | `provision status` | Inspect capability state, typed authentication dependencies and local action policy. |
 | `provision <operation> <capability-id>` | Run an allowlisted typed operation under node-local provisioning policy. Package changes require `--allow-elevation` as well as policy permission. `verify-repository-access` requires `--repository owner/repository`. |
 | `credential status`, `credential check/login/logout <provider>` | Observe shared node-local credential state or run typed GitHub/Codex authentication under the same local policy as provisioning. Login publishes a transient browser/device challenge. |
@@ -242,3 +242,5 @@ association. Installer rollback preserves registration state because a Server co
 cannot be undone by restoring only a local URL. Keep the same Server, operation and
 identity when retrying an interrupted installation. Start the service only after
 registration is verified; registration does not establish execution readiness.
+
+See [secret delivery and operational output](secret-protection.md) for stdin migration, protected enrollment files, and node-compromise response.
