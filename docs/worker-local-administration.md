@@ -17,6 +17,22 @@ The existing root help alias `h` remains supported.
 | `provision <operation> <capability-id>` | Run an allowlisted typed operation under node-local provisioning policy. Package changes require `--allow-elevation` as well as policy permission. `verify-repository-access` requires `--repository owner/repository`. |
 | `credential status`, `credential check/login/logout <provider>` | Observe shared node-local credential state or run typed GitHub/Codex authentication under the same local policy as provisioning. Login publishes a transient browser/device challenge. |
 
+Managed configuration diagnostics separate retrieval from contract validation and local synchronization. Local `status`/`diagnostics` text and JSON expose the validated cached catalog with source `cached`, retrieval `unverified`, and project preparation `unverified`; they do not infer readiness from a checkout or contact Server. The running Worker's `/api/status` (`managedDiagnostics`) and `/api/configuration-sync` expose current observations, also displayed on its dashboard. Server Worker diagnostics retain these heartbeat observations as `workerReportedManagedDiagnostics`; project readiness includes the reported revision and labels stale heartbeats or revision mismatches separately from Server-derived eligibility.
+
+Project observations progress from `not-materialized` to `materializing` and `ready` after local preparation. `blocked` identifies missing project capabilities; `failed` identifies rejected local preparation. These states describe Worker preparation, not Server authorization to execute. Cached configuration never authorizes scheduling during an outage.
+
+| Diagnostic code | Operator action |
+| --- | --- |
+| `server-unavailable` | Check Server connectivity and service availability. |
+| `server-unauthorized` | Check Worker registration and authorized Server credentials; do not regenerate identity as a connectivity repair. |
+| `managed-contract-invalid` | Check Server/Worker contract compatibility and the managed project definition. Retrieval succeeded; this is not a connectivity failure. |
+| `managed-local-configuration-invalid` | Check local `managedProjects` runtime settings for the reported project/revision. |
+| `managed-synchronization-failed` | Check local cache access, project configuration, and active execution ownership. |
+| `project-capabilities-missing` | Inspect project requirements and the existing capability diagnostics; provision missing dependencies. |
+| `project-preparation-failed` | Check repository access, checkout ownership, node configuration, and retained recovery resources. |
+
+Diagnostic payloads contain bounded identifiers, revisions, states and allowlisted codes. They do not contain repository credentials, exception messages or command output. A successful HTTP response followed by failed validation or synchronization is reported as `retrieved` with the corresponding failure stage.
+
 These commands accept `--json` for automation. Successful observations and
 operation results retain their existing versioned contracts. Adapter errors emit
 one JSON object with `contractVersion: 1`, `status: "failed"` and a bounded,

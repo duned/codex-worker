@@ -20,6 +20,52 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Fact]
+    public async Task ManagedObservationsSurviveRegistryStorageAndRemainDistinctFromServerEligibility()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.UnixEpoch);
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), 30, clock);
+        await store.InitializeAsync();
+        var workerId = Guid.NewGuid().ToString("N");
+        WorkerCapability[] capabilities = [new("authentication", "github-api", Scope: "owner/repo"),
+            new("authentication", "git-repository", Scope: "owner/repo"), new("agent-provider", "codex")];
+        await store.RegisterWorkerAsync(new(2, workerId, "Worker", "1", "linux", 1, capabilities));
+        var observations = new ManagedWorkerDiagnostics("retrieved", "synchronized", "server-retrieved", "version", "version",
+            null, null, [new("project", 1, "failed", "project-preparation-failed")]);
+        await store.HeartbeatWorkerAsync(new(2, workerId, "1", "not-ready", 0, 1, capabilities, [],
+            "synchronized", "version", ManagedDiagnostics: observations));
+        var project = new CentralProject("project", "Project", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var worker = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(workerId));
+        var diagnostics = WorkerDiagnosticsDerivation.Derive(worker, [project], [], "version");
+
+        var readiness = Assert.Single(diagnostics.Projects);
+        Assert.True(readiness.IsEligible);
+        Assert.Equal("failed", readiness.MaterializationState);
+        Assert.Equal("project-preparation-failed", readiness.DiagnosticCode);
+        Assert.Equal("worker-reported-current-revision", readiness.ObservationStatus);
+        Assert.Equal(observations.Projects, diagnostics.WorkerReportedManagedDiagnostics?.Projects);
+        Assert.Contains(diagnostics.Reasons, reason => reason.Contains("project-preparation-failed", StringComparison.Ordinal));
+        Assert.Equal("stale-revision", Assert.Single(WorkerDiagnosticsDerivation.Derive(worker,
+            [project with { Revision = 2 }], [], "version").Projects).ObservationStatus);
+        clock.Advance(TimeSpan.FromSeconds(31));
+        var stale = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(workerId));
+        Assert.Equal("stale-heartbeat", Assert.Single(WorkerDiagnosticsDerivation.Derive(stale, [project], [], "version").Projects).ObservationStatus);
+    }
+
+    [Fact]
+    public void ManagedDiagnosticsRejectRawOutputAndUnboundedPayloads()
+    {
+        var diagnostics = new ManagedWorkerDiagnostics("retrieved", "synchronized", "server-retrieved", "v", "v", null, null,
+            [new("project", 1, "ready")]);
+        Assert.True(ManagedWorkerDiagnostics.Valid(diagnostics));
+        Assert.False(ManagedWorkerDiagnostics.Valid(diagnostics with { DiagnosticCode = "raw command output" }));
+        Assert.False(ManagedWorkerDiagnostics.Valid(diagnostics with { Projects = [new("project", 1, "failed", "token=private-value")] }));
+        Assert.False(ManagedWorkerDiagnostics.Valid(diagnostics with { Projects = Enumerable.Range(0, 1001)
+            .Select(index => new ManagedProjectDiagnostic(index.ToString(System.Globalization.CultureInfo.InvariantCulture), 1, "ready")).ToArray() }));
+    }
+
+    [Fact]
     public async Task MissingLocalAuthenticationBlocksAssignmentDespiteRunningHeartbeat()
     {
         using var temporary = new TemporaryDirectory();

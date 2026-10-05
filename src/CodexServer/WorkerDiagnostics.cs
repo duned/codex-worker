@@ -4,7 +4,8 @@ using CodexProvisioning;
 
 /// <summary>Operational, secret-free view derived from the existing worker registry and project models.</summary>
 public sealed record WorkerProjectReadiness(string ProjectId, string ProjectName, bool IsEligible,
-    IReadOnlyList<string> MissingRequirements);
+    IReadOnlyList<string> MissingRequirements, long? WorkerReportedRevision = null,
+    string? MaterializationState = null, string? DiagnosticCode = null, string ObservationStatus = "not-reported");
 
 public sealed record ProvisioningOperationSummary(string Source, string Id, string Status, string? Action,
     string Diagnostic, DateTimeOffset CreatedAtUtc);
@@ -13,7 +14,8 @@ public sealed record WorkerDiagnostics(string WorkerId, string WorkerVersion, st
     DateTimeOffset? LastHeartbeatAtUtc, string LifecycleState, int ActiveExecutions, int Capacity,
     int AvailableCapacity, string ConfigurationSynchronization, string ProvisioningState,
     bool GitHubReady, bool GitReady, bool AiAgentReady, IReadOnlyList<WorkerProjectReadiness> Projects,
-    IReadOnlyList<string> Reasons, string? RecentOperationalError, ProvisioningOperationSummary? LatestProvisioningOperation = null);
+    IReadOnlyList<string> Reasons, string? RecentOperationalError, ProvisioningOperationSummary? LatestProvisioningOperation = null,
+    ManagedWorkerDiagnostics? WorkerReportedManagedDiagnostics = null);
 
 /// <summary>Deterministically explains whether a registered worker can accept work.</summary>
 public static class WorkerDiagnosticsDerivation
@@ -45,7 +47,12 @@ public static class WorkerDiagnosticsDerivation
         var readiness = projects.Select(project =>
         {
             var result = WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), capabilities, worker.CapabilityInventory);
-            return new WorkerProjectReadiness(project.Id, project.Name, result.IsEligible, result.MissingRequirements);
+            var observation = worker.ManagedDiagnostics?.Projects.FirstOrDefault(item => item.ProjectId == project.Id);
+            return new WorkerProjectReadiness(project.Id, project.Name, result.IsEligible, result.MissingRequirements,
+                observation?.Revision, observation?.State, observation?.DiagnosticCode, observation is null ? "not-reported" :
+                    worker.Availability is "stale" or "offline" ? "stale-heartbeat" :
+                    worker.ManagedDiagnostics?.Source == "cached" ? "cached-worker-observation" :
+                    observation.Revision == project.Revision ? "worker-reported-current-revision" : "stale-revision");
         }).ToArray();
 
         var reasons = new List<string>();
@@ -65,6 +72,14 @@ public static class WorkerDiagnosticsDerivation
             if (!aiReady) reasons.Add("AI agent unavailable");
             foreach (var requirement in readiness.SelectMany(project => project.MissingRequirements).Distinct(StringComparer.Ordinal))
                 reasons.Add("Missing requirement: " + requirement);
+        }
+
+        if (worker.ManagedDiagnostics is { } managed)
+        {
+            if (managed.DiagnosticCode is { } code) reasons.Add($"Worker managed configuration: {managed.FailureStage} ({code})");
+            foreach (var observation in managed.Projects.Where(item => item.State is "blocked" or "failed" or "materializing" or "not-materialized"))
+                reasons.Add($"Worker-observed project {observation.ProjectId}, revision {observation.Revision}: {observation.State}" +
+                    (observation.DiagnosticCode is null ? "" : $" ({observation.DiagnosticCode})"));
         }
 
         var latestPlan = provisioningPlans.Where(plan => plan.WorkerId == worker.WorkerId)
@@ -107,7 +122,7 @@ public static class WorkerDiagnosticsDerivation
         return new WorkerDiagnostics(worker.WorkerId, worker.WorkerVersion, worker.Availability, worker.LastHeartbeatAtUtc,
             worker.LifecycleState, worker.ActiveExecutions, worker.MaximumCapacity, worker.AvailableCapacity,
             configurationSynchronization, provisioningState, githubReady, gitReady, aiReady, readiness, reasons.Distinct(StringComparer.Ordinal).ToArray(),
-            recentError, latestProvisioning);
+            recentError, latestProvisioning, worker.ManagedDiagnostics);
     }
 
     private static bool Has(IReadOnlyList<WorkerCapability> capabilities, string type, string name, string? scope = null) =>

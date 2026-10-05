@@ -1,3 +1,4 @@
+using CodexProvisioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -9,7 +10,8 @@ public sealed record ServerManagedConfigurationContract(int ContractVersion, str
     IReadOnlyList<ServerProjectContract> Projects);
 
 public sealed record WorkerConfigurationSyncStatus(string? DesiredVersion, string? AppliedVersion,
-    string SynchronizationStatus, DateTimeOffset? LastSuccessfulUpdateUtc, string? Error);
+    string SynchronizationStatus, DateTimeOffset? LastSuccessfulUpdateUtc, string? Error,
+    ManagedWorkerDiagnostics? Diagnostics = null);
 
 /// <summary>Maintains the last validated Server snapshot as an atomic, secret-free local cache.</summary>
 public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedProjectRuntimeSettings runtime)
@@ -18,7 +20,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
     private readonly string _cachePath = Path.GetFullPath(cachePath);
     private readonly object _gate = new();
     private IReadOnlyList<ServerProjectContract> _appliedProjects = [];
-    private WorkerConfigurationSyncStatus _status = new(null, null, "not-synchronized", null, null);
+    private WorkerConfigurationSyncStatus _status = new(null, null, "not-synchronized", null, null,
+        new("unverified", "not-synchronized", "none", null, null, null, null, []));
 
     public IReadOnlyList<ServerProjectContract> AppliedProjects { get { lock (_gate) return _appliedProjects; } }
 
@@ -35,7 +38,10 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         {
             AppliedVersion = snapshot.Version,
             SynchronizationStatus = _status.Error is null ? "cached" : _status.SynchronizationStatus,
-            LastSuccessfulUpdateUtc = new DateTimeOffset(File.GetLastWriteTimeUtc(_cachePath), TimeSpan.Zero)
+            LastSuccessfulUpdateUtc = new DateTimeOffset(File.GetLastWriteTimeUtc(_cachePath), TimeSpan.Zero),
+            Diagnostics = Diagnostics with { Source = "cached", AppliedVersion = snapshot.Version,
+                Synchronization = _status.Error is null ? "cached" : _status.SynchronizationStatus,
+                Projects = snapshot.Projects.Select(project => new ManagedProjectDiagnostic(project.Id, project.Revision, "unverified")).ToArray() }
         };
         return result;
     }
@@ -43,12 +49,64 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
     public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Apply(
         ServerManagedConfigurationContract desired) => Apply(desired, updateStatus: true);
 
+    private ManagedWorkerDiagnostics Diagnostics => _status.Diagnostics ??
+        new("unverified", "not-synchronized", "none", null, null, null, null, []);
+
+    public async Task<IReadOnlyList<(string Path, WorkerConfiguration Configuration)>> RetrieveAndApplyAsync(
+        Func<CancellationToken, Task<ServerManagedConfigurationContract>> retrieve, CancellationToken token)
+    {
+        ServerManagedConfigurationContract desired;
+        try { desired = await retrieve(token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or JsonException or InvalidDataException)
+        {
+            RecordUnavailable(ex);
+            throw;
+        }
+        return Apply(desired);
+    }
+
     public void RecordUnavailable(Exception exception)
+    {
+        lock (_gate)
+        {
+            var invalid = exception is JsonException or InvalidDataException;
+            var requestFailure = exception as HttpRequestException ?? exception.InnerException as HttpRequestException;
+            var unauthorized = requestFailure is { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden };
+            var code = invalid ? "managed-contract-invalid" : unauthorized ? "server-unauthorized" : "server-unavailable";
+            _status = _status with
+            {
+                SynchronizationStatus = invalid ? "error" : "unavailable",
+                Error = invalid ? "Server configuration was retrieved but its contract is invalid." :
+                    unauthorized ? "Server rejected managed configuration authorization." : "Server configuration retrieval failed.",
+                Diagnostics = Diagnostics with { Retrieval = invalid ? "retrieved" : unauthorized ? "unauthorized" : "unavailable",
+                    Source = _status.AppliedVersion is null ? "none" : "cached",
+                    Synchronization = invalid ? "error" : "unavailable", FailureStage = invalid ? "contract-validation" : "retrieval", DiagnosticCode = code,
+                    FailedProjectId = null, FailedProjectRevision = null }
+            };
+        }
+    }
+
+    public void RecordProjectState(ServerProjectContract project, string state, string? diagnosticCode = null)
+    {
+        lock (_gate)
+        {
+            var observations = Diagnostics.Projects.Select(item => item.ProjectId == project.Id && item.Revision == project.Revision
+                ? item with { State = state, DiagnosticCode = diagnosticCode } : item).ToArray();
+            var updated = Diagnostics with { Projects = observations };
+            if (!ManagedWorkerDiagnostics.Valid(updated)) throw new ArgumentException("Invalid managed project observation.");
+            _status = _status with { Diagnostics = updated };
+        }
+    }
+
+    public void RecordSynchronizationFailure()
     {
         lock (_gate) _status = _status with
         {
-            SynchronizationStatus = _status.SynchronizationStatus == "error" ? "error" : "unavailable",
-            Error = _status.Error ?? SafeError(exception)
+            SynchronizationStatus = "error",
+            Error = "Server configuration was retrieved but runtime synchronization failed. Check the local project configuration and active execution ownership.",
+            Diagnostics = Diagnostics with { Retrieval = "retrieved", Synchronization = "error", FailureStage = "synchronization",
+                DiagnosticCode = "managed-synchronization-failed" }
         };
     }
 
@@ -56,12 +114,16 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         ServerManagedConfigurationContract desired,
         bool updateStatus)
     {
+        var stage = "contract-validation";
+        ServerProjectContract? preparing = null;
         try
         {
             ValidateSnapshot(desired);
+            stage = "synchronization";
             var applied = new List<(string Path, WorkerConfiguration Configuration)>();
             foreach (var serverProject in desired.Projects)
             {
+                preparing = serverProject;
                 // Opaque stable IDs cannot escape the Worker-owned checkout root and survive renames.
                 var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serverProject.Id))).ToLowerInvariant();
                 var directory = Path.Combine(Path.GetFullPath(runtime.CheckoutDirectory), key);
@@ -70,6 +132,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 configuration.Validate();
                 applied.Add((Path.Combine(directory, "runtime.json"), configuration));
             }
+            preparing = null;
             ProjectConfigurationDiscovery.ValidateSet(applied, validateExecutionResources: false);
             if (updateStatus)
             {
@@ -79,7 +142,10 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                     if (!unchanged) PersistAtomically(desired);
                     _appliedProjects = desired.Projects.ToArray();
                     _status = new(desired.Version, desired.Version, "synchronized",
-                        unchanged ? _status.LastSuccessfulUpdateUtc : DateTimeOffset.UtcNow, null);
+                        unchanged ? _status.LastSuccessfulUpdateUtc : DateTimeOffset.UtcNow, null,
+                        new("retrieved", "synchronized", "server-retrieved", desired.Version, desired.Version, null, null,
+                            desired.Projects.Select(project => Diagnostics.Projects.FirstOrDefault(item => item.ProjectId == project.Id && item.Revision == project.Revision)
+                                ?? new ManagedProjectDiagnostic(project.Id, project.Revision, "not-materialized")).ToArray()));
                 }
             }
             if (!updateStatus)
@@ -88,8 +154,17 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         }
         catch (Exception ex) when (updateStatus)
         {
-            lock (_gate) _status = _status with { DesiredVersion = desired.Version, SynchronizationStatus = "error", Error = SafeError(ex) };
-            throw;
+            var code = stage == "contract-validation" ? "managed-contract-invalid" :
+                ex is ArgumentException or InvalidDataException ? "managed-local-configuration-invalid" : "managed-synchronization-failed";
+            var context = preparing is null ? "" : $" Project '{preparing.Id}', revision {preparing.Revision}.";
+            var error = stage == "contract-validation" ? "Server configuration was retrieved but contract validation failed." :
+                "Server configuration was retrieved but local configuration synchronization failed.";
+            lock (_gate) _status = _status with { DesiredVersion = desired.Version is { Length: <= 128 } version && !version.Any(char.IsControl) ? version : null,
+                SynchronizationStatus = "error", Error = error + context,
+                Diagnostics = Diagnostics with { Retrieval = "retrieved", Synchronization = "error", FailureStage = stage,
+                    DesiredVersion = desired.Version is { Length: <= 128 } desiredVersion && !desiredVersion.Any(char.IsControl) ? desiredVersion : null, DiagnosticCode = code,
+                    FailedProjectId = preparing?.Id, FailedProjectRevision = preparing?.Revision } };
+            throw new InvalidDataException(error + context + " Diagnostic: " + code + ".", ex);
         }
     }
 
@@ -210,5 +285,4 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         return clone;
     }
 
-    private static string SafeError(Exception exception) => exception.Message.Length <= 500 ? exception.Message : exception.Message[..500];
 }

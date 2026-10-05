@@ -40,7 +40,7 @@ public static class WorkerAgentCapabilities
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null,
-    IReadOnlyList<CapabilityState>? CapabilityInventory = null);
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
@@ -223,7 +223,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             if (!response.IsSuccessStatusCode)
             {
                 var detail = await ReadSafeServerErrorAsync(response, cancellationToken, token);
-                throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}");
+                throw new WorkerStartupException($"Codex Server registration failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{detail}",
+                    new HttpRequestException("Server registration request was rejected.", null, response.StatusCode));
             }
         }
         catch (WorkerStartupException) { throw; }
@@ -368,10 +369,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
                 lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
                 configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
-                await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken)));
+                await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics));
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
+                throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
         }
         finally { if (httpClient is null) client.Dispose(); }
     }
@@ -415,9 +416,16 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{identity}/configuration");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Codex Server configuration request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
-            return await response.Content.ReadFromJsonAsync<ServerManagedConfigurationContract>(cancellationToken: cancellationToken)
-                ?? throw new InvalidDataException("Codex Server returned an empty managed configuration.");
+                throw new HttpRequestException($"Codex Server configuration request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
+            try
+            {
+                return await response.Content.ReadFromJsonAsync<ServerManagedConfigurationContract>(cancellationToken: cancellationToken)
+                    ?? throw new InvalidDataException("Codex Server returned an empty managed configuration.");
+            }
+            catch (System.Text.Json.JsonException ex)
+            {
+                throw new InvalidDataException("Codex Server configuration was retrieved but its JSON contract is invalid.", ex);
+            }
         }
         finally { if (httpClient is null) client.Dispose(); }
     }

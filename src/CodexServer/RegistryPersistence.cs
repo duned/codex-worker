@@ -404,7 +404,7 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
     IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,
@@ -412,7 +412,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     IReadOnlyList<string> ActiveProjects, DateTimeOffset? LastHeartbeatAtUtc = null,
     string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null,
     string SchedulingPolicy = WorkerSchedulingPolicy.Enabled, int ActiveAssignments = 0,
-    string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null);
+    string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null);
 
 public static class WorkerSchedulingPolicy
 {
@@ -2014,7 +2014,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             availability, active, capacity, Math.Max(0, capacity - active), heartbeat?.LifecycleState ?? "unknown",
             online ? heartbeat!.ActiveProjects : Array.Empty<string>(), heartbeat is null ? null : seen,
             heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory,
-            schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc);
+            schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc, heartbeat?.ManagedDiagnostics);
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

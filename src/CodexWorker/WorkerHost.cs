@@ -146,8 +146,8 @@ public sealed class WorkerHost
                 {
                     try
                     {
-                        var desired = await registration.GetManagedConfigurationAsync(_global.Server, ct);
-                        configuredProjects = managedConfiguration.Apply(desired);
+                        configuredProjects = await managedConfiguration.RetrieveAndApplyAsync(
+                            token => registration.GetManagedConfigurationAsync(_global.Server, token), ct);
                     }
                     catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) &&
                         (ex is not OperationCanceledException || !ct.IsCancellationRequested))
@@ -255,10 +255,13 @@ public sealed class WorkerHost
                 foreach (var failure in startupResult.UnavailableProjects)
                 {
                     activeProject = failure.Name;
-                    runtimeReadModel.Registry.MarkUnavailable(failure.Name, failure.Reason);
-                    var message = $"Project '{failure.Name}' is unavailable after startup validation: {failure.Reason}";
+                    var failureReason = managed ? "Local project preparation failed (project-preparation-failed); check repository access and node configuration." : failure.Reason;
+                    runtimeReadModel.Registry.MarkUnavailable(failure.Name, failureReason);
+                    if (managedConfiguration?.AppliedProjects.FirstOrDefault(item => item.Name == failure.Name) is { } failedProject)
+                        managedConfiguration.RecordProjectState(failedProject, "failed", "project-preparation-failed");
+                    var message = $"Project '{failure.Name}' is unavailable after startup validation: {failureReason}";
                     _output.Warning(message);
-                    _operationalLog($"Scheduler · {failure.Name} · unavailable · {failure.Reason}");
+                    _operationalLog($"Scheduler · {failure.Name} · unavailable · {failureReason}");
                 }
                 var unavailableNames = startupResult.UnavailableProjects.Select(failure => failure.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var healthyRuntimes = runtimes.Where(project => startupPlans.Any(plan => plan.Name == project.Configuration.Project.Name) &&
@@ -339,13 +342,18 @@ public sealed class WorkerHost
                             heartbeatCapabilities, inventory);
                         runtimeReadModel.Registry.ApplyExecutionEligibility(project.Configuration.Project.Name,
                             project.Configuration, eligibility);
+                        var observation = managedConfiguration.Status.Diagnostics?.Projects.FirstOrDefault(item => item.ProjectId == definition.Id);
+                        if (observation?.State != "failed")
+                            managedConfiguration.RecordProjectState(definition, eligibility.IsEligible
+                                ? preparedConfigurations.Contains(project.Configuration) ? "ready" : "not-materialized" : "blocked",
+                                eligibility.IsEligible ? null : "project-capabilities-missing");
                     }
                 }
                 var ready = agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
                     (runtimes.Count == 0 || runtimes.Any(project => validatedConfigurations.Contains(project.Configuration) &&
                         runtimeReadModel.Registry.Get(project.Configuration.Project.Name)?.State != ProjectLifecycleState.Unavailable));
                 lifecycle.SetExecutionReadiness(ready, managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized"
-                    ? "Managed Server configuration is unavailable; cached projects do not authorize execution."
+                    ? managedConfiguration.Status.Error ?? "Managed configuration has not been synchronized; cached projects do not authorize execution."
                     : localReadiness.Available
                     ? readiness.DiagnosticCode ?? string.Join("; ", runtimeReadModel.Registry.Status()
                         .Where(project => project.UnavailableReason is not null).Select(project => $"{project.Name}: {project.UnavailableReason}"))
@@ -430,21 +438,23 @@ public sealed class WorkerHost
                     try
                     {
                         var registration = _registration;
-                        var desired = await registration.GetManagedConfigurationAsync(_global.Server, executionToken);
                         var previousVersion = managedConfiguration!.Status.AppliedVersion;
-                        var replacement = managedConfiguration.Apply(desired);
-                        if (!string.Equals(previousVersion, desired.Version, StringComparison.Ordinal))
+                        var retryRuntimeSynchronization = managedConfiguration.Status.Diagnostics is
+                            { FailureStage: "synchronization", DiagnosticCode: "managed-synchronization-failed" };
+                        var replacement = await managedConfiguration.RetrieveAndApplyAsync(
+                            token => registration.GetManagedConfigurationAsync(_global.Server, token), executionToken);
+                        if (retryRuntimeSynchronization || !string.Equals(previousVersion, managedConfiguration.Status.AppliedVersion, StringComparison.Ordinal))
                         {
                             runtimeReadModel.Registry.ReplaceConfiguration(replacement, validateExecutionResources: false);
                             runtimeReadModel.Events.Publish("configuration.synchronized", "Server-managed configuration was applied.");
                         }
                     }
                     catch (OperationCanceledException) when (executionToken.IsCancellationRequested) { throw; }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        managedConfiguration!.RecordUnavailable(ex);
+                        if (managedConfiguration!.Status.Diagnostics?.FailureStage is null) managedConfiguration.RecordSynchronizationFailure();
                         runtimeReadModel.Events.Publish("configuration.sync.failed", "Server-managed configuration could not be applied; the last valid configuration remains active.");
-                        _output.Warning($"Server-managed configuration sync failed: {ex.Message}");
+                        _output.Warning($"Server-managed configuration sync failed: {managedConfiguration.Status.Error}");
                     }
                 }
 
@@ -621,6 +631,7 @@ public sealed class WorkerHost
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
                                 if (!preparedConfigurations.Contains(assignedProject.Configuration))
                                 {
+                                    managedConfiguration!.RecordProjectState(assignment.Project, "materializing");
                                     await assignedProject.RepositoryGate.WaitAsync(leaseStop.Token);
                                     try { await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token); }
                                     finally { assignedProject.RepositoryGate.Release(); }
@@ -633,17 +644,20 @@ public sealed class WorkerHost
                                         { State: ProjectLifecycleState.Unavailable } unavailable)
                                         throw new IssuePreparationRejectedException(unavailable.UnavailableReason ?? "Project recovery requires inspection.");
                                     preparedConfigurations.Add(assignedProject.Configuration);
+                                    managedConfiguration!.RecordProjectState(assignment.Project, "ready");
                                 }
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
                             }
                             catch (Exception ex) when (!leaseStop.IsCancellationRequested)
                             {
-                                var reason = "Managed project preparation failed: " + FailureDiagnosticRedactor.Redact(
-                                    ex.Message, assignedProject.Configuration.Environment.Variables.Values.ToArray());
-                                if (reason.Length > 1000) reason = reason[..1000];
+                                managedConfiguration!.RecordProjectState(assignment.Project, "failed", "project-preparation-failed");
+                                var reason = $"Managed project '{assignment.Project.Id}', revision {assignment.Project.Revision}: " +
+                                    (ex is IssuePreparationRejectedException ? "project revision or recovery verification rejected preparation. " : "local project preparation failed. ") +
+                                    "Diagnostic: project-preparation-failed. Check checkout ownership, repository access and node configuration.";
                                 await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
                                 runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
                                 runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
+                                await PublishReadinessAsync(executionToken);
                                 leaseStop.Cancel();
                                 try { await leaseRenewal; } catch (OperationCanceledException) { }
                                 leaseStop.Dispose();
@@ -757,7 +771,7 @@ public sealed class WorkerHost
                 {
                     var blockers = executionReadinessBlockers.ToList();
                     if (!agentReady) blockers.Add(readiness.DiagnosticCode ?? "codex-execution-unavailable");
-                    if (managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized") blockers.Add("managed-configuration-unavailable");
+                    if (managedConfiguration is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized") blockers.Add(managedConfiguration.Status.Diagnostics?.DiagnosticCode ?? "managed-configuration-not-synchronized");
                     await _output.WaitingForPrerequisitesAsync(blockers.Distinct(StringComparer.Ordinal).ToArray());
                 }
                 else
@@ -879,16 +893,16 @@ public sealed class WorkerHost
         ManagedConfigurationSynchronizer synchronizer,
         Exception cause)
     {
-        synchronizer.RecordUnavailable(cause);
+        if (synchronizer.Status.Diagnostics?.FailureStage is null) synchronizer.RecordUnavailable(cause);
         try
         {
             var cached = synchronizer.LoadLastValid();
-            _output.Warning($"Codex Server configuration is unavailable; continuing with applied version {synchronizer.Status.AppliedVersion}.");
+            _output.Warning($"{synchronizer.Status.Error} Using cached version {synchronizer.Status.AppliedVersion}; cached configuration does not authorize execution.");
             return cached;
         }
         catch (Exception cacheError) when (cacheError is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            throw new WorkerStartupException($"Managed Server configuration is unavailable and no valid cached configuration can be applied: {cacheError.Message}", cause);
+            throw new WorkerStartupException($"{synchronizer.Status.Error} No valid cached configuration can be applied. Diagnostic: {synchronizer.Status.Diagnostics?.DiagnosticCode}.", cause);
         }
     }
 

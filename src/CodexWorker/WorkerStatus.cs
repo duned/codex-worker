@@ -16,7 +16,7 @@ public sealed record WorkerStatusDocument(
     WorkerStatusProvisioning Provisioning,
     IReadOnlyList<WorkerStatusCapability> Capabilities,
     IReadOnlyList<string> Diagnostics,
-    WorkerStatusRuntime? Runtime = null);
+    WorkerStatusRuntime? Runtime = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null);
 
 public sealed record WorkerStatusConfiguration(string Validity, string Path, int? ProjectCount, string? Ownership,
     string? ServerConfigured, string? DiagnosticCode);
@@ -103,6 +103,23 @@ public static class WorkerStatusReporter
         if (locallyReady && configuration?.Projects.Ownership == "managed") diagnostics.Add("server-state-unverified");
         if (!locallyReady && diagnostics.Count == 0) diagnostics.Add("worker-not-ready");
 
+        ManagedWorkerDiagnostics? managedDiagnostics = null;
+        if (configuration?.Projects.Ownership == "managed")
+        {
+            var synchronizer = new ManagedConfigurationSynchronizer(
+                (configuration.Server.IdentityFile ?? WorkerIdentity.DefaultPath) + ".configuration.json", configuration.ManagedProjects);
+            try
+            {
+                if (synchronizer.HasCachedSnapshot) synchronizer.LoadLastValid();
+                managedDiagnostics = synchronizer.Status.Diagnostics;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+            {
+                diagnostics.Add("managed-cache-invalid");
+                managedDiagnostics = synchronizer.Status.Diagnostics;
+            }
+        }
+
         return new WorkerStatusDocument(1, ApplicationVersion.Display, RuntimeInformation.OSDescription,
             new WorkerStatusConfiguration(configuration is null ? "invalid" : "valid", fullPath,
                 configuration is null ? null : projects.Count, configuration?.Projects.Ownership,
@@ -115,7 +132,7 @@ public static class WorkerStatusReporter
                 provisioning?.AllowCredentials ?? false, provisioning?.AllowedPrivilegedActions.Count ?? 0,
                 provisioning?.DeniedActions.Count ?? 0), capabilities, diagnostics.Distinct(StringComparer.Ordinal).ToArray(),
             new WorkerStatusRuntime(RuntimeInformation.FrameworkDescription, RuntimeInformation.ProcessArchitecture.ToString(),
-                RuntimeInformation.OSArchitecture.ToString()));
+                RuntimeInformation.OSArchitecture.ToString()), managedDiagnostics);
     }
 
     private static async Task<WorkerStatusRegistration> ObserveRegistrationAsync(GlobalWorkerConfiguration? configuration,
@@ -183,6 +200,14 @@ public static class WorkerStatusReporter
         writer.WriteLine($"Lifecycle: {status.Operation.Lifecycle}; readiness: {status.Operation.Readiness} ({status.Operation.ObservationScope})");
         writer.WriteLine($"Capacity: {status.Capacity.Active?.ToString() ?? "unknown"}/{status.Capacity.Maximum?.ToString() ?? "unknown"}");
         writer.WriteLine($"Provisioning: {(status.Provisioning.Enabled ? "enabled" : "disabled")}; non-privileged: {status.Provisioning.AllowNonPrivileged}; credentials: {status.Provisioning.AllowCredentials}; allow rules: {status.Provisioning.AllowedPrivilegedActionCount}; deny rules: {status.Provisioning.DeniedActionCount}");
+        if (status.ManagedDiagnostics is { } managed)
+        {
+            writer.WriteLine($"Managed configuration: retrieval {managed.Retrieval}; synchronization {managed.Synchronization}; source {managed.Source}");
+            writer.WriteLine($"Managed versions: desired {managed.DesiredVersion ?? "unknown"}; applied {managed.AppliedVersion ?? "unknown"}");
+            if (managed.DiagnosticCode is { } code) writer.WriteLine($"Managed diagnostic: {managed.FailureStage}: {code}; project {managed.FailedProjectId ?? "unknown"}, revision {managed.FailedProjectRevision?.ToString() ?? "unknown"}");
+            foreach (var project in managed.Projects)
+                writer.WriteLine($"Managed project {project.ProjectId}, revision {project.Revision}: {project.State} ({project.DiagnosticCode ?? "no failure recorded"}; {managed.Source})");
+        }
         writer.WriteLine("Capabilities:");
         foreach (var capability in status.Capabilities)
         {

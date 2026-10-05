@@ -6,6 +6,113 @@ namespace CodexWorker.Tests;
 public sealed class ManagedConfigurationTests
 {
     [Fact]
+    public async Task SuccessfulRetrievalWithLocalMismatchReportsSynchronizationFailureAndProjectRevision()
+    {
+        using var fixture = new Fixture();
+        fixture.Runtime.GitHub.WorkingLabel = fixture.Runtime.GitHub.ReadyLabel;
+        fixture.Runtime.Environment.Variables = new Dictionary<string, string> { ["SECRET"] = "private-value" };
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+
+        var failure = await Assert.ThrowsAsync<InvalidDataException>(() => synchronizer.RetrieveAndApplyAsync(
+            _ => Task.FromResult(fixture.Snapshot(2)), CancellationToken.None));
+
+        var diagnostics = Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics);
+        Assert.Equal("retrieved", diagnostics.Retrieval);
+        Assert.Equal("synchronization", diagnostics.FailureStage);
+        Assert.Equal("managed-local-configuration-invalid", diagnostics.DiagnosticCode);
+        Assert.Equal("repository", diagnostics.FailedProjectId);
+        Assert.Equal(2, diagnostics.FailedProjectRevision);
+        Assert.DoesNotContain("unavailable", failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private-value", JsonSerializer.Serialize(synchronizer.Status), StringComparison.Ordinal);
+        Assert.False(File.Exists(fixture.CachePath));
+    }
+
+    [Theory]
+    [InlineData(401, "unauthorized", "server-unauthorized")]
+    [InlineData(503, "unavailable", "server-unavailable")]
+    public async Task RetrievalFailurePreservesCacheAndReportsConnectivity(int statusCode, string retrieval, string code)
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(fixture.Snapshot(1));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => synchronizer.RetrieveAndApplyAsync(
+            _ => Task.FromException<ServerManagedConfigurationContract>(new HttpRequestException(
+                "raw private-value", null, (System.Net.HttpStatusCode)statusCode)), CancellationToken.None));
+
+        Assert.Equal(retrieval, synchronizer.Status.Diagnostics?.Retrieval);
+        Assert.Equal("retrieval", synchronizer.Status.Diagnostics?.FailureStage);
+        Assert.Equal(code, synchronizer.Status.Diagnostics?.DiagnosticCode);
+        Assert.Equal("cached", synchronizer.Status.Diagnostics?.Source);
+        Assert.Equal(fixture.Snapshot(1).Version, synchronizer.Status.AppliedVersion);
+        Assert.DoesNotContain("private-value", JsonSerializer.Serialize(synchronizer.Status), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvalidJsonIsAContractFailureAfterRetrieval()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+
+        await Assert.ThrowsAsync<JsonException>(() => synchronizer.RetrieveAndApplyAsync(
+            _ => Task.FromException<ServerManagedConfigurationContract>(new JsonException("private-value")), CancellationToken.None));
+
+        Assert.Equal("retrieved", synchronizer.Status.Diagnostics?.Retrieval);
+        Assert.Equal("contract-validation", synchronizer.Status.Diagnostics?.FailureStage);
+        Assert.DoesNotContain("private-value", JsonSerializer.Serialize(synchronizer.Status), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegistrationAuthorizationFailureIsNotReportedAsServerUnavailability()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.RecordUnavailable(new WorkerStartupException("registration rejected",
+            new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Unauthorized)));
+
+        Assert.Equal("unauthorized", synchronizer.Status.Diagnostics?.Retrieval);
+        Assert.Equal("server-unauthorized", synchronizer.Status.Diagnostics?.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task CancelledRetrievalDoesNotBecomeConnectivityFailure()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(fixture.Snapshot(1));
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => synchronizer.RetrieveAndApplyAsync(
+            token => Task.FromCanceled<ServerManagedConfigurationContract>(token), stop.Token));
+
+        Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
+    }
+
+    [Fact]
+    public void ProjectObservationsKeepRevisionContextAndAreNotRestoredAsReadinessAuthority()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(fixture.Snapshot(1));
+        Assert.Equal("not-materialized", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+        synchronizer.RecordProjectState(fixture.Project(1), "blocked", "project-capabilities-missing");
+        Assert.Equal("project-capabilities-missing", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).DiagnosticCode);
+        synchronizer.RecordProjectState(fixture.Project(1), "materializing");
+        synchronizer.RecordProjectState(fixture.Project(1), "failed", "project-preparation-failed");
+        Assert.Equal("failed", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+        synchronizer.RecordProjectState(fixture.Project(1), "ready");
+        synchronizer.Apply(fixture.Snapshot(1));
+        Assert.Equal("ready", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        restarted.LoadLastValid();
+        Assert.Equal("cached", restarted.Status.Diagnostics?.Source);
+        Assert.Equal("unverified", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(restarted.Status.Diagnostics).Projects).State);
+        synchronizer.Apply(fixture.Snapshot(2));
+        Assert.Equal("not-materialized", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
+    }
+
+    [Fact]
     public void AppliesAnEmptyServerSnapshotForAColdStartWorker()
     {
         using var fixture = new Fixture();

@@ -1,5 +1,6 @@
 namespace CodexWorker;
 
+using CodexProvisioning;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
@@ -13,7 +14,8 @@ public sealed record RuntimeEvent(long Id, DateTimeOffset TimestampUtc, string T
 public sealed record WorkerCapability(string Name, string Kind, string? Version = null, IReadOnlyDictionary<string, string>? Attributes = null);
 public sealed record WorkerStatus(string Version, string State, long UptimeSeconds, int MaxParallelTasks,
     int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount,
-    string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult);
+    string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult,
+    ManagedWorkerDiagnostics? ManagedDiagnostics = null);
 public sealed record ProjectRuntimeInfo(string Name, string ConfigurationPath, string ProjectDirectory, string Repository, bool Enabled, string State,
     int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount, string? UnavailableReason = null);
 public sealed record ProjectLifecycleRequest(string Action);
@@ -155,7 +157,8 @@ public sealed class WorkerRuntimeReadModel
             Math.Max(0, (long)(DateTimeOffset.UtcNow - _startedAtUtc).TotalSeconds),
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
             projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled),
-            lifecycle.State, lifecycle.DrainRequested, lifecycle.LastUpdateResult, lifecycle.ReconnectReadinessResult);
+            lifecycle.State, lifecycle.DrainRequested, lifecycle.LastUpdateResult, lifecycle.ReconnectReadinessResult,
+            ConfigurationSyncStatus?.Diagnostics);
     }
 
     public IReadOnlyList<WorkerCapability> Capabilities =>

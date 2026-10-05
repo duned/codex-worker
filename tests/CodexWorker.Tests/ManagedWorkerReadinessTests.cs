@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using CodexProvisioning;
 using CodexWorker;
 
@@ -168,15 +169,17 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal(expectedPreflights, provider.Calls);
     }
 
-    [Fact]
-    public async Task ColdStartWithServerProjectAndNoLocalYamlIsEligibleWithoutMaterialization()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ColdStartWithServerProjectAndNoLocalYamlReportsEligibilityWithoutMaterialization(bool missingCapability)
     {
         if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
         temporary.EnableProjectProbes();
         using var stop = new CancellationTokenSource();
         using var output = new StopOnStartedWriter(stop);
-        var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
+        var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", missingCapability ? [new("runtime", "unavailable-runtime")] : [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
@@ -184,6 +187,7 @@ public sealed class ManagedWorkerReadinessTests
         await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
         await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
         var ready = false;
+        ManagedProjectDiagnostic? observation = null;
         using var handler = new Handler(async (request, token) =>
         {
             var path = request.RequestUri?.AbsolutePath ?? "";
@@ -194,6 +198,8 @@ public sealed class ManagedWorkerReadinessTests
                 var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat"))
                     .ReadFromJsonAsync<WorkerHeartbeatContract>(token);
                 ready |= heartbeat?.LifecycleState == "running";
+                if (heartbeat?.ManagedDiagnostics?.Projects.FirstOrDefault() is { State: "blocked" or "not-materialized" } current)
+                    observation = current;
             }
             return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
         });
@@ -215,7 +221,9 @@ public sealed class ManagedWorkerReadinessTests
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Contains("Worker started.", output.ToString(), StringComparison.Ordinal);
-        Assert.True(ready);
+        Assert.Equal(!missingCapability, ready);
+        Assert.Equal(missingCapability ? "blocked" : "not-materialized", observation?.State);
+        Assert.Equal(missingCapability ? "project-capabilities-missing" : null, observation?.DiagnosticCode);
         Assert.DoesNotContain("not materialized", output.ToString(), StringComparison.Ordinal);
         Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
         var cached = new ManagedConfigurationSynchronizer(settings.IdentityFile + ".configuration.json", global.ManagedProjects);
@@ -410,10 +418,18 @@ public sealed class ManagedWorkerReadinessTests
             Api = new() { Enabled = false }
         };
         var assigned = false;
+        var failedObservation = new TaskCompletionSource<WorkerHeartbeatContract>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reported = new TaskCompletionSource<WorkerExecutionReportContract>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var handler = new Handler(async (request, token) =>
         {
             var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat"))
+                    .ReadFromJsonAsync<WorkerHeartbeatContract>(token);
+                if (heartbeat?.ManagedDiagnostics?.Projects.Any(item => item.State == "failed") == true)
+                    failedObservation.TrySetResult(heartbeat);
+            }
             if (path.EndsWith("/configuration", StringComparison.Ordinal))
             {
                 var current = assigned && scenario == "execution-stale" ? project with { Revision = 2 } : project;
@@ -454,11 +470,20 @@ public sealed class ManagedWorkerReadinessTests
         try
         {
             var report = await reported.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            if (scenario == "materialization")
+            {
+                var heartbeat = await failedObservation.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                var observation = Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(heartbeat.ManagedDiagnostics).Projects);
+                Assert.Equal(project.Id, observation.ProjectId);
+                Assert.Equal(project.Revision, observation.Revision);
+                Assert.Equal("project-preparation-failed", observation.DiagnosticCode);
+                Assert.DoesNotContain("clone unavailable", JsonSerializer.Serialize(heartbeat), StringComparison.Ordinal);
+            }
             Assert.False(run.IsCompleted);
             Assert.Equal("Failed", report.State);
             Assert.Equal(1, report.Generation);
             Assert.False(report.Recoverable);
-            Assert.Contains(scenario == "materialization" ? "clone unavailable" : "revision changed",
+            Assert.Contains(scenario == "materialization" ? "local project preparation failed" : "revision",
                 report.Summary, StringComparison.OrdinalIgnoreCase);
             Assert.False(Directory.Exists(Path.Combine(global.ManagedProjects.CheckoutDirectory,
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(project.Id))).ToLowerInvariant())));

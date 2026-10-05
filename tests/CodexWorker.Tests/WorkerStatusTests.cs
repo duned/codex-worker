@@ -7,6 +7,33 @@ namespace CodexWorker.Tests;
 public sealed class WorkerStatusTests
 {
     [Fact]
+    public async Task CachedManagedStatusUsesTheSameObservationsInTextAndJsonWithoutClaimingServerReadiness()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n  identityFile: ./worker-id\n");
+        var identity = Path.Combine(fixture.DirectoryPath, "worker-id");
+        var project = new ServerProjectContract("central-id", "Project", "owner/repo", "main", "", [], 3,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var synchronizer = new ManagedConfigurationSynchronizer(identity + ".configuration.json",
+            new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(fixture.DirectoryPath, "checkouts") });
+        synchronizer.Apply(new(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]));
+        synchronizer.RecordProjectState(project, "ready");
+
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());
+        var observation = Assert.IsType<ManagedWorkerDiagnostics>(status.ManagedDiagnostics);
+        Assert.Equal("cached", observation.Source);
+        Assert.Equal("unverified", observation.Retrieval);
+        Assert.Equal("unverified", Assert.Single(observation.Projects).State);
+        using var text = new StringWriter();
+        using var json = new StringWriter();
+        WorkerStatusReporter.Write(status, false, text);
+        WorkerStatusReporter.Write(status, true, json);
+        Assert.Contains("central-id, revision 3: unverified", text.ToString(), StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(json.ToString());
+        Assert.Equal("cached", document.RootElement.GetProperty("managedDiagnostics").GetProperty("source").GetString());
+    }
+
+    [Fact]
     public async Task EmptyStandaloneConfigurationIsValidWhilePreparingExecutionDependencies()
     {
         using var fixture = new StatusFixture();
