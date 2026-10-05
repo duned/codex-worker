@@ -281,6 +281,107 @@ public sealed class GitWorktreeTests
         Assert.Contains("done/feature/example-task-17", result.Summary);
     }
 
+    // Investigation baseline: a local remote can observe ref transactions, but
+    // cannot reproduce GitHub's asynchronous Issue timeline indexing.
+    [Theory]
+    [InlineData(1, false, true)]
+    [InlineData(2, false, true)]
+    [InlineData(2, true, true)]
+    [InlineData(1, false, false)]
+    [InlineData(2, false, false)]
+    [InlineData(2, true, false)]
+    public async Task DirectIntegrationPushSequenceIsIndependentOfRetryAndRecovery(int attempt, bool recover, bool retainCompleted)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = retainCompleted });
+        await original.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await original.StartIssueAsync(id, fixture.Issue, null, false, attempt, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(original.ExecutionDirectory, "implemented.txt"), "implementation");
+        using var restarted = original.CreateExecutionRepository();
+        IGitRepository integrating = original;
+        if (recover)
+        {
+            await fixture.AdvanceBaseAsync();
+            await Assert.ThrowsAsync<PostRebaseValidationException>(() => original.CommitAndIntegrateAsync(fixture.Issue,
+                _ => Task.FromResult(new ValidationResult(new ValidationFailure(1, "local-check", 1, "", "failed", false))),
+                CancellationToken.None));
+            var preserved = await original.PreserveIntegrationConflictAsync(CancellationToken.None);
+            Assert.NotNull(preserved);
+            var source = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+                preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+                "Implemented", "failed: post-rebase validation", 0, [], preserved.BaseCommit, null, null, null,
+                RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit, AttemptNumber: attempt);
+            await restarted.StartIntegrationRecoveryAsync(source, CancellationToken.None);
+            integrating = restarted;
+        }
+
+        var baseCommit = await fixture.Git("rev-parse", "main");
+        await fixture.RecordPushTransactionsAsync();
+
+        var result = await integrating.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+
+        Assert.NotNull(result.CommitSha);
+        // The blank lines separate pushes. The completed ref is first published
+        // only after the exact same implementation SHA has reached the base.
+        var received = await fixture.ReadPushTransactionsAsync();
+        Assert.Equal($"{baseCommit} {result.CommitSha} refs/heads/main\n\n" +
+            (retainCompleted ? $"{new string('0', 40)} {result.CommitSha} refs/heads/{result.CompletedBranch}\n\n" : ""), received);
+        Assert.Equal($"Implement #{fixture.Issue.Number}: {fixture.Issue.Title}",
+            await fixture.Git("log", "-1", "--format=%s", "main"));
+        Assert.Equal($"{result.CommitSha} {baseCommit}", await fixture.Git("rev-list", "--parents", "-n", "1", "main"));
+        Assert.Equal(result.CommitSha, (await fixture.Git("ls-remote", "origin", "refs/heads/main")).Split('\t')[0]);
+        if (retainCompleted)
+        {
+            Assert.NotNull(result.CompletedBranch);
+            Assert.Equal(result.CommitSha, (await fixture.Git("ls-remote", "origin", $"refs/heads/{result.CompletedBranch}")).Split('\t')[0]);
+        }
+        else
+        {
+            Assert.Null(result.CompletedBranch);
+            Assert.Empty(await fixture.Git("ls-remote", "origin", "refs/heads/completed/*"));
+        }
+    }
+
+    [Fact]
+    public async Task HistoricalMergeSequencePublishesImplementationWithBaseBeforeCompletedRef()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await RepositoryFixture.CreateAsync();
+        // Reproduce the pre-fast-forward Git sequence in a disposable local repository.
+        // This comparison does not change the production integration workflow.
+        using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await git.InitializeAsync(CancellationToken.None);
+        var baseCommit = await fixture.Git("rev-parse", "main");
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "implemented.txt"), "implementation");
+        await fixture.RecordPushTransactionsAsync();
+        var result = await git.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None);
+        Assert.NotNull(result.CommitSha);
+        Assert.NotNull(result.CompletedBranch);
+        Assert.Empty(await fixture.ReadPushTransactionsAsync());
+
+        await fixture.Git("merge", "--no-ff", "--no-edit", $"refs/heads/{result.CompletedBranch}");
+        var mergeCommit = await fixture.Git("rev-parse", "main");
+        var completed = GitRepository.CompletedBranchName(new GitSettings(), fixture.Issue);
+        await fixture.Git("push", "origin", "refs/heads/main:refs/heads/main");
+        await fixture.Git("push", "origin", $"{result.CompletedBranch}:refs/heads/{completed}");
+
+        Assert.Equal($"{baseCommit} {mergeCommit} refs/heads/main\n\n" +
+            $"{new string('0', 40)} {result.CommitSha} refs/heads/{completed}\n\n", await fixture.ReadPushTransactionsAsync());
+        Assert.Equal($"{mergeCommit} {baseCommit} {result.CommitSha}",
+            await fixture.Git("rev-list", "--parents", "-n", "1", "main"));
+        Assert.Equal($"{result.CommitSha} {baseCommit}",
+            await fixture.Git("rev-list", "--parents", "-n", "1", result.CommitSha));
+        Assert.Equal($"Implement #{fixture.Issue.Number}: {fixture.Issue.Title}",
+            await fixture.Git("log", "-1", "--format=%s", result.CommitSha));
+        Assert.Equal(mergeCommit, (await fixture.Git("ls-remote", "origin", "refs/heads/main")).Split('\t')[0]);
+        Assert.Equal(result.CommitSha, (await fixture.Git("ls-remote", "origin", $"refs/heads/{completed}")).Split('\t')[0]);
+    }
+
     [Fact]
     public async Task ReopenedIssueArchivesEachExecutionWithoutReplacingHistoricalCompletedBranches()
     {
@@ -2113,6 +2214,18 @@ public sealed class GitWorktreeTests
 
         public async Task<string> Git(params string[] args) => await RunGit(Checkout, args);
         public async Task<string> GitAt(string directory, params string[] args) => await RunGit(directory, args);
+        public async Task RecordPushTransactionsAsync()
+        {
+            if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("The receive hook requires a POSIX shell.");
+            var remote = Path.Combine(_root, "origin.git");
+            await File.WriteAllTextAsync(Path.Combine(remote, "received-refs"), "");
+            var hook = Path.Combine(remote, "hooks", "post-receive");
+            await File.WriteAllTextAsync(hook, "#!/bin/sh\ncat >> received-refs\nprintf '\\n' >> received-refs\n");
+            File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        public async Task<string> ReadPushTransactionsAsync() =>
+            (await File.ReadAllTextAsync(Path.Combine(_root, "origin.git", "received-refs")))
+                .Replace("\r\n", "\n", StringComparison.Ordinal);
         public async Task AdvanceBaseAsync(string path = "base-advanced.txt", string content = "independent base change")
         {
             await File.WriteAllTextAsync(Path.Combine(Checkout, path), content);
