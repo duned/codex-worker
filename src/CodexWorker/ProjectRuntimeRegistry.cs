@@ -226,9 +226,9 @@ public sealed class ProjectRuntimeRegistry
     }
 
     /// <summary>Installs a fully validated project set in one lock acquisition, preserving lifecycle state by name.</summary>
-    public void ReplaceConfiguration(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> configurations)
+    public void ReplaceConfiguration(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> configurations, bool validateExecutionResources = true)
     {
-        ProjectConfigurationDiscovery.ValidateSet(configurations);
+        ProjectConfigurationDiscovery.ValidateSet(configurations, validateExecutionResources);
         lock (_gate)
         {
             if (_maintenance) throw new ProjectConfigurationConflictException("Execution cleanup is in progress; retry configuration changes after maintenance finishes.");

@@ -14,10 +14,24 @@ worker:
 projects:
   directory: ./projects
   # standalone uses project YAML as the project source of truth. Managed mode applies
-  # versioned Server project identity/repository/branch/requirements while retaining
-  # machine-local checkouts, authentication, execution settings, and recovery state.
+  # versioned Server project definitions without reading local project YAML.
+  # Runtime defaults for managed projects are configured once below.
   # In either mode the Worker owns GitHub labels, comments, and Issue closure.
   ownership: standalone
+
+# Worker-local runtime defaults used only in managed ownership. Checkout paths are
+# derived from Server project IDs beneath this root; missing checkouts remain unavailable.
+managedProjects:
+  checkoutDirectory: ./checkouts
+  # Same git/github/codex/validation/environment/worker sections as project YAML,
+  # without project identity. git.baseBranch is always supplied by the Server.
+  # Relative codex.instructionsFile paths resolve inside each derived checkout.
+  codex:
+    instructionsFile: AGENTS.md
+  validation:
+    commands: []
+  worker:
+    maxParallelTasks: 1
 
 telegram:
   enabled: false

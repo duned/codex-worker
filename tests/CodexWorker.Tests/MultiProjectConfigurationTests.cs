@@ -17,6 +17,33 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(Path.Combine(fixture.Root, "projects"), config.Projects.Directory);
     }
 
+    [Fact]
+    public void ManagedOwnershipIgnoresLocalYamlAndDoesNotRequireProjectsDirectory()
+    {
+        using var fixture = new Fixture();
+        File.WriteAllText(Path.Combine(fixture.Projects, "invalid.yml"), "invalid: configuration");
+        var global = new GlobalWorkerConfiguration { Projects = new() { Directory = fixture.Projects, Ownership = "managed" } };
+        Assert.Empty(ProjectConfigurationDiscovery.LoadForWorker(global));
+        global.Projects.Directory = Path.Combine(fixture.Root, "absent");
+        Assert.Empty(ProjectConfigurationDiscovery.LoadForWorker(global));
+        global.Projects.Ownership = "standalone";
+        Assert.Throws<InvalidDataException>(() => ProjectConfigurationDiscovery.LoadForWorker(global));
+    }
+
+    [Fact]
+    public void ManagedRuntimeDefaultsResolveAtGlobalLayerAndRejectUnknownKeys()
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.Root, "worker.yml");
+        File.WriteAllText(path, "managedProjects:\n  checkoutDirectory: ./runtime\n  worker:\n    maxParallelTasks: 2\n  validation:\n    commands: [dotnet test]\n");
+        var global = GlobalWorkerConfiguration.Load(path);
+        Assert.Equal(Path.Combine(fixture.Root, "runtime"), global.ManagedProjects.CheckoutDirectory);
+        Assert.Equal(2, global.ManagedProjects.Worker.MaxParallelTasks);
+        Assert.Equal(["dotnet test"], global.ManagedProjects.Validation.Commands);
+        File.WriteAllText(path, "managedProjects:\n  repository: owner/repo\n");
+        Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
@@ -101,6 +128,8 @@ public sealed class MultiProjectConfigurationTests
 
         fixture.AddProject("later.yml", "Later", "owner/later", "later");
 
+        Assert.Empty(ProjectConfigurationDiscovery.LoadForWorker(global));
+        global.Projects.Ownership = "standalone";
         Assert.Equal("Later", Assert.Single(ProjectConfigurationDiscovery.LoadForWorker(global)).Configuration.Project.Name);
     }
 

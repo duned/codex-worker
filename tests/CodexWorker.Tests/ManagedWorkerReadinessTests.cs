@@ -167,6 +167,47 @@ public sealed class ManagedWorkerReadinessTests
     }
 
     [Fact]
+    public async Task ColdStartWithServerProjectAndNoLocalYamlStaysOnlineWithProjectUnavailable()
+    {
+        using var temporary = new TemporaryDirectory();
+        using var stop = new CancellationTokenSource();
+        using var output = new StopOnStartedWriter(stop);
+        var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        using var handler = new Handler((request, _) => Task.FromResult(
+            request.RequestUri?.AbsolutePath.EndsWith("/configuration", StringComparison.Ordinal) == true
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) }
+                : new HttpResponseMessage(request.RequestUri?.AbsolutePath.EndsWith("/request", StringComparison.Ordinal) == true
+                    ? HttpStatusCode.NoContent : HttpStatusCode.OK)));
+        using var client = new HttpClient(handler);
+        var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0")));
+        var capabilities = new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")));
+        var global = new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed", Directory = Path.Combine(temporary.Path, "absent-projects") },
+            ManagedProjects = new() { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") },
+            Api = new() { Enabled = false }
+        };
+        var host = new WorkerHost(global, ProjectConfigurationDiscovery.LoadForWorker(global),
+            new WorkerConsole(output, interactive: false),
+            registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
+            agentAuthentication: new TestProvider { Available = true });
+
+        await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Contains("Worker started.", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Central", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("unavailable", output.ToString(), StringComparison.Ordinal);
+        var cached = new ManagedConfigurationSynchronizer(settings.IdentityFile + ".configuration.json", global.ManagedProjects);
+        Assert.Equal("Central", Assert.Single(cached.LoadLastValid()).Configuration.Project.Name);
+    }
+
+    [Fact]
     public async Task FailedPreflightIsRetriedOnlyAfterExplicitRefreshAndCancellationPropagates()
     {
         var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0")));

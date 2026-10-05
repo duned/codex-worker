@@ -116,6 +116,7 @@ public sealed class GlobalWorkerConfiguration
     public TelegramSettings Telegram { get; set; } = new();
     public ManagementApiSettings Api { get; set; } = new();
     public WorkerServerSettings Server { get; set; } = new();
+    public ManagedProjectRuntimeSettings ManagedProjects { get; set; } = new();
 
     public static GlobalWorkerConfiguration Load(string path)
     {
@@ -151,6 +152,8 @@ public sealed class GlobalWorkerConfiguration
             if (value.Api.EventHistoryLimit < 1 || value.Api.EventHistoryLimit > 10000)
                 throw new InvalidDataException("api.eventHistoryLimit must be between 1 and 10000.");
             value.Server.Validate();
+            if (value.ManagedProjects is null) throw new InvalidDataException("managedProjects must be a YAML mapping.");
+            value.ManagedProjects.ResolveAndValidate(fullPath);
             if (value.Projects.Ownership is not ("standalone" or "managed"))
                 throw new InvalidDataException("projects.ownership must be standalone or managed.");
             if (value.Projects.Ownership == "managed" && !value.Server.Enabled)
@@ -185,10 +188,48 @@ public sealed class ProjectsSettings
     public string Ownership { get; set; } = "standalone";
 }
 
+/// <summary>Machine/runtime defaults for all Server-managed projects; contains no project identity.</summary>
+public sealed class ManagedProjectRuntimeSettings
+{
+    public string CheckoutDirectory { get; set; } = "./checkouts";
+    public GitSettings Git { get; set; } = new();
+    [YamlMember(Alias = "github")]
+    public GitHubSettings GitHub { get; set; } = new()
+    {
+        ReadyLabel = "codex-ready", WorkingLabel = "codex-working", BlockedLabel = "codex-blocked",
+        FailedLabel = "codex-failed", DoneLabel = "codex-done"
+    };
+    public CodexSettings Codex { get; set; } = new();
+    public ValidationSettings Validation { get; set; } = new();
+    public ProjectEnvironmentSettings Environment { get; set; } = new();
+    public WorkerSettings Worker { get; set; } = new();
+
+    internal WorkerConfiguration CreateTemplate(string directory) => new()
+    {
+        Project = new ProjectSettings { Name = "runtime-defaults", Repository = "runtime/defaults", Directory = directory },
+        Git = Git, GitHub = GitHub, Codex = Codex, Validation = Validation, Environment = Environment, Worker = Worker
+    };
+
+    internal void ResolveAndValidate(string configurationPath)
+    {
+        if (string.IsNullOrWhiteSpace(CheckoutDirectory)) throw new InvalidDataException("managedProjects.checkoutDirectory is required.");
+        if (Git is null || GitHub is null || Codex is null || Validation is null || Environment is null || Worker is null)
+            throw new InvalidDataException("managedProjects runtime sections must be YAML mappings.");
+        CheckoutDirectory = WorkerPath.Resolve(CheckoutDirectory, Path.GetDirectoryName(configurationPath)!);
+        // Environment files belong to the node, relative to the global Worker file.
+        if (!string.IsNullOrWhiteSpace(Environment.File))
+        {
+            Environment.File = WorkerPath.Resolve(Environment.File, Path.GetDirectoryName(configurationPath)!);
+            Environment.Variables = ProjectEnvironmentFile.Load(Environment.File);
+        }
+        CreateTemplate(CheckoutDirectory).Validate();
+    }
+}
+
 public static class ProjectConfigurationDiscovery
 {
     public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadForWorker(GlobalWorkerConfiguration global) =>
-        Load(global.Projects.Directory, allowEmpty: true);
+        global.Projects.Ownership == "managed" ? [] : Load(global.Projects.Directory, allowEmpty: true);
 
     public static IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Load(string directory, bool allowEmpty = false,
         bool validateExecutionResources = true)
@@ -210,10 +251,10 @@ public static class ProjectConfigurationDiscovery
         return projects;
     }
 
-    public static void ValidateSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)
+    public static void ValidateSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, bool validateExecutionResources = true)
     {
         ValidateUniqueSet(projects);
-        ValidateExecutionResources(projects);
+        if (validateExecutionResources) ValidateExecutionResources(projects);
     }
 
     private static void ValidateUniqueSet(IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects)

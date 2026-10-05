@@ -13,6 +13,16 @@ projects:
   directory: /var/lib/codex-worker/projects
   ownership: managed
 
+# No per-project YAML is required. Runtime defaults apply to all Server projects.
+managedProjects:
+  checkoutDirectory: /var/lib/codex-worker/checkouts
+  codex:
+    instructionsFile: AGENTS.md
+  validation:
+    commands: []
+  worker:
+    maxParallelTasks: 1
+
 telegram:
   enabled: false
 

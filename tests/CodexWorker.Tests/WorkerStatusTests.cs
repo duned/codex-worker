@@ -212,7 +212,7 @@ public sealed class WorkerStatusTests
     public async Task InvalidConfiguredPolicyIsReportedWithoutLeakingConfigurationContents()
     {
         using var fixture = new StatusFixture();
-        fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: managed\nserver:\n  enabled: true\n  url: https://server.example\n");
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: standalone\nserver:\n  enabled: true\n  url: https://server.example\n");
         Directory.CreateDirectory(fixture.ProjectsPath);
         File.WriteAllText(Path.Combine(fixture.ProjectsPath, "invalid.yml"), "private-value: should-not-be-reported\n");
 

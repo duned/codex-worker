@@ -60,7 +60,7 @@ public sealed class WorkerHost
         if (_global.Server.Enabled && _global.Projects.Ownership == "managed")
         {
             var identityPath = _global.Server.IdentityFile ?? WorkerIdentity.DefaultPath;
-            managedConfiguration = new ManagedConfigurationSynchronizer(identityPath + ".configuration.json");
+            managedConfiguration = new ManagedConfigurationSynchronizer(identityPath + ".configuration.json", _global.ManagedProjects);
         }
         _output.Startup(configuredProjects.Count);
         foreach (var item in configuredProjects) _output.ProjectLoaded(item.Configuration.Project.Name);
@@ -111,7 +111,7 @@ public sealed class WorkerHost
             heartbeatCapabilities = discoveredCapabilities;
             if (managedConfiguration?.HasCachedSnapshot == true)
             {
-                try { _ = managedConfiguration.LoadLastValid(configuredProjects); }
+                try { _ = managedConfiguration.LoadLastValid(); }
                 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
                 {
                     managedConfiguration.RecordUnavailable(ex);
@@ -130,20 +130,20 @@ public sealed class WorkerHost
                     (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                 {
                     if (_global.Projects.Ownership != "managed") throw;
-                    configuredProjects = LoadCachedManagedConfiguration(managedConfiguration!, configuredProjects, ex);
+                    configuredProjects = LoadCachedManagedConfiguration(managedConfiguration!, ex);
                 }
                 if (managedConfiguration is not null && registered)
                 {
                     try
                     {
                         var desired = await registration.GetManagedConfigurationAsync(_global.Server, ct);
-                        configuredProjects = managedConfiguration.Apply(desired, _projects);
+                        configuredProjects = managedConfiguration.Apply(desired);
                     }
                     catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException) &&
                         (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                     {
                         managedConfiguration.RecordUnavailable(ex);
-                        configuredProjects = LoadCachedManagedConfiguration(managedConfiguration, configuredProjects, ex);
+                        configuredProjects = LoadCachedManagedConfiguration(managedConfiguration, ex);
                     }
                 }
             }
@@ -406,11 +406,10 @@ public sealed class WorkerHost
                         var registration = _registration;
                         var desired = await registration.GetManagedConfigurationAsync(_global.Server, executionToken);
                         var previousVersion = managedConfiguration!.Status.AppliedVersion;
-                        var localProjects = ProjectConfigurationDiscovery.Load(_global.Projects.Directory, allowEmpty: true);
-                        var replacement = managedConfiguration.Apply(desired, localProjects);
+                        var replacement = managedConfiguration.Apply(desired);
                         if (!string.Equals(previousVersion, desired.Version, StringComparison.Ordinal))
                         {
-                            runtimeReadModel.Registry.ReplaceConfiguration(replacement);
+                            runtimeReadModel.Registry.ReplaceConfiguration(replacement, validateExecutionResources: false);
                             runtimeReadModel.Events.Publish("configuration.synchronized", "Server-managed configuration was applied.");
                         }
                     }
@@ -794,12 +793,12 @@ public sealed class WorkerHost
 
     private IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadCachedManagedConfiguration(
         ManagedConfigurationSynchronizer synchronizer,
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> localProjects, Exception cause)
+        Exception cause)
     {
         synchronizer.RecordUnavailable(cause);
         try
         {
-            var cached = synchronizer.LoadLastValid(localProjects);
+            var cached = synchronizer.LoadLastValid();
             _output.Warning($"Codex Server configuration is unavailable; continuing with applied version {synchronizer.Status.AppliedVersion}.");
             return cached;
         }

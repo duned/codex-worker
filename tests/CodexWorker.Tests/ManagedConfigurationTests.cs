@@ -9,10 +9,10 @@ public sealed class ManagedConfigurationTests
     public void AppliesAnEmptyServerSnapshotForAColdStartWorker()
     {
         using var fixture = new Fixture();
-        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(Path.GetDirectoryName(fixture.CachePath)!, "empty-configuration.json"));
+        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(Path.GetDirectoryName(fixture.CachePath)!, "empty-configuration.json"), fixture.Runtime);
         var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
 
-        var configured = synchronizer.Apply(snapshot, []);
+        var configured = synchronizer.Apply(snapshot);
 
         Assert.Empty(configured);
         Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
@@ -22,9 +22,9 @@ public sealed class ManagedConfigurationTests
     public void InitialSnapshotIsValidatedAppliedAndReported()
     {
         using var fixture = new Fixture();
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
 
-        var applied = synchronizer.Apply(fixture.Snapshot(1), fixture.LocalProjects);
+        var applied = synchronizer.Apply(fixture.Snapshot(1));
 
         Assert.Equal("owner/repository", applied.Single().Configuration.Project.Repository);
         Assert.Equal("main", applied.Single().Configuration.Git.BaseBranch);
@@ -38,8 +38,8 @@ public sealed class ManagedConfigurationTests
     public void UpdatedSnapshotAppliesOnlyServerOwnedProjectFieldsAndAdvancesVersion()
     {
         using var fixture = new Fixture();
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
-        var initial = synchronizer.Apply(fixture.Snapshot(1), fixture.LocalProjects).Single().Configuration;
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        var initial = synchronizer.Apply(fixture.Snapshot(1)).Single().Configuration;
 
         var updatedProjects = new[]
         {
@@ -50,7 +50,7 @@ public sealed class ManagedConfigurationTests
             Version = ManagedConfigurationSynchronizer.CalculateVersion(updatedProjects),
             Projects = updatedProjects
         };
-        var updated = synchronizer.Apply(updatedSnapshot, fixture.LocalProjects).Single().Configuration;
+        var updated = synchronizer.Apply(updatedSnapshot).Single().Configuration;
 
         Assert.Equal("owner/renamed", updated.Project.Repository);
         Assert.Equal("trunk", updated.Git.BaseBranch);
@@ -63,13 +63,13 @@ public sealed class ManagedConfigurationTests
     public void UnchangedSnapshotDoesNotRewriteCacheOrChangeSuccessfulUpdateTime()
     {
         using var fixture = new Fixture();
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var desired = fixture.Snapshot(1);
-        synchronizer.Apply(desired, fixture.LocalProjects);
+        synchronizer.Apply(desired);
         var timestamp = synchronizer.Status.LastSuccessfulUpdateUtc;
         var writtenAt = File.GetLastWriteTimeUtc(fixture.CachePath);
 
-        synchronizer.Apply(desired, fixture.LocalProjects);
+        synchronizer.Apply(desired);
 
         Assert.Equal(timestamp, synchronizer.Status.LastSuccessfulUpdateUtc);
         Assert.Equal(writtenAt, File.GetLastWriteTimeUtc(fixture.CachePath));
@@ -81,13 +81,13 @@ public sealed class ManagedConfigurationTests
         using var fixture = new Fixture();
         var project = fixture.Project(1) with { Requirements = [new("runtime", "dotnet", ">=10")] };
         var desired = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
-        synchronizer.Apply(desired, fixture.LocalProjects);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(desired);
 
-        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(desired with { Version = "invalid" }, fixture.LocalProjects));
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(desired with { Version = "invalid" }));
         Assert.Equal(project.Requirements, Assert.Single(synchronizer.AppliedProjects).Requirements);
-        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath);
-        restarted.LoadLastValid(fixture.LocalProjects);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        restarted.LoadLastValid();
         Assert.Equal(project.Requirements, Assert.Single(restarted.AppliedProjects).Requirements);
     }
 
@@ -95,13 +95,13 @@ public sealed class ManagedConfigurationTests
     public void InvalidUpdateKeepsLastValidSnapshotAvailableAndReportsError()
     {
         using var fixture = new Fixture();
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var initial = fixture.Snapshot(1);
-        synchronizer.Apply(initial, fixture.LocalProjects);
+        synchronizer.Apply(initial);
         var invalid = fixture.Snapshot(2) with { Version = "incorrect-version" };
 
-        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(invalid, fixture.LocalProjects));
-        var fallback = synchronizer.LoadLastValid(fixture.LocalProjects).Single().Configuration;
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(invalid));
+        var fallback = synchronizer.LoadLastValid().Single().Configuration;
 
         Assert.Equal("owner/repository", fallback.Project.Repository);
         Assert.Equal(initial.Version, synchronizer.Status.AppliedVersion);
@@ -114,13 +114,13 @@ public sealed class ManagedConfigurationTests
     public void TemporaryServerLossPreservesAppliedConfigurationAcrossRestart()
     {
         using var fixture = new Fixture();
-        var firstProcess = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var firstProcess = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var snapshot = fixture.Snapshot(1);
-        firstProcess.Apply(snapshot, fixture.LocalProjects);
+        firstProcess.Apply(snapshot);
         firstProcess.RecordUnavailable(new HttpRequestException("offline"));
 
-        var restartedProcess = new ManagedConfigurationSynchronizer(fixture.CachePath);
-        var restored = restartedProcess.LoadLastValid(fixture.LocalProjects).Single().Configuration;
+        var restartedProcess = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        var restored = restartedProcess.LoadLastValid().Single().Configuration;
 
         Assert.Equal(snapshot.Version, restartedProcess.Status.AppliedVersion);
         Assert.Equal("cached", restartedProcess.Status.SynchronizationStatus);
@@ -145,45 +145,84 @@ public sealed class ManagedConfigurationTests
         var disabledProject = fixture.Project(2) with { Enabled = false };
         var snapshot = new ServerManagedConfigurationContract(1,
             ManagedConfigurationSynchronizer.CalculateVersion([disabledProject]), [disabledProject]);
-        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath);
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
-        synchronizer.Apply(snapshot, fixture.LocalProjects);
+        synchronizer.Apply(snapshot);
         var stored = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(fixture.CachePath), jsonOptions);
-        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath);
-        restarted.LoadLastValid(fixture.LocalProjects);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        restarted.LoadLastValid();
         var restored = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(fixture.CachePath), jsonOptions);
 
         Assert.False(Assert.Single(stored!.Projects).Enabled);
         Assert.False(Assert.Single(restored!.Projects).Enabled);
     }
 
+    [Fact]
+    public void ColdStartAcceptsServerProjectWithoutYamlCheckoutOrInstructions()
+    {
+        using var fixture = new Fixture();
+        fixture.Runtime.Worker.MaxParallelTasks = 3;
+        fixture.Runtime.Validation.Commands = ["dotnet test"];
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+
+        var applied = Assert.Single(synchronizer.Apply(fixture.Snapshot(1)));
+
+        Assert.Equal("Repository", applied.Configuration.Project.Name);
+        Assert.Equal("owner/repository", applied.Configuration.Project.Repository);
+        Assert.Equal(3, applied.Configuration.Worker.MaxParallelTasks);
+        Assert.Equal(["dotnet test"], applied.Configuration.Validation.Commands);
+        Assert.Equal(Path.Combine(applied.Configuration.Project.Directory, "AGENTS.md"), applied.Configuration.Codex.InstructionsFile);
+        Assert.False(Directory.Exists(applied.Configuration.Project.Directory));
+        Assert.False(File.Exists(applied.Path));
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        Assert.Equal(applied.Configuration.Project.Directory, Assert.Single(restarted.LoadLastValid()).Configuration.Project.Directory);
+    }
+
+    [Fact]
+    public void RenameAndRevisionRetainCheckoutIdentityAndServerLifecycle()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        var initial = Assert.Single(synchronizer.Apply(fixture.Snapshot(1)));
+        var project = fixture.Project(2) with { Name = "Renamed", Enabled = false, Requirements = [new("runtime", "dotnet", ">=10")] };
+        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+
+        var updated = Assert.Single(synchronizer.Apply(snapshot));
+
+        Assert.Equal("Renamed", updated.Configuration.Project.Name);
+        Assert.Equal(initial.Configuration.Project.Directory, updated.Configuration.Project.Directory);
+        var registry = new ProjectRuntimeRegistry([initial]);
+        registry.ReplaceConfiguration([updated], validateExecutionResources: false);
+        Assert.Equal("Renamed", Assert.Single(registry.Snapshot()).Configuration.Project.Name);
+        Assert.Equal(project, Assert.Single(synchronizer.AppliedProjects));
+        Assert.False(Assert.Single(synchronizer.AppliedProjects).Enabled);
+    }
+
+    [Fact]
+    public void RejectsDuplicateServerIdsWithoutReplacingCache()
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(fixture.Snapshot(1));
+        var projects = new[] { fixture.Project(2), fixture.Project(2) with { Name = "Another", Repository = "owner/another" } };
+        var invalid = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
+
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(invalid));
+        Assert.Single(synchronizer.LoadLastValid());
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TemporaryDirectory _temporary = new();
-        private readonly string _checkout;
-        private readonly string _instructions;
-
         public Fixture()
         {
-            _checkout = Path.Combine(_temporary.Path, "checkout");
-            Directory.CreateDirectory(_checkout);
-            _instructions = Path.Combine(_checkout, "AGENTS.md");
-            File.WriteAllText(_instructions, "worker instructions");
             CachePath = Path.Combine(_temporary.Path, "state", "configuration.json");
-            LocalProjects =
-            [
-                (Path.Combine(_temporary.Path, "projects", "repo.yml"), new WorkerConfiguration
-                {
-                    Project = new ProjectSettings { Name = "Repository", Repository = "local/stale", Directory = _checkout },
-                    Codex = new CodexSettings { InstructionsFile = _instructions },
-                    GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" }
-                })
-            ];
+            Runtime = new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(_temporary.Path, "checkouts") };
         }
 
         public string CachePath { get; }
-        public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LocalProjects { get; }
+        public ManagedProjectRuntimeSettings Runtime { get; }
         public ServerManagedConfigurationContract Snapshot(long revision)
         {
             var projects = new[] { Project(revision) };

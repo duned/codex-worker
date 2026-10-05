@@ -12,7 +12,7 @@ public sealed record WorkerConfigurationSyncStatus(string? DesiredVersion, strin
     string SynchronizationStatus, DateTimeOffset? LastSuccessfulUpdateUtc, string? Error);
 
 /// <summary>Maintains the last validated Server snapshot as an atomic, secret-free local cache.</summary>
-public sealed class ManagedConfigurationSynchronizer(string cachePath)
+public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedProjectRuntimeSettings runtime)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _cachePath = Path.GetFullPath(cachePath);
@@ -25,13 +25,12 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
     public WorkerConfigurationSyncStatus Status { get { lock (_gate) return _status; } }
     public bool HasCachedSnapshot => File.Exists(_cachePath);
 
-    public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadLastValid(
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> localProjects)
+    public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadLastValid()
     {
         if (!File.Exists(_cachePath)) throw new InvalidDataException("No previously applied Server configuration is available.");
         var snapshot = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(_cachePath), JsonOptions)
             ?? throw new InvalidDataException("The cached Server configuration is empty.");
-        var result = Apply(snapshot, localProjects, updateStatus: false);
+        var result = Apply(snapshot, updateStatus: false);
         lock (_gate) _status = _status with
         {
             AppliedVersion = snapshot.Version,
@@ -42,8 +41,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
     }
 
     public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Apply(
-        ServerManagedConfigurationContract desired,
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> localProjects) => Apply(desired, localProjects, updateStatus: true);
+        ServerManagedConfigurationContract desired) => Apply(desired, updateStatus: true);
 
     public void RecordUnavailable(Exception exception)
     {
@@ -56,22 +54,23 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
 
     private IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Apply(
         ServerManagedConfigurationContract desired,
-        IReadOnlyList<(string Path, WorkerConfiguration Configuration)> localProjects, bool updateStatus)
+        bool updateStatus)
     {
         try
         {
             ValidateSnapshot(desired);
-            var byName = localProjects.ToDictionary(project => project.Configuration.Project.Name, StringComparer.OrdinalIgnoreCase);
             var applied = new List<(string Path, WorkerConfiguration Configuration)>();
             foreach (var serverProject in desired.Projects)
             {
-                if (!byName.TryGetValue(serverProject.Name, out var local))
-                    throw new InvalidDataException($"Server project '{serverProject.Name}' has no machine-local project checkout configuration.");
-                var configuration = CloneWithServerOwnedProject(local.Configuration, serverProject);
+                // Opaque stable IDs cannot escape the Worker-owned checkout root and survive renames.
+                var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serverProject.Id))).ToLowerInvariant();
+                var directory = Path.Combine(Path.GetFullPath(runtime.CheckoutDirectory), key);
+                var configuration = MaterializeProject(runtime.CreateTemplate(directory), serverProject);
+                configuration.ResolvePaths(Path.Combine(directory, "runtime.json"));
                 configuration.Validate();
-                applied.Add((local.Path, configuration));
+                applied.Add((Path.Combine(directory, "runtime.json"), configuration));
             }
-            ProjectConfigurationDiscovery.ValidateSet(applied);
+            ProjectConfigurationDiscovery.ValidateSet(applied, validateExecutionResources: false);
             if (updateStatus)
             {
                 lock (_gate)
@@ -116,6 +115,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");
         if (snapshot.Projects.Any(project => project is null || project.Revision < 1 || !ValidProject(project)))
             throw new InvalidDataException("Server returned an invalid managed project configuration.");
+        if (snapshot.Projects.Select(project => project.Id).Distinct(StringComparer.Ordinal).Count() != snapshot.Projects.Count)
+            throw new InvalidDataException("Server returned duplicate managed project IDs.");
         var duplicate = snapshot.Projects.GroupBy(project => project.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null) throw new InvalidDataException($"Server returned duplicate managed project '{duplicate.Key}'.");
         var expected = CalculateVersion(snapshot.Projects);
@@ -170,40 +171,40 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath)
         else target.Append(value.Length).Append(':').Append(value);
     }
 
-    private static WorkerConfiguration CloneWithServerOwnedProject(WorkerConfiguration local, ServerProjectContract server)
+    private static WorkerConfiguration MaterializeProject(WorkerConfiguration defaults, ServerProjectContract server)
     {
         var clone = new WorkerConfiguration
         {
-            Project = new ProjectSettings { Name = server.Name, Repository = server.Repository, Directory = local.Project.Directory },
+            Project = new ProjectSettings { Name = server.Name, Repository = server.Repository, Directory = defaults.Project.Directory },
             Git = new GitSettings
             {
-                BaseBranch = server.DefaultBranch, FeaturePrefix = local.Git.FeaturePrefix, CompletedPrefix = local.Git.CompletedPrefix,
-                AutoMerge = local.Git.AutoMerge, PushCompletedBranch = local.Git.PushCompletedBranch,
-                DeleteLocalFeatureBranch = local.Git.DeleteLocalFeatureBranch
+                BaseBranch = server.DefaultBranch, FeaturePrefix = defaults.Git.FeaturePrefix, CompletedPrefix = defaults.Git.CompletedPrefix,
+                AutoMerge = defaults.Git.AutoMerge, PushCompletedBranch = defaults.Git.PushCompletedBranch,
+                DeleteLocalFeatureBranch = defaults.Git.DeleteLocalFeatureBranch
             },
             GitHub = new GitHubSettings
             {
-                ReadyLabel = local.GitHub.ReadyLabel, WorkingLabel = local.GitHub.WorkingLabel,
-                BlockedLabel = local.GitHub.BlockedLabel, FailedLabel = local.GitHub.FailedLabel,
-                IntegrationConflictLabel = local.GitHub.IntegrationConflictLabel,
-                IntegrationRecoveryLabel = local.GitHub.IntegrationRecoveryLabel, DoneLabel = local.GitHub.DoneLabel
+                ReadyLabel = defaults.GitHub.ReadyLabel, WorkingLabel = defaults.GitHub.WorkingLabel,
+                BlockedLabel = defaults.GitHub.BlockedLabel, FailedLabel = defaults.GitHub.FailedLabel,
+                IntegrationConflictLabel = defaults.GitHub.IntegrationConflictLabel,
+                IntegrationRecoveryLabel = defaults.GitHub.IntegrationRecoveryLabel, DoneLabel = defaults.GitHub.DoneLabel
             },
             Codex = new CodexSettings
             {
-                InstructionsFile = local.Codex.InstructionsFile, Model = local.Codex.Model,
-                ReasoningEffort = local.Codex.ReasoningEffort, TimeoutMinutes = local.Codex.TimeoutMinutes
+                InstructionsFile = defaults.Codex.InstructionsFile, Model = defaults.Codex.Model,
+                ReasoningEffort = defaults.Codex.ReasoningEffort, TimeoutMinutes = defaults.Codex.TimeoutMinutes
             },
             Validation = new ValidationSettings
             {
-                Commands = [.. local.Validation.Commands], TimeoutSeconds = local.Validation.TimeoutSeconds,
-                MaxFixAttempts = local.Validation.MaxFixAttempts
+                Commands = [.. defaults.Validation.Commands], TimeoutSeconds = defaults.Validation.TimeoutSeconds,
+                MaxFixAttempts = defaults.Validation.MaxFixAttempts
             },
-            Environment = local.Environment,
+            Environment = new ProjectEnvironmentSettings { File = defaults.Environment.File, Variables = defaults.Environment.Variables },
             Worker = new WorkerSettings
             {
-                GitTimeoutSeconds = local.Worker.GitTimeoutSeconds, GitHubTimeoutSeconds = local.Worker.GitHubTimeoutSeconds,
-                MaxParallelTasks = local.Worker.MaxParallelTasks, RetryMode = local.Worker.RetryMode,
-                RecoveryRetentionDays = local.Worker.RecoveryRetentionDays
+                GitTimeoutSeconds = defaults.Worker.GitTimeoutSeconds, GitHubTimeoutSeconds = defaults.Worker.GitHubTimeoutSeconds,
+                MaxParallelTasks = defaults.Worker.MaxParallelTasks, RetryMode = defaults.Worker.RetryMode,
+                RecoveryRetentionDays = defaults.Worker.RecoveryRetentionDays
             }
         };
         return clone;

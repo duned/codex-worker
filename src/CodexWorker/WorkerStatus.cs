@@ -48,7 +48,7 @@ public static class WorkerStatusReporter
         try
         {
             configuration = GlobalWorkerConfiguration.Load(fullPath);
-            projects = ProjectConfigurationDiscovery.Load(configuration.Projects.Directory,
+            projects = configuration.Projects.Ownership == "managed" ? [] : ProjectConfigurationDiscovery.Load(configuration.Projects.Directory,
                 allowEmpty: true,
                 validateExecutionResources: false);
         }
