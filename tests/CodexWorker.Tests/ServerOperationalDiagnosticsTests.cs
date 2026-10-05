@@ -147,6 +147,8 @@ public sealed class ServerOperationalDiagnosticsTests
 
     private sealed class BlockedIssueReads : IServerGitHubReadService
     {
+        public Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project, GitHubIssueDiscoveryQuery query,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<ManagedGitHubIssue>> ListIssuesAsync(CentralProject project, GitHubIssueQuery query, CancellationToken cancellationToken = default) =>
