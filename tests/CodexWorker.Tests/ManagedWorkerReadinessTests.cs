@@ -5,6 +5,7 @@ using CodexWorker;
 
 namespace CodexWorker.Tests;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class ManagedWorkerReadinessTests
 {
     [Theory]
@@ -29,7 +30,7 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Empty(projects);
         var host = new WorkerHost(configuration, projects, new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
-            agentAuthentication: provider);
+            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -65,7 +66,7 @@ public sealed class ManagedWorkerReadinessTests
         };
         var host = new WorkerHost(configuration, [("project.yml", project)], new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(provisioningDiscovery: discovery, capabilityDiscovery: capabilities),
-            agentAuthentication: provider);
+            agentAuthentication: provider, executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
 
         // This checkout cannot complete its safety checks yet. Missing node authentication
         // must leave the control loop available for provisioning rather than fail startup.
@@ -156,7 +157,8 @@ public sealed class ManagedWorkerReadinessTests
             Api = new() { Enabled = false }
         };
         var host = new WorkerHost(configuration, [], new WorkerConsole(new StringWriter(), interactive: false),
-            registrationClient: new WorkerRegistrationClient(client, discovery, capabilities), agentAuthentication: provider);
+            registrationClient: new WorkerRegistrationClient(client, discovery, capabilities), agentAuthentication: provider,
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
@@ -167,9 +169,11 @@ public sealed class ManagedWorkerReadinessTests
     }
 
     [Fact]
-    public async Task ColdStartWithServerProjectAndNoLocalYamlStaysOnlineWithProjectUnavailable()
+    public async Task ColdStartWithServerProjectAndNoLocalYamlIsEligibleWithoutMaterialization()
     {
+        if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
+        temporary.EnableProjectProbes();
         using var stop = new CancellationTokenSource();
         using var output = new StopOnStartedWriter(stop);
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
@@ -179,11 +183,20 @@ public sealed class ManagedWorkerReadinessTests
             IdentityFile = Path.Combine(temporary.Path, "identity") };
         await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
         await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
-        using var handler = new Handler((request, _) => Task.FromResult(
-            request.RequestUri?.AbsolutePath.EndsWith("/configuration", StringComparison.Ordinal) == true
-                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) }
-                : new HttpResponseMessage(request.RequestUri?.AbsolutePath.EndsWith("/request", StringComparison.Ordinal) == true
-                    ? HttpStatusCode.NoContent : HttpStatusCode.OK)));
+        var ready = false;
+        using var handler = new Handler(async (request, token) =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/configuration", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) };
+            if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat"))
+                    .ReadFromJsonAsync<WorkerHeartbeatContract>(token);
+                ready |= heartbeat?.LifecycleState == "running";
+            }
+            return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+        });
         using var client = new HttpClient(handler);
         var discovery = new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0")));
         var capabilities = new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")));
@@ -196,13 +209,15 @@ public sealed class ManagedWorkerReadinessTests
         var host = new WorkerHost(global, ProjectConfigurationDiscovery.LoadForWorker(global),
             new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
-            agentAuthentication: new TestProvider { Available = true });
+            agentAuthentication: new TestProvider { Available = true },
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Contains("Worker started.", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("Central", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("unavailable", output.ToString(), StringComparison.Ordinal);
+        Assert.True(ready);
+        Assert.DoesNotContain("not materialized", output.ToString(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
         var cached = new ManagedConfigurationSynchronizer(settings.IdentityFile + ".configuration.json", global.ManagedProjects);
         Assert.Equal("Central", Assert.Single(cached.LoadLastValid()).Configuration.Project.Name);
     }
@@ -212,7 +227,9 @@ public sealed class ManagedWorkerReadinessTests
     [InlineData(true)]
     public async Task UnmaterializedCatalogSurvivesRestartOutageAndReconnect(bool hasProject)
     {
+        if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
+        temporary.EnableProjectProbes();
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         ServerProjectContract[] projects = hasProject ? [project] : [];
@@ -243,7 +260,6 @@ public sealed class ManagedWorkerReadinessTests
             using var handler = new Handler(async (request, token) =>
             {
                 var path = request.RequestUri?.AbsolutePath ?? "";
-                Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
                 if (offline) throw new HttpRequestException("Server offline");
                 if (path.EndsWith("/configuration", StringComparison.Ordinal))
                     return new(HttpStatusCode.OK) { Content = JsonContent.Create(snapshot) };
@@ -258,6 +274,8 @@ public sealed class ManagedWorkerReadinessTests
                 }
                 if (path.EndsWith("/provisioning/request", StringComparison.Ordinal))
                     Interlocked.Increment(ref provisioningRequests);
+                if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(false, null)) };
                 return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
             });
             using var client = new HttpClient(handler);
@@ -266,7 +284,8 @@ public sealed class ManagedWorkerReadinessTests
             var host = new WorkerHost(global, ProjectConfigurationDiscovery.LoadForWorker(global),
                 new WorkerConsole(output, interactive: false),
                 registrationClient: new WorkerRegistrationClient(client, discovery, capabilities),
-                agentAuthentication: new TestProvider { Available = true });
+                agentAuthentication: new TestProvider { Available = true },
+                executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
             var run = host.RunAsync(stop.Token);
             try
             {
@@ -274,16 +293,16 @@ public sealed class ManagedWorkerReadinessTests
                 Assert.False(run.IsCompleted);
                 var status = await management.GetFromJsonAsync<WorkerStatus>("/api/status");
                 Assert.NotNull(status);
-                Assert.Equal(hasProject || offline ? "not-ready" : "running", status.State);
+                Assert.Equal(offline ? "not-ready" : "running", status.State);
                 Assert.Equal(hasProject ? 1 : 0, status.ConfiguredProjectCount);
-                Assert.Equal(0, status.EnabledProjectCount);
+                Assert.Equal(hasProject ? 1 : 0, status.EnabledProjectCount);
                 var runtimeProjects = await management.GetFromJsonAsync<ProjectRuntimeInfo[]>("/api/projects");
                 Assert.NotNull(runtimeProjects);
                 if (hasProject)
                 {
                     var runtime = Assert.Single(runtimeProjects);
-                    Assert.Equal("Unavailable", runtime.State);
-                    Assert.Contains("not materialized", runtime.UnavailableReason ?? "", StringComparison.Ordinal);
+                    Assert.Equal("Enabled", runtime.State);
+                    Assert.Null(runtime.UnavailableReason);
                 }
                 else Assert.Empty(runtimeProjects);
                 Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
@@ -304,7 +323,9 @@ public sealed class ManagedWorkerReadinessTests
     [Fact]
     public async Task CachedUnmaterializedProjectReconnectsWithoutRestartOrAssignment()
     {
+        if (!OperatingSystem.IsLinux()) return;
         using var temporary = new TemporaryDirectory();
+        temporary.EnableProjectProbes();
         using var stop = new CancellationTokenSource();
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
@@ -326,7 +347,6 @@ public sealed class ManagedWorkerReadinessTests
         using var handler = new Handler(async (request, token) =>
         {
             var path = request.RequestUri?.AbsolutePath ?? "";
-            Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
             if (path.EndsWith("/configuration", StringComparison.Ordinal))
             {
                 if (++requests <= 2) throw new HttpRequestException("Server offline");
@@ -340,11 +360,13 @@ public sealed class ManagedWorkerReadinessTests
                 cachedHeartbeat |= heartbeat.ConfigurationSynchronization == "unavailable";
                 if (requests >= 3 && heartbeat.ConfigurationSynchronization == "synchronized")
                 {
-                    Assert.Equal("not-ready", heartbeat.LifecycleState);
+                    Assert.Equal("running", heartbeat.LifecycleState);
                     reconnected = true;
                     stop.Cancel();
                 }
             }
+            if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(false, null)) };
             return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
         });
         using var client = new HttpClient(handler);
@@ -353,7 +375,8 @@ public sealed class ManagedWorkerReadinessTests
             registrationClient: new WorkerRegistrationClient(client,
                 new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
                 new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
-            agentAuthentication: new TestProvider { Available = true });
+            agentAuthentication: new TestProvider { Available = true },
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
         try
         {
             await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
@@ -362,6 +385,89 @@ public sealed class ManagedWorkerReadinessTests
             Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
         }
         finally { stop.Cancel(); }
+    }
+
+    [Theory]
+    [InlineData("materialization")]
+    [InlineData("snapshot-stale")]
+    [InlineData("execution-stale")]
+    public async Task AssignmentWithNoCheckoutHasBoundedPreparationOutcome(string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var temporary = new TemporaryDirectory();
+        temporary.EnableProjectProbes();
+        using var stop = new CancellationTokenSource();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "identity") };
+        var workerId = await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var project = new ServerProjectContract("opaque-central-id", "Central", "owner/repo", "main", "", [], 1,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var global = new GlobalWorkerConfiguration
+        {
+            Server = settings, Projects = new() { Ownership = "managed" },
+            ManagedProjects = new() { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") },
+            Api = new() { Enabled = false }
+        };
+        var assigned = false;
+        var reported = new TaskCompletionSource<WorkerExecutionReportContract>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new Handler(async (request, token) =>
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            if (path.EndsWith("/configuration", StringComparison.Ordinal))
+            {
+                var current = assigned && scenario == "execution-stale" ? project with { Revision = 2 } : project;
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(1,
+                    ManagedConfigurationSynchronizer.CalculateVersion([current]), [current])) };
+            }
+            if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
+            {
+                Assert.False(Directory.Exists(global.ManagedProjects.CheckoutDirectory));
+                var capacity = await (request.Content ?? throw new InvalidDataException("Missing request"))
+                    .ReadFromJsonAsync<WorkerAssignmentRequestContract>(token);
+                Assert.NotNull(capacity);
+                Assert.Equal(1, capacity.ProjectCapacities[project.Id]);
+                Assert.False(assigned);
+                assigned = true;
+                var now = DateTimeOffset.UtcNow;
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new WorkerAssignmentResponseContract(true,
+                    new("assignment", "execution", scenario == "snapshot-stale" ? project with { Revision = 2 } : project,
+                        new("github-issue", "17"), workerId, new Dictionary<string, string>(),
+                        new("execution", workerId, 1, now, now.AddMinutes(15), "Active", 60)))) };
+            }
+            if (path.EndsWith("/report", StringComparison.Ordinal))
+            {
+                var report = await (request.Content ?? throw new InvalidDataException("Missing report"))
+                    .ReadFromJsonAsync<WorkerExecutionReportContract>(token);
+                reported.TrySetResult(report ?? throw new InvalidDataException("Missing report"));
+            }
+            return new(path.EndsWith("/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
+        });
+        using var client = new HttpClient(handler);
+        var host = new WorkerHost(global, [], new WorkerConsole(new StringWriter(), interactive: false),
+            registrationClient: new WorkerRegistrationClient(client,
+                new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
+                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
+            agentAuthentication: new TestProvider { Available = true },
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
+        var run = host.RunAsync(stop.Token);
+        try
+        {
+            var report = await reported.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(run.IsCompleted);
+            Assert.Equal("Failed", report.State);
+            Assert.Equal(1, report.Generation);
+            Assert.False(report.Recoverable);
+            Assert.Contains(scenario == "materialization" ? "clone unavailable" : "revision changed",
+                report.Summary, StringComparison.OrdinalIgnoreCase);
+            Assert.False(Directory.Exists(Path.Combine(global.ManagedProjects.CheckoutDirectory,
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(project.Id))).ToLowerInvariant())));
+        }
+        finally
+        {
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(15));
+        }
     }
 
     private sealed class AdvancingClock : TimeProvider
@@ -474,7 +580,24 @@ public sealed class ManagedWorkerReadinessTests
     private sealed class TemporaryDirectory : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "managed-readiness-" + Guid.NewGuid().ToString("N"));
+        private string? _previousPath;
         public TemporaryDirectory() => Directory.CreateDirectory(Path);
-        public void Dispose() => Directory.Delete(Path, recursive: true);
+        public void EnableProjectProbes()
+        {
+            if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+            var bin = System.IO.Path.Combine(Path, "bin");
+            Directory.CreateDirectory(bin);
+            File.WriteAllText(System.IO.Path.Combine(bin, "git"), "#!/bin/sh\nif [ \"$1\" = ls-remote ]; then exit 0; fi\necho 'clone unavailable' >&2\nexit 1\n");
+            File.WriteAllText(System.IO.Path.Combine(bin, "gh"), "#!/bin/sh\nif [ \"$1\" = api ]; then echo '{\"push\":true}'; else echo '[]'; fi\n");
+            foreach (var executable in new[] { "git", "gh" })
+                File.SetUnixFileMode(System.IO.Path.Combine(bin, executable), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            _previousPath = Environment.GetEnvironmentVariable("PATH");
+            Environment.SetEnvironmentVariable("PATH", bin + ":" + _previousPath);
+        }
+        public void Dispose()
+        {
+            if (_previousPath is not null) Environment.SetEnvironmentVariable("PATH", _previousPath);
+            Directory.Delete(Path, recursive: true);
+        }
     }
 }

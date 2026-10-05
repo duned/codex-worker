@@ -64,12 +64,14 @@ public sealed class WorkerRegistrationTests
             Project = new ProjectSettings { Name = "Compiler Tools", Repository = "owner/compiler", Directory = "/tmp/compiler" },
             Git = new GitSettings { BaseBranch = "main" }
         };
-        var known = new ServerProjectContract("compiler-tools", "Compiler Tools", "owner/compiler", "main", "untrusted description", [], 2, now, now);
+        var known = new ServerProjectContract("opaque-central-id", "Compiler Tools", "owner/compiler", "main", "untrusted description", [], 2, now, now);
 
-        Assert.True(WorkerHost.MatchesServerProject(configuration, known));
-        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { Repository = "attacker/repository" }));
-        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { DefaultBranch = "attacker-branch" }));
-        Assert.False(WorkerHost.MatchesServerProject(configuration, known with { Id = "other-project" }));
+        Assert.True(WorkerHost.MatchesManagedProject(configuration, known, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Repository = "attacker/repository" }, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { DefaultBranch = "attacker-branch" }, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Id = "other-project" }, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Revision = 3 }, [known]));
+        Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Requirements = [new("tool", "docker")] }, [known]));
     }
 
     [Fact]

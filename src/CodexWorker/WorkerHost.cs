@@ -13,14 +13,17 @@ public sealed class WorkerHost
     private readonly ProcessRunner _runner = new();
     private readonly WorkerRegistrationClient _registration;
     private readonly IAgentAuthenticationProvider? _agentAuthentication;
+    private readonly string? _executionHistoryPath;
 
     public WorkerHost(GlobalWorkerConfiguration global,
         IReadOnlyList<(string Path, WorkerConfiguration Configuration)> projects, WorkerConsole? output = null,
         TimeProvider? timeProvider = null, Action<string>? operationalLog = null,
-        WorkerRegistrationClient? registrationClient = null, IAgentAuthenticationProvider? agentAuthentication = null)
+        WorkerRegistrationClient? registrationClient = null, IAgentAuthenticationProvider? agentAuthentication = null,
+        string? executionHistoryPath = null)
     {
         _registration = registrationClient ?? new WorkerRegistrationClient();
         _agentAuthentication = agentAuthentication;
+        _executionHistoryPath = executionHistoryPath;
         _global = global;
         _projects = projects;
         _output = output ?? new WorkerConsole();
@@ -160,7 +163,7 @@ public sealed class WorkerHost
                     () => managedConfiguration?.Status, _registration);
                 heartbeat.Start();
             }
-            history = new ExecutionHistoryStore();
+            history = new ExecutionHistoryStore(_executionHistoryPath);
             if (_global.Server.Enabled)
             {
                 foreach (var entry in await history.ReadAllAsync(ct))
@@ -194,6 +197,9 @@ public sealed class WorkerHost
             }
 
             var managed = _global.Server.Enabled && _global.Projects.Ownership == "managed";
+            string ServerProjectId(string name) => managedConfiguration?.AppliedProjects.FirstOrDefault(project =>
+                string.Equals(project.Name, name, StringComparison.OrdinalIgnoreCase))?.Id ?? throw new WorkerInfrastructureException($"Managed project '{name}' has no authoritative Server identity.");
+
             if (_global.Server.Enabled)
             {
                 var registration = _registration;
@@ -217,13 +223,7 @@ public sealed class WorkerHost
             async Task InitializeProjectsAsync(CancellationToken token)
             {
                 var pendingProjects = runtimes.Where(project => !validatedConfigurations.Contains(project.Configuration)).ToArray();
-                foreach (var project in pendingProjects.Where(project => managed && !Directory.Exists(project.Configuration.Project.Directory)))
-                {
-                    const string reason = "Managed checkout is not materialized; project execution is unavailable.";
-                    runtimeReadModel.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
-                    _output.Warning($"Project '{project.Configuration.Project.Name}' is unavailable: {reason}");
-                }
-                var startupPlans = pendingProjects.Where(project => !managed || Directory.Exists(project.Configuration.Project.Directory))
+                var startupPlans = pendingProjects
                     .Select(project => new ProjectStartupPlan(
                     project.Path,
                     project.Configuration.Project.Name,
@@ -333,7 +333,7 @@ public sealed class WorkerHost
                     foreach (var project in runtimes.Where(project => validatedConfigurations.Contains(project.Configuration)))
                     {
                         var definition = managedConfiguration.AppliedProjects.FirstOrDefault(item =>
-                            MatchesServerProject(project.Configuration, item));
+                            MatchesManagedProject(project.Configuration, item, managedConfiguration.AppliedProjects));
                         if (definition is null) continue;
                         var eligibility = CapabilityEligibility.Evaluate(CapabilityEligibility.ForProject(definition.Requirements, definition.Repository),
                             heartbeatCapabilities, inventory);
@@ -573,17 +573,26 @@ public sealed class WorkerHost
                         if (!assignmentResponse.HasWork || assignmentResponse.Assignment is null)
                             throw new WorkerInfrastructureException("Codex Server returned an inconsistent assignment response; remote assignment state may be uncertain.");
                         var assignment = assignmentResponse.Assignment!;
-                        var assignedProject = runtimes.FirstOrDefault(candidate => MatchesServerProject(candidate.Configuration, assignment.Project));
-                        if (assignedProject is null)
-                        {
-                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
-                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
-                        }
                         if (assignment.Lease is not { State: "Active", Generation: > 0 } lease ||
                             lease.ExpiresAtUtc <= lease.AcquiredAtUtc || lease.RenewalIntervalSeconds is < 10 or > 3600 ||
                             lease.RenewalIntervalSeconds * 3 >= (lease.ExpiresAtUtc - lease.AcquiredAtUtc).TotalSeconds ||
                             lease.ExecutionId != assignment.ServerExecutionId || lease.WorkerId != assignment.WorkerId)
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} has no valid active ownership lease.");
+                        var assignedProject = runtimes.FirstOrDefault(candidate => MatchesManagedProject(candidate.Configuration, assignment.Project, managedConfiguration!.AppliedProjects));
+                        if (assignedProject is null)
+                        {
+                            var previousDefinition = managedConfiguration!.AppliedProjects.FirstOrDefault(item => item.Id == assignment.Project.Id);
+                            var previousRuntime = runtimes.FirstOrDefault(item => item.Configuration.Project.Name == previousDefinition?.Name);
+                            if (previousRuntime is not null)
+                            {
+                                await RejectIncompatibleAssignmentAsync(assignment, previousRuntime.Configuration, history,
+                                    "Managed project revision changed since configuration synchronization; assignment refused.", executionToken);
+                                nextManagedConfigurationSync = DateTimeOffset.MinValue;
+                                break;
+                            }
+                            runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
+                            throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
+                        }
                         var assignmentEligibility = CapabilityEligibility.Evaluate(
                             CapabilityEligibility.ForProject(assignment.Project.Requirements, assignment.Project.Repository), heartbeatCapabilities, await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken));
                         if (!assignmentEligibility.IsEligible)
@@ -607,9 +616,10 @@ public sealed class WorkerHost
                         var leaseRenewal = RenewLeaseWhileActiveAsync(lease, leaseStop);
                         try
                         {
-                            if (!preparedConfigurations.Contains(assignedProject.Configuration))
+                            try
                             {
-                                try
+                                await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
+                                if (!preparedConfigurations.Contains(assignedProject.Configuration))
                                 {
                                     await assignedProject.RepositoryGate.WaitAsync(leaseStop.Token);
                                     try { await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token); }
@@ -624,20 +634,22 @@ public sealed class WorkerHost
                                         throw new IssuePreparationRejectedException(unavailable.UnavailableReason ?? "Project recovery requires inspection.");
                                     preparedConfigurations.Add(assignedProject.Configuration);
                                 }
-                                catch (Exception ex) when (!leaseStop.IsCancellationRequested)
-                                {
-                                    var reason = "Managed project preparation failed: " + FailureDiagnosticRedactor.Redact(
-                                        ex.Message, assignedProject.Configuration.Environment.Variables.Values.ToArray());
-                                    if (reason.Length > 1000) reason = reason[..1000];
-                                    await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
-                                    runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
-                                    runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
-                                    leaseStop.Cancel();
-                                    try { await leaseRenewal; } catch (OperationCanceledException) { }
-                                    leaseStop.Dispose();
-                                    runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
-                                    continue;
-                                }
+                                await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
+                            }
+                            catch (Exception ex) when (!leaseStop.IsCancellationRequested)
+                            {
+                                var reason = "Managed project preparation failed: " + FailureDiagnosticRedactor.Redact(
+                                    ex.Message, assignedProject.Configuration.Environment.Variables.Values.ToArray());
+                                if (reason.Length > 1000) reason = reason[..1000];
+                                await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
+                                runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);
+                                runtimeReadModel.Events.Publish("project.unavailable", reason, assignedProject.Configuration.Project.Name);
+                                leaseStop.Cancel();
+                                try { await leaseRenewal; } catch (OperationCanceledException) { }
+                                leaseStop.Dispose();
+                                runtimeReadModel.Registry.Release(assignedProject.Configuration.Project.Name);
+                                nextManagedConfigurationSync = DateTimeOffset.MinValue;
+                                continue;
                             }
                             assignedExecution = await assignedProject.Worker.ClaimAssignedAsync(assignment, leaseStop.Token);
                         }
@@ -928,18 +940,24 @@ public sealed class WorkerHost
         }
     }
 
-    private static string ServerProjectId(string name)
+    private async Task VerifyAssignmentRevisionAsync(WorkerAssignmentContract assignment, CancellationToken token)
     {
-        var id = new string(name.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
-        if (id.Length == 0) id = "project-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name)))[..12].ToLowerInvariant();
-        return id.Length > 80 ? id[..80].TrimEnd('-') : id;
+        var current = await _registration.GetManagedConfigurationAsync(_global.Server, token);
+        if (current.ContractVersion != 1 ||
+            !SameProjectRevision(assignment.Project, current.Projects.FirstOrDefault(project => project.Id == assignment.Project.Id)))
+            throw new IssuePreparationRejectedException("Managed project revision changed or was removed after assignment; execution refused.");
     }
 
-    internal static bool MatchesServerProject(WorkerConfiguration configuration, ServerProjectContract project) =>
-        string.Equals(ServerProjectId(configuration.Project.Name), project.Id, StringComparison.Ordinal) &&
-        string.Equals(configuration.Project.Name, project.Name, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(configuration.Project.Repository, project.Repository, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(configuration.Git.BaseBranch, project.DefaultBranch, StringComparison.Ordinal);
+    internal static bool SameProjectRevision(ServerProjectContract assigned, ServerProjectContract? current) =>
+        current is not null && assigned.Revision == current.Revision &&
+        ManagedConfigurationSynchronizer.CalculateVersion([assigned]) == ManagedConfigurationSynchronizer.CalculateVersion([current]);
+
+    internal static bool MatchesManagedProject(WorkerConfiguration configuration, ServerProjectContract assigned,
+        IReadOnlyList<ServerProjectContract> applied) =>
+        SameProjectRevision(assigned, applied.FirstOrDefault(project => project.Id == assigned.Id)) &&
+        string.Equals(configuration.Project.Name, assigned.Name, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(configuration.Project.Repository, assigned.Repository, StringComparison.OrdinalIgnoreCase) &&
+        configuration.Git.BaseBranch == assigned.DefaultBranch;
 
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct)

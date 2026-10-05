@@ -1695,6 +1695,36 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task AssignmentReevaluatesCurrentRevisionWithoutLocalProjects()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "revision-eligibility.db"));
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Central", "team/project", "main", "", []));
+        var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "49")));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "empty worker", "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var definition = new CentralProjectDefinition("Central", project.Repository, "release", "updated", [new("tool", "docker")]);
+        var updated = await store.UpdateProjectAsync(project.Id, definition, project.Revision);
+        Assert.NotNull(updated);
+
+        Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
+        Assert.Equal("Queued", Assert.Single(await store.GetExecutionsAsync()).State);
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1,
+            [.. capabilities, new("tool", "docker")], []));
+        var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(request)).Assignment);
+
+        Assert.Equal(queued.Id, assignment.ServerExecutionId);
+        Assert.Equal(updated.Revision, assignment.Project.Revision);
+        Assert.Equal("release", assignment.Project.DefaultBranch);
+        Assert.Equal(definition.Requirements, assignment.Project.Requirements);
+        Assert.NotNull(assignment.Lease);
+    }
+
+    [Fact]
     public async Task RecoveryAssignmentsAreNodeBoundIdempotentAndExhaustedBaseDoesNotRearmAfterRestart()
     {
         using var temporary = new TemporaryDirectory();

@@ -110,8 +110,11 @@ their normal checkout and GitHub safety checks before scheduling, and an absent
 standalone checkout remains a startup configuration error.
 
 Managed Workers need no local
-project YAML or checkout at startup: the validated Server catalog is retained
-while unmaterialized projects report `Unavailable`. The control API, heartbeats,
+project YAML or checkout at startup: the validated Server catalog is retained,
+and compatible projects become eligible after read-only repository access and
+Worker readiness checks. A missing checkout does not make a managed project
+`Unavailable`; it is materialized only after assignment. Missing capabilities,
+access failures and preparation failures remain explicit blockers. The control API, heartbeats,
 capability reporting and provisioning remain online; `not-ready` describes
 execution readiness, not process failure. On Server loss, a valid cached catalog
 keeps the Worker observable but cannot authorize new assignments. Synchronization
