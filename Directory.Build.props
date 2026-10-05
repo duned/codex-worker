@@ -4,6 +4,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Current product version changes only through explicit release preparation, not roadmap/Issue numbering.
          Command-line Version overrides remain authoritative for releases. -->
-    <Version>0.20.4</Version>
+    <Version>0.20.5</Version>
   </PropertyGroup>
 </Project>
