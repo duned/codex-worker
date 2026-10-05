@@ -234,6 +234,7 @@ public static class WorkerStatusReporter
                     "Git identity is not configured for Worker execution.",
                 "configuration-required" when definition.ConfigurationDependency == LocalConfigurationDependencyKind.DockerDaemonAccess =>
                     "Docker daemon is not accessible by the Worker service account; check daemon availability and service-account access.",
+                "docker-daemon-unavailable" => "Docker is installed but the local daemon is unavailable or unhealthy.",
                 "configuration-required" => $"{definition.DisplayName} requires configuration for Worker execution.",
                 "authentication-required" => $"{definition.DisplayName} authentication is required for Worker execution.",
                 "probe-failed" => $"{definition.DisplayName} readiness could not be checked; inspect local tool and service-account access.",

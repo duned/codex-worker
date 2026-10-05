@@ -17,7 +17,7 @@ public static class WorkerProvisioning
         var readOnly = action is ProvisioningCommandAction.Detect or ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.CheckConfiguration or ProvisioningCommandAction.InspectSshKey or ProvisioningCommandAction.VerifyRepositoryAccess;
         var type = NodeGitHubSetup.Handles(request) || action is ProvisioningCommandAction.Login or ProvisioningCommandAction.Logout or ProvisioningCommandAction.CheckAuthentication ? "authentication" : "tool";
         var key = $"{type}:{request.CapabilityId}:{action}".ToLowerInvariant();
-        var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        var privileged = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure;
         if (policy.DeniedActions.Contains(key, StringComparer.OrdinalIgnoreCase))
             return new(false, $"{key} is denied by local provisioning policy.",
                 $"Remove '{key}' from worker.provisioning.deniedActions.", privileged);

@@ -163,19 +163,47 @@ the product does not add feeds, import keys or execute downloaded scripts.
 
 `docker` manages the distribution `docker.io` package, as permitted by the
 [Docker installation overview](https://docs.docker.com/engine/install/).
-The CLI version establishes installation. `docker info --format
-'{{.ServerVersion}}'` checks daemon access in the service account's Docker context;
+The CLI version establishes installation. On Linux, `docker --host
+unix:///var/run/docker.sock info --format '{{.ServerVersion}}'` checks the local
+daemon in the service account's process context;
 failed access reports configuration required, not missing authentication.
-`CheckConfiguration` repeats this read-only check without sudo. Operators must
-provide a running daemon and appropriate service-account access locally. The
-provider does not change group membership, socket permissions or daemon
-configuration, and never runs a container as a readiness probe. Package-manager
-installation success is independent of daemon readiness.
+`CheckConfiguration` repeats this read-only check without sudo.
+
+On the supported Ubuntu path, install/update also runs the root-owned
+`/usr/local/libexec/codex-provisioning-docker configure` helper. It ensures the
+`docker` group exists and appends only `codex-worker` to it when missing, preserving
+other memberships. Docker group membership grants privileged host access; this
+step requires the existing explicit elevation and node-local action allowlist.
+It never changes socket permissions or runs the Worker as root.
+
+For existing installations, use `codex-worker provision configure docker
+--allow-elevation`, with `tool:docker:configure` in
+`worker.provisioning.allowedPrivilegedActions` and provisioning enabled. The Server
+also exposes the typed Docker `Configure` action, subject to the same Worker-local
+policy. Reinstall/update the product packaging to deploy the helper and fixed
+sudo authorization before using it; no arbitrary account/group parameters are accepted.
+
+The helper checks the local Unix daemon as `codex-worker` with fresh supplementary
+groups and an isolated Docker environment. `DockerDaemonUnavailable` reports an
+unavailable daemon separately from `DockerDaemonAccessRequired`. Discovery keeps
+package installation, daemon health and authorization distinct. A successful
+membership change alone does not establish readiness.
+
+An already-running Worker retains its old supplementary groups. The helper checks
+its systemd MainPID groups and returns `DockerServiceRestartRequired` if they lack
+the Docker group. Provisioning does not restart a service holding work/leases.
+Finish the supported lifecycle by [draining active work](execution-maintenance.md), running
+`sudo systemctl restart codex-worker`, and then
+`sudo codex-worker provision check-configuration docker`. The result includes
+these refresh instructions; until its actual process can reach the daemon, the
+running Worker continues to report configuration required. Retry `configure` after
+interruption: group creation/membership are idempotent, and daemon verification is
+repeated. The provider never runs a container as a readiness probe.
 
 All new providers use the existing bounded executor, local elevation policy,
 package mutation gate, failure refresh and cancellation semantics. Uninstall
 removes the selected package without purge/autoremove or explicit data deletion;
-Docker images/volumes, configuration and unrelated .NET versions are retained.
+Docker images/volumes, configuration, service-account group memberships and unrelated .NET versions are retained.
 Package-manager dependency rules still apply (for example removing a runtime can
 remove packages that depend on it). Review local dependencies before uninstall.
 

@@ -163,6 +163,7 @@ uninstall_server() {
   remove_path "$provisioning_sudoers" 'provisioning privilege policy'
   if [[ ! -e ${test_root}/etc/sudoers.d/codex-worker-provisioning ]]; then
     remove_path "${test_root}/usr/local/libexec/codex-provisioning-codex" 'Codex provisioning helper'
+    remove_path "${test_root}/usr/local/libexec/codex-provisioning-docker" 'Docker provisioning helper'
     remove_path "${test_root}/var/cache/codex-provisioning" 'Codex provisioning cache'
   fi
   remove_path "$install_root" 'installed Server releases'

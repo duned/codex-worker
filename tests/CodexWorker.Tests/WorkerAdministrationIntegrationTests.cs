@@ -65,6 +65,11 @@ public sealed class WorkerAdministrationIntegrationTests
             var effectiveArguments = tool == "/usr/sbin/runuser" ? arguments.Skip(4).ToArray() : arguments;
             if (tool == "/usr/sbin/runuser" && (arguments.Count < 4 || arguments[2] != "--" || arguments[3] != "docker"))
                 return Task.FromException<(int, string)>(new FileNotFoundException("private-output"));
+            if (effectiveArguments[0] == "--host")
+            {
+                Assert.Equal("unix:///var/run/docker.sock", effectiveArguments[1]);
+                effectiveArguments = effectiveArguments.Skip(2).ToArray();
+            }
             if (!installed) return Task.FromException<(int, string)>(new FileNotFoundException("private-output"));
             return Task.FromResult(effectiveArguments[0] switch
             {

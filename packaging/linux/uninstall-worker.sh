@@ -171,6 +171,7 @@ uninstall_worker() {
   remove_path "${test_root}/etc/sudoers.d/codex-worker-provisioning" 'provisioning privilege policy'
   if [[ ! -e ${test_root}/etc/sudoers.d/codex-server-provisioning ]]; then
     remove_path "${test_root}/usr/local/libexec/codex-provisioning-codex" 'Codex provisioning helper'
+    remove_path "${test_root}/usr/local/libexec/codex-provisioning-docker" 'Docker provisioning helper'
     remove_path "${test_root}/var/cache/codex-provisioning" 'Codex provisioning cache'
   fi
   remove_worker_releases

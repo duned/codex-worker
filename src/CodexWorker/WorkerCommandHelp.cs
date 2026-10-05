@@ -87,7 +87,7 @@ public static class WorkerCommandHelp
             case "provision":
                 writer.WriteLine($"Usage: codex-worker provision <status|operation> {configOption} [options]");
                 writer.WriteLine("Show local policy and capability state, or run a bounded typed capability operation.");
-                writer.WriteLine("Operations: install, upgrade, uninstall, detect, check-authentication, logout, check-configuration,");
+                writer.WriteLine("Operations: install, upgrade, uninstall, configure, detect, check-authentication, logout, check-configuration,");
                 writer.WriteLine("            prepare-authentication, login, generate-ssh-key, inspect-ssh-key, remove-ssh-key,");
                 writer.WriteLine("            verify-repository-access.");
                 writer.WriteLine("Options: --json; verify-repository-access uses --repository <owner/repository>.");

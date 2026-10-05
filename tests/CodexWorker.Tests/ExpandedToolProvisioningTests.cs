@@ -83,14 +83,16 @@ public sealed class ExpandedToolProvisioningTests
         Assert.Equal(expected, state.Configuration);
         Assert.Null(state.Authentication);
         Assert.Equal(exitCode == 0, CapabilityCatalog.Ready([state]));
-        Assert.Equal(exitCode == 0 ? null : "configuration-required", state.DiagnosticCode);
+        Assert.Equal(exitCode == 0 ? null : "docker-daemon-unavailable", state.DiagnosticCode);
         Assert.DoesNotContain("private-output", JsonSerializer.Serialize(state), StringComparison.Ordinal);
         var executor = new NodeProvisioningCommandExecutor(discovery, processRunner: (tool, args, _) =>
         {
             var needsWorkerIdentity = OperatingSystem.IsLinux() && Environment.UserName != "codex-worker";
             Assert.Equal(needsWorkerIdentity ? "/usr/sbin/runuser" : "docker", tool);
-            Assert.Equal(needsWorkerIdentity ? ["-u", "codex-worker", "--", "docker", "info", "--format", "{{.ServerVersion}}"]
-                : ["info", "--format", "{{.ServerVersion}}"], args);
+            IReadOnlyList<string> localArgs = OperatingSystem.IsLinux()
+                ? ["--host", "unix:///var/run/docker.sock", "info", "--format", "{{.ServerVersion}}"]
+                : ["info", "--format", "{{.ServerVersion}}"];
+            Assert.Equal(needsWorkerIdentity ? ["-u", "codex-worker", "--", "docker", .. localArgs] : localArgs, args);
             return Task.FromResult(new ProvisioningProcessResult(exitCode,
                 exitCode == 0 ? string.Empty : "permission denied while connecting to Docker API"));
         });
@@ -149,6 +151,11 @@ public sealed class ExpandedToolProvisioningTests
         {
             calls.Add((tool, args));
             Assert.Equal("/usr/bin/sudo", tool);
+            if (args[1] == "/usr/local/libexec/codex-provisioning-docker")
+            {
+                Assert.Equal(["-n", "/usr/local/libexec/codex-provisioning-docker", "configure"], args);
+                return Task.FromResult(0);
+            }
             Assert.Equal(["-n", "/usr/bin/apt-get"], args.Take(2));
             if (args.Contains(package)) installed = args[2] != "remove";
             return Task.FromResult(0);

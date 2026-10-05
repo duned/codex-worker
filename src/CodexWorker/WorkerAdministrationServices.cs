@@ -203,7 +203,9 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
         var state = cancellationToken.IsCancellationRequested ? null :
             (await _discovery.GetAsync(cancellationToken: cancellationToken))
                 .FirstOrDefault(candidate => candidate.Id == request.CapabilityId);
-        var reason = report.Diagnostic switch
+        if (report.FailureDetail?.Code == ProvisioningFailureCode.DockerServiceRestartRequired && state is not null)
+            state = state with { Configuration = RequirementState.Required, DiagnosticCode = "docker-daemon-access-required" };
+        var reason = (request.CapabilityId == "docker" ? report.FailureDetail?.Description : null) ?? (report.Diagnostic switch
         {
             ProvisioningDiagnostic.ProcessFailed when request.CapabilityId == "docker" &&
                 request.Action == ProvisioningCommandAction.CheckConfiguration && state?.Configuration == RequirementState.Required =>
@@ -220,19 +222,19 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
             ProvisioningDiagnostic.TimedOut => "The operation exceeded its configured time limit. Capability state was re-detected.",
             ProvisioningDiagnostic.Cancelled => "The operation was cancelled. Capability state was re-detected.",
             _ => null
-        };
-        var remediation = report.Diagnostic switch
+        });
+        var remediation = (request.CapabilityId == "docker" ? report.FailureDetail?.Description : null) ?? (report.Diagnostic switch
         {
             ProvisioningDiagnostic.ProcessFailed when request.CapabilityId == "docker" &&
                 request.Action == ProvisioningCommandAction.CheckConfiguration && state?.Configuration == RequirementState.Required =>
-                "Run this check as codex-worker or through elevated local administration. Check that Docker is running and grant the codex-worker service account daemon access through your approved Docker group or authorization policy, then rerun 'codex-worker provision check-configuration docker'.",
+                "Check that Docker is running, then run the policy-authorized 'codex-worker provision configure docker --allow-elevation' and rerun 'codex-worker provision check-configuration docker'.",
             ProvisioningDiagnostic.Unsupported when IsPrivileged(request.Action) => "Run provisioning on a Debian-based Linux Worker.",
             ProvisioningDiagnostic.Unsupported when NodeGitHubSetup.Handles(request) && !OperatingSystem.IsLinux() => "Run the operation on a Linux Worker.",
             ProvisioningDiagnostic.ProcessFailed => "Resolve the local operation issue, then run 'codex-worker provision status'.",
             ProvisioningDiagnostic.Denied => "Review worker.provisioning policy settings and rerun with --allow-elevation when required.",
             ProvisioningDiagnostic.TimedOut => "Check package manager availability and rerun the operation.",
             _ => null
-        };
+        });
         return new(DisplayAction(request.Action), report.Status.ToString().ToLowerInvariant(), report.Diagnostic,
             request.CapabilityId, request.Action, reason, remediation, state, Report: report);
     }
@@ -274,7 +276,7 @@ public sealed class WorkerProvisioningAdministrationService : IWorkerProvisionin
     }
 
     private static bool IsPrivileged(ProvisioningCommandAction action) => action is ProvisioningCommandAction.Install or
-        ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure;
 
     public static string DisplayAction(ProvisioningCommandAction action) => action switch
     {

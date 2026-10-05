@@ -53,9 +53,14 @@ public sealed record NodeCapability(CapabilityDefinition Definition, CapabilityS
 internal static class DockerDaemonAccessProbe
 {
     public static (string Executable, IReadOnlyList<string> Arguments) ForCurrentProcess(string executable,
-        IReadOnlyList<string> arguments) => OperatingSystem.IsLinux() && Environment.UserName != "codex-worker"
-            ? ("/usr/sbin/runuser", ["-u", "codex-worker", "--", executable, .. arguments])
-            : (executable, arguments);
+        IReadOnlyList<string> arguments)
+    {
+        IReadOnlyList<string> localArguments = OperatingSystem.IsLinux()
+            ? ["--host", "unix:///var/run/docker.sock", .. arguments] : arguments;
+        return OperatingSystem.IsLinux() && Environment.UserName != "codex-worker"
+            ? ("/usr/sbin/runuser", ["-u", "codex-worker", "--", executable, .. localArguments])
+            : (executable, localArguments);
+    }
 }
 
 public sealed record ProvisionableNode(string Id, string Kind, string DisplayName, string Connectivity,
@@ -72,7 +77,7 @@ public static class CapabilityCatalog
             { Provides = [ProvidedToolKind.DotNetSdk, ProvidedToolKind.DotNetRuntime, ProvidedToolKind.AspNetCoreRuntime], RequiredMajorVersion = 10, RequiredForExecution = false },
         new("dotnet-runtime", ".NET 10 / ASP.NET Core Runtime", "dotnet", [], false, ["refresh", "install", "update", "uninstall"])
             { Provides = [ProvidedToolKind.DotNetRuntime, ProvidedToolKind.AspNetCoreRuntime], RequiredMajorVersion = 10, RequiredForExecution = false },
-        new("docker", "Docker", "docker", [], true, ["refresh", "install", "update", "uninstall", "checkconfiguration"])
+        new("docker", "Docker", "docker", [], true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "configure"])
             { Provides = [ProvidedToolKind.DockerEngine], ConfigurationDependency = LocalConfigurationDependencyKind.DockerDaemonAccess, RequiredForExecution = false }
     ]);
 
@@ -95,7 +100,8 @@ public static class CapabilityCatalog
         if (state.Id != definition.Id || state.Installation == InstallationState.Unknown) reasons.Add("not-detected");
         else if (state.Installation == InstallationState.Missing) reasons.Add("tool-missing");
         if (state.Health == CapabilityHealth.Error) reasons.Add("probe-failed");
-        else if (state.Health == CapabilityHealth.Degraded) reasons.Add("not-detected");
+        else if (state.Health == CapabilityHealth.Degraded) reasons.Add(state.DiagnosticCode == "docker-daemon-unavailable"
+            ? "docker-daemon-unavailable" : "not-detected");
         if (definition.RequiresAuthentication && state.Authentication != RequirementState.Satisfied)
             reasons.Add("authentication-required");
         if (definition.RequiresConfiguration && state.Configuration != RequirementState.Satisfied)
@@ -133,9 +139,9 @@ public static class CapabilityCatalog
             (state.Configuration is null || Enum.IsDefined(state.Configuration.Value)) &&
             state.Operation is not null && Enum.IsDefined(state.Operation.State) &&
             (state.DetectedVersion is null || state.DetectedVersion.Length <= 100 && Regex.IsMatch(state.DetectedVersion, @"^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]+)?$")) &&
-            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" or "configuration-required" or "docker-daemon-access-required" &&
+            state.DiagnosticCode is null or "not-detected" or "tool-missing" or "probe-failed" or "authentication-required" or "configuration-required" or "docker-daemon-access-required" or "docker-daemon-unavailable" &&
             state.Operation.DiagnosticCode is null or "operation-failed" &&
-            state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration" or "prepareauthentication" or "generatesshkey" or "inspectsshkey" or "removesshkey" or "verifyrepositoryaccess");
+            state.Operation.Action is null or "refresh" or "detect" or "ensure" or "install" or "update" or "uninstall" or "login" or "logout" or "provision" or "checkauthentication" or "checkconfiguration" or "configure" or "prepareauthentication" or "generatesshkey" or "inspectsshkey" or "removesshkey" or "verifyrepositoryaccess");
     }
 }
 
@@ -183,7 +189,8 @@ public sealed class NodeCapabilityDiscovery
                         var accessible = daemon.ExitCode == 0 && !string.IsNullOrWhiteSpace(daemon.Output);
                         var accessDenied = daemon.Output.Contains("permission denied", StringComparison.OrdinalIgnoreCase);
                         state = state with { Configuration = accessible ? RequirementState.Satisfied : RequirementState.Required,
-                            DiagnosticCode = accessible ? null : accessDenied ? "docker-daemon-access-required" : "configuration-required" };
+                            Health = accessible || accessDenied ? CapabilityHealth.Healthy : CapabilityHealth.Degraded,
+                            DiagnosticCode = accessible ? null : accessDenied ? "docker-daemon-access-required" : "docker-daemon-unavailable" };
                     }
                     if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.GitIdentity)
                     {

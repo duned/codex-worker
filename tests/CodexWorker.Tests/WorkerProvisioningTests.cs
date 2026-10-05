@@ -86,7 +86,7 @@ public sealed class WorkerProvisioningTests
         Assert.Equal(RequirementState.Required, result.Capability?.Configuration);
         Assert.Equal(ProvisioningFailureCode.DockerDaemonAccessRequired, result.Report?.FailureDetail?.Code);
         Assert.Contains("service account", result.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("grant the codex-worker", result.Remediation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("provision configure docker --allow-elevation", result.Remediation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

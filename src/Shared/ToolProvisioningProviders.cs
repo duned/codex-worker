@@ -8,6 +8,7 @@ internal sealed record ToolProvisioningStep(string Executable, IReadOnlyList<str
 /// <summary>Local product policy, never caller-supplied packages, paths or shell commands.</summary>
 internal static class ToolProvisioningProviders
 {
+    internal const string DockerHelper = "/usr/local/libexec/codex-provisioning-docker";
     internal const string CodexHelper = "/usr/local/libexec/codex-provisioning-codex";
     internal const string NpmRegistry = "https://registry.npmjs.org";
     internal static string? AptPackage(string id) => id switch
@@ -62,14 +63,22 @@ internal static class ToolProvisioningProviders
     internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action,
         bool npmAvailable = false)
     {
+        var dockerConfiguration = new ToolProvisioningStep(DockerHelper, ["configure"],
+            ProvisioningProviderStep.DockerDaemonConfiguration, RequiresElevation: true);
+        if (action == ProvisioningCommandAction.Configure)
+            return id == "docker" ? [dockerConfiguration] : throw new InvalidOperationException("Unsupported configuration provider.");
         var remove = action == ProvisioningCommandAction.Uninstall;
         if (AptPackage(id) is { } package)
-            return remove ? [Apt("remove", ProvisioningProviderStep.AptPackageRemoval, "-y", package)] :
+        {
+            List<ToolProvisioningStep> aptSteps = remove ? [Apt("remove", ProvisioningProviderStep.AptPackageRemoval, "-y", package)] :
                 [Apt("update", ProvisioningProviderStep.AptIndexRefresh),
                     Apt("install", ProvisioningProviderStep.AptPackageInstall,
                         id == "git"
                             ? ["-y", "--no-install-recommends", package, "openssh-client"]
                             : ["-y", "--no-install-recommends", package])];
+            if (id == "docker" && !remove) aptSteps.Add(dockerConfiguration);
+            return aptSteps;
+        }
         if (id != "codex-cli") throw new InvalidOperationException("Unsupported tool provider.");
         // The root-owned helper accepts only these two fixed operations. It prepares
         // the isolated npm cache and uses a readable installation umask.

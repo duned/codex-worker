@@ -18,6 +18,7 @@ public static class ProvisioningCli
             ["uninstall"] = ProvisioningCommandAction.Uninstall,
             ["check-authentication"] = ProvisioningCommandAction.CheckAuthentication,
             ["logout"] = ProvisioningCommandAction.Logout,
+            ["configure"] = ProvisioningCommandAction.Configure,
             ["check-configuration"] = ProvisioningCommandAction.CheckConfiguration,
             ["prepare-authentication"] = ProvisioningCommandAction.PrepareAuthentication,
             ["generate-ssh-key"] = ProvisioningCommandAction.GenerateSshKey,
@@ -40,7 +41,7 @@ public static class ProvisioningCli
         }
         if (!Verbs.TryGetValue(verb, out var action)) throw Usage("Unknown provisioning operation.");
         var canonical = WorkerProvisioningAdministrationService.DisplayAction(action);
-        var elevation = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        var elevation = action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure;
         writer.WriteLine($"Usage: codex-worker provision {canonical} <capability-id> [--config <path>] [--json] [--timeout-seconds 5..600]" +
             (elevation ? " --allow-elevation" : "") +
             (action == ProvisioningCommandAction.VerifyRepositoryAccess ? " --repository <owner/repository>" : ""));
@@ -95,8 +96,8 @@ public static class ProvisioningCli
                     throw Usage($"Unexpected or repeated option '{arguments[index]}'.");
             }
         }
-        if (allowElevation && action is not (ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall))
-            throw Usage("--allow-elevation is only valid for install, upgrade, and uninstall.");
+        if (allowElevation && action is not (ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure))
+            throw Usage("--allow-elevation is only valid for install, upgrade, uninstall, and configure.");
         if ((action == ProvisioningCommandAction.VerifyRepositoryAccess) != (repository is not null))
             throw Usage("verify-repository-access requires --repository <owner/repository>; other operations do not accept it.");
         if (repository is not null && !System.Text.RegularExpressions.Regex.IsMatch(repository,

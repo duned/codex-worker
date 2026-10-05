@@ -245,6 +245,11 @@ public sealed class WorkerCredentialCliTests
     private static NodeCapabilityDiscovery Discovery(bool authenticated, bool dockerDaemonAvailable = true) => new((tool, arguments, _) =>
     {
         var effectiveArguments = tool == "/usr/sbin/runuser" ? arguments.Skip(4).ToArray() : arguments;
+        if (effectiveArguments[0] == "--host")
+        {
+            Assert.Equal("unix:///var/run/docker.sock", effectiveArguments[1]);
+            effectiveArguments = effectiveArguments.Skip(2).ToArray();
+        }
         return Task.FromResult(effectiveArguments[0] switch
         {
             "--list-sdks" => (0, "10.0.100 [/usr/share/dotnet/sdk]"),

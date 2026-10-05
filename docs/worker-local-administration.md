@@ -130,7 +130,10 @@ and `uninstall` for `git`, `github-cli`, `codex-cli`, `dotnet-sdk`,
 `dotnet-runtime` and `docker` on Debian-based Linux with compatible configured
 apt sources. .NET providers require stable .NET 10 components; runtime provisioning
 includes ASP.NET Core. Docker separates installation from service-account daemon
-access (`checkconfiguration`), and requires no CLI login. Inventory also exposes
+access (`check-configuration`), and requires no CLI login. `configure docker
+--allow-elevation` reconciles the fixed service-account membership under the
+`tool:docker:configure` policy key; install/upgrade includes this step. A reported
+service-context refresh requires draining active work and restarting the Worker. Inventory also exposes
 typed provided-tool and local configuration dependency metadata. See
 [node provisioning policy](node-capabilities.md#net-and-docker-providers).
 

@@ -5,15 +5,15 @@ using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandAction>))]
-public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration, PrepareAuthentication, GenerateSshKey, InspectSshKey, RemoveSshKey, VerifyRepositoryAccess, Login }
+public enum ProvisioningCommandAction { Detect, Install, Update, Uninstall, CheckAuthentication, Logout, CheckConfiguration, PrepareAuthentication, GenerateSshKey, InspectSshKey, RemoveSshKey, VerifyRepositoryAccess, Login, Configure }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningCommandStatus>))]
 public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Cancelled, TimedOut }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
-public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions }
+public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions, DockerDaemonConfiguration }
 
 /// <summary>Safe, bounded failure context. It contains no process output or caller-controlled text.</summary>
 public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null,
@@ -35,7 +35,9 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.CapabilityDetectionFailed => "Capability detection failed.",
         ProvisioningFailureCode.PackageUnavailable => "The managed tool package is unavailable. Configure compatible node-local apt sources and refresh their indexes before retrying.",
         ProvisioningFailureCode.RepositoryAccessFailed => "Git could not read the requested repository. Check the repository identifier, network access and node credentials.",
-        ProvisioningFailureCode.DockerDaemonAccessRequired => "The Worker service account cannot access the Docker daemon. Grant the service account access through your approved Docker group or authorization policy, then rerun the configuration check.",
+        ProvisioningFailureCode.DockerDaemonAccessRequired => "The Worker service account cannot access the Docker daemon. Run 'codex-worker provision configure docker --allow-elevation' with tool:docker:configure allowlisted by local policy, then rerun the configuration check.",
+        ProvisioningFailureCode.DockerDaemonUnavailable => "Docker is installed but the local daemon is unavailable or unhealthy. Restore the Docker service, then rerun the configuration check.",
+        ProvisioningFailureCode.DockerServiceRestartRequired => "Docker daemon access is configured, but the running Worker needs a fresh service context. Drain active work, restart codex-worker.service with 'sudo systemctl restart codex-worker', then run 'codex-worker provision check-configuration docker'.",
         ProvisioningFailureCode.TimedOut => "Provisioning exceeded its configured timeout.",
         _ => "Provisioning failed."
     } + (ProviderStep is ProvisioningProviderStep.Unknown ? string.Empty : $" Provider step: {ProviderStepDescription}.");
@@ -48,6 +50,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningProviderStep.AptPackageRemoval => "remove the managed apt package",
         ProvisioningProviderStep.NpmPackageInstall => "install @openai/codex with npm",
         ProvisioningProviderStep.NpmPackageRemoval => "remove @openai/codex with npm",
+        ProvisioningProviderStep.DockerDaemonConfiguration => "configure fixed Worker Docker daemon access",
         ProvisioningProviderStep.ExecutablePermissions => "set managed tool permissions",
         _ => "run the managed provider command"
     };
@@ -96,6 +99,7 @@ public static class ProvisioningCommandProtocol
         ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli",
         ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => ToolProvisioningProviders.AptPackage(request.CapabilityId) is not null || request.CapabilityId == "codex-cli",
         ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
+        ProvisioningCommandAction.Configure => request.CapabilityId == "docker",
         ProvisioningCommandAction.CheckConfiguration => request.CapabilityId is "git" or "docker",
         ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
             ProvisioningCommandAction.RemoveSshKey or ProvisioningCommandAction.VerifyRepositoryAccess => request.CapabilityId == "git",
@@ -174,7 +178,7 @@ public sealed partial class NodeProvisioningCommandExecutor
         using var deadline = new CancellationTokenSource(remaining, _timeProvider);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         // Package-manager mutations share a gate, including Codex's runtime dependencies.
-        var mutation = command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall;
+        var mutation = command.Request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure;
         var gate = _gates.GetOrAdd(mutation ? "tools" : command.Request.CapabilityId, _ => new SemaphoreSlim(1, 1));
         var acquired = false;
         var refreshed = false;
@@ -217,7 +221,7 @@ public sealed partial class NodeProvisioningCommandExecutor
             }
             string executable;
             IReadOnlyList<string> arguments;
-            if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall)
+            if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure)
             {
                 if (!_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
                 if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
@@ -230,12 +234,18 @@ public sealed partial class NodeProvisioningCommandExecutor
                 }
                 ProvisioningProcessResult? processResult = null;
                 var failedProviderStep = ProvisioningProviderStep.Unknown;
+                var serviceRestartRequired = false;
                 foreach (var step in ToolProvisioningProviders.Plan(request.CapabilityId, request.Action,
                     request.CapabilityId == "codex-cli" && _npmAvailable()))
                 {
                     var elevate = step.RequiresElevation && !_isRoot();
                     processResult = await _run(elevate ? "/usr/bin/sudo" : step.Executable,
                         elevate ? ["-n", step.Executable, .. step.Arguments] : step.Arguments, timeout.Token);
+                    if (step.FailureStep == ProvisioningProviderStep.DockerDaemonConfiguration && processResult.ExitCode == 10)
+                    {
+                        serviceRestartRequired = true;
+                        processResult = new ProvisioningProcessResult(0);
+                    }
                     if (processResult.ExitCode != 0)
                     {
                         failedProviderStep = step.FailureStep;
@@ -247,8 +257,27 @@ public sealed partial class NodeProvisioningCommandExecutor
                 var expected = request.Action == ProvisioningCommandAction.Uninstall ? InstallationState.Missing : InstallationState.Installed;
                 var observedState = states.Single(state => state.Id == request.CapabilityId);
                 if (processResult?.ExitCode == 0 && expected == InstallationState.Installed &&
-                    (observedState.Update == UpdateState.Available || !await _discovery.VerifyManagedInstallationAsync(observedState, timeout.Token)))
+                    (request.Action != ProvisioningCommandAction.Configure && observedState.Update == UpdateState.Available || !await _discovery.VerifyManagedInstallationAsync(observedState, timeout.Token)))
                     return Failed(ProvisioningFailureCode.VerificationFailed);
+                if (request.CapabilityId == "docker" && expected == InstallationState.Installed)
+                {
+                    if (processResult is { ExitCode: not 0 } && failedProviderStep == ProvisioningProviderStep.DockerDaemonConfiguration)
+                    {
+                        var code = ClassifyDockerAccess(processResult);
+                        return Failed(code, code == ProvisioningFailureCode.ProcessExited ? processResult.ExitCode : null,
+                            code is ProvisioningFailureCode.ProcessExited or ProvisioningFailureCode.ElevationDenied
+                                ? failedProviderStep : ProvisioningProviderStep.Unknown);
+                    }
+                    if (processResult?.ExitCode == 0)
+                    {
+                        if (observedState.DiagnosticCode == "docker-daemon-unavailable")
+                            return Failed(ProvisioningFailureCode.DockerDaemonUnavailable);
+                        if (observedState.Health == CapabilityHealth.Error)
+                            return Failed(ProvisioningFailureCode.VerificationFailed);
+                        if (serviceRestartRequired || observedState.Configuration != RequirementState.Satisfied)
+                            return Failed(ProvisioningFailureCode.DockerServiceRestartRequired);
+                    }
+                }
                 var providerFailureCode = processResult is { ExitCode: not 0 }
                     ? Classify(processResult, failedProviderStep) : ProvisioningFailureCode.VerificationFailed;
                 return processResult?.ExitCode == 0 && observedState.Installation == expected && observedState.Health != CapabilityHealth.Error
@@ -359,7 +388,11 @@ public sealed partial class NodeProvisioningCommandExecutor
 
     private static ProvisioningFailureCode ClassifyDockerAccess(ProvisioningProcessResult result) =>
         result.StandardError.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
-            ? ProvisioningFailureCode.DockerDaemonAccessRequired : Classify(result);
+            ? ProvisioningFailureCode.DockerDaemonAccessRequired
+            : result.StandardError.Contains("Cannot connect", StringComparison.OrdinalIgnoreCase) ||
+              result.StandardError.Contains("connection refused", StringComparison.OrdinalIgnoreCase) ||
+              result.StandardError.Contains("docker-daemon-unavailable", StringComparison.Ordinal)
+                ? ProvisioningFailureCode.DockerDaemonUnavailable : Classify(result);
 
     private static async Task<ProvisioningProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
     {

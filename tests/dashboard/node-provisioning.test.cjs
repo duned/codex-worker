@@ -80,3 +80,11 @@ test('GitHub browser/device handoff remains node-local and exposes check and log
  assert.match(html,/gh auth login --hostname github.com/);
  assert.match(html,/node-local gh login only; provider-side scopes/);
 });
+
+test('Docker configuration is typed and requires explicit elevation',async()=>{
+ const s=setup();s.node.capabilities=[{definition:{id:'docker',displayName:'Docker'},availableActions:['configure'],state:{installation:'Installed',health:'Healthy',configuration:'Required',operation:{state:'Idle'}}}];s.run('renderNode()');
+ assert.deepEqual(s.buttons().map(b=>b.textContent),['Configure daemon access']);
+ await s.run("runNodeAction('server','docker','configure')");assert.equal(s.calls.length,0);
+ s.$('node-elevation').checked=true;await s.run("runNodeAction('server','docker','configure')");
+ assert.deepEqual(JSON.parse(s.calls[0].options.body),{nodeId:'server',capabilityId:'docker',action:'Configure',timeoutSeconds:120,allowElevation:true});
+});
