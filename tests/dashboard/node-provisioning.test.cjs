@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
-const source=html.slice(html.indexOf('// Only wire actions'),html.indexOf('async function streamWorkers'));
+const source=html.slice(html.indexOf('// Only wire actions'),html.indexOf('// One owner per page.'));
 function setup(){
  class Element{
   constructor(){this.children=[];this.value='server';this.checked=false;this.disabled=false;this.textContent=''}
