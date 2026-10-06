@@ -12,7 +12,7 @@ function setup(handler,projects=[],workers=[]){
   if(!this.controls[field]){const input=this.innerHTML.match(new RegExp('data-field="'+field+'".*?value="([^"]*)"'));
    this.controls[field]={value:field==='type'?this.innerHTML.match(/<option selected value="([^"]*)"/)?.[1]||'runtime':input?.[1]||''}}
   return this.controls[field];
- },remove(){},reset(){},reportValidity(){return true},showModal(){this.open=true},close(){this.open=false}}}
+ },focus(){},remove(){},reset(){},reportValidity(){return true},showModal(){this.open=true},close(){this.open=false}}}
  const $=id=>{if(!elements.has(id))elements.set(id,element(id));return elements.get(id)};
  const calls=[];
  const context=vm.createContext({$,projects,workers,document:{createElement:tag=>element(tag)},esc:String,encodeURIComponent,
@@ -98,4 +98,13 @@ test('successful save with unavailable Worker inventory reports unknown readines
  const s=setup(async(url,options)=>url.endsWith('/verify')?checked:{...stored,...JSON.parse(options.body)},[],null);
  s.run('newProject()');fill(s);await s.run('reviewProject()');await s.run('submitProject({preventDefault(){}})');
  assert.match(s.$('project-result').textContent,/Worker inventory is unavailable/);assert.doesNotMatch(s.$('project-result').textContent,/No Worker exists/);
+});
+
+test('project assistant shows repository, essentials and verified review one step at a time',async()=>{
+ const s=setup(async()=>checked);s.run('newProject()');
+ assert.equal(s.$('project-repository-selection').hidden,false);assert.equal(s.$('project-essentials').hidden,true);assert.equal(s.$('project-review').hidden,true);
+ s.$('project-next').onclick();assert.equal(s.$('project-essentials').hidden,true);assert.match(s.$('form-error').textContent,/repository/);
+ fill(s);s.$('project-next').onclick();assert.equal(s.$('project-repository-selection').hidden,true);assert.equal(s.$('project-essentials').hidden,false);
+ await s.run('reviewProject()');assert.equal(s.$('project-essentials').hidden,true);assert.equal(s.$('project-review').hidden,false);assert.equal(s.$('save-project').hidden,false);
+ s.$('project-back').onclick();assert.equal(s.$('project-essentials').hidden,false);assert.equal(s.$('project-review').hidden,true);assert.equal(s.$('save-project').hidden,true);
 });

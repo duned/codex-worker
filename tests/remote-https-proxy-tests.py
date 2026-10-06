@@ -142,7 +142,11 @@ def main():
                     for name in ['Authorization', 'X-Codex-Worker-Token', 'X-Worker-Credential-Token']:
                         assert upstream[name] == headers[name]
                 before = len(seen)
-                for method, path in [('GET', '/'),
+                for method, path in [('GET', '/'), ('GET', '/home'),
+                                     ('GET', '/projects/project-a?label=review'),
+                                     ('GET', '/workers/worker-a?step=preparation'),
+                                     ('GET', '/executions/request-a?offset=50'),
+                                     ('GET', '/settings/credential-a'),
                                      ('GET', '/api/v1/administration/session'),
                                      ('POST', '/api/v1/administration/session'),
                                      ('DELETE', '/api/v1/administration/session'), ('GET', '/api/v1/projects'),
@@ -200,6 +204,8 @@ def main():
                             raise
                         time.sleep(0.02)
                 assert request('GET', '/')[0] == 200
+                for path in ['/home', '/projects/project-a?label=review', '/workers/worker-a?step=preparation', '/executions/request-a?offset=50', '/settings/credential-a']:
+                    assert request('GET', path)[0] == 200
             finally:
                 process.terminate()
                 process.wait(timeout=5)

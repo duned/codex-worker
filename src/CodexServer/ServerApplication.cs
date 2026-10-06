@@ -410,7 +410,13 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException) { return Results.Json(new { error = "Credential encryption is not configured." }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
-        app.MapGet("/", () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
+        // Explicit UI routes only: protocol, API and health failures never become HTML.
+        foreach (var path in new[] { "/", "/home", "/projects", "/projects/{resourceId}",
+            "/workers", "/workers/{resourceId}", "/executions", "/executions/{resourceId}",
+            "/settings", "/settings/{resourceId}" })
+        {
+            app.MapGet(path, () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
+        }
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>
         {
             try

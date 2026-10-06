@@ -100,3 +100,60 @@ migration/rotation/recovery, automatic DNS/TLS/firewall installation, and the
 separate historical-terminal-report migration defect are deferred. Association
 preserves history; this integration does not claim to repair that reporting defect.
 No product version change or release is part of this task.
+
+
+## Sidebar and path-navigation acceptance (#263)
+
+The embedded Server shell now uses the specified sidebar, compact session header,
+centered login, Home next actions and one-current-step project/enrollment/Worker
+assistants. Canonical product links use same-origin paths and query context. The
+Server maps an explicit UI GET allowlist; the proxy retains default VPN protection
+for all shell routes. Authorization, revisions, recovery, node-local consent,
+provider scope, one polling/SSE owner and standalone Worker behavior are retained.
+
+Deterministic coverage includes actual History API push/replace/pop behavior,
+legacy-bookmark normalization, deep-link session hydration, resource/filter/offset
+context, stale read cancellation, scroll restoration, observation disclosure/focus
+retention and one-step project form behavior. API tests cover supported anonymous
+shell deep links, unknown API/protocol/health/UI paths and unsupported methods.
+Proxy tests cover both denied and management-network UI deep links.
+
+Local self-validation for this change:
+
+- `node --test --test-isolation=none tests/dashboard/*.test.cjs`: 101 passed.
+- `dotnet build CodexWorker.sln --no-restore -m:1 -p:UseSharedCompilation=false`:
+  passed with zero warnings/errors after offline restore from the package cache.
+- `dotnet test CodexWorker.sln --no-build --no-restore -m:1`: 1,512 Worker/Server
+  and 269 toolbox tests passed with local socket access. The initial sandbox run
+  was aborted because VSTest's loopback communication socket was denied.
+- `python3 tests/remote-https-proxy-tests.py`: passed with local socket access,
+  disposable nginx/TLS configuration and an HTTP stub; initially skipped by the
+  sandbox's loopback restriction.
+- HTML nesting and diff consistency checks passed. These are Codex self-checks;
+  separately configured Worker validation remains the authoritative gate.
+
+Rendered browser review remains required on a disposable test deployment. This
+execution environment has no browser executable or browser tool, so desktop,
+360px mobile, 200% zoom and representative screenshots were unavailable; DOM
+coverage does not establish visual fidelity. No operator VM or live provider
+credentials were used. Review these screens with deterministic local data:
+
+1. Login (including origin/session errors), Home with empty and configured state,
+   each sidebar selection and narrow wrapping navigation.
+2. Project and Worker lists/details, missing-resource errors and long names/IDs;
+   check primary preparation versus advanced administration and Back to list.
+3. Every project step, manual fallback, invalid advanced fields, review, revision
+   conflict and lost-save recovery; each enrollment step and authorization expiry.
+4. Each Worker preparation step with stale/missing/ready evidence and project
+   context; local consent, retained operation cancellation/reconciliation and
+   explicit activation safeguards must remain visible on their relevant step.
+5. Settings connection/credentials and expanded advanced diagnostics; keyboard
+   labels, visible focus, native dialogs, status text and long errors/public keys.
+6. Scroll a resource well below its heading, expand diagnostics and wait for
+   polling/SSE; position and focused controls must remain stable. Apply filters,
+   change steps, reload and use Back/Forward; compare resource context and scroll
+   coordinates. Navigation must never resubmit a pending operation.
+
+Capture reviewable screenshots of login, Home, lists/details and assistant steps
+at approximately 1280px and 360px, plus 200% zoom. Exclude tokens, device codes,
+authorization values, cookies and provider secrets from screenshots and traces.

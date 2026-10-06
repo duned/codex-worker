@@ -1,3 +1,9 @@
+let onboardingStep=1;
+function showOnboardingStep(step){
+ onboardingStep=step;$('onboarding-steps').textContent=`Step ${step} of 4 · ${['Machine','Local registration','Authorize / resume','Node acknowledgement'][step-1]}`;
+ ['machine','registration','pairing','handoff'].forEach((name,index)=>$('onboarding-'+name).hidden=index+1!==step);
+ $('onboarding-check').hidden=step<3;$('onboarding-back').hidden=step===1;$('onboarding-next').hidden=step>=3;
+}
 // Only the public request survives dialog close. Authorization stays in volatile DOM state.
 let onboardingGeneration=0,onboardingBusy=false,onboardingExpiry=null;
 function clearOnboardingAuthorization(){
@@ -5,7 +11,7 @@ function clearOnboardingAuthorization(){
  $('onboarding-authorization').value='';$('onboarding-authorization').type='password';
 }
 async function openOnboarding(){
- clearOnboardingAuthorization();$('onboarding-dialog').showModal();
+ clearOnboardingAuthorization();showOnboardingStep(1);$('onboarding-dialog').showModal();
  $('onboarding-destination').textContent='Destination Server: '+window.location.origin;
  $('onboarding-message').textContent='';$('onboarding-prepare').hidden=true;
  await updateOnboardingInstruction();
@@ -41,7 +47,7 @@ async function authorizeOnboarding(){
   $('onboarding-message').textContent='Authorizing '+request.operation+' at '+request.server+'…';
   const result=await api('/api/v1/workers/onboarding/authorize',{method:'POST',body:JSON.stringify(request)});
   if(generation!==onboardingGeneration)return;
-  $('onboarding-authorization').value=result.authorization;
+  showOnboardingStep(4);$('onboarding-authorization').value=result.authorization;
   onboardingExpiry=setTimeout(()=>clearOnboardingAuthorization(),result.lifetimeSeconds*1000);
   $('onboarding-message').textContent='Authorization issued. Paste it into the hidden node prompt. Wait for the node acknowledgement, start the service, then Check progress. If this response was lost, resume on the node with empty input first; request a fresh authorization only if the retained credential is rejected.';
  }catch(e){if(generation===onboardingGeneration)$('onboarding-message').textContent=e.message+' Retain local pending state; check progress before requesting another authorization.'}
@@ -59,7 +65,7 @@ async function checkOnboarding(){
   $('onboarding-message').textContent=connected?
    'Registration acknowledged and communication observed. Execution readiness is not established. Scheduling remains a separate administration choice. Continue with contextual preparation.':
    'Registration recorded; waiting for observed communication. Resume on the node with empty input to verify acknowledgement, then start the service. Inspect local status if startup is denied or unavailable.';
-  if(connected){$('onboarding-prepare').hidden=false;$('onboarding-prepare').href='#/workers/'+encodeURIComponent(worker.workerId)+'?prepare=1';}
+  if(connected){showOnboardingStep(4);$('onboarding-prepare').hidden=false;$('onboarding-prepare').href='/workers/'+encodeURIComponent(worker.workerId)+'?step=preparation';}
  }catch(e){if(generation===onboardingGeneration)$('onboarding-message').textContent=e.message+' Preserve node state and check the Server connection before retrying.'}
 }
 $('add-worker').onclick=openOnboarding;$('onboarding-kind').onchange=updateOnboardingInstruction;
@@ -67,3 +73,6 @@ $('onboarding-authorize').onclick=authorizeOnboarding;$('onboarding-check').oncl
 $('onboarding-reveal').onclick=()=>{$('onboarding-authorization').type=$('onboarding-authorization').type==='password'?'text':'password'};
 $('onboarding-close').onclick=()=>$('onboarding-dialog').close();
 $('onboarding-dialog').onclose=clearOnboardingAuthorization;
+
+$('onboarding-next').onclick=()=>showOnboardingStep(Math.min(3,onboardingStep+1));
+$('onboarding-back').onclick=()=>{if(!onboardingBusy)showOnboardingStep(Math.max(1,onboardingStep-1))};

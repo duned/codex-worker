@@ -1427,7 +1427,23 @@ public sealed class CodexServerTests
             Assert.Contains("Worker details", await dashboardResponse.Content.ReadAsStringAsync());
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
             foreach (var view in new[] { "home", "projects", "workers", "executions", "settings" })
-                Assert.Contains($"href=\"#/{view}\"", dashboard);
+                Assert.Contains($"href=\"/{view}\"", dashboard);
+            foreach (var path in new[] { "/home", "/projects", "/projects/missing?label=review",
+                "/workers/worker-a?step=preparation", "/executions/request-a?offset=50", "/settings/credential-a" })
+            {
+                using var deepLink = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, deepLink.StatusCode);
+                Assert.Equal("text/html", deepLink.Content.Headers.ContentType?.MediaType);
+                Assert.Contains("Administration sign in", await deepLink.Content.ReadAsStringAsync());
+            }
+            foreach (var path in new[] { "/unsupported", "/api/unknown", "/api/v1/workers/worker-a/unknown",
+                "/health/unknown", "/projects/a/unsupported", "/home/unsupported" })
+            {
+                using var unknown = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+            }
+            using var unsupportedMethod = await client.PostAsync("/projects/project-a", null);
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, unsupportedMethod.StatusCode);
             Assert.DoesNotContain("<!-- dashboard-scripts -->", dashboard);
             foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues" })
                 Assert.DoesNotContain($"/* dashboard-{module} */", dashboard);

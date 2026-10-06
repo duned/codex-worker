@@ -1,15 +1,22 @@
+let projectStep=1;
+function showProjectStep(step){
+ projectStep=step;
+ $('project-steps').textContent=`Step ${step} of 3 · ${['Repository','Essential configuration','Review'][step-1]}`;
+ $('project-repository-selection').hidden=step!==1;$('project-essentials').hidden=step!==2;$('project-review').hidden=step!==3;
+ $('project-back').hidden=step===1;$('project-next').hidden=step!==1;$('review-project').hidden=step!==2;$('save-project').hidden=step!==3&&!projectUncertain;
+}
 let repositoryChoices=[],repositoryNextPage=null,projectDraft=null,projectReviewed=null,projectUncertain=null,projectBusy=false,projectDialogGeneration=0,projectConflict=null;
 function projectError(message){$('form-error').textContent=message;$('form-error').hidden=false}
-function invalidateProjectReview(){projectReviewed=null;$('project-review').hidden=true;$('save-project').disabled=!projectUncertain}
+function invalidateProjectReview(){projectReviewed=null;if(projectStep===3&&!projectUncertain)showProjectStep(2);$('project-review').hidden=true;$('save-project').disabled=!projectUncertain}
 function openProject(p){
  if(projectUncertain){projectError('Resolve the unconfirmed save before starting another definition.');$('project-dialog').showModal();return}
  projectConflict=null;$('reload-project').hidden=true;projectDialogGeneration++;projectDraft=p||null;projectReviewed=null;repositoryChoices=[];repositoryNextPage=null;
  $('project-form').reset();$('project-id').value=p?.id||'';$('revision').value=p?.revision||'';
  for(const [id,value] of Object.entries({name:p?.name,repository:p?.repository,branch:p?.defaultBranch,description:p?.description,'issue-ready-label':p?.issueReadyLabel,'issue-blocked-label':p?.issueBlockedLabel}))$(id).value=value||'';
- $('dialog-title').textContent=p?'Edit project':'Create project';$('project-repository-selection').hidden=!!p;$('manual-repository').open=!!p;
+ $('dialog-title').textContent=p?'Edit project':'Create project';$('manual-repository').open=!!p;
  $('repository-selection').innerHTML='<option value="">Choose a repository</option>';$('more-repositories').hidden=true;$('repository-discovery-message').textContent='';
  $('requirements').innerHTML='';for(const requirement of p?.requirements||[])addProjectRequirement(requirement);
- $('form-error').hidden=true;$('save-project').textContent='Save reviewed project';invalidateProjectReview();$('project-dialog').showModal();
+ $('form-error').hidden=true;$('save-project').textContent='Save reviewed project';invalidateProjectReview();showProjectStep(1);$('project-dialog').showModal();
 }
 function editProject(id){const p=projects.find(p=>p.id===id);if(p)openProject(p)}
 function newProject(){openProject(null)}
@@ -33,7 +40,10 @@ async function discoverProjectRepositories(page=1){
  }catch(e){if(generation!==projectDialogGeneration)return;$('repository-discovery-message').textContent='Discovery unavailable: '+e.message+' Connect or check Server GitHub, then retry; manual repository input is available.'}
 }
 async function reviewProject(){
- if(projectBusy||projectUncertain)return;if(!$('project-form').reportValidity())return;
+ if(projectBusy||projectUncertain)return;if(!$('repository').value.trim()){showProjectStep(1);$('manual-repository').open=true;projectError('Select or enter a repository to continue.');return;}
+ showProjectStep(2);const invalid=[...$('project-essentials').querySelectorAll('input,select,textarea')].find(field=>field.willValidate&&!field.checkValidity());
+ if(invalid){for(const details of $('project-essentials').querySelectorAll('details'))details.open=true;}
+ if(!$('project-form').reportValidity())return;
  const generation=projectDialogGeneration,definition=projectDefinition();projectBusy=true;invalidateProjectReview();$('form-error').hidden=true;
  try{const result=await api('/api/v1/projects/verify',{method:'POST',body:JSON.stringify(definition)});
  if(generation!==projectDialogGeneration||!$('project-dialog').open||JSON.stringify(definition)!==JSON.stringify(projectDefinition()))return;
@@ -44,7 +54,7 @@ async function reviewProject(){
   'Worker requirements: '+(definition.requirements.length?definition.requirements.map(r=>r.type+' · '+r.name+(r.version?' '+r.version:'')+(r.scope?' for '+r.scope:'')).join('; '):'None added'),
   'Issue ready label: '+(definition.issueReadyLabel||'None'),'Issue blocked label: '+(definition.issueBlockedLabel||'None'),
   ...(definition.automaticDiscovery?['Existing discovery policy: every '+definition.automaticDiscovery.intervalSeconds+' seconds; page size '+definition.automaticDiscovery.pageSize+'; deadline '+definition.automaticDiscovery.deadlineSeconds+' seconds.']:[])
- ].join('\n');$('project-review-access').textContent=result.diagnostic+' Lifecycle policy: '+(projectDraft?.enabled===false?'disabled':'enabled')+'. Automatic discovery: '+(definition.automaticDiscovery?.enabled?'enabled under the existing policy':'disabled')+'.';$('project-review').hidden=false;$('save-project').disabled=false;
+ ].join('\n');$('project-review-access').textContent=result.diagnostic+' Lifecycle policy: '+(projectDraft?.enabled===false?'disabled':'enabled')+'. Automatic discovery: '+(definition.automaticDiscovery?.enabled?'enabled under the existing policy':'disabled')+'.';showProjectStep(3);$('save-project').disabled=false;
  }catch(e){if(generation===projectDialogGeneration)projectError(e.message)}finally{projectBusy=false}
 }
 function sameProjectDefinition(p,d){
@@ -57,8 +67,8 @@ async function finishProjectSave(project){
  let workerState=null;try{const current=await api('/api/v1/workers');if(Array.isArray(current))workerState=current}catch{/* Readiness remains unknown when this independent observation fails. */}
  const preparation=workerState===null?'Worker inventory is unavailable. Refresh Workers to inspect preparation.':workerState.length?'Inspect and associate a Worker, then verify its project configuration and authentication.':'No Worker exists yet. Add and prepare a Worker to continue.';
  $('project-result').textContent=`Project “${project.name}” saved. ${preparation} Server read verification does not establish Worker execution readiness. No Issues were marked ready or work enqueued.`;$('project-result').hidden=false;
- $('project-result').appendChild(Object.assign(document.createElement('a'),{href:'#/workers?prepare=1',textContent:' Add / associate Worker'}));
- $('project-result').appendChild(Object.assign(document.createElement('a'),{href:'#/projects/'+encodeURIComponent(project.id),textContent:' Inspect project preparation'}));
+ $('project-result').appendChild(Object.assign(document.createElement('a'),{href:'/workers?prepare=1',textContent:' Add / associate Worker'}));
+ $('project-result').appendChild(Object.assign(document.createElement('a'),{href:'/projects/'+encodeURIComponent(project.id),textContent:' Inspect project preparation'}));
 }
 async function submitProject(event){
  event.preventDefault();if(projectBusy)return;projectBusy=true;$('save-project').disabled=true;
@@ -85,3 +95,6 @@ $('add-requirement').onclick=()=>addProjectRequirement();$('review-project').onc
 $('project-form').addEventListener('input',invalidateProjectReview);$('project-form').addEventListener('change',invalidateProjectReview);
 
 $('reload-project').onclick=()=>{if(projectConflict){const current=projectConflict;projectUncertain=null;openProject(current)}};
+
+$('project-next').onclick=()=>{if(!$('repository').value.trim()){$('manual-repository').open=true;$('repository').focus({preventScroll:true});projectError('Select or enter a repository to continue.');return}$('form-error').hidden=true;showProjectStep(2)};
+$('project-back').onclick=()=>{if(!projectBusy&&!projectUncertain)showProjectStep(Math.max(1,projectStep-1))};

@@ -5,7 +5,7 @@ const vm=require('node:vm');
 const {readDashboard}=require('./server-dashboard-source.cjs');
 const flush=async()=>{for(let i=0;i<100;i++)await Promise.resolve()};
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
-function setup(hash='#/home'){
+function setup(path='/home'){
  const html=readDashboard(),elements=new Map(),listeners=new Map(),timers=new Map(),calls=[];
  let timerId=0;
  class Element{
@@ -16,7 +16,7 @@ function setup(hash='#/home'){
   setAttribute(name,value){this.attributes[name]=value}
   removeAttribute(name){delete this.attributes[name]}
   addEventListener(){}
-  querySelectorAll(selector){if(['a','button,select,a,input'].includes(selector))return this.children;const key=selector.match(/^\[data-([a-z-]+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return key?this.children.filter(c=>key in c.dataset):[]}
+  querySelectorAll(selector){if(['a','button,select,a,input','button,select,a,input,summary'].includes(selector))return this.children;const key=selector.match(/^\[data-([a-z-]+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return key?this.children.filter(c=>key in c.dataset):[]}
   contains(element){return this.children.includes(element)}
   querySelector(selector){return this.markup.includes(selector.slice(1,-1))?new Element():null}
   append(child){this.children.push(child)}
@@ -28,7 +28,7 @@ function setup(hash='#/home'){
  for(const match of html.split('<script>')[0].matchAll(/id="([^"]+)"/g))elements.set(match[1],new Element(match[1]));
  const $=id=>elements.get(id)||null;
  const views=['home','projects','workers','executions','settings'].map(view=>{const el=$('view-'+view);el.dataset.view=view;return el});
- $('navigation').children=views.map(view=>{const el=new Element();el.attributes.href='#/'+view.dataset.view;return el});
+ $('navigation').children=views.map(view=>{const el=new Element();el.attributes.href='/'+view.dataset.view;return el});
  const worker={workerId:'worker-a',displayName:'Worker A',workerVersion:'0.15.0',availability:'online',lifecycleState:'running',maximumCapacity:2,activeExecutions:0,availableCapacity:2,schedulingPolicy:'Enabled',activeAssignments:0,capabilities:[],activeProjects:['Project A'],managedDiagnostics:{source:'server',projects:[{projectId:'project-a',revision:1,state:'ready'}]}};
  const project={id:'project-a',name:'Project A',repository:'owner/repo',defaultBranch:'main',revision:1,enabled:true,requirements:[]};
  const github={definition:{id:'github-cli',displayName:'GitHub CLI'},state:{installation:'Installed',authentication:'Satisfied',health:'Healthy',operation:{state:'Idle'}},availableActions:[]};
@@ -36,9 +36,14 @@ function setup(hash='#/home'){
  const node={id:'worker-a',kind:'worker',displayName:'Worker A',connectivity:'connected',executionReadiness:'ready',observationsStale:false,capabilities:[]};
  const data={workers:[],projects:[],nodes:[{...server,capabilities:[{...github,state:{...github.state,authentication:'Required'}}]}],executions:[],commands:[],githubCommands:[]};
  const held=new Map();let rejectNodes=false,streamRead=null;
- const window={location:{hash},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
- const context=vm.createContext({window,document:{getElementById:$,querySelectorAll:selector=>selector==='[data-view]'?views:selector==='dialog'?[...elements.values()].filter(el=>el.id?.endsWith('dialog')):[],createElement:()=>new Element()},
-  Headers,AbortController,AbortSignal,TextDecoder,TextEncoder,Date,URLSearchParams,Set,Math,JSON,encodeURIComponent,decodeURIComponent,confirm:()=>true,prompt:()=>null,
+ const origin='https://server.example',entries=[],scrolls=[];let entry=-1;
+ const window={location:{origin},scrollX:0,scrollY:0,scrollTo(x,y){this.scrollX=x;this.scrollY=y;scrolls.push([x,y])},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
+ function location(value){const url=new URL(value,origin);Object.assign(window.location,{pathname:url.pathname,search:url.search,hash:url.hash})}
+ window.history={state:null,pushState(state,title,value){entries.splice(++entry);entries.push({state,path:value});this.state=state;location(value)},replaceState(state,title,value){const path=value||window.location.pathname+window.location.search;entries[entry]={state,path};this.state=state;location(path)}};
+ window.history.pushState({},'',path);
+ const documentListeners=new Map();
+ const context=vm.createContext({window,document:{addEventListener(name,handler){documentListeners.set(name,handler)},getElementById:$,querySelectorAll:selector=>selector==='[data-view]'?views:selector==='dialog'?[...elements.values()].filter(el=>el.id?.endsWith('dialog')):[],createElement:()=>new Element()},
+  Headers,AbortController,AbortSignal,TextDecoder,TextEncoder,Date,URL,URLSearchParams,Set,Math,JSON,encodeURIComponent,decodeURIComponent,confirm:()=>true,prompt:()=>null,
   setTimeout(fn,delay){const id=++timerId;timers.set(id,{fn,delay});return id},clearTimeout:id=>timers.delete(id),
   fetch:async(path,options)=>{
    calls.push({path,options});
@@ -73,7 +78,8 @@ function setup(hash='#/home'){
  vm.runInContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
  const emit=async(name,event={})=>{for(const handler of listeners.get(name)||[])handler(event);await flush()};
  return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,
-  async route(hash){window.location.hash=hash;await emit('hashchange')},
+  async route(path){window.history.pushState({},'',path);await emit('popstate')},
+  window,scrolls,documentListeners,async back(){entry--;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},async forward(){entry++;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},
   async poll(){const entry=[...timers.entries()].find(([,timer])=>timer.delay===5000);assert.ok(entry);timers.delete(entry[0]);await entry[1].fn();await flush()},
   configured(){data.workers=[worker];data.projects=[project];data.nodes=[server,node]},
   rejectNodes(){rejectNodes=true},async workersEvent(items){streamRead.resolve({value:new TextEncoder().encode('data: '+JSON.stringify(items)+'\n\n'),done:false});await flush()},emit,flush
@@ -95,10 +101,10 @@ test('first-use milestones support alternate order, configured state, stale fact
 });
 
 test('one navigation owner preserves resource/filter URLs on reload and back without adding listeners or timers',async()=>{
- const s=setup('#/executions/execution-a?project=project-a&state=Completed&issue=7&offset=50');await s.flush();
+ const s=setup('/executions/execution-a?project=project-a&state=Completed&issue=7&offset=50');await s.flush();
  assert.equal(s.$('view-title').textContent,'Executions');assert.equal(s.$('execution-project-filter').value,'project-a');assert.equal(s.$('execution-state-filter').value,'Completed');assert.match(s.$('execution-detail').innerHTML,/execution-a/);
  const listenerCount=[...s.listeners.values()].reduce((n,list)=>n+list.length,0),timerCount=s.timers.size;
- for(const route of ['#/projects/project-a','#/workers/worker-a','#/settings','#/home','#/executions/execution-a?project=project-a&state=Completed&issue=7&offset=50']){await s.route(route);assert.equal([...s.listeners.values()].reduce((n,list)=>n+list.length,0),listenerCount);assert.equal(s.timers.size,timerCount)}
+ for(const route of ['/projects/project-a','/workers/worker-a','/settings','/home','/executions/execution-a?project=project-a&state=Completed&issue=7&offset=50']){await s.route(route);assert.equal([...s.listeners.values()].reduce((n,list)=>n+list.length,0),listenerCount);assert.equal(s.timers.size,timerCount)}
  assert.equal(s.$('view-projects').hidden,true);assert.equal(s.$('view-executions').hidden,false);assert.equal(s.$('view-title').focused,true);
  await s.emit('pagehide');assert.equal([...s.timers.values()].filter(timer=>timer.delay===5000).length,0);
  await s.emit('pageshow',{persisted:true});assert.equal([...s.timers.values()].filter(timer=>timer.delay===5000).length,1);
@@ -106,26 +112,26 @@ test('one navigation owner preserves resource/filter URLs on reload and back wit
 });
 
 test('resource context hydrates on session restore, and credential metadata has a reloadable Settings route',async()=>{
- const s=setup('#/projects/project-a?issue=7');s.configured();await s.flush();
+ const s=setup('/projects/project-a?issue=7');s.configured();await s.flush();
  assert.match(s.$('project-detail').innerHTML,/Project A/);assert.match(s.$('project-detail').innerHTML,/Worker A/);assert.match(s.$('github-issue-detail').innerHTML,/Issue/);
- await s.route('#/settings/credential-a');assert.equal(s.$('credential-details-dialog').open,true);assert.match(s.$('credential-details').innerHTML,/credential-a/);
- await s.route('#/workers/worker-a');assert.equal(s.$('credential-details-dialog').open,false);assert.match(s.$('worker-detail').innerHTML,/Worker A/);assert.match(s.$('worker-admin').innerHTML,/Drain/);
+ await s.route('/settings/credential-a');assert.equal(s.$('credential-details-dialog').open,true);assert.match(s.$('credential-details').innerHTML,/credential-a/);
+ await s.route('/workers/worker-a');assert.equal(s.$('credential-details-dialog').open,false);assert.match(s.$('worker-detail').innerHTML,/Worker A/);assert.match(s.$('worker-admin').innerHTML,/Drain/);
  await s.emit('pagehide');
 });
 
 test('a delayed detail response or failure cannot overwrite a new resource context',async()=>{
  const s=setup();await s.flush();const old=deferred();s.held.set('/api/v1/executions/old',old);
- await s.route('#/executions/old');await s.route('#/executions/new');assert.match(s.$('execution-detail').innerHTML,/new/);
+ await s.route('/executions/old');await s.route('/executions/new');assert.match(s.$('execution-detail').innerHTML,/new/);
  old.resolve({ok:true,status:200,json:async()=>({id:'old'})});await s.flush();assert.doesNotMatch(s.$('execution-detail').innerHTML,/old/);
- const bad=deferred();s.held.set('/api/v1/executions/bad',bad);await s.route('#/executions/bad');await s.route('#/executions/new');bad.resolve({ok:false,status:404,json:async()=>({error:'old failure'})});await s.flush();assert.doesNotMatch(s.$('execution-detail').innerHTML,/old failure/);
+ const bad=deferred();s.held.set('/api/v1/executions/bad',bad);await s.route('/executions/bad');await s.route('/executions/new');bad.resolve({ok:false,status:404,json:async()=>({error:'old failure'})});await s.flush();assert.doesNotMatch(s.$('execution-detail').innerHTML,/old failure/);
  await s.emit('pagehide');
 });
 
-test('selected Server and Worker provisioning stays contextual and navigation rejects malformed fragments',async()=>{
+test('selected Server and Worker provisioning stays contextual and navigation rejects malformed resource paths',async()=>{
  const s=setup();s.configured();await s.flush();
- await s.route('#/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('worker-authentication-guidance').hidden,true);assert.equal(s.$('github-connection-panel').scrolled,true);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
- await s.route('#/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.equal(s.$('worker-authentication-guidance').hidden,false);assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
- await s.route('#/workers/%invalid');assert.equal(s.$('view-title').textContent,'Home');
+ await s.route('/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('worker-authentication-guidance').hidden,true);assert.equal(s.$('github-connection-panel').scrolled,undefined);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
+ await s.route('/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.equal(s.$('worker-authentication-guidance').hidden,false);assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
+ await s.route('/workers/%invalid');assert.equal(s.$('view-title').textContent,'Home');
  await s.emit('pagehide');
 });
 
@@ -138,23 +144,23 @@ test('an in-flight polling cycle cannot recreate its timer after page teardown',
 });
 
 test('Home shows actual pending and recovery evidence from the unfiltered bounded queue',async()=>{
- const s=setup('#/executions?project=filtered-project');s.configured();s.data.executions=[{id:'blocked-request',state:'Queued',workReference:{type:'github-issue',id:'12'},pendingReason:'No eligible Worker',recoveryReason:'Check integration evidence'}];await s.flush();
- await s.route('#/home');assert.match(s.$('home-next').innerHTML,/No eligible Worker/);assert.match(s.$('home-next').innerHTML,/blocked-request/);
+ const s=setup('/executions?project=filtered-project');s.configured();s.data.executions=[{id:'blocked-request',state:'Queued',workReference:{type:'github-issue',id:'12'},pendingReason:'No eligible Worker',recoveryReason:'Check integration evidence'}];await s.flush();
+ await s.route('/home');assert.match(s.$('home-next').innerHTML,/No eligible Worker/);assert.match(s.$('home-next').innerHTML,/blocked-request/);
  assert.ok(s.calls.some(c=>c.path==='/api/v1/executions?limit=50&offset=0'));
  await s.emit('pagehide');
 });
 
 test('Issue context preserves project and list filters through direct reload',async()=>{
- const s=setup('#/projects/project-a?issue=7&issueState=closed&label=review&issues=1');s.configured();await s.flush();
+ const s=setup('/projects/project-a?issue=7&issueState=closed&label=review&issues=1');s.configured();await s.flush();
  assert.equal(s.$('github-project').value,'project-a');assert.equal(s.$('github-state').value,'closed');assert.equal(s.$('github-label').value,'review');
  assert.ok(s.calls.some(c=>c.path.includes('/projects/project-a/github/issues?state=closed&limit=50&label=review')));
  await s.emit('pagehide');
 });
 
 test('project observation refresh keeps the focused resource action reachable',async()=>{
- const s=setup('#/projects');s.configured();await s.flush();
+ const s=setup('/projects');s.configured();await s.flush();
  s.document.activeElement=s.$('projects').children.find(button=>button.dataset.edit==='project-a');assert.ok(s.document.activeElement);
- await s.poll();assert.ok(s.$('projects').children.find(button=>button.dataset.edit==='project-a').focused);
+ s.data.projects=[{...s.project,revision:2}];await s.poll();assert.ok(s.$('projects').children.find(button=>button.dataset.edit==='project-a').focused);
  await s.emit('pagehide');
 });
 
@@ -162,7 +168,7 @@ test('delivered Home and route loaders share equivalent reads and keep one strea
  const s=setup();await s.flush();
  const count=path=>s.calls.filter(c=>c.path===path).length;
  for(const path of ['/api/v1/projects','/api/v1/nodes','/api/v1/workers','/api/v1/provisioning/commands','/api/v1/executions?limit=50&offset=0'])assert.equal(count(path),1,path);
- for(const route of ['#/projects/project-a','#/workers/worker-a','#/settings?node=server','#/home']){
+ for(const route of ['/projects/project-a','/workers/worker-a','/settings?node=server','/home']){
   s.configured();const start=s.calls.length;await s.route(route);
   const reads=s.calls.slice(start).filter(c=>(c.options.method||'GET')==='GET');
   const paths=reads.map(c=>c.path);assert.equal(new Set(paths).size,paths.length,route+': '+paths.join(', '));
@@ -176,8 +182,8 @@ test('delivered Home and route loaders share equivalent reads and keep one strea
 test('route cancellation ignores stale shared inventory and command completions and loads the active view',async()=>{
  const s=setup();await s.flush();s.configured();
  const inventory=deferred(),commands=deferred();s.held.set('/api/v1/nodes',inventory);s.held.set('/api/v1/provisioning/commands',commands);
- await s.route('#/settings?node=server');const obsolete=s.calls.filter(c=>s.held.has(c.path)).slice(-2);
- s.held.clear();await s.route('#/workers/worker-a');
+ await s.route('/settings?node=server');const obsolete=s.calls.filter(c=>s.held.has(c.path)).slice(-2);
+ s.held.clear();await s.route('/workers/worker-a');
  assert.ok(obsolete.every(c=>c.options.signal.aborted));
  const markup=s.$('node-detail').innerHTML;
  inventory.resolve({ok:true,status:200,json:async()=>[{...s.server,displayName:'obsolete secret'}]});commands.resolve({ok:true,status:200,json:async()=>[]});await s.flush();
@@ -186,7 +192,7 @@ test('route cancellation ignores stale shared inventory and command completions 
 });
 
 test('mutation invalidates pending observations and refreshes provisioning progress without duplicate command reads',async()=>{
- const s=setup('#/settings');await s.flush();
+ const s=setup('/settings');await s.flush();
  s.data.commands=[{id:'command-a',request:{nodeId:'server',capabilityId:'github-cli',action:'Detect'},status:'Pending',createdAtUtc:'2026-01-01T00:00:00Z',diagnostic:'Queued'}];
  s.$('refresh-provisioning').onclick();await s.flush();
  const button=s.$('provisioning').children.find(c=>c.dataset.provisioningAction==='cancel');assert.ok(button);
@@ -229,9 +235,9 @@ test('Home and guided Server connection agree on pending, failed and recovered a
 });
 
 test('leaving Settings clears Server connection consent before returning',async()=>{
- const s=setup('#/settings');await s.flush();
+ const s=setup('/settings');await s.flush();
  s.$('github-provisioning-consent').checked=true;s.$('github-elevation-consent').checked=true;
- await s.route('#/workers');await s.route('#/settings');
+ await s.route('/workers');await s.route('/settings');
  assert.equal(s.$('github-provisioning-consent').checked,false);
  assert.equal(s.$('github-elevation-consent').checked,false);
  assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
@@ -245,8 +251,45 @@ test('Worker-first onboarding remains resumable without a project or scheduling 
  assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,1);
  assert.match(s.$('home-next').innerHTML,/Create a project/);
  assert.match(s.$('home-next').innerHTML,/scheduling Disabled/);
- await s.route('#/workers/worker-a');
+ await s.route('/workers/worker-a?step=project');
  assert.match(s.$('worker-detail').innerHTML,/No central project exists/);
  assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
+ await s.emit('pagehide');
+});
+
+ test('product clicks push canonical history once, polls preserve scroll and Back/Forward restores entries',async()=>{
+ const s=setup('/executions?state=Completed&offset=50');await s.flush();
+ s.window.scrollY=480;await s.emit('scroll');
+ let prevented=false;
+ const link={href:'https://server.example/workers/worker-a?step=project',hasAttribute:()=>false};
+ s.documentListeners.get('click')({target:{closest:()=>link},button:0,preventDefault(){prevented=true}});await s.flush();
+ assert.equal(prevented,true);assert.equal(s.window.location.pathname,'/workers/worker-a');assert.equal(s.window.location.hash,'');assert.equal(s.window.scrollY,0);
+ s.window.scrollY=320;await s.emit('scroll');await s.poll();assert.equal(s.window.scrollY,320);
+ await s.back();assert.equal(s.window.scrollY,480);assert.equal(s.$('execution-state-filter').value,'Completed');
+ await s.forward();assert.equal(s.window.scrollY,320);assert.equal(s.window.location.search,'?step=project');
+ await s.emit('pagehide');
+ });
+ test('legacy bookmarks normalize once and same-resource step changes preserve scroll and open operations',async()=>{
+ const s=setup('/#/workers/worker-a?project=project-a&step=preparation');await s.flush();
+ assert.equal(s.window.location.pathname,'/workers/worker-a');assert.equal(s.window.location.hash,'');
+ s.window.scrollY=230;await s.emit('scroll');s.$('project-dialog').open=true;
+ const link={href:'https://server.example/workers/worker-a?project=project-a&step=activation',hasAttribute:()=>false};
+ s.documentListeners.get('click')({target:{closest:()=>link},button:0,preventDefault(){}});await s.flush();
+ assert.equal(s.window.scrollY,230);assert.equal(s.$('project-dialog').open,true);assert.equal(s.$('worker-admin-panel').hidden,false);
+ await s.emit('pagehide');
+ });
+
+test('observation rendering preserves expanded disclosures and summary focus',async()=>{
+ const s=setup('/workers/worker-a');await s.flush();
+ // Exercise the actual router primitive with deterministic layout effects.
+ const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../../src/CodexServer/dashboard-navigation.js'),'utf8');
+ const details={open:true},summary={dataset:{},id:'',getAttribute:()=>null,focus(options){this.focusOptions=options}};
+ let currentDetails=details,currentSummary=summary;
+ const element={contains:control=>control===currentSummary,querySelectorAll(selector){return selector==='details'?[currentDetails]:selector==='summary'?[currentSummary]:[currentSummary]}};
+ const context=vm.createContext({URL,URLSearchParams,document:{...s.document,activeElement:summary},window:s.window});vm.runInContext(source,context);
+ const router=context.createDashboardNavigation({document:context.document,window:s.window,onRoute(){},isServerGitHubConnected:()=>false});
+ s.window.scrollY=420;
+ router.preservePresentation(element,()=>{currentDetails={open:false};currentSummary={...summary};s.window.scrollY=100});
+ assert.equal(currentDetails.open,true);assert.equal(currentSummary.focusOptions.preventScroll,true);assert.equal(s.window.scrollY,420);
  await s.emit('pagehide');
 });

@@ -12,8 +12,9 @@ test('Server Worker detail distinguishes eligibility from stale preparation obse
  const diagnostics={reasons:['Worker-observed project: failed'],projects:[{projectId:'project',projectName:'<Project>',isEligible:true,
   missingRequirements:[],materializationState:'failed',workerReportedRevision:4,observationStatus:'stale-revision',
   diagnosticCode:'project-preparation-failed'}]};
- const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,projects:[{id:'project',name:'<Project>',repository:'owner/repo',revision:5,enabled:true,requirements:[]}],api:async path=>path.endsWith('/diagnostics')?diagnostics:worker,
+ const context=vm.createContext({URLSearchParams,encodeURIComponent,...require('./server-dashboard-source.cjs').dashboardDependencies(),$,projects:[{id:'project',name:'<Project>',repository:'owner/repo',revision:5,enabled:true,requirements:[]}],api:async path=>path.endsWith('/diagnostics')?diagnostics:worker,
   esc:value=>String(value??'').replaceAll('<','&lt;').replaceAll('>','&gt;')});
+ context.navigation={...context.navigation,current:()=>({view:'workers',id:'worker',params:new URLSearchParams({step:'project'})})};
  vm.runInContext(source,context);
  await context.loadWorker('worker');
  const rendered=$('worker-detail').innerHTML;
@@ -31,7 +32,7 @@ test('Worker dashboard displays safe managed retrieval and preparation observati
  const status={managedDiagnostics:{retrieval:'retrieved',synchronization:'error',source:'server-retrieved',
   failureStage:'synchronization',diagnosticCode:'managed-local-configuration-invalid',failedProjectId:'<id>',failedProjectRevision:2,
   projects:[{projectId:'<id>',revision:2,state:'failed',diagnosticCode:'project-preparation-failed'}]}};
- const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,statusEndpoint:'/api/status',api:async path=>path==='/api/status'?status:
+ const context=vm.createContext({URLSearchParams,encodeURIComponent,...require('./server-dashboard-source.cjs').dashboardDependencies(),$,statusEndpoint:'/api/status',api:async path=>path==='/api/status'?status:
   path==='/worker/drain'?{}:[],badge:value=>String(value??''),duration:()=>'',renderEvents:()=>{},
   esc:value=>String(value??'').replaceAll('<','&lt;').replaceAll('>','&gt;')});
  vm.runInContext(source,context);

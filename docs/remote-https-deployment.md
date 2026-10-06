@@ -520,3 +520,24 @@ available. It does not install services, change firewall rules, use real secrets
 or establish public trust, renewal or separate-host acceptance. Record skipped
 checks honestly; run the live checks above under 23.6 rather than treating local
 syntax/application tests as deployment validation.
+
+
+### Dashboard paths and proxy upgrades
+
+Pass dashboard GET paths unchanged to the Server: `/`, `/home`, `/projects`,
+`/workers`, `/executions`, `/settings`, and `/projects/{id}`, `/workers/{id}`,
+`/executions/{id}`, `/settings/{credentialId}` (including their query strings).
+The checked-in proxy's default management-network restriction covers every UI
+path. Do not add these to the public Worker protocol allowlist. Do not use a
+`try_files`/error-page rewrite that converts unknown API, protocol, health paths
+or unsupported methods into dashboard HTML. The Server maps supported shell
+paths explicitly; unauthenticated deep links display login and then restore their
+resource context. Old hash bookmarks normalize once in the browser.
+
+Keep the existing external HTTPS AdministrationOrigin, fixed upstream Host,
+cookie Path `/`, Secure/HttpOnly session and CSRF behavior. No forwarded-header
+trust or origin inference is added. On a disposable HTTPS deployment, refresh a
+resource deep link before/after sign in and test Back/Forward with filters and
+pagination. Outside the management subnet all UI paths must remain denied,
+while allowlisted method-specific Worker protocol routes still work. Unknown
+API paths must remain API/404 responses, never HTML.

@@ -7,27 +7,66 @@ All displayed operational facts and mutations use existing Server APIs. There ar
 no simulated actions, completion flags, framework dependencies or new scheduling
 rules. The local Worker dashboard and standalone ownership mode are unchanged.
 
+## Presentation and assistants
+
+A compact full-width teal header holds product/session controls. Desktop uses a
+184px sidebar and flexible padded content; below 650px navigation becomes a
+wrapping row. There is no viewport-height shell or horizontal page scroll area.
+Shared surface, typography, button and status styles replace the former horizontal
+admin shell. Text accompanies status colors. Login has one primary sign-in action
+and collapsed configuration/token help, preserving the HTTPS-origin diagnostics.
+Home leads with real setup/action rows and activity; technical summary metrics are
+collapsed. Lists and resource details have separate context and a Back to list
+link. Settings groups GitHub connection and credential administration, with node
+capabilities/history in contextual disclosures.
+
+Project creation/editing shows Repository → Essential configuration → Review,
+one step at a time. Manual repository fallback, advanced policies and typed
+requirements remain available; verification is still required before save, with
+revision conflict and uncertain-save reconciliation unchanged. Enrollment shows
+Machine → Local registration → Authorize/resume → Node acknowledgement; it retains
+the public pairing request, local warnings and transient one-use authorization.
+Registered Worker preparation uses four URL-addressable steps, displaying only
+current checks/actions. Activation remains a separate explicit Server request.
+
 ## Screens and stable context
 
 | Screen | Route and context | Content and administration entry points |
 | --- | --- | --- |
-| Home | `#/home` | Resumable setup milestones, actual bounded execution activity, connectivity/scheduling blockers, Server status and capacity. Links to the next resource action. Configured systems show completed milestones in a collapsed disclosure. |
-| Projects | `#/projects`, `#/projects/{id}`, optionally `?issue={number}` with `issueState`, `label`, `issues=1` list context | Central definitions, create/edit/enable/disable/delete, requirements, Worker-reported preparation/revision/freshness, linked Workers, project-filtered executions, GitHub read checks and Issues. Issue create/edit, configured eligibility labels, blocked-by relationships, enqueue and eligibility refresh retain their existing previews and authorization. |
-| Workers | `#/workers`, `#/workers/{id}`, `#/workers?prepare=1` | Connection, capacity, readiness and preparation; project eligibility and materialization diagnostics; scheduling enable/drain/disable and separate API-token/delivery-authorization revocation. Contextual node provisioning for registered Workers and advanced operation history. Add Worker guides new-machine enrollment or safe existing-Worker association with a public pairing request and short-lived authorization. |
-| Executions | `#/executions`, `#/executions/{id}` | Bounded queue, outcomes, assignment, leases, recovery evidence and attempt lineage. `project`, `state`, `issue`, `offset` query parameters preserve filters/pagination on detail, reload and Back. Queued cancellation and uncertain integration reconciliation retain the existing evidence requirements. |
-| Settings | `#/settings`, `#/settings/{credentialId}`, `#/settings?node=server` | Server GitHub login/preparation, Server tool capabilities and advanced provisioning diagnostics/history; credential metadata/create/replace/assign/revoke. Credential detail opens its metadata dialog after session restore. No secret is retrieved by metadata views. |
+| Home | `/home` | Resumable setup milestones, actual bounded execution activity, connectivity/scheduling blockers, Server status and capacity. Links to the next resource action. Configured systems show completed milestones in a collapsed disclosure. |
+| Projects | `/projects`, `/projects/{id}`, optionally `?issue={number}` with `issueState`, `label`, `issues=1` list context | Central definitions, create/edit/enable/disable/delete, requirements, Worker-reported preparation/revision/freshness, linked Workers, project-filtered executions, GitHub read checks and Issues. Issue create/edit, configured eligibility labels, blocked-by relationships, enqueue and eligibility refresh retain their existing previews and authorization. |
+| Workers | `/workers`, `/workers/{id}`, `/workers/{id}?step=preparation&project={projectId}` | Connection, capacity, readiness and preparation; project eligibility and materialization diagnostics; scheduling enable/drain/disable and separate API-token/delivery-authorization revocation. Contextual node provisioning for registered Workers and advanced operation history. Add Worker guides new-machine enrollment or safe existing-Worker association with a public pairing request and short-lived authorization. |
+| Executions | `/executions`, `/executions/{id}` | Bounded queue, outcomes, assignment, leases, recovery evidence and attempt lineage. `project`, `state`, `issue`, `offset` query parameters preserve filters/pagination on detail, reload and Back. Queued cancellation and uncertain integration reconciliation retain the existing evidence requirements. |
+| Settings | `/settings`, `/settings/{credentialId}`, `/settings?node=server` | Server GitHub login/preparation, Server tool capabilities and advanced provisioning diagnostics/history; credential metadata/create/replace/assign/revoke. Credential detail opens its metadata dialog after session restore. No secret is retrieved by metadata views. |
 
-Main navigation returns to each resource list. Resource links and browser Back /
-Forward use URL fragments, so the same Server `/` endpoint serves reloads without
-new path handling. Unknown or malformed routes fall back to Home. A missing or
-deleted resource produces its API/context error; it does not silently select a
-different resource. The selected resource remains in the URL across sign out and
-sign in. URLs contain IDs and filters only. Dialog edit/secret drafts are transient
-and are cleared/closed when leaving the context.
+Main navigation returns to each resource list. One History API router owns
+same-origin paths and query context. `/` normalizes to `/home`; old `#/…`
+bookmarks are replaced once with their canonical path, without a second router.
+The Server explicitly serves GET shell routes `/home`, `/projects`, `/workers`,
+`/executions`, `/settings`, and one resource-ID segment under each resource
+section. Unknown paths, extra path segments, API/protocol/health paths and
+unsupported methods never receive an HTML fallback. The shell is available
+before sign in so direct deep links can restore a session or show login; reads
+and mutations still require the existing administration authorization.
+
+Missing/deleted resources show their API/context error, without selecting another
+resource. IDs, Issue/execution filters, offsets and Worker preparation `step`
+(`registration`, `preparation`, `project`, `activation`) and `project` context
+survive refresh and Back/Forward. Secret/edit drafts stay transient. Changing a
+resource closes its dialogs; same-resource query changes do not close or resubmit
+operations. Node-local consent remains explicit and no render submits work.
+
+Navigation to a different resource starts at the page heading and focuses it with
+`preventScroll`. Query/filter/assistant changes preserve viewport position.
+History entries contain only scroll coordinates; Back/Forward and reload restore
+them after route reads settle. Observation renders preserve expanded disclosures
+and identifiable focused controls, restoring the viewport if DOM replacement
+changes it. Polling, SSE and unchanged renders never add history entries.
 
 The shared node panel selects only Workers in Workers and the Server in Settings.
-Worker prepare links scroll to it; the Home Server connection link scrolls to the guided Settings panel. Operation history filters to the selected node; when
-no node is selected, the advanced history can show all operations. Capability
+It is open on the Worker Preparation step and a contextual advanced disclosure in
+Settings. Operation history filters to the selected node; when no node is selected,
+the advanced history can show all operations. Capability
 command IDs and the Worker provisioning summary live in advanced disclosures.
 Public SSH identities, active device-login instructions, command cancellation,
 quiescence-confirmed reconciliation and all existing elevation/destructive-action
@@ -58,7 +97,7 @@ execution-time project names alone do not establish a central association.
 
 ## Navigation, request and session ownership
 
-`dashboard-navigation.js` owns fragment routing, active navigation semantics,
+`dashboard-navigation.js` owns History API path routing, active navigation semantics,
 view generation and Home projections. Resource responses and mutation follow-up
 rendering check that their initiating view is still current. Rendering a view never starts a provisioning operation or registers polling timers or global listeners. The Server connection challenge has one transient deadline timer to remove it from the UI at expiry. Stable Home markup is not
 replaced on every unchanged poll; refreshed Worker/project/execution rows preserve

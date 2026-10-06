@@ -4,7 +4,8 @@ let nodes=[],nodeCommands=[],nodesLoading=false,nodeSubmitting=false,nodeSnapsho
 let serverGitHub=null,githubChallengeTimer=null,nodeLoadGeneration=0;
 function selectedNode(){return nodes.find(n=>n.id===$('node-select').value)}
 function commandActive(c){return c.status==='Pending'||c.status==='Running'}
-function renderNode(){
+function renderNode(){navigation.preservePresentation($('node-detail'),renderNodeContent)}
+function renderNodeContent(){
  renderServerGitHub();
  const node=selectedNode();if(!node){$('node-detail').innerHTML='<div class="empty">No node selected.</div>';return}
  const busy=nodeSubmitting||!nodeSnapshotValid||node.provisioningReadiness==='busy'||nodeCommands.some(c=>c.request.nodeId===node.id&&commandActive(c));
@@ -19,7 +20,7 @@ function renderNode(){
    const progress=document.createElement('p');progress.className='operation';
    const expired=latest.status==='Running'&&Date.parse(latest.deadlineUtc)<=Date.now();
    progress.textContent=`${latest.request.action}: ${latest.status}. ${expired?'Deadline expired; verify the node is quiescent and reconcile before retrying.':commandActive(latest)?'You may leave and return; this operation is retained.':''} ${latest.failureDetail?.description||latest.diagnostic}`;section.append(progress);
-   if(latest.status==='Pending'||expired){const control=document.createElement('button');control.className='button';control.textContent=expired?'Reconcile after node quiescence':'Cancel queued operation';control.disabled=nodeSubmitting||!nodeSnapshotValid;control.onclick=()=>runProvisioningCommandAction(latest.id,expired?'reconcile':'cancel');section.append(control)}
+   if(latest.status==='Pending'||expired){const control=document.createElement('button');control.id='node-command-'+latest.id;control.className='button';control.textContent=expired?'Reconcile after node quiescence':'Cancel queued operation';control.disabled=nodeSubmitting||!nodeSnapshotValid;control.onclick=()=>runProvisioningCommandAction(latest.id,expired?'reconcile':'cancel');section.append(control)}
   }
   for(const command of nodeCommands.filter(c=>c.request.nodeId===node.id&&c.request.capabilityId===capability.definition.id&&c.publicIdentity).slice(-30)){const identity=document.createElement('div');identity.innerHTML=`<p class="sub">Public SSH identity</p><pre>${esc(command.publicIdentity.publicKey)}\n${esc(command.publicIdentity.fingerprint)}</pre>`;section.append(identity)}
   if(nodeSnapshotValid&&latest?.loginInstructions&&latest.status==='Running'&&new Date(latest.deadlineUtc)>new Date()){
@@ -30,7 +31,7 @@ function renderNode(){
   if(capability.definition.requiresAuthentication&&!capability.definition.supportedActions?.includes('prepareauthentication')&&!actions.includes('prepareauthentication')&&!actions.some(a=>a==='login'||a==='authenticate')){const note=document.createElement('p');note.className='sub';note.textContent='Remote login is not supported by this node API. Complete authentication in the node service account environment, then re-detect. No credentials are collected or displayed here.';section.append(note)}
   const policy=document.createElement('p');policy.className='sub';policy.textContent=latest?.diagnostic==='Denied'?'The node rejected this action under local authorization policy. Ask its administrator to permit the specific typed action and service-account access, or complete that preparation locally, then refresh before retrying.':'These are registered supported actions. The node checks local authorization when executing; Server authorization cannot override that policy.';section.append(policy);
   const buttons=document.createElement('div');buttons.className='capability-actions';
-  function addAction(action,label){const button=document.createElement('button');button.className='button'+(nodeActions[action].destructive?' danger':'');button.textContent=label;button.disabled=busy;button.onclick=()=>runNodeAction(node.id,capability.definition.id,action);buttons.append(button)}
+  function addAction(action,label){const button=document.createElement('button');button.id='node-action-'+encodeURIComponent(node.id)+'-'+encodeURIComponent(capability.definition.id)+'-'+encodeURIComponent(label);button.className='button'+(nodeActions[action].destructive?' danger':'');button.textContent=label;button.disabled=busy;button.onclick=()=>runNodeAction(node.id,capability.definition.id,action);buttons.append(button)}
   if(!actions.length){const note=document.createElement('p');note.className='sub';note.textContent='No remote actions are currently available. Ask the node administrator to install/configure this supported tool in the Worker service account, or permit its typed action in node-local provisioning policy, then refresh observations. Project runtimes outside the supported catalog must be prepared on the node.';section.append(note)}
   for(const action of actions)addAction(action,nodeActions[action].label);
   const retry=latest&&Object.keys(nodeActions).find(a=>nodeActions[a].command===latest.request.action);
@@ -74,12 +75,13 @@ function serverGitHubState(){
  const busy=nodeSubmitting||!nodeSnapshotValid||!serverGitHub||node?.provisioningReadiness==='busy'||nodeCommands.some(c=>c.request.nodeId==='server'&&commandActive(c))||commands.some(commandActive);
  return {node,capability,latest,busy};
 }
-function renderServerGitHub(){
+function renderServerGitHub(){navigation.preservePresentation($('github-connection'),renderServerGitHubContent)}
+function renderServerGitHubContent(){
  clearTimeout(githubChallengeTimer);githubChallengeTimer=null;
  const panel=$('github-connection');panel.innerHTML='';
  const {node,capability,latest,busy}=serverGitHubState();
  function paragraph(text){const p=document.createElement('p');p.textContent=text;panel.append(p)}
- function button(label,action,disabled=busy){const b=document.createElement('button');b.className='button';b.textContent=label;b.disabled=disabled;b.onclick=action;panel.append(b)}
+ function button(label,action,disabled=busy){const b=document.createElement('button');b.id='server-github-'+encodeURIComponent(label);b.className='button';b.textContent=label;b.disabled=disabled;b.onclick=action;panel.append(b)}
  if(!nodeSnapshotValid||!serverGitHub||!capability){paragraph('Connection state unavailable. Refresh connection before starting or retrying. An unconfirmed submission may still be running.');return}
  const active=latest&&commandActive(latest);
  const connected=serverGitHubConnected(node,serverGitHub.commands);
