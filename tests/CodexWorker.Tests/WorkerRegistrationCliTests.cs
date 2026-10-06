@@ -8,6 +8,81 @@ public sealed class WorkerRegistrationCliTests
 {
     [Theory]
     [InlineData("enroll")]
+    [InlineData("associate")]
+    public async Task PairingPrintsPublicRequestAndUsesProtectedInputWithoutReplacingExistingState(string operation)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"pairing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "identity");
+            var identity = await WorkerIdentity.LoadOrCreateAsync(path);
+            var preserved = Path.Combine(directory, "recovery-resource");
+            await File.WriteAllTextAsync(preserved, "retained history and uncertain work");
+            using var writer = new StringWriter();
+            var invoked = false;
+            var cli = new WorkerRegistrationCli((settings, _, token, _) =>
+            {
+                invoked = true;
+                Assert.Equal(operation, settings.RegistrationOperation);
+                Assert.Equal("protected-authorization", token);
+                return Task.CompletedTask;
+            }, new WorkerConsole(writer, interactive: false, errorWriter: writer), TextReader.Null, writer,
+                _ => Task.FromResult("protected-authorization"));
+            Assert.Equal(ProcessExitCodes.Success, await cli.ExecuteAsync(new("register", null,
+                ["--server", "https://server.example", "--identity-file", path, "--operation", operation, "--pair"])));
+            Assert.True(invoked);
+            Assert.Contains(identity, writer.ToString());
+            Assert.Contains("https://server.example", writer.ToString());
+            Assert.DoesNotContain("protected-authorization", writer.ToString());
+            Assert.Equal(identity, await WorkerIdentity.LoadAsync(path));
+            Assert.Equal("retained history and uncertain work", await File.ReadAllTextAsync(preserved));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:5090", "enroll")]
+    [InlineData("https://server.example", "associate")]
+    public async Task PairingRejectsHttpAndMissingExistingIdentityBeforeSecretOrBootstrap(string server, string operation)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"absent-pairing-{Guid.NewGuid():N}");
+        using var writer = new StringWriter();
+        var invoked = false;
+        var cli = new WorkerRegistrationCli((_, _, _, _) => { invoked = true; return Task.CompletedTask; },
+            new WorkerConsole(writer, interactive: false, errorWriter: writer), TextReader.Null, writer,
+            _ => throw new InvalidOperationException("Secret input must not be requested."));
+        Assert.Equal(ProcessExitCodes.StartupFailure, await cli.ExecuteAsync(new("register", null,
+            ["--server", server, "--identity-file", path, "--operation", operation, "--pair"])));
+        Assert.False(invoked);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task PairingCancellationDuringProtectedInputPreservesIdentityAndDoesNotBootstrap()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"cancel-pairing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "identity");
+            var identity = await WorkerIdentity.LoadOrCreateAsync(path);
+            using var cancellation = new CancellationTokenSource();
+            using var writer = new StringWriter();
+            var invoked = false;
+            var cli = new WorkerRegistrationCli((_, _, _, _) => { invoked = true; return Task.CompletedTask; },
+                new WorkerConsole(writer, interactive: false, errorWriter: writer), TextReader.Null, writer,
+                token => { cancellation.Cancel(); return Task.FromCanceled<string>(token); });
+            Assert.Equal(WorkerCliOutput.Cancelled, await cli.ExecuteAsync(new("register", null,
+                ["--server", "https://server.example", "--identity-file", path, "--pair"]), cancellation.Token));
+            Assert.False(invoked);
+            Assert.Equal(identity, await WorkerIdentity.LoadAsync(path));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("enroll")]
     [InlineData("rotate")]
     [InlineData("recover")]
     [InlineData("associate")]

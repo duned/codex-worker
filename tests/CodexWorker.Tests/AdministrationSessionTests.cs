@@ -1,6 +1,7 @@
 namespace CodexWorker.Tests;
 
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Reflection;
@@ -138,6 +139,9 @@ public sealed class AdministrationSessionTests
             using (var workers = await client.GetAsync("/api/v1/workers"))
                 Assert.Equal(HttpStatusCode.OK, workers.StatusCode);
             using (var denied = await client.DeleteAsync("/api/v1/administration/session"))
+                Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            using (var denied = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize",
+                new CodexProvisioning.WorkerPairingRequest(1, Guid.NewGuid().ToString("N"), "enroll", browserOrigin)))
                 Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
             client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, csrf);
             client.DefaultRequestHeaders.Authorization = new("Bearer", "worker-token");

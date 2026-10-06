@@ -8,10 +8,11 @@ public static class WorkerCommandHelp
         writer ??= Console.Out;
         if (command == "register")
         {
-            writer.WriteLine("Usage: codex-worker register [--server <url>] --token-stdin [--operation enroll|rotate|recover|associate] [--capacity 1..8] [--identity-file <path>] [--config <path>] [--json]");
+            writer.WriteLine("Usage: codex-worker register [--server <url>] (--token-stdin|--pair) [--operation enroll|rotate|recover|associate] [--capacity 1..8] [--identity-file <path>] [--config <path>] [--json]");
             writer.WriteLine();
             writer.WriteLine("Options:");
             writer.WriteLine("  --server <url>                 Codex Server base URL (HTTP or HTTPS); defaults to installed configuration.");
+            writer.WriteLine("  --pair                        Guided HTTPS enroll/associate: public request for Add Worker, hidden authorization input. Empty input reconciles retained credentials.");
             writer.WriteLine("  --operation <operation>      enroll (default) retries without rotation; rotate/recover/associate require a Worker-bound authorization. Retained pending operations must be retried with the same Server and operation.");
             writer.WriteLine("  --token-stdin                  Required. Read the one-time token from protected stdin.");
             writer.WriteLine("  --capacity <1..8>              Execution capacity; defaults to configured maxParallelTasks or 1.");

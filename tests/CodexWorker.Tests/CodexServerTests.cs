@@ -29,6 +29,80 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task GuidedAuthorizationUsesManagementBoundaryAndExactHttpsDestinationWithoutGrantingReadiness()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "onboarding.db");
+        var origin = $"http://127.0.0.1:{ReservePort()}";
+        const string destination = "https://server.example";
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "onboarding-management-token");
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync([.. Args(origin, database),
+                $"--Server:AdministrationOrigin={destination}"]);
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(origin) };
+            var request = new WorkerPairingRequest(1, Guid.NewGuid().ToString("N"), "enroll", destination);
+            using (var denied = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", request))
+                Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "onboarding-management-token");
+            foreach (var invalid in new[] { request with { Server = "https://wrong.example" },
+                request with { Operation = "recover" }, request with { Server = "http://server.example" } })
+            {
+                using var rejected = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", invalid);
+                Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            }
+            using var authorized = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", request);
+            Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+            Assert.True(authorized.Headers.CacheControl?.NoStore);
+            using var result = JsonDocument.Parse(await authorized.Content.ReadAsStringAsync());
+            var authorization = result.RootElement.GetProperty("authorization").GetString();
+            Assert.NotNull(authorization);
+            Assert.Equal(900, result.RootElement.GetProperty("lifetimeSeconds").GetInt32());
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var registration = new WorkerRegistrationRequest(2, request.WorkerId, "guided Worker", "1.0", "test", 1, []);
+            const string durableToken = "durable-node-only-credential-with-entropy";
+            var otherServer = new SqliteRegistryStore(Path.Combine(temporary.Path, "other.db"));
+            await otherServer.InitializeAsync();
+            Assert.False(await otherServer.BootstrapWorkerAsync(authorization, registration, durableToken));
+            Assert.True(await store.BootstrapWorkerAsync(authorization, registration, durableToken));
+            using (var duplicate = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", request))
+                Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+            var worker = await store.GetWorkerAsync(request.WorkerId);
+            Assert.NotNull(worker);
+            Assert.Null(worker.LastHeartbeatAtUtc);
+            Assert.Equal(WorkerSchedulingPolicy.Disabled, worker.SchedulingPolicy);
+            await store.HeartbeatWorkerAsync(new(2, request.WorkerId, "1.0", "starting", 0, 1, [], []));
+            worker = await store.GetWorkerAsync(request.WorkerId);
+            Assert.NotNull(worker);
+            Assert.NotNull(worker.LastHeartbeatAtUtc);
+            Assert.Equal(WorkerSchedulingPolicy.Disabled, worker.SchedulingPolicy);
+            var association = request with { Operation = "associate" };
+            using var associationResponse = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", association);
+            Assert.Equal(HttpStatusCode.OK, associationResponse.StatusCode);
+            using var associationResult = JsonDocument.Parse(await associationResponse.Content.ReadAsStringAsync());
+            var associationToken = associationResult.RootElement.GetProperty("authorization").GetString();
+            Assert.NotNull(associationToken);
+            var project = await store.CreateProjectAsync(new CentralProjectDefinition("Onboarding", "team/onboarding", "main", "", []));
+            WorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+            await store.RegisterWorkerAsync(registration with { Capabilities = capabilities });
+            await store.HeartbeatWorkerAsync(new(2, request.WorkerId, "1.0", "running", 0, 1, capabilities, []));
+            await store.SetWorkerSchedulingPolicyAsync(request.WorkerId, WorkerSchedulingPolicy.Enabled);
+            await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "1")));
+            var assigned = await store.RequestAssignmentAsync(new(request.WorkerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 }));
+            Assert.NotNull(assigned.Assignment);
+            using (var rejected = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize", association))
+                Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+            // Check again at consumption: assignments can arrive after authorization was issued.
+            Assert.False(await store.BootstrapWorkerAsync(associationToken, registration, new string('z', 64), operation: "associate"));
+            Assert.True(await store.IsWorkerTokenValidAsync(request.WorkerId, durableToken));
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
     public async Task WorkerRoutesRequireExactDurableIdentityAndRetainOwnershipChecks()
     {
         using var temporary = new TemporaryDirectory();

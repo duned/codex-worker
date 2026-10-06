@@ -11,6 +11,33 @@ using CodexWorker;
 public sealed class WorkerEnrollmentTests
 {
     [Fact]
+    public async Task BoundEnrollmentRejectsWrongIdentityOperationExpiryAndReuseWithoutScheduling()
+    {
+        using var temporary = new TemporaryState();
+        var clock = new EnrollmentClock();
+        var store = new SqliteRegistryStore(temporary.Database, timeProvider: clock);
+        await store.InitializeAsync();
+        var worker = Registration(Guid.NewGuid().ToString("N"));
+        var token = new string('p', 64);
+        var expired = await store.CreateWorkerAuthorizationAsync(worker.WorkerId, "enroll", TimeSpan.FromMinutes(15));
+        clock.Advance(TimeSpan.FromMinutes(15));
+        Assert.False(await store.BootstrapWorkerAsync(expired, worker, token));
+        var authorization = await store.CreateWorkerAuthorizationAsync(worker.WorkerId, "enroll", TimeSpan.FromMinutes(15));
+        Assert.False(await store.BootstrapWorkerAsync(authorization, Registration(Guid.NewGuid().ToString("N")), token));
+        Assert.False(await store.BootstrapWorkerAsync(authorization, worker, token, operation: "associate"));
+        Assert.True(await store.BootstrapWorkerAsync(authorization, worker, token));
+        Assert.False(await store.BootstrapWorkerAsync(authorization, worker, new string('q', 64)));
+        var registered = await store.GetWorkerAsync(worker.WorkerId);
+        Assert.NotNull(registered);
+        Assert.Equal(WorkerSchedulingPolicy.Disabled, registered.SchedulingPolicy);
+        Assert.Null(registered.LastHeartbeatAtUtc);
+        Assert.Equal("stale", registered.Availability);
+        // Bound enroll cannot replace an identity even with an unused new authorization.
+        Assert.False(await store.BootstrapWorkerAsync(await store.CreateWorkerAuthorizationAsync(worker.WorkerId,
+            "enroll", TimeSpan.FromMinutes(15)), worker, new string('q', 64)));
+    }
+
+    [Fact]
     public async Task GenericEnrollmentCannotReplaceIdentityAndTargetedAuthorizationIsOneUseAndFresh()
     {
         using var temporary = new TemporaryState();
@@ -87,6 +114,7 @@ public sealed class WorkerEnrollmentTests
     [InlineData("enroll")]
     [InlineData("rotate")]
     [InlineData("recover")]
+    [InlineData("associate")]
     public async Task LostCommitResponseIsReconciledWithRetainedMaterialBeforeUsingNewAuthorization(string operation)
     {
         using var temporary = new TemporaryState();
@@ -115,7 +143,7 @@ public sealed class WorkerEnrollmentTests
         var untouched = await store.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15));
         var posts = handler.BootstrapRequests;
         // A new process/client uses the durable pending material, without another bootstrap request.
-        await new WorkerRegistrationClient(http, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, untouched, operation, CancellationToken.None);
+        await new WorkerRegistrationClient(http, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, string.Empty, operation, CancellationToken.None);
         Assert.Equal(posts, handler.BootstrapRequests);
         Assert.Equal(retained.Token, WorkerAuthentication.GetToken(settings));
         Assert.Null(WorkerPendingRegistration.Load(temporary.Identity));
@@ -186,6 +214,9 @@ public sealed class WorkerEnrollmentTests
             await original.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(15)), CancellationToken.None);
         var identity = await WorkerIdentity.LoadAsync(temporary.Identity);
         var oldToken = WorkerAuthentication.GetToken(settings);
+        var preservedPaths = new[] { "worker.yml", "history.db", "uncertain-resource" }
+            .Select(name => System.IO.Path.Combine(temporary.Path, name)).ToArray();
+        foreach (var path in preservedPaths) await File.WriteAllTextAsync(path, "retained local state");
         settings.Url = "https://destination.example";
         using var handler = new RegistryHandler(destination);
         using var http = new HttpClient(handler);
@@ -203,6 +234,12 @@ public sealed class WorkerEnrollmentTests
         Assert.Equal(pending.Token, WorkerAuthentication.GetToken(settings));
         Assert.DoesNotContain(oldToken, handler.Tokens);
         Assert.True(await original.IsWorkerTokenValidAsync(identity, oldToken));
+        Assert.Equal(identity, await WorkerIdentity.LoadAsync(temporary.Identity));
+        foreach (var path in preservedPaths) Assert.Equal("retained local state", await File.ReadAllTextAsync(path));
+        Assert.Equal(WorkerSchedulingPolicy.Disabled, (await destination.GetWorkerAsync(identity))?.SchedulingPolicy);
+        var posts = handler.BootstrapRequests;
+        await client.BootstrapAsync(settings, 1, string.Empty, "associate", CancellationToken.None);
+        Assert.Equal(posts, handler.BootstrapRequests);
     }
 
     [Fact]

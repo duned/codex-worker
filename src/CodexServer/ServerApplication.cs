@@ -265,6 +265,22 @@ public static class ServerApplication
         });
         app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
+        // The public handoff is produced on the node; authorization uses the existing registry.
+        app.MapPost("/api/v1/workers/onboarding/authorize", async (WorkerPairingRequest request, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (request is null || !request.IsValid() || request.Server != settings.AdministrationOrigin)
+                return Results.BadRequest(new { error = "Pairing request must match this HTTPS Server and enroll or associate operation. Return to the node; do not edit the request." });
+            var worker = await store.GetWorkerAsync(request.WorkerId, context.RequestAborted);
+            if (request.Operation == "enroll" && worker is not null)
+                return Results.Conflict(new { error = "This identity is already registered. Resume on the node without a new authorization; use existing recovery operations if credentials are unavailable." });
+            if (worker?.ActiveAssignments > 0)
+                return Results.Conflict(new { error = "Active assignments must finish or be reconciled before association. Drain the Worker first." });
+            var token = await store.CreateWorkerAuthorizationAsync(request.WorkerId, request.Operation,
+                TimeSpan.FromMinutes(15), context.RequestAborted);
+            return Results.Ok(new { authorization = token, lifetimeSeconds = 900 });
+        });
         app.MapPost("/api/v1/workers/register", async (WorkerRegistrationRequest request, HttpContext context, IRegistryStore store) =>
         {
             if (request is null || !Valid(request))
@@ -283,7 +299,7 @@ public static class ServerApplication
             if (!accepted)
             {
                 return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "invalid_bootstrap_token",
-                    "Worker bootstrap token is invalid, expired, or has already been used. Create a fresh registration token and retry.");
+                    "Worker authorization was rejected: it may be invalid, expired, used, bound to another identity/operation, or association may have active assignments. Retain pending state and reconcile the same Server and operation first; drain active assignments before requesting a fresh authorization.");
             }
             return Results.Ok(new CodexProvisioning.WorkerEnrollmentAcknowledgement(CodexProvisioning.WorkerEnrollmentProtocol.AcknowledgementVersion, request.WorkerId));
         });
@@ -902,7 +918,7 @@ public static class ServerApplication
             var source = scriptReader.ReadToEnd();
             if (name == "dashboard-admin.js")
             {
-                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues" })
+                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues", "onboarding" })
                 {
                     using var moduleStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.dashboard-{module}.js")
                         ?? throw new InvalidOperationException("A Server dashboard module resource is missing.");

@@ -116,7 +116,9 @@ public sealed class ManagedHttpsSecurityTests
             Assert.Null(WorkerPendingRegistration.Load(settings.IdentityFile));
             Assert.Equal(retained.Token, WorkerAuthentication.GetToken(settings));
             Assert.True(await registry.RevokeWorkerBootstrapTokenAsync(unused));
-            Assert.Single(await registry.GetWorkersAsync());
+            var registered = Assert.Single(await registry.GetWorkersAsync());
+            Assert.Equal(operation == "associate" ? WorkerSchedulingPolicy.Disabled : WorkerSchedulingPolicy.Enabled,
+                registered.SchedulingPolicy);
             await recovered.HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
             Assert.NotNull(await recovered.GetManagedConfigurationAsync(settings, CancellationToken.None));
             if (oldToken is not null)
@@ -127,6 +129,12 @@ public sealed class ManagedHttpsSecurityTests
                 using var response = await recoveredHttp.SendAsync(request);
                 Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
                 Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+            }
+            if (operation == "associate")
+            {
+                // Connection recovery preserves the preparation gate; scheduling needs explicit operator approval.
+                var enabled = await registry.SetWorkerSchedulingPolicyAsync(retained.WorkerId, WorkerSchedulingPolicy.Enabled);
+                Assert.Equal(WorkerSchedulingPolicy.Enabled, enabled?.SchedulingPolicy);
             }
             await VerifyManagedFlowAsync(recovered, recoveredHttp, settings, registry, restarted.Services);
             await restarted.StopAsync();

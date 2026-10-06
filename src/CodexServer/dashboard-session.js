@@ -7,7 +7,7 @@ function signOut(message='Sign in to administer this Server.'){
  $('administration-login').hidden=false;$('administration-content').hidden=true;$('logout').hidden=true;
  $('session-expiration').textContent='';$('session-message').textContent=message;$('live').textContent='Live · signed out';
  for(const dialog of document.querySelectorAll('dialog')){if(dialog.open)dialog.close()}
- $('credential-secret').value='';resetResources();navigation.stop();
+ $('credential-secret').value='';clearOnboardingAuthorization();resetResources();navigation.stop();
 }
 async function api(path,options={},sessionRequest=false){
  if(!authenticated&&!sessionRequest)throw Error('Sign in to administer this Server.');

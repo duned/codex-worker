@@ -92,7 +92,7 @@ public static class Program
             using var standardInput = registrationInput is null && commandLine.Arguments.Contains("--token-stdin", StringComparer.Ordinal)
                 ? new StreamReader(Console.OpenStandardInput()) : null;
             var input = registrationInput ?? standardInput ?? TextReader.Null;
-            return await new WorkerRegistrationCli(new WorkerRegistrationClient().BootstrapAsync, output, input, Console.Out)
+            return await new WorkerRegistrationCli(new WorkerRegistrationClient().BootstrapAsync, output, input, Console.Out, registrationInput is null ? WorkerPairingConsole.ReadSecretAsync : null)
                 .ExecuteAsync(commandLine, cancellationToken);
         }
         if (commandLine.Command == "provision") return await ProvisionAsync(commandLine, output, cancellationToken);

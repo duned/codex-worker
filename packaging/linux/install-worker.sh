@@ -20,7 +20,7 @@ if [[ -n $installer_source ]]; then
 fi
 
 usage() {
-  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register] [--operation enroll|rotate|recover|associate] [--start] [--token-file PATH] [--git-name NAME] [--git-email EMAIL]"
+  echo "Usage: $0 [--version VERSION] [--server URL] [--capacity 1..8] [--register|--pair] [--operation enroll|rotate|recover|associate] [--start] [--token-file PATH] [--git-name NAME] [--git-email EMAIL]"
   echo "Install and optionally configure/register/start the Codex Worker on Ubuntu 24.04 x86_64."
   echo "For unattended registration, set CODEX_WORKER_BOOTSTRAP_TOKEN or use --token-file; tokens are never accepted as command-line values."
 }
@@ -30,6 +30,7 @@ requested_server=""
 requested_capacity=""
 registration_operation=enroll
 register_requested=false
+pair_requested=false
 start_requested=false
 token_file=""
 requested_git_name=""
@@ -64,6 +65,7 @@ while (($#)); do
       registration_operation=$2; shift 2
       ;;
     --register) register_requested=true; shift ;;
+    --pair) register_requested=true; pair_requested=true; shift ;;
     --start) start_requested=true; shift ;;
     --token-file)
       (($# >= 2)) && [[ -n $2 ]] || { echo "--token-file requires a path" >&2; exit 2; }
@@ -288,7 +290,12 @@ if [[ -n $token_file && -n ${CODEX_WORKER_BOOTSTRAP_TOKEN:-} ]]; then
 fi
 bootstrap_token=${CODEX_WORKER_BOOTSTRAP_TOKEN:-}
 unset CODEX_WORKER_BOOTSTRAP_TOKEN
-if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
+if [[ $pair_requested == true ]]; then
+  [[ -z $token_file && -z $bootstrap_token ]] || fail "--pair cannot be combined with another token source"
+  [[ $registration_operation == enroll || $registration_operation == associate ]] || fail "--pair supports enroll or associate"
+  [[ -r /dev/tty && -w /dev/tty ]] || fail "--pair requires a local interactive terminal"
+fi
+if [[ $register_requested == true && $pair_requested == false && -z $token_file && -z $bootstrap_token ]]; then
   if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     fail "--register requires CODEX_WORKER_BOOTSTRAP_TOKEN or --token-file PATH when no interactive terminal is available"
   fi
@@ -411,7 +418,11 @@ cleanup() {
       echo "Could not stop Worker during rollback; files retained. Run: sudo systemctl stop codex-worker before retrying." >&2
     fi
     echo "The codex-worker account and data/log directories remain. Configuration remains in $config_root; identity and recovery credentials remain in $data_root/.codex-worker." >&2
-    echo "Retry: rerun install-worker.sh --version $version --register --operation $registration_operation --start with the same Server URL and --token-file PATH. Keep active and pending identity/material; a retained pending operation is reconciled before consuming another authorization." >&2
+    if [[ $pair_requested == true ]]; then
+      echo "Resume: rerun the pinned installer with --pair and the same Server and operation. At the hidden prompt, submit empty input to reconcile retained credentials before requesting another authorization. Preserve identity and pending material." >&2
+    else
+      echo "Retry: rerun install-worker.sh --version $version --register --operation $registration_operation --start with the same Server URL and --token-file PATH. Keep active and pending identity/material; a retained pending operation is reconciled before consuming another authorization." >&2
+    fi
   fi
   rm -rf -- "$temporary_dir" "$stage_dir"
   exit "$status"
@@ -471,7 +482,7 @@ config_changed=true
 config_was_present=false
 if [[ -e $config_root/worker.yml ]]; then config_was_present=true; fi
 if [[ $config_was_present == false ]]; then
-  curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/worker.managed.example.yml" --output "$temporary_dir/worker.yml" || fail "could not download the starter Worker configuration"
+  curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/$tag/packaging/linux/worker.managed.example.yml" --output "$temporary_dir/worker.yml" || fail "could not download the starter Worker configuration"
   install -o root -g codex-worker -m 0640 "$temporary_dir/worker.yml" "$config_root/worker.yml" || fail "could not install starter Worker configuration"
 fi
 
@@ -507,7 +518,7 @@ fi
 # --register can be used with either a new or existing configuration. Resolve
 # the terminal source after that choice is known, always through the controlling
 # terminal so curl | sudo bash never consumes the script's piped stdin.
-if [[ $register_requested == true && -z $token_file && -z $bootstrap_token ]]; then
+if [[ $register_requested == true && $pair_requested == false && -z $token_file && -z $bootstrap_token ]]; then
   IFS= read -r -s -p "Bootstrap token: " bootstrap_token </dev/tty || fail "could not read the bootstrap token from the interactive terminal"
   printf '\n' >/dev/tty
   [[ -n $bootstrap_token ]] || fail "bootstrap token cannot be empty"
@@ -569,7 +580,7 @@ runuser -u codex-worker -- "$stage_dir/CodexWorker" --help >/dev/null || fail "s
 if [[ -f $script_dir/codex-worker.service ]]; then
   cp -- "$script_dir/codex-worker.service" "$temporary_dir/codex-worker.service"
 else
-  curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/main/packaging/linux/codex-worker.service" --output "$temporary_dir/codex-worker.service" || fail "could not download the systemd unit"
+  curl --fail --silent --show-error --location "https://raw.githubusercontent.com/$repository/$tag/packaging/linux/codex-worker.service" --output "$temporary_dir/codex-worker.service" || fail "could not download the systemd unit"
 fi
 grep -Fxq "ExecStart=$install_root/CodexWorker run --config $config_root/worker.yml" "$temporary_dir/codex-worker.service" || fail "systemd ExecStart does not match the packaged Worker executable and configuration"
 
@@ -582,10 +593,15 @@ if [[ $register_requested == true ]]; then
   if [[ -n $token_file ]]; then
     IFS= read -r token_value < "$token_file" || [[ -n $token_value ]] || fail "bootstrap token file is empty"
   fi
-  [[ -n $token_value ]] || fail "bootstrap token cannot be empty"
+  [[ $pair_requested == true || -n $token_value ]] || fail "bootstrap token cannot be empty"
   registration_options=()
   if [[ $registration_operation != enroll ]]; then registration_options+=(--operation "$registration_operation"); fi
-  if ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$stage_dir/CodexWorker" register \
+  if [[ $pair_requested == true ]]; then
+    if ! runuser -u codex-worker -- env HOME="$data_root" "$stage_dir/CodexWorker" register \
+        --server "$requested_server" "${registration_options[@]}" --pair --capacity "$capacity_for_registration" --identity-file "$identity_file" </dev/tty >/dev/tty; then
+      fail "Worker pairing failed; retain identity and pending material and resume the same operation"
+    fi
+  elif ! printf '%s\n' "$token_value" | runuser -u codex-worker -- "$stage_dir/CodexWorker" register \
       --server "$requested_server" "${registration_options[@]}" --token-stdin --capacity "$capacity_for_registration" --identity-file "$identity_file"; then
     fail "Worker registration failed; the bootstrap token was not written to installer output"
   fi

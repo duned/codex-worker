@@ -37,11 +37,18 @@ set -euo pipefail
 [[ $1 == register ]]
 printf 'register\n' >> "$LIFECYCLE_ROOT/events"
 printf '%s\n' "$@" > "$LIFECYCLE_ROOT/registration-arguments"
+pair=false
 while (($#)); do
   if [[ $1 == --identity-file ]]; then identity=$2; shift; fi
+  if [[ $1 == --pair ]]; then pair=true; fi
   shift
 done
+if [[ $pair == true ]]; then
+  printf 'Public pairing request from node\nPairing authorization: '
+  stty -echo
+fi
 IFS= read -r token
+if [[ $pair == true ]]; then stty echo; fi
 [[ $token == test-token ]]
 printf 'stable-identity\n' > "$identity"
 printf 'durable-recovery-credential\n' > "${identity}.credential"
@@ -150,7 +157,8 @@ import time
 pid, terminal = pty.fork()
 if pid == 0:
     os.execvpe("bash", ["bash", sys.argv[1], "--version", "1.2.3", "--server",
-                         "https://server.example", "--capacity", "1", "--register", "--start"], os.environ)
+                         "https://server.example", "--capacity", "1",
+                         "--pair" if os.environ.get("PAIR_TEST") == "true" else "--register", "--start"], os.environ)
 
 output = bytearray()
 token_sent = False
@@ -174,7 +182,7 @@ while time.monotonic() < deadline:
         if not email_sent and b"Worker Git user.email: " in output:
             os.write(terminal, b"interactive@example.invalid\n")
             email_sent = True
-        if not token_sent and b"Bootstrap token: " in output:
+        if not token_sent and (b"Bootstrap token: " in output or b"Pairing authorization: " in output):
             os.write(terminal, b"test-token\n")
             token_sent = True
     waited, child_status = os.waitpid(pid, os.WNOHANG)
@@ -443,4 +451,11 @@ grep -Fxq 'apt-get install -y --no-install-recommends git' "$LIFECYCLE_ROOT/even
 cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"
 if APT_FAIL=true run_install; then exit 1; fi
 cmp "$LIFECYCLE_ROOT/previous.gitconfig" "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig"
+prepare_root guided-pairing tty
+PAIR_TEST=true run_interactive_install || { cat "$LIFECYCLE_ROOT/output"; exit 1; }
+grep -Fxq -- '--pair' "$LIFECYCLE_ROOT/registration-arguments"
+! grep -Fxq -- '--token-stdin' "$LIFECYCLE_ROOT/registration-arguments"
+! grep -q 'Bootstrap token:' "$LIFECYCLE_ROOT/output"
+! grep -q 'test-token' "$LIFECYCLE_ROOT/output"
+[[ -f $LIFECYCLE_ROOT/registered && -f $LIFECYCLE_ROOT/active ]]
 echo 'Worker installer lifecycle checks passed.'

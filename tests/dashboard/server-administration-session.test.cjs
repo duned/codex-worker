@@ -14,7 +14,8 @@ function setup(){
   setTimeout:fn=>{const id=++timerId;timers.set(id,fn);return id},clearTimeout:id=>timers.delete(id),
   ...Object.fromEntries(['loadProjects','loadOverview','loadExecutions','loadNodes','loadProvisioning','loadCredentials'].map(name=>[name,()=>{}])),
   fetch:(path,options)=>new Promise((resolve,reject)=>{requests.push({path,options,resolve,reject});options.signal?.addEventListener('abort',()=>reject(Object.assign(Error(),{name:'AbortError'})))})});
- vm.runInContext(source+binding,context);
+ const onboarding=html.slice(html.indexOf('// Only the public request'),html.indexOf('async function openOnboarding'));
+ vm.runInContext(onboarding+source+binding,context);
  const run=code=>vm.runInContext(code,context);
  const respond=(index,status=200,body={csrfToken:'csrf-test',expiresAtUtc:new Date(Date.now()+3600000).toISOString()})=>requests[index].resolve({ok:status>=200&&status<300,status,json:async()=>body});
  return {$,requests,timers,context,run,respond,starts:()=>streamStarts,stops:()=>streamStops};
@@ -48,9 +49,10 @@ test('transport failure stays distinct from session rejection and requires delib
 
 test('logout cancels pending requests and stream, clears session state, and revokes cookie on Server',async()=>{
  const s=setup();const restoring=s.run('restoreSession()');s.respond(0);await restoring;
+ s.$('onboarding-authorization').value='ephemeral-authorization';
  const pending=s.run("api('/api/v1/workers')").catch(e=>e.name);
  const loggingOut=s.$('logout').click();assert.equal(s.requests[1].options.signal.aborted,true);
- assert.equal(s.context.authenticated,false);assert.equal(s.timers.size,0);assert.equal(s.$('administration-content').hidden,true);
+ assert.equal(s.context.authenticated,false);assert.equal(s.$('onboarding-authorization').value,'');assert.equal(s.timers.size,0);assert.equal(s.$('administration-content').hidden,true);
  assert.equal(s.requests[2].options.method,'DELETE');assert.equal(s.requests[2].options.headers['X-Codex-CSRF'],'csrf-test');
  s.respond(2,204);await loggingOut;assert.equal(await pending,'AbortError');assert.equal(s.stops(),2);
  await assert.rejects(s.run("api('/api/v1/workers')"),/Sign in/);assert.equal(s.requests.length,3);

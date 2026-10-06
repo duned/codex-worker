@@ -37,6 +37,7 @@ public sealed class WorkerRegistrationTests
 
     [Theory]
     [InlineData("   ")]
+    [InlineData("\t\n")]
     [InlineData("token description")]
     [InlineData("token\tvalue")]
     [InlineData("token\nvalue")]

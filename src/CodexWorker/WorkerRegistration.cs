@@ -342,8 +342,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
 
     public async Task BootstrapAsync(WorkerServerSettings settings, int capacity, string bootstrapToken, string operation, CancellationToken cancellationToken)
     {
+        if (bootstrapToken.Length > 0 && string.IsNullOrWhiteSpace(bootstrapToken))
+            throw new WorkerStartupException("Bootstrap token must be a single nonempty value. Copy only the token, without its description.");
         bootstrapToken = bootstrapToken.Trim();
-        if (bootstrapToken.Length is 0 or > 4096 || bootstrapToken.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
+        if (bootstrapToken.Length > 4096 || bootstrapToken.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
             throw new WorkerStartupException("Bootstrap token must be a single nonempty value. Copy only the token, without its description.");
         WorkerServerSettings.ValidateUrl(settings.Url);
         if (!WorkerEnrollmentProtocol.ValidOperation(operation) || capacity is < 1 or > 8)
@@ -365,7 +367,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         var pending = WorkerPendingRegistration.Load(identityPath);
         if (pending is not null && (pending.WorkerId != identity || pending.Endpoint != endpoint || pending.Operation != operation))
             throw new WorkerStartupException("A different registration is pending. Reconcile it using its original Server and operation before starting another operation.");
-        if (pending is null && operation == "enroll" && File.Exists(WorkerAuthentication.TokenPath(identityPath)))
+        if (pending is null && (operation == "enroll" || bootstrapToken.Length == 0 && !changingServer) && File.Exists(WorkerAuthentication.TokenPath(identityPath)))
         {
             // An ordinary retry never rotates or consumes another enrollment authorization.
             if (activeEndpoint is null)
@@ -375,6 +377,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             await WorkerRegistrationFile.ReplaceAsync(urlPath, endpoint, cancellationToken);
             return;
         }
+        if (pending is null && bootstrapToken.Length == 0)
+            throw new WorkerStartupException("No retained registration to reconcile. Request a fresh authorization in Add Worker for this public pairing request.");
         var retainedPending = pending is not null;
         if (pending is null)
         {
@@ -393,6 +397,8 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
                 }
                 if (pending.Verified) throw new WorkerStartupException("Previously verified pending credential is no longer accepted. Preserve local state and reconcile with the Server operator.");
             }
+            if (bootstrapToken.Length == 0)
+                throw new WorkerStartupException("Retained credential is not acknowledged by this Server. Request a fresh authorization for the same identity, Server and operation; do not delete pending state.");
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint + "/api/v1/workers/register"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bootstrapToken);
             request.Headers.Add("X-Codex-Worker-Token", pending.Token);

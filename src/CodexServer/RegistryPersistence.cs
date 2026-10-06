@@ -2178,8 +2178,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
 
     public Task<string> CreateWorkerAuthorizationAsync(string workerId, string operation, TimeSpan lifetime, CancellationToken cancellationToken = default)
     {
-        if (!Guid.TryParseExact(workerId, "N", out _) || operation is not ("rotate" or "recover" or "associate"))
-            throw new ArgumentException("Authorization requires a valid Worker identity and rotate, recover, or associate operation.");
+        if (!Guid.TryParseExact(workerId, "N", out _) || !WorkerEnrollmentProtocol.ValidOperation(operation))
+            throw new ArgumentException("Authorization requires a valid Worker identity and enrollment operation.");
         return CreateAuthorizationAsync(workerId, operation, lifetime, cancellationToken);
     }
 
@@ -2219,14 +2219,19 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
         var now = _timeProvider.GetUtcNow();
+        command.CommandText = "SELECT worker_id FROM worker_bootstrap_tokens WHERE token_hash=$hash;";
+        command.Parameters.AddWithValue("$hash", HashToken(token));
+        var boundIdentity = await command.ExecuteScalarAsync(cancellationToken) is string;
+        command.Parameters.Clear();
         command.CommandText = """
             DELETE FROM worker_bootstrap_tokens
             WHERE token_hash=$hash AND expires_at_utc>$now AND consumed_at_utc IS NULL AND operation=$operation
+                AND (operation!='associate' OR NOT EXISTS (SELECT 1 FROM execution_requests WHERE assigned_worker_id=$worker AND state IN ('Assigned','Running')))
                 AND NOT EXISTS (SELECT 1 FROM worker_auth_tokens WHERE worker_id=$worker AND token_hash=$newToken)
-                AND ((operation='enroll' AND worker_id IS NULL
+                AND ((operation='enroll' AND (worker_id IS NULL OR worker_id=$worker)
                         AND NOT EXISTS (SELECT 1 FROM worker_auth_tokens WHERE worker_id=$worker)
                         AND NOT EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker))
-                    OR (worker_id=$worker AND (operation='associate' OR EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker))));
+                    OR (operation!='enroll' AND worker_id=$worker AND (operation='associate' OR EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker))));
             """;
         command.Parameters.AddWithValue("$hash", HashToken(token));
         command.Parameters.AddWithValue("$worker", worker.WorkerId);
@@ -2240,12 +2245,14 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         command.Parameters.AddWithValue("$token", HashToken(workerToken));
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
-        command.CommandText = "INSERT INTO workers (worker_id, display_name, registered_at_utc, status_json, registration_json, last_seen_at_utc) VALUES ($id,$name,$now,NULL,$metadata,$now) ON CONFLICT(worker_id) DO UPDATE SET display_name=excluded.display_name, registration_json=excluded.registration_json, last_seen_at_utc=excluded.last_seen_at_utc, heartbeat_json=NULL;";
+        command.CommandText = "INSERT INTO workers (worker_id, display_name, registered_at_utc, status_json, registration_json, last_seen_at_utc, scheduling_policy) VALUES ($id,$name,$now,NULL,$metadata,$now,$policy) ON CONFLICT(worker_id) DO UPDATE SET display_name=excluded.display_name, registration_json=excluded.registration_json, last_seen_at_utc=excluded.last_seen_at_utc, heartbeat_json=NULL, scheduling_policy=CASE WHEN $operation='associate' THEN 'Disabled' ELSE workers.scheduling_policy END;";
         command.Parameters.Clear();
         command.Parameters.AddWithValue("$id", worker.WorkerId);
         command.Parameters.AddWithValue("$name", worker.DisplayName);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(worker));
+        command.Parameters.AddWithValue("$policy", boundIdentity || operation == "associate" ? WorkerSchedulingPolicy.Disabled : WorkerSchedulingPolicy.Enabled);
+        command.Parameters.AddWithValue("$operation", operation);
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return true;
