@@ -145,6 +145,9 @@ def main():
                 for method, path in [('GET', '/'), ('GET', '/home'),
                                      ('GET', '/projects/project-a?label=review'),
                                      ('GET', '/workers/worker-a?step=preparation'),
+                                     ('GET', '/workers/worker-a/poc'),
+                                     ('GET', '/dashboard-assets/worker-poc.js'),
+                                     ('GET', '/dashboard-assets/worker-poc.css'),
                                      ('GET', '/executions/request-a?offset=50'),
                                      ('GET', '/settings/credential-a'),
                                      ('GET', '/api/v1/administration/session'),
@@ -204,7 +207,7 @@ def main():
                             raise
                         time.sleep(0.02)
                 assert request('GET', '/')[0] == 200
-                for path in ['/home', '/projects/project-a?label=review', '/workers/worker-a?step=preparation', '/executions/request-a?offset=50', '/settings/credential-a']:
+                for path in ['/home', '/projects/project-a?label=review', '/workers/worker-a?step=preparation', '/workers/worker-a/poc', '/dashboard-assets/worker-poc.js', '/dashboard-assets/worker-poc.css', '/executions/request-a?offset=50', '/settings/credential-a']:
                     assert request('GET', path)[0] == 200
             finally:
                 process.terminate()

@@ -1428,6 +1428,28 @@ public sealed class CodexServerTests
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
             foreach (var view in new[] { "home", "projects", "workers", "executions", "settings" })
                 Assert.Contains($"href=\"/{view}\"", dashboard);
+            Assert.DoesNotContain("src=\"/dashboard-assets/worker-poc.js\"", dashboard);
+            Assert.DoesNotContain("href=\"/dashboard-assets/worker-poc.css\"", dashboard);
+            using var pocResponse = await client.GetAsync("/workers/worker-a/poc");
+            Assert.Equal(HttpStatusCode.OK, pocResponse.StatusCode);
+            var poc = await pocResponse.Content.ReadAsStringAsync();
+            Assert.Contains("Administration sign in", poc);
+            Assert.Contains("id=\"worker-poc\"", poc);
+            Assert.Contains("src=\"/dashboard-assets/worker-poc.js\"", poc);
+            Assert.Contains("href=\"/dashboard-assets/worker-poc.css\"", poc);
+            Assert.Contains("/api/v1/events/stream", poc);
+            foreach (var (asset, mediaType, content) in new[] {
+                ("js", "text/javascript", "codexWorkerPoc"), ("css", "text/css", "#worker-poc") })
+            {
+                using var response = await client.GetAsync($"/dashboard-assets/worker-poc.{asset}");
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.Equal(mediaType, response.Content.Headers.ContentType?.MediaType);
+                Assert.Contains(content, await response.Content.ReadAsStringAsync());
+                using var post = await client.PostAsync($"/dashboard-assets/worker-poc.{asset}", null);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, post.StatusCode);
+            }
+            using var pocPost = await client.PostAsync("/workers/worker-a/poc", null);
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, pocPost.StatusCode);
             foreach (var path in new[] { "/home", "/projects", "/projects/missing?label=review",
                 "/workers/worker-a?step=preparation", "/executions/request-a?offset=50", "/settings/credential-a" })
             {
@@ -1437,7 +1459,8 @@ public sealed class CodexServerTests
                 Assert.Contains("Administration sign in", await deepLink.Content.ReadAsStringAsync());
             }
             foreach (var path in new[] { "/unsupported", "/api/unknown", "/api/v1/workers/worker-a/unknown",
-                "/health/unknown", "/projects/a/unsupported", "/home/unsupported" })
+                "/health/unknown", "/projects/a/unsupported", "/home/unsupported",
+                "/workers/worker-a/poc/unknown", "/workers/worker-a/other", "/dashboard-assets/unknown.js" })
             {
                 using var unknown = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);

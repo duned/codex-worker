@@ -1,0 +1,8 @@
+{
+  "name": "codex-server-worker-detail-poc",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs ../obj/worker-poc" },
+  "dependencies": { "react": "19.3.0", "react-dom": "19.3.0" },
+  "devDependencies": { "esbuild": "0.25.12" }
+}

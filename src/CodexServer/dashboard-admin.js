@@ -6,6 +6,7 @@ const navigation=createDashboardNavigation({document,window,onRoute:applyRoute,i
 async function applyRoute(route,previous){
  const reads=[],read=promise=>reads.push(promise),changed=!previous||previous.view!==route.view||previous.id!==route.id;
  cancelDashboardReads();
+ if(route.poc)window.codexWorkerPoc?.render(null,true);
  // Restart route observations after obsolete readers are cancelled. In-flight reads coalesce.
  read(loadProjects());read(loadNodes());read(loadOverview());
  $('github-provisioning-consent').checked=false;$('github-elevation-consent').checked=false;
@@ -14,7 +15,7 @@ async function applyRoute(route,previous){
  if(route.view==='workers'){
   if(changed)$('worker-detail').innerHTML='<div class="empty">Select a Worker to inspect runtime state and capabilities.</div>';
   if(changed)$('worker-admin').innerHTML='<div class="empty">Select a Worker to administer it.</div>';
-  if(route.id){read(loadWorker(route.id));read(loadWorkerAdministration(route.id))}
+  if(route.id&&!route.poc){read(loadWorker(route.id));read(loadWorkerAdministration(route.id))}
  }
  if(route.view==='projects'){
   populateGithubProjects();$('github-project').value=route.id||projects[0]?.id||'';
@@ -68,6 +69,7 @@ async function loadProjectDiscoveryObservation(projectId){
  }catch(e){if(!navigation.isCurrent(context)||navigation.current().id!==projectId)return;target.textContent='Current queue observation is unavailable. Refresh project executions; discovery-cycle details are not exposed here. '+e.message}
 }
 function resetResources(){
+ window.codexWorkerPoc?.render(null);
  clearTimeout(githubChallengeTimer);githubChallengeTimer=null;
  $('project-result').hidden=true;
  workers=[];projects=[];nodes=[];nodeCommands=[];serverGitHub=null;nodeSnapshotValid=false;
@@ -75,6 +77,7 @@ function resetResources(){
  for(const id of ['workers','projects','credentials','executions','provisioning','node-detail','github-connection'])$(id).innerHTML='<div class="empty">Waiting for current Server state…</div>';
 }
 function invalidateWorkers(){
+ window.codexWorkerPoc?.render(null);
  navigation.observe('workers',null);
  document.querySelectorAll('[data-worker-policy="Enabled"]').forEach(button=>button.disabled=true);
  for(const id of ['worker-count','capacity-total','capacity-used'])$(id).textContent='—';
@@ -84,7 +87,7 @@ function invalidateWorkers(){
 }
 function executionFilterRoute(offset=0){navigation.navigate('executions','',{project:$('execution-project-filter').value,state:$('execution-state-filter').value,issue:$('execution-issue-filter').value,offset});}
 /* dashboard-session */
-function renderWorkers(data){workerObservationGeneration++;workers=data;navigation.observe('workers',data);renderProjectContext();const online=data.filter(w=>w.availability==='online').length,stale=data.filter(w=>w.availability==='stale').length,offline=data.filter(w=>w.availability==='offline').length;const total=data.reduce((n,w)=>n+w.maximumCapacity,0),used=data.reduce((n,w)=>n+w.activeExecutions,0),free=data.reduce((n,w)=>n+w.availableCapacity,0);$('worker-count').textContent=data.length;$('worker-health').textContent=`${online} online · ${stale} stale · ${offline} offline`;$('capacity-total').textContent=total;$('capacity-used').textContent=used;$('capacity-free').textContent=`Available ${free}`;navigation.updateRows($('workers'),data.length?data.map(w=>`<button class="row" data-worker="${esc(w.workerId)}" style="width:100%;border-left:0;border-right:0;border-top:0;text-align:left;background:transparent;cursor:pointer"><span><span class="primary">${esc(w.displayName)}</span><span class="sub">${esc(w.workerId)} · v${esc(w.workerVersion)}</span><span class="sub">${w.activeExecutions}/${w.maximumCapacity} active · policy ${esc(w.schedulingPolicy.toLowerCase())} · last seen ${esc(new Date(w.lastSeenAtUtc).toLocaleString())}</span></span><span class="badge ${esc(w.availability)}">${esc(w.availability)}</span></button>`).join(''):'<div class="empty">No Workers have registered yet.</div>');document.querySelectorAll('[data-worker]').forEach(el=>el.addEventListener('click',()=>{navigation.navigate('workers',el.dataset.worker)}));}
+function renderWorkers(data){window.codexWorkerPoc?.render(data);workerObservationGeneration++;workers=data;navigation.observe('workers',data);renderProjectContext();const online=data.filter(w=>w.availability==='online').length,stale=data.filter(w=>w.availability==='stale').length,offline=data.filter(w=>w.availability==='offline').length;const total=data.reduce((n,w)=>n+w.maximumCapacity,0),used=data.reduce((n,w)=>n+w.activeExecutions,0),free=data.reduce((n,w)=>n+w.availableCapacity,0);$('worker-count').textContent=data.length;$('worker-health').textContent=`${online} online · ${stale} stale · ${offline} offline`;$('capacity-total').textContent=total;$('capacity-used').textContent=used;$('capacity-free').textContent=`Available ${free}`;navigation.updateRows($('workers'),data.length?data.map(w=>`<button class="row" data-worker="${esc(w.workerId)}" style="width:100%;border-left:0;border-right:0;border-top:0;text-align:left;background:transparent;cursor:pointer"><span><span class="primary">${esc(w.displayName)}</span><span class="sub">${esc(w.workerId)} · v${esc(w.workerVersion)}</span><span class="sub">${w.activeExecutions}/${w.maximumCapacity} active · policy ${esc(w.schedulingPolicy.toLowerCase())} · last seen ${esc(new Date(w.lastSeenAtUtc).toLocaleString())}</span></span><span class="badge ${esc(w.availability)}">${esc(w.availability)}</span></button>`).join(''):'<div class="empty">No Workers have registered yet.</div>');document.querySelectorAll('[data-worker]').forEach(el=>el.addEventListener('click',()=>{navigation.navigate('workers',el.dataset.worker)}));}
 function workerPreparation(w,d){
  const current=w.availability==='online'&&d.configurationSynchronization==='synchronized'&&d.capabilityObservationsCurrent;
  const evidence=ready=>current&&ready?'Worker-reported evidence':'Unavailable or unverified';

@@ -10,10 +10,27 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Frontend source/dependencies are build inputs, never deployment content. -->
+    <Content Remove="worker-poc/**/*" />
     <EmbeddedResource Include="dashboard.html" />
     <EmbeddedResource Include="dashboard-*.js" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)worker-poc/poc.js" LogicalName="CodexServer.worker-poc.js" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)worker-poc/poc.css" LogicalName="CodexServer.worker-poc.css" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Shared/CodexProvisioning.csproj" />
+  </ItemGroup>
+  <Target Name="RestoreWorkerPoc" BeforeTargets="PrepareForBuild"
+          Inputs="worker-poc/package.json;worker-poc/package-lock.json"
+          Outputs="worker-poc/node_modules/.package-lock.json">
+    <Exec WorkingDirectory="worker-poc" Command="npm ci --no-audit --no-fund" />
+  </Target>
+  <Target Name="BuildWorkerPoc" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreWorkerPoc"
+          Inputs="worker-poc/package-lock.json;worker-poc/build.mjs;worker-poc/UNTITLED-UI-LICENSE;@(WorkerPocSource)"
+          Outputs="$(IntermediateOutputPath)worker-poc/poc.js;$(IntermediateOutputPath)worker-poc/poc.css">
+    <Exec WorkingDirectory="worker-poc" Command="node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'worker-poc'))&quot;" />
+  </Target>
+  <ItemGroup>
+    <WorkerPocSource Include="worker-poc/src/**/*" />
   </ItemGroup>
 </Project>

@@ -6,7 +6,8 @@ const {readDashboard}=require('./server-dashboard-source.cjs');
 const flush=async()=>{for(let i=0;i<100;i++)await Promise.resolve()};
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
 function setup(path='/home'){
- const html=readDashboard(),elements=new Map(),listeners=new Map(),timers=new Map(),calls=[];
+ const poc=path.split('?')[0].endsWith('/poc'),pocRenders=[],assignments=[];
+ const html=readDashboard({workerPoc:poc}),elements=new Map(),listeners=new Map(),timers=new Map(),calls=[];
  let timerId=0;
  class Element{
   constructor(id){this.id=id;this.value='';this.dataset={};this.hidden=false;this.open=false;this.children=[];this.attributes={};this.checked=false;this.markup='';this.textContent=''}
@@ -38,6 +39,8 @@ function setup(path='/home'){
  const held=new Map();let rejectNodes=false,streamRead=null;
  const origin='https://server.example',entries=[],scrolls=[];let entry=-1;
  const window={location:{origin},scrollX:0,scrollY:0,scrollTo(x,y){this.scrollX=x;this.scrollY=y;scrolls.push([x,y])},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
+ window.location.assign=value=>assignments.push(value);
+ if(poc)window.codexWorkerPoc={render:(data,loading=false)=>pocRenders.push({data,loading})};
  function location(value){const url=new URL(value,origin);Object.assign(window.location,{pathname:url.pathname,search:url.search,hash:url.hash})}
  window.history={state:null,pushState(state,title,value){entries.splice(++entry);entries.push({state,path:value});this.state=state;location(value)},replaceState(state,title,value){const path=value||window.location.pathname+window.location.search;entries[entry]={state,path};this.state=state;location(path)}};
  window.history.pushState({},'',path);
@@ -77,7 +80,7 @@ function setup(path='/home'){
  });
  vm.runInContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
  const emit=async(name,event={})=>{for(const handler of listeners.get(name)||[])handler(event);await flush()};
- return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,
+ return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,pocRenders,assignments,
   async route(path){window.history.pushState({},'',path);await emit('popstate')},
   window,scrolls,documentListeners,async back(){entry--;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},async forward(){entry++;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},
   async poll(){const entry=[...timers.entries()].find(([,timer])=>timer.delay===5000);assert.ok(entry);timers.delete(entry[0]);await entry[1].fn();await flush()},
@@ -291,5 +294,34 @@ test('observation rendering preserves expanded disclosures and summary focus',as
  s.window.scrollY=420;
  router.preservePresentation(element,()=>{currentDetails={open:false};currentSummary={...summary};s.window.scrollY=100});
  assert.equal(currentDetails.open,true);assert.equal(currentSummary.focusOptions.preventScroll,true);assert.equal(s.window.scrollY,420);
+ await s.emit('pagehide');
+});
+
+test('isolated Worker PoC restores the existing session and consumes its single stream without detail reads',async()=>{
+ const s=setup('/workers/worker-a/poc');await s.flush();
+ assert.equal(s.$('view-workers').hidden,false);
+ assert.equal(s.$('worker-poc').hidden,false);
+ assert.equal(s.$('worker-detail-panel').hidden,true);
+ assert.equal(s.$('worker-admin-panel').hidden,true);
+ assert.equal(s.calls.filter(c=>c.path==='/api/v1/administration/session').length,1);
+ assert.equal(s.calls.filter(c=>c.path==='/api/v1/events/stream').length,1);
+ await s.workersEvent([s.worker]);
+ assert.equal(s.pocRenders.at(-1).data[0].workerId,'worker-a');
+ await s.poll();
+ assert.ok(!s.calls.some(c=>c.path.startsWith('/api/v1/workers/')));
+ assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
+ await s.$('logout').onclick();await s.flush();
+ assert.equal(s.$('administration-content').hidden,true);
+ assert.equal(s.pocRenders.at(-1).data,null);
+ assert.equal([...s.timers.values()].filter(t=>t.delay===5000).length,0);
+ await s.emit('pagehide');
+});
+
+test('PoC exit restores the ordinary page by same-origin navigation and normal pages have no PoC assets',async()=>{
+ const s=setup('/workers/worker-a/poc');await s.flush();
+ let prevented=false;
+ s.documentListeners.get('click')({target:{closest:()=>({href:'https://server.example/workers/worker-a',hasAttribute:()=>false})},button:0,preventDefault(){prevented=true}});
+ assert.equal(prevented,true);assert.deepEqual(s.assignments,['/workers/worker-a']);
+ assert.doesNotMatch(readDashboard(),/src="\/dashboard-assets\/worker-poc|href="\/dashboard-assets\/worker-poc|id="worker-poc"/);
  await s.emit('pagehide');
 });

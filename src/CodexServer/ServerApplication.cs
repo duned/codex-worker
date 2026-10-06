@@ -417,6 +417,10 @@ public static class ServerApplication
         {
             app.MapGet(path, () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
         }
+        app.MapGet("/workers/{resourceId}/poc", () => Results.Content(ReadDashboard(workerPoc: true), "text/html; charset=utf-8"));
+        // Fixed embedded assets only; no filesystem/static-file or HTML fallback.
+        app.MapGet("/dashboard-assets/worker-poc.js", () => Results.Content(ReadWorkerPocAsset("js"), "text/javascript; charset=utf-8"));
+        app.MapGet("/dashboard-assets/worker-poc.css", () => Results.Content(ReadWorkerPocAsset("css"), "text/css; charset=utf-8"));
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>
         {
             try
@@ -959,12 +963,27 @@ public static class ServerApplication
         return app;
     }
 
-    private static string ReadDashboard()
+    private static string ReadWorkerPocAsset(string extension)
+    {
+        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.worker-poc.{extension}")
+            ?? throw new InvalidOperationException("A Server Worker PoC asset resource is missing.");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
+    private static string ReadDashboard(bool workerPoc = false)
     {
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CodexServer.dashboard.html")
             ?? throw new InvalidOperationException("The Server dashboard resource is missing.");
         using var reader = new StreamReader(stream);
         var html = reader.ReadToEnd();
+        html = html.Replace("<!-- worker-poc -->", workerPoc
+            ? "<div id=\"worker-poc\"></div>" : "", StringComparison.Ordinal);
+        if (workerPoc)
+        {
+            html = html.Replace("</head>", "<link rel=\"stylesheet\" href=\"/dashboard-assets/worker-poc.css\"></head>", StringComparison.Ordinal);
+            html = html.Replace("<!-- dashboard-scripts -->", "<script src=\"/dashboard-assets/worker-poc.js\"></script><!-- dashboard-scripts -->", StringComparison.Ordinal);
+        }
         var scripts = new StringBuilder();
         foreach (var name in new[] { "dashboard-navigation.js", "dashboard-admin.js" })
         {

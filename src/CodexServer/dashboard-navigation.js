@@ -7,6 +7,7 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
  let state={projects:null,nodes:null,workers:null,executions:null};
  function readRoute(){
   const segments=(window.location.pathname||'/home').slice(1).split('/');
+  if(segments[0]==='workers'&&segments[1]&&segments.length===3&&segments[2]==='poc')return {view:'workers',id:decodeURIComponent(segments[1]),poc:true,params:new URLSearchParams(window.location.search)};
   if(!views.includes(segments[0])||segments.length>2||(segments[0]==='home'&&segments.length!==1))return {view:'home',id:'',params:new URLSearchParams()};
   return {view:segments[0],id:segments[1]?decodeURIComponent(segments[1]):'',params:new URLSearchParams(window.location.search)};
  }
@@ -42,8 +43,9 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
   $('execution-list-toolbar').hidden=!!route.id;$('executions').hidden=!!route.id;$('execution-detail').hidden=!route.id;
   $('project-list-panel').hidden=route.view==='projects'&&!!route.id;
   $('worker-list-panel').hidden=route.view==='workers'&&!!route.id;
-  $('worker-detail-panel').hidden=!route.id;
-  $('worker-admin-panel').hidden=!route.id||step!=='activation';
+  $('worker-detail-panel').hidden=!route.id||!!route.poc;
+  $('worker-admin-panel').hidden=!route.id||step!=='activation'||!!route.poc;
+  if($('worker-poc'))$('worker-poc').hidden=!route.poc;
   if(active){
    const loaded=onRoute(route,previous);
    if(navigation&&(!previous||previous.view!==route.view||previous.id!==route.id)){
@@ -56,6 +58,8 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
  function navigate(view,id='',params={}){
   if(!views.includes(view))return;
   const path=canonical(view,id,params);
+  // Leaving the isolated page restores the ordinary shell without React assets.
+  if(current().poc){window.location.assign(path);return;}
   if(window.location.pathname+window.location.search===path)return;
   saveScroll();window.history.pushState({},'',path);render({navigation:true});
  }
