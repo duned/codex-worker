@@ -33,6 +33,18 @@ function api(path,options={},sessionRequest=false){
   try{
    const response=await fetch(path,{...options,headers,credentials:'same-origin',cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(15000)])});
    if(!current())throw obsoleteDashboardRead();
+   if(sessionRequest&&(response.status===401||response.status===403)){
+    const messages={
+     'administration-origin-missing':'Browser login is not configured. On the Server, set AdministrationOrigin to the exact external HTTPS origin with sudo codex-server config set AdministrationOrigin <origin>, then restart codex-server.service. Keep the proxy upstream Host consistent. Token rotation will not fix this.',
+     'administration-host-mismatch':'Server administration Host mismatch. Match the fixed proxy upstream Host to the configured AdministrationOrigin authority, validate the proxy and reload it; restart the Server after configuration changes. Token rotation will not fix this.',
+     'administration-origin-mismatch':'Browser origin does not match Server AdministrationOrigin. Use the configured HTTPS dashboard URL or correct the explicit Server configuration and restart the Server. Token rotation will not fix this.',
+     'administration-token-invalid':'Management token was rejected. Retrieve the existing token locally on the Server using the login help below.',
+     'administration-session-invalid':'No valid administration session. Sign in with the existing management token.'
+    };
+    const code=response.headers?.get('X-Codex-Administration-Error');
+    const message=(Object.hasOwn(messages,code)?messages[code]:null)||'Access was rejected without a Server session diagnostic. Check the VPN management network policy and proxy routing before retrying; this does not establish a token failure.';
+    signOut(message);throw Object.assign(Error(message),{administrationFailure:true});
+   }
    if(response.status===401||response.status===403){signOut('Your session expired or was rejected. Sign in again.');throw Error('Administration sign in required.');}
    // Never display untrusted error bodies, authentication challenges or query values.
    const resource=path.split('?')[0].slice(0,160);
@@ -44,7 +56,7 @@ function api(path,options={},sessionRequest=false){
    if(!current())throw obsoleteDashboardRead();
    return result;
   }catch(e){
-   if(e.message==='Administration sign in required.')throw e;
+   if(e.administrationFailure||e.message==='Administration sign in required.')throw e;
    if(!current())throw obsoleteDashboardRead();
    if(e.name==='TypeError'||e.name==='TimeoutError')throw Error(`${method} ${path.split('?')[0].slice(0,160)}: connection unavailable. State may be stale; check the connection and refresh.`);
    throw e;
@@ -64,11 +76,11 @@ function startSession(session){
  const generation=sessionGeneration;clearTimeout(sessionTimer);sessionTimer=setTimeout(()=>{if(generation===sessionGeneration)signOut('Your session expired. Sign in again.')},Math.max(0,Date.parse(session.expiresAtUtc)-Date.now()));
  navigation.start();startDashboardPolling();streamWorkers();
 }
-async function restoreSession(){signOut('Checking administration session…');const generation=sessionGeneration;try{const session=await api('/api/v1/administration/session',{},true);if(generation===sessionGeneration)startSession(session)}catch(e){if(authenticated||e.message==='Administration session ended.')return;if(e.name!=='AbortError'&&e.message!=='Administration sign in required.')$('session-message').textContent='Server connection unavailable. Choose Check session to try again.'}}
+async function restoreSession(){signOut('Checking administration session…');const generation=sessionGeneration;try{const session=await api('/api/v1/administration/session',{},true);if(generation===sessionGeneration)startSession(session)}catch(e){if(authenticated||e.message==='Administration session ended.')return;if(e.administrationFailure)$('session-message').textContent=e.message;else if(e.name!=='AbortError'&&e.message!=='Administration sign in required.')$('session-message').textContent='Server connection unavailable. Choose Check session to try again.'}}
 async function signIn(){
  const token=$('token').value;$('token').value='';signOut('Signing in…');$('unlock').disabled=true;const generation=sessionGeneration;
  try{const session=await api('/api/v1/administration/session',{method:'POST',headers:{Authorization:'Bearer '+token}},true);if(generation===sessionGeneration)startSession(session)}
- catch(e){if(e.name!=='AbortError'&&e.message!=='Administration session ended.')$('session-message').textContent=e.message==='Administration sign in required.'?'Sign in was rejected. Check the management token and configured administration origin.':'Server connection unavailable. Try signing in again.'}
+ catch(e){if(e.name!=='AbortError'&&e.message!=='Administration session ended.')$('session-message').textContent=e.administrationFailure?e.message:'Server connection unavailable. Try signing in again.'}
  finally{if(generation===sessionGeneration)$('unlock').disabled=false}
 }
 async function logout(){

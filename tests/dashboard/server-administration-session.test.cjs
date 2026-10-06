@@ -17,7 +17,7 @@ function setup(){
  const onboarding=html.slice(html.indexOf('// Only the public request'),html.indexOf('async function openOnboarding'));
  vm.runInContext(onboarding+source+binding,context);
  const run=code=>vm.runInContext(code,context);
- const respond=(index,status=200,body={csrfToken:'csrf-test',expiresAtUtc:new Date(Date.now()+3600000).toISOString()})=>requests[index].resolve({ok:status>=200&&status<300,status,json:async()=>body});
+ const respond=(index,status=200,body={csrfToken:'csrf-test',expiresAtUtc:new Date(Date.now()+3600000).toISOString()},code=null)=>requests[index].resolve({ok:status>=200&&status<300,status,headers:new Headers(code?{'X-Codex-Administration-Error':code}:{}),json:async()=>body});
  return {$,requests,timers,context,run,respond,starts:()=>streamStarts,stops:()=>streamStops};
 }
 
@@ -37,8 +37,8 @@ test('reload restores the existing cookie session without a management token',as
 
 test('rejected login and reload produce one sign-in state without retries',async()=>{
  for(const operation of ['signIn()','restoreSession()']){
-  const s=setup();s.$('token').value='rejected';const pending=s.run(operation);s.respond(0,401);await pending;
-  assert.equal(s.context.authenticated,false);assert.equal(s.starts(),0);assert.equal(s.timers.size,0);assert.equal(s.requests.length,1);assert.match(s.$('session-message').textContent,/rejected/);
+  const s=setup();s.$('token').value='rejected';const pending=s.run(operation);s.respond(0,401,{},operation==='signIn()'?'administration-token-invalid':'administration-session-invalid');await pending;
+  assert.equal(s.context.authenticated,false);assert.equal(s.starts(),0);assert.equal(s.timers.size,0);assert.equal(s.requests.length,1);assert.match(s.$('session-message').textContent,/rejected|No valid administration session/);
  }
 });
 
@@ -97,4 +97,25 @@ test('pending read registry has a fixed bound and cancellation releases capacity
  const pending=Array.from({length:64},(_,i)=>s.run(`api('/api/v1/executions?offset=${i}')`).catch(e=>e.name));
  await assert.rejects(s.run("api('/api/v1/executions?offset=64')"),/capacity/);assert.equal(s.run('dashboardReads.size'),64);
  s.run('signOut()');await Promise.all(pending);assert.equal(s.run('dashboardReads.size'),0);
+});
+
+// Codes are fixed allowlisted guidance; proxy bodies/headers must never reach the UI.
+test('configuration, token and unknown proxy rejection show distinct safe help without retries',async()=>{
+ for(const [code,pattern] of [
+  ['administration-origin-missing',/not configured/],
+  ['administration-host-mismatch',/Host mismatch/],
+  ['administration-origin-mismatch',/origin does not match/],
+  ['administration-token-invalid',/token was rejected/],
+  [null,/VPN management network/],['__proto__',/VPN management network/],['untrusted-secret',/VPN management network/]
+ ]){
+  for(const operation of ['signIn()','restoreSession()']){
+   const s=setup();s.$('token').value='private-test-token';const pending=s.run(operation);
+   s.respond(0,code==='administration-token-invalid'?401:403,{message:'raw-private-payload'},code);await pending;
+   assert.match(s.$('session-message').textContent,pattern);
+   assert.doesNotMatch(s.$('session-message').textContent,/raw-private-payload|private-test-token|untrusted-secret/);
+   assert.equal(s.requests.length,1);assert.equal(s.starts(),0);assert.equal(s.timers.size,0);
+   assert.equal(s.$('unlock').disabled,false);assert.equal(s.$('token').value,operation==='signIn()'?'':'private-test-token');
+  }
+ }
+ assert.match(html,/sudo sed -n/);assert.match(html,/config set AdministrationOrigin/);
 });

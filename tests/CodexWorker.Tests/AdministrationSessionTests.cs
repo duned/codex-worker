@@ -85,6 +85,88 @@ public sealed class AdministrationSessionTests
         else Assert.Throws<InvalidDataException>(configuration.Validate);
     }
 
+    [Fact]
+    public async Task UpgradedHttpsEnvironmentExplainsMissingOriginAndInstalledConfigSetRestoresLogin()
+    {
+        using var temporary = new TemporaryDirectory();
+        const string browserOrigin = "https://checha.duckdns.org";
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var listenUrl = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+        listener.Stop();
+        var path = Path.Combine(temporary.Path, "server.env");
+        // Synthetic preserved pre-upgrade environment, never a deployment secret/file.
+        var original = $"# operator settings retained\nServer__ListenUrl={listenUrl}\nCODEX_SERVER_MANAGEMENT_TOKEN=upgrade-test-token\n";
+        File.WriteAllText(path, original);
+        var values = new Dictionary<string, string?>
+        {
+            ["CODEX_SERVER_CONFIGURATION_FILE"] = path,
+            ["CODEX_SERVER_MANAGEMENT_TOKEN"] = "upgrade-test-token",
+            ["Server__AdministrationOrigin"] = null,
+            ["Server__ListenUrl"] = listenUrl,
+            ["Server__DataDirectory"] = temporary.Path,
+            ["Server__DatabasePath"] = Path.Combine(temporary.Path, "registry.db")
+        };
+        var previous = values.Keys.ToDictionary(key => key, Environment.GetEnvironmentVariable);
+        foreach (var (key, value) in values) Environment.SetEnvironmentVariable(key, value);
+        try
+        {
+            var inspected = new ServerConfigurationAdministrationService().Inspect([]);
+            Assert.True(inspected.Document.IsValid); // Worker and bearer management remain usable.
+            Assert.Contains("config set AdministrationOrigin", inspected.Document.AdministrationSessionGuidance);
+            using var handler = new SocketsHttpHandler { UseCookies = false };
+            using var client = new HttpClient(handler) { BaseAddress = new(listenUrl) };
+            client.DefaultRequestHeaders.Host = "checha.duckdns.org";
+            client.DefaultRequestHeaders.Add("Origin", browserOrigin);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "upgrade-test-token");
+            await using (var app = await ServerApplication.BuildAsync(["--Logging:LogLevel:Default=Warning"]))
+            {
+                await app.StartAsync();
+                foreach (var method in new[] { HttpMethod.Get, HttpMethod.Post })
+                {
+                    using var request = new HttpRequestMessage(method, "/api/v1/administration/session");
+                    using var rejected = await client.SendAsync(request);
+                    Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
+                    Assert.Equal("administration-origin-missing", Assert.Single(rejected.Headers.GetValues(AdministrationSessions.ErrorHeader)));
+                    Assert.True(rejected.Headers.CacheControl?.NoStore);
+                    Assert.False(rejected.Headers.Contains("Set-Cookie"));
+                }
+                using var bearer = await client.GetAsync("/api/v1/workers");
+                Assert.Equal(HttpStatusCode.OK, bearer.StatusCode);
+                await app.StopAsync();
+            }
+            var originalOutput = Console.Out;
+            using var output = new StringWriter();
+            Console.SetOut(output);
+            try
+            {
+                Assert.Equal(ServerAdministrationExitCodes.Success,
+                    await Program.Main(["config", "set", "AdministrationOrigin", browserOrigin, "--json"]));
+            }
+            finally { Console.SetOut(originalOutput); }
+            Assert.DoesNotContain("upgrade-test-token", output.ToString());
+            using var mutation = JsonDocument.Parse(output.ToString());
+            Assert.True(mutation.RootElement.GetProperty("restartRequired").GetBoolean());
+            Assert.StartsWith(original, File.ReadAllText(path));
+            Assert.Contains($"Server__AdministrationOrigin=\"{browserOrigin}\"", File.ReadAllText(path));
+            // Model systemd loading the newly written setting on service restart.
+            Environment.SetEnvironmentVariable("Server__AdministrationOrigin", browserOrigin);
+            inspected = new ServerConfigurationAdministrationService().Inspect([]);
+            Assert.Equal(browserOrigin, inspected.Document.AdministrationOrigin);
+            Assert.Null(inspected.Document.AdministrationSessionGuidance);
+            await using var restarted = await ServerApplication.BuildAsync(["--Logging:LogLevel:Default=Warning"]);
+            await restarted.StartAsync();
+            using var login = await client.PostAsync("/api/v1/administration/session", null);
+            Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+            Assert.Contains("; secure", Assert.Single(login.Headers.GetValues("Set-Cookie")));
+            await restarted.StopAsync();
+        }
+        finally
+        {
+            foreach (var (key, value) in previous) Environment.SetEnvironmentVariable(key, value);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -100,18 +182,20 @@ public sealed class AdministrationSessionTests
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
             listener.Stop();
             var origin = $"http://127.0.0.1:{port}";
-            var browserOrigin = tlsProxy ? $"https://127.0.0.1:{port}" : origin;
+            var browserOrigin = tlsProxy ? "https://checha.duckdns.org" : origin;
             await using var app = await ServerApplication.BuildAsync([
                 $"--Server:ListenUrl={origin}", $"--Server:AdministrationOrigin={browserOrigin}",
                 $"--Server:DatabasePath={Path.Combine(temporary.Path, "registry.db")}", "--Logging:LogLevel:Default=Warning"]);
             await app.StartAsync();
             using var handler = new SocketsHttpHandler { UseCookies = false, MaxResponseDrainSize = 0 };
             using var client = new HttpClient(handler) { BaseAddress = new(origin) };
+            client.DefaultRequestHeaders.Host = new Uri(browserOrigin).Authority;
             client.DefaultRequestHeaders.Add("Origin", browserOrigin);
             client.DefaultRequestHeaders.Authorization = new("Bearer", "worker-token");
             using (var rejected = await client.PostAsync("/api/v1/administration/session", null))
             {
                 Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+                Assert.Equal("administration-token-invalid", Assert.Single(rejected.Headers.GetValues(AdministrationSessions.ErrorHeader)));
                 Assert.True(rejected.Headers.CacheControl?.NoStore);
                 Assert.False(rejected.Headers.Contains("Set-Cookie"));
             }
@@ -122,6 +206,25 @@ public sealed class AdministrationSessionTests
                 Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
             client.DefaultRequestHeaders.Remove("Origin");
             client.DefaultRequestHeaders.Add("Origin", browserOrigin);
+            foreach (var untrusted in new string?[] { null, "null", "https://attacker.example", browserOrigin + "/" })
+            {
+                client.DefaultRequestHeaders.Remove("Origin");
+                if (untrusted is not null) client.DefaultRequestHeaders.Add("Origin", untrusted);
+                using var rejected = await client.PostAsync("/api/v1/administration/session", null);
+                Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
+                Assert.Equal("administration-origin-mismatch", Assert.Single(rejected.Headers.GetValues(AdministrationSessions.ErrorHeader)));
+            }
+            client.DefaultRequestHeaders.Remove("Origin");
+            client.DefaultRequestHeaders.Add("Origin", browserOrigin);
+            client.DefaultRequestHeaders.Host = "wrong-route.example";
+            client.DefaultRequestHeaders.Add("X-Forwarded-Host", new Uri(browserOrigin).Authority);
+            client.DefaultRequestHeaders.Add("X-Forwarded-Proto", "https");
+            using (var rejected = await client.PostAsync("/api/v1/administration/session", null))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
+                Assert.Equal("administration-host-mismatch", Assert.Single(rejected.Headers.GetValues(AdministrationSessions.ErrorHeader)));
+            }
+            client.DefaultRequestHeaders.Host = new Uri(browserOrigin).Authority;
             using var login = await client.PostAsync("/api/v1/administration/session", null);
             Assert.Equal(HttpStatusCode.OK, login.StatusCode);
             var setCookie = Assert.Single(login.Headers.GetValues("Set-Cookie"));
@@ -134,6 +237,7 @@ public sealed class AdministrationSessionTests
             var csrf = session.RootElement.GetProperty("csrfToken").GetString();
             client.DefaultRequestHeaders.Authorization = null;
             client.DefaultRequestHeaders.Add("Cookie", cookie);
+            client.DefaultRequestHeaders.Remove("Origin"); // Browser reload GET need not send Origin.
             using (var restored = await client.GetAsync("/api/v1/administration/session"))
                 Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
             using (var workers = await client.GetAsync("/api/v1/workers"))
@@ -143,6 +247,11 @@ public sealed class AdministrationSessionTests
             using (var denied = await client.PostAsJsonAsync("/api/v1/workers/onboarding/authorize",
                 new CodexProvisioning.WorkerPairingRequest(1, Guid.NewGuid().ToString("N"), "enroll", browserOrigin)))
                 Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            client.DefaultRequestHeaders.Add("Origin", browserOrigin);
+            client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, "incorrect-csrf");
+            using (var denied = await client.DeleteAsync("/api/v1/administration/session"))
+                Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            client.DefaultRequestHeaders.Remove(AdministrationSessions.CsrfHeader);
             client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, csrf);
             client.DefaultRequestHeaders.Authorization = new("Bearer", "worker-token");
             using (var denied = await client.GetAsync("/api/v1/workers"))

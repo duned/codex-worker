@@ -535,6 +535,13 @@ cat <<'EOF'
 Configure /etc/codex-server/server.env, then restart with: systemctl restart codex-server
 The management token is stored in /etc/codex-server/server.env. Retrieve it when needed with:
 sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env
+Dashboard setup/upgrade: existing settings and tokens are preserved. Browser login requires an explicit AdministrationOrigin.
+Inspect safely: sudo codex-server config show; sudo codex-server config validate
+Set the exact external HTTPS origin (no trailing slash): sudo codex-server config set AdministrationOrigin https://YOUR-SERVER-HOST
+Match the proxy fixed upstream Host to that origin's authority; keep TLS and VPN restrictions. Validate/reload the proxy after edits.
+Restart after Server configuration changes: sudo systemctl restart codex-server
+An unset origin disables browser login only; do not rotate a valid token to repair origin/Host or VPN rejection.
+See docs/remote-https-deployment.md for safe rejection diagnostics and upgrade verification.
 The default endpoint is http://127.0.0.1:5090. Check status: systemctl status codex-server
 Logs: journalctl -u codex-server
 Create a short-lived, one-use Worker bootstrap token: sudo codex-server worker-token create

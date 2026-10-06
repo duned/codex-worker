@@ -117,17 +117,33 @@ public static class ServerApplication
         }
         app.Logger.LogInformation("Codex Server {Version} initialized in {RuntimeMode} mode; listening on {ListenUrl}; persistent data directory: {DataDirectory}",
             DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
+        if (configuration.AdministrationOrigin is null)
+            app.Logger.LogWarning("{Guidance}", AdministrationSessions.MissingOriginGuidance);
         app.MapPost("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
         {
-            if (!sessions.OriginAllowed(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
-            if (!sessions.BearerAuthorized(context)) return Results.Unauthorized();
+            if (sessions.LoginFailure(context) is { } failure)
+            {
+                context.Response.Headers[AdministrationSessions.ErrorHeader] = failure;
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+            if (!sessions.BearerAuthorized(context))
+            {
+                context.Response.Headers[AdministrationSessions.ErrorHeader] = "administration-token-invalid";
+                return Results.Unauthorized();
+            }
             var session = sessions.Create(context);
             return session is null ? Results.StatusCode(StatusCodes.Status429TooManyRequests)
                 : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
         });
         app.MapGet("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
         {
+            if (sessions.ConfigurationFailure(context) is { } failure)
+            {
+                context.Response.Headers[AdministrationSessions.ErrorHeader] = failure;
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
             var session = sessions.Validate(context);
+            if (session is null) context.Response.Headers[AdministrationSessions.ErrorHeader] = "administration-session-invalid";
             return session is null ? Results.Unauthorized() : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
         });
         app.MapDelete("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>

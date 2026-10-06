@@ -186,11 +186,122 @@ replace incoming values rather than appending arbitrary client headers.
 
 Set `Server:AdministrationOrigin` to the exact browser origin, for example
 `https://codex-server.example.com` (no trailing slash), through Server configuration
-or `Server__AdministrationOrigin` in the service environment. It must match the
+or `Server__AdministrationOrigin` in the service environment. The installed CLI supports:
+
+```sh
+sudo codex-server config show
+sudo codex-server config set AdministrationOrigin https://codex-server.example.com
+sudo codex-server config validate
+sudo systemctl restart codex-server
+```
+
+`config show` exposes the origin and safe guidance, with paths/credentials redacted;
+`config validate` permits an unset origin for bearer-only deployments but explains
+that browser login is disabled. The Server also warns at startup. It must match the
 fixed upstream Host including any non-default port. The origin is operator
 configuration, never inferred from forwarded headers or the HTTP upstream scheme.
 An unset origin disables browser session login; bearer API/CLI clients still work.
 Keep the loopback listener, proxy TLS and VPN route restrictions in place.
+
+#### Upgrade recovery and bounded rejection diagnostics
+
+An upgrade preserves the existing management token and environment; it cannot
+infer the trusted browser origin. Before opening the upgraded dashboard, inspect
+`sudo codex-server config show` and configure the exact origin if it is absent or
+inconsistent. Do not change the loopback ListenUrl to the external HTTPS URL.
+Keep existing valid origin settings. An invalid configured origin is a startup
+configuration error; correct only that setting locally using a private editor if
+`config set` cannot load the invalid configuration, then validate and restart.
+Do not print or share the private EnvironmentFile. The installer prints these
+setup steps; it does not overwrite an operator's proxy configuration.
+
+For the reported separate-VM deployment, the supported values are:
+
+- Browser URL and `AdministrationOrigin`: `https://checha.duckdns.org`.
+- Server `ListenUrl`: `http://127.0.0.1:5090` (or the existing loopback port,
+  with the same port in `proxy_pass`).
+- TLS virtual host: `checha.duckdns.org`; fixed `proxy_set_header Host checha.duckdns.org;`.
+  No forwarded-header trust; retain the existing VPN management allowlist.
+
+On the Server, using the upgraded artifact:
+
+```sh
+sudo codex-server --version
+sudo codex-server config show
+sudo codex-server config set AdministrationOrigin https://checha.duckdns.org
+sudo codex-server config validate
+sudo systemctl restart codex-server
+```
+
+Review only the relevant proxy server name, upstream Host/port and VPN policy
+locally. If an edit is needed, run `sudo nginx -t` then
+`sudo systemctl reload nginx`; a Server origin change requires a Server restart.
+Do not replace the operator's proxy configuration with the example wholesale.
+Neither step changes Worker identity, history, or the management token.
+
+A 403 alone does not identify the rejecting layer. From the administrator's VPN
+client, a bounded **credential-free** probe checks the actual TLS/proxy route:
+
+```sh
+curl --silent --show-error --max-time 10 --output /dev/null --dump-header - \
+  --request POST --header 'Origin: https://checha.duckdns.org' \
+  https://checha.duckdns.org/api/v1/administration/session
+```
+
+Use this command only without Authorization or cookies; never add real credentials,
+`-v`, `-k` or a cookie jar. Inspect only HTTP status, `X-Codex-Request-Id` and
+`X-Codex-Administration-Error`. The Server's fixed diagnostic codes are
+`administration-origin-missing`, `administration-host-mismatch`,
+`administration-origin-mismatch` (403), `administration-token-invalid` (401), and
+`administration-session-invalid` (401 on restoration). No submitted value is echoed.
+An expected 401/token-invalid from this **token-free** probe means the Server
+accepted the origin/Host; it says nothing about the preserved token's validity.
+A 403 without a Server diagnostic may be proxy/network rejection or a different
+artifact/routing/header policy; it is not proof of a bad token. Verify VPN source
+membership, route and artifact before retrying. Do not weaken the network policy.
+If needed, repeat the same token-free POST locally to the loopback listener with
+`Host: checha.duckdns.org` and the same Origin to isolate the application from the
+proxy. Do not expose the loopback port remotely. Compare only status and fixed
+codes, not raw browser requests, logs or environment files.
+
+The dashboard checks session configuration on reload before token entry and
+shows distinct configuration guidance, invalid-token/session help, or an unknown
+access rejection pointing to VPN/proxy checks. It displays only allowlisted
+messages, never arbitrary proxy error bodies. There are no automatic login retries.
+Origin/Host rejection does not justify rotating a valid management token.
+
+Retrieve the existing token only in a private local Server terminal when needed:
+
+```sh
+sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env
+```
+
+Paste it into the dashboard password field. Do not send its output to support,
+attach the environment file, export a HAR, or share cookies/authentication headers.
+The token is never returned through a login-help API.
+
+Deployed acceptance checklist for `https://checha.duckdns.org`:
+
+1. Verify the installed/running artifact version, redacted configuration and
+   explicit origin, loopback upstream port/Host and unchanged VPN restrictions.
+   Restart Server after configuration edits; validate/reload proxy after its edits.
+2. From the allowed VPN client, run the token-free probe and identify the layer
+   by fixed diagnostic/status. Outside the allowed network, management routes
+   must remain rejected without reaching the backend.
+3. Sign in with the preserved token; confirm a Secure/HttpOnly/SameSite=Strict
+   host-only cookie without recording its value. No token appears in URLs or
+   browser persistent storage.
+4. Reload: the session restores without token entry. Observe exactly one active
+   `/api/v1/events/stream` connection and continuing dashboard updates. Do not
+   export request headers or responses.
+5. Log out: the stream closes and administration hides. Reload stays signed out;
+   a mutation without valid CSRF must be rejected.
+
+The fix is validated with local deterministic application/dashboard regressions
+and an isolated proxy test when tools are available. The operator VMs, effective
+configuration, real-token sign-in, deployed SSE and logout have **not** been
+inspected or exercised during implementation. Missing origin is a reproduced
+upgrade condition, not a proven cause of this deployment's original 403.
 
 Sign in at the dashboard's Administration sign in panel with the management token.
 Only the login request carries this token; it is cleared from the input immediately

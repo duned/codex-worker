@@ -15,6 +15,7 @@ public static partial class ServerConfigurationMutation
     {
         ["DisplayName"] = "Server__DisplayName",
         ["ListenUrl"] = "Server__ListenUrl",
+        ["AdministrationOrigin"] = "Server__AdministrationOrigin",
         ["DataDirectory"] = "Server__DataDirectory",
         ["DatabasePath"] = "Server__DatabasePath",
         ["EnableLocalProvisioning"] = "Server__EnableLocalProvisioning",
@@ -100,6 +101,7 @@ public static partial class ServerConfigurationMutation
         {
             case "DisplayName": configuration.DisplayName = value; break;
             case "ListenUrl": configuration.ListenUrl = value; break;
+            case "AdministrationOrigin": configuration.AdministrationOrigin = value; break;
             case "DataDirectory": configuration.DataDirectory = value; break;
             case "DatabasePath": configuration.DatabasePath = value; break;
             case "EnableLocalProvisioning": configuration.EnableLocalProvisioning = ParseBoolean(setting, value); break;

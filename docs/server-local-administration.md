@@ -74,7 +74,7 @@ Root `--help` / `-h` is an index. Each command family and leaf supports the same
 
 `config show` displays effective non-secret settings. Data-directory and database paths are redacted. `config validate` checks Server settings and path resolution without opening or creating the database. Registration, management, and credential-encryption secrets are not included in either output. JSON documents include `contractVersion: 1` for callers that need a versioned output contract.
 
-`config set <setting> <value>` atomically updates a supported value in the installed `/etc/codex-server/server.env`: `ListenUrl`, `DataDirectory`, `DatabasePath`, `EnableLocalProvisioning`, `AllowLocalProvisioningElevation`, `WorkerStaleAfterSeconds`, `ExecutionLeaseDurationSeconds`, and `ExecutionLeaseRenewalIntervalSeconds`. It validates the resulting Server configuration, preserves file ownership and mode, and reports that the service must be restarted. The installed helper uses a fixed configuration path and invokes only this setting allowlist as root; all values remain ordinary arguments and are validated before writing.
+`config set <setting> <value>` atomically updates a supported value in the installed `/etc/codex-server/server.env`: `AdministrationOrigin`, `ListenUrl`, `DataDirectory`, `DatabasePath`, `EnableLocalProvisioning`, `AllowLocalProvisioningElevation`, `WorkerStaleAfterSeconds`, `ExecutionLeaseDurationSeconds`, and `ExecutionLeaseRenewalIntervalSeconds`. It validates the resulting Server configuration, preserves file ownership and mode, and reports that the service must be restarted. The installed helper uses a fixed configuration path and invokes only this setting allowlist as root; all values remain ordinary arguments and are validated before writing.
 
 Worker commands use the configured Server database directly and do not contact the running Server. `worker show` emits the Worker registry projection and the separate credential-delivery authorization status. `enable`, `drain`, and `disable` change only the Server-owned scheduling policy. Enabled Workers may receive assignments; Draining and Disabled Workers receive none. Both policies preserve already assigned or running executions and their leases. The active assignment count makes a drain visible until it reaches zero; the stored policy remains Draining until an operator enables or disables scheduling. Reported heartbeat lifecycle and readiness remain Worker observations.
 
@@ -219,3 +219,13 @@ For a systemd installation, inspect the existing Server unit with `journalctl -u
 Use `codex-server executions show <execution-id> --json` or the dashboard execution detail to inspect persisted eligibility reasons, pending reason, lease ownership/generation, result, recovery disposition and retry lineage. Use `codex-server worker show <worker-id> --json` for eligibility/capacity diagnostics (see the command syntax above). Logs explain transitions; the existing registry projections remain the source of current state. Issue bodies, Worker completion summaries, validation/integration text, process output, environment contents and authentication material are excluded from operational events.
 
 See [secret delivery and operational output](secret-protection.md) for trusted TLS termination, API proxy cache/log exclusions, remote sentinel checks, and the complete node-compromise response.
+
+For HTTPS dashboard setup or upgrade, use
+`sudo codex-server config set AdministrationOrigin https://YOUR-SERVER-HOST`
+(no trailing slash), then `sudo codex-server config validate` and
+`sudo systemctl restart codex-server`. `config show` includes the safe origin and
+browser-login guidance; an unset origin remains valid for bearer-only clients.
+The TLS proxy's fixed upstream Host must match the origin's authority while the
+listener remains loopback HTTP. Existing settings, token and state are preserved.
+See [HTTPS login recovery and safe diagnostics](remote-https-deployment.md#upgrade-recovery-and-bounded-rejection-diagnostics)
+for network/configuration rejection, existing-token retrieval and deployed checks.

@@ -17,7 +17,11 @@ public sealed record ServerConfigurationDocument(
     int WorkerStaleAfterSeconds,
     int ExecutionLeaseDurationSeconds,
     int ExecutionLeaseRenewalIntervalSeconds,
-    IReadOnlyList<ServerConfigurationDiagnostic> Diagnostics);
+    IReadOnlyList<ServerConfigurationDiagnostic> Diagnostics)
+{
+    public string? AdministrationOrigin { get; init; }
+    public string? AdministrationSessionGuidance { get; init; }
+}
 
 public sealed record ServerConfigurationAdministrationResult(ServerConfiguration? Configuration,
     ServerConfigurationDocument Document);
@@ -78,7 +82,11 @@ public sealed class ServerConfigurationAdministrationService : IServerConfigurat
         return new(1, diagnostics.Count == 0, listenUrl, "[redacted]", "[redacted]",
             configuration.EnableLocalProvisioning, configuration.AllowLocalProvisioningElevation,
             configuration.WorkerStaleAfterSeconds, configuration.ExecutionLeaseDurationSeconds,
-            configuration.ExecutionLeaseRenewalIntervalSeconds, diagnostics);
+            configuration.ExecutionLeaseRenewalIntervalSeconds, diagnostics)
+        {
+            AdministrationOrigin = configuration.AdministrationOrigin is { } origin ? ServerAdministrationRedaction.SafeUrl(origin) : null,
+            AdministrationSessionGuidance = configuration.AdministrationOrigin is null ? AdministrationSessions.MissingOriginGuidance : null
+        };
     }
 }
 
@@ -1226,7 +1234,10 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
         else if (operation == "show")
             WriteConfiguration(inspected.Document);
         else if (inspected.Document.IsValid)
+        {
             _output.WriteLine("Server configuration is valid.");
+            if (inspected.Document.AdministrationSessionGuidance is { } guidance) _output.WriteLine(guidance);
+        }
         else
             WriteConfigurationFailure(inspected.Document, json: false);
 
@@ -1297,6 +1308,8 @@ public sealed class ServerAdministrationCli(IServerConfigurationAdministrationSe
     {
         _output.WriteLine($"Server configuration: {(document.IsValid ? "valid" : "invalid")}");
         _output.WriteLine($"Server:ListenUrl: {document.ListenUrl}");
+        _output.WriteLine($"Server:AdministrationOrigin: {document.AdministrationOrigin ?? "unset"}");
+        if (document.AdministrationSessionGuidance is { } guidance) _output.WriteLine(guidance);
         _output.WriteLine($"Server:DataDirectory: {document.DataDirectory}");
         _output.WriteLine($"Server:DatabasePath: {document.DatabasePath}");
         _output.WriteLine($"Server:EnableLocalProvisioning: {document.EnableLocalProvisioning.ToString().ToLowerInvariant()}");

@@ -91,6 +91,8 @@ public sealed class ServerConfigurationMutationTests
 
     [Theory]
     [InlineData("UnknownSetting", "true")]
+    [InlineData("AdministrationOrigin", "http://external.example")]
+    [InlineData("AdministrationOrigin", "https://admin.example/")]
     [InlineData("EnableLocalProvisioning", "sometimes")]
     [InlineData("ExecutionLeaseDurationSeconds", "zero")]
     public void MutationRejectsUnsupportedOrInvalidValuesWithoutReplacingTheFile(string setting, string value)
@@ -100,7 +102,10 @@ public sealed class ServerConfigurationMutationTests
         const string original = "Server__EnableLocalProvisioning=false\n";
         File.WriteAllText(path, original);
 
-        Assert.Throws<ArgumentException>(() => ServerConfigurationMutation.Set(path, setting, value, new ServerConfiguration()));
+        if (setting == "AdministrationOrigin")
+            Assert.Throws<InvalidDataException>(() => ServerConfigurationMutation.Set(path, setting, value, new ServerConfiguration()));
+        else
+            Assert.Throws<ArgumentException>(() => ServerConfigurationMutation.Set(path, setting, value, new ServerConfiguration()));
 
         Assert.Equal(original, File.ReadAllText(path));
         Assert.Empty(Directory.EnumerateFiles(temporary.Path, "*.tmp", SearchOption.TopDirectoryOnly));

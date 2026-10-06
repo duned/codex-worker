@@ -27,8 +27,18 @@ public sealed class AdministrationSessions(ServerConfiguration configuration, Ti
             Equal(supplied[prefix.Length..], expected);
     }
 
-    public bool OriginAllowed(HttpContext context) => configuration.AdministrationOrigin is { } origin &&
-        string.Equals(context.Request.Headers.Origin.ToString(), origin, StringComparison.Ordinal) && HostAllowed(context);
+    public const string ErrorHeader = "X-Codex-Administration-Error";
+    public const string MissingOriginGuidance = "Browser administration login is disabled: set Server:AdministrationOrigin to the exact external HTTPS origin using sudo codex-server config set AdministrationOrigin <origin>, match the proxy upstream Host, then restart codex-server.service. Bearer clients remain supported.";
+
+    // Fixed diagnostic codes only: never include caller headers or authentication material.
+    public string? ConfigurationFailure(HttpContext context) => configuration.AdministrationOrigin is null
+        ? "administration-origin-missing" : !HostAllowed(context) ? "administration-host-mismatch" : null;
+
+    public string? LoginFailure(HttpContext context) => ConfigurationFailure(context) ??
+        (!string.Equals(context.Request.Headers.Origin.ToString(), configuration.AdministrationOrigin, StringComparison.Ordinal)
+            ? "administration-origin-mismatch" : null);
+
+    public bool OriginAllowed(HttpContext context) => LoginFailure(context) is null;
 
     private bool HostAllowed(HttpContext context) => configuration.AdministrationOrigin is { } origin &&
         string.Equals(context.Request.Host.Value, new Uri(origin).Authority, StringComparison.OrdinalIgnoreCase);
