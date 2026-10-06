@@ -1,5 +1,8 @@
 # HTTPS security acceptance campaign (23.6)
 
+The [final integration review](secure-transport-integration-review.md) records the
+combined boundary review, migration corrections and actual local check results.
+
 This campaign validates series 23 without changing product versions or an existing
 deployment. It uses the [23.5 proxy recipe](remote-https-deployment.md) verbatim:
 Nginx and Server on S, loopback backend 5090, HTTPS on 443, ACME-only 80,
@@ -30,11 +33,16 @@ there is no validation callback or global trust-store edit. Redirect tests cover
 301/302/303/307/308, same/cross origin, bootstrap bodies and delivery headers;
 the destination sees zero requests. The production Server fixture uses Kestrel
 TLS with the same isolated certificates and the actual Worker transport. It
-withholds an accepted enrollment/rotation/recovery response, aborts the connection,
-recreates Server and Worker clients from durable state, and verifies authenticated
+withholds an accepted enrollment/rotation/recovery/association response, aborts the connection,
+recreates Server and Worker clients from durable state (including `associate`
+with a retained previous-origin association), and verifies authenticated
 reconciliation without consuming another authorization. It then exercises
 heartbeat, validated cached configuration/revision, assignment, lease renewal,
-stale-generation rejection, typed detect/report and execution-result reporting.
+stale-generation rejection, typed detect/report and execution-result reporting after
+deterministic Server-owned Issue discovery and eligibility-checked enqueue. Assigned credential delivery uses
+the actual Worker client and encrypted store over TLS; checks cover unassigned and
+reassigned rejection, non-cacheable conditional responses, independent delivery
+revocation and secret-free cached snapshots/errors.
 Capabilities and tool discovery are deterministic test inputs; no live provider,
 GitHub or Codex credentials are required. This demonstrates protocol flow, not a
 real implementation execution. Existing execution tests own Git/recovery behavior.

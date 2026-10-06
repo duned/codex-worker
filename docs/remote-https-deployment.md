@@ -273,8 +273,11 @@ Drain before Worker upgrades. Back up Server with its supported backup command
 and protect configuration/encryption-key sources separately. Reconcile proxy
 route changes and validate Nginx before reload. Moving from co-located HTTP to
 HTTPS on the same Server retains its registry and stable Worker identities;
-explicitly rotate through the new endpoint and verify polling before retiring
-old access. A different Server requires associate, not copying its database or
+issue a Worker-bound `associate` authorization from the retained registry and run
+`register --operation associate` through the new HTTPS endpoint. Any endpoint
+change requires `associate`, even when the registry is unchanged; `rotate` is for
+credential changes at the existing endpoint. Verify polling before retiring old
+access. A different Server requires associate, not copying its database or
 sending old credentials. Remove legacy shared registration environment settings.
 Restore requires fresh API/delivery authorization and re-provisioned provider
 secrets; backups do not contain usable authentication.

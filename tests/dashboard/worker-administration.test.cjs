@@ -31,7 +31,9 @@ test('shows drain progress and separate Worker API and delivery authorization st
  assert.match(s.$('worker-admin').innerHTML,/Worker API token/);
  assert.match(s.$('worker-admin').innerHTML,/revoked/);
  assert.match(s.$('worker-admin').innerHTML,/Delivery authorization/);
- assert.match(s.$('worker-admin').innerHTML,/shared Server registration-token fallback remains server-wide/);
+ assert.match(s.$('worker-admin').innerHTML,/Revoking a Worker API token denies calls using it/);
+ assert.match(s.$('worker-admin').innerHTML,/it does not revoke delivery authorization/);
+ assert.doesNotMatch(s.$('worker-admin').innerHTML,/shared Server registration-token fallback/);
  assert.deepEqual(s.policyButtons.map(button=>button.dataset.workerPolicy),['Enabled','Draining','Disabled']);
 });
 

@@ -213,15 +213,20 @@ For a missing or revoked credential, preserve/restore the original identity and 
 Do not delete identity or recovery files to repair authentication. Rotation and recovery
 authorizations only apply to identities already visible on that Server.
 
-To move to a different Server, authorize the same Worker ID on the destination with
+To change the Server URL (including HTTP-to-HTTPS migration of the same registry),
+authorize the same Worker ID on the destination with
 `worker-token authorize WORKER_ID associate`, then run `register --server NEW_URL
 --operation associate --token-stdin`. This also works when the destination does not yet
 know that identity. Fresh material is generated for the destination; the previous
 Server's credential is never sent there. The previous active association and material
 remain intact until the new endpoint has acknowledged and authenticated enrollment.
-After successful migration, explicitly revoke the old Server credential there; moving
-association does not grant authority to administer the previous Server. Reconfigure any
-separate credential-delivery authorization for the destination before restarting.
+After migration to a distinct Server registry, explicitly revoke the old Server
+credential there; moving association does not grant authority to administer the
+previous Server. Reconfigure separate credential-delivery authorization for that
+destination before restarting. When only the endpoint of the same registry changes,
+association already replaces its API credential: do not revoke that Worker's token
+afterward, which would revoke the newly associated credential. Existing delivery
+authorization in the retained registry remains independent.
 
 The identity, `.token`, `.server`, and `.pending` files are owner-only on Unix. The
 pending journal retains Worker ID, endpoint, operation and fresh credential across
