@@ -201,6 +201,10 @@ public sealed class NodeCapabilityTests
         var disconnected = NodeProvisioning.Describe(worker with { Availability = "stale" }, []);
         Assert.True(disconnected.ObservationsStale);
         Assert.All(disconnected.Capabilities, item => Assert.Empty(item.AvailableActions));
+        var stopped = NodeProvisioning.Describe(worker with { Availability = "offline", LifecycleState = "stopped" }, []);
+        Assert.Equal("disconnected", stopped.Connectivity);
+        Assert.Equal("not-ready", stopped.ExecutionReadiness);
+        Assert.All(stopped.Capabilities, item => Assert.Empty(item.AvailableActions));
     }
 
     [Fact]
@@ -259,6 +263,6 @@ public sealed class NodeCapabilityTests
     }
 
     private static WorkerRegistrationResponse Worker() => new(2, new string('a', 32), "Worker", "1.0", "linux", 1,
-        [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "available", 0, 1, 1, "running", [],
+        [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "online", 0, 1, 1, "running", [],
         CapabilityInventory: CapabilityCatalog.Definitions.Select(CapabilityCatalog.Unknown).ToArray());
 }

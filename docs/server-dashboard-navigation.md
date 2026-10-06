@@ -193,3 +193,81 @@ Manual HTTPS acceptance (not run as part of automated tests):
 6. Sign out while a challenge is visible; confirm challenge/consent are cleared.
    Verify no device code/token appears in Server logs. No live provider credentials
    are required by the automated dashboard, store, executor or API tests.
+
+## Contextual Worker preparation and project association
+
+Open a registered Worker to resume preparation. Connectivity, tools/configuration,
+Codex service-account authentication and execution preflight, Worker GitHub
+service-account authentication, scoped repository permissions and project
+requirements are presented separately. Registration, health, a submitted command,
+and Server repository readability never establish execution readiness. Stale,
+cached, unavailable and unreported observations remain incomplete. Worker-local
+project failures and revision mismatches remain visible beside healthy projects.
+
+Project → Prepare / associate Worker and Worker → Prepare for this project use the
+same Worker detail and the `project` query context. The existing managed ownership
+model delivers the central catalog and revisions to authorized Workers; there is
+no separate binding store or browser-only association. A registered Worker with no
+central project links to Projects; a project with no Worker links to Add Worker.
+Missing checkouts remain lazy until assignment. Scoped Worker Git/GitHub capability
+evidence is distinct from checkout materialization and never performs a test push.
+The Git capability's repository read verification action only verifies readability,
+not push authorization. Repository permissions must still allow the configured
+Worker identity to push, and Worker scoped eligibility remains authoritative.
+
+Supported next actions use the node's registered typed actions and local policy.
+Unadvertised actions explain the required service-account/node preparation. For
+Codex, install the supported CLI if absent, authenticate in the Worker service
+account (supported device login when available), then re-detect to run readiness
+preflight. For GitHub, prepare product-managed authentication before supported
+login; otherwise the node administrator must configure that service-account
+context. Repair invalid local managed runtime defaults on the node and refresh
+configuration. Requirements outside the supported tool catalog require node-side
+preparation. No shell text, executable path or new installer protocol is accepted.
+
+Rendering, navigation and reload do not submit installs/logins. The authenticated
+`GET /api/v1/nodes/{nodeId}/commands` returns bounded node history with active
+operations first, so unrelated history cannot hide a retained operation. Progress,
+failure and expiry are visible next to each capability. Cancel queued operations
+or, after verifying node quiescence, reconcile an expired running operation using
+the contextual controls. Never retry an unconfirmed submission until refresh
+recovers its operation. Advanced command history, credentials and uncertain
+execution recovery remain available. Provider tokens stay off the browser.
+
+Activation is explicit in Worker administration. The Server re-evaluates the
+existing scheduling-policy request and returns conflict when evidence is missing:
+current running heartbeat, active Worker API authentication, live synchronized
+managed ownership, fresh typed tool/auth observations, successful Codex execution
+preflight, and at least one enabled project with current revision and scoped
+capability eligibility. Pending provisioning must be reconciled first. A valid
+not-yet-materialized project can qualify; a failed project does not prevent another
+healthy project from qualifying. Preparation and association never enable
+scheduling, enqueue work or change Issue eligibility labels. Drain/disable and
+active lease/recovery semantics are unchanged; assignment still checks authority.
+Standalone Worker ownership remains supported and does not acquire managed
+activation through this presentation.
+
+Manual HTTPS acceptance (live checks not run by automated tests):
+
+1. On disposable HTTPS Server/Worker nodes, register a Worker with no projects or
+   tools. Confirm connectivity is visible while activation is blocked. Create a
+   central project and open preparation from either resource.
+2. Under explicitly permitted node-local policy, start one supported action and
+   navigate/reload during progress. Confirm the same operation returns, even after
+   unrelated history exceeds a page. Verify queued cancellation and expired-running
+   reconciliation after node quiescence, including a lost submission response.
+3. Leave a tool/auth step incomplete or deny its local action. Confirm the required
+   node-side step is explained. Complete permitted Codex login and re-detect;
+   confirm login alone never reports successful execution preflight.
+4. Change the project revision, remove repository permission, and introduce a local
+   managed configuration failure. Confirm stale/unavailable evidence blocks
+   activation and healthy project diagnostics remain visible. Restore configuration
+   and read/push permission without destructive test pushes.
+5. With current eligible evidence, explicitly activate, then drain and disable.
+   Confirm preparation never created queue entries or changed labels and existing
+   uncertain executions remain accessible. Use the existing trusted HTTPS session,
+   identity and credential administration paths; do not modify operator VMs.
+
+A full provisioning assistant, arbitrary project runtime installation, automatic
+provider authorization and autonomous remote login are deferred. This iteration
+presents actual supported observations and operations, not simulated completion.

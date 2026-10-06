@@ -16,12 +16,13 @@ function setup(){
  const calls=[];
  const worker={workerId:'worker-id',schedulingPolicy:'Draining',activeAssignments:2,authenticationCredentialStatus:'revoked',authenticationCredentialRevokedAtUtc:'2026-09-01T00:00:00Z'};
  const credentialDelivery={status:'active'};
+ const readiness={canActivate:true,activationBlockingReasons:[]};
  const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,document:{querySelectorAll:selector=>selector==='[data-worker-policy]'?policyButtons:revokeButtons},
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
-  api:async(path,options)=>{calls.push({path,options});if(path.endsWith('/credential-access'))return credentialDelivery;return worker},
+  api:async(path,options)=>{calls.push({path,options});if(path.endsWith('/credential-access'))return credentialDelivery;if(path.endsWith('/diagnostics'))return readiness;return worker},
   loadOverview:async()=>{},loadWorker:async()=>{}});
  vm.runInContext(source,context);
- return {$,calls,policyButtons,revokeButtons,worker,context};
+ return {$,calls,policyButtons,revokeButtons,worker,readiness,context};
 }
 
 test('shows drain progress and separate Worker API and delivery authorization states',async()=>{
@@ -34,6 +35,15 @@ test('shows drain progress and separate Worker API and delivery authorization st
  assert.match(s.$('worker-admin').innerHTML,/it does not revoke delivery authorization/);
  assert.doesNotMatch(s.$('worker-admin').innerHTML,/shared Server registration-token fallback/);
  assert.deepEqual(s.policyButtons.map(button=>button.dataset.workerPolicy),['Enabled','Draining','Disabled']);
+});
+
+test('activation is disabled without authoritative evidence while drain and disable remain available',async()=>{
+ const s=setup();s.readiness.canActivate=false;s.readiness.activationBlockingReasons=['Current revision and Codex preflight required'];
+ await s.context.loadWorkerAdministration('worker-id');
+ assert.match(s.$('worker-admin').innerHTML,/data-worker-policy="Enabled" disabled/);
+ assert.match(s.$('worker-admin').innerHTML,/Current revision and Codex preflight required/);
+ assert.doesNotMatch(s.$('worker-admin').innerHTML,/data-worker-policy="Draining" disabled/);
+ assert.ok(s.calls.every(call=>!call.options));
 });
 
 test('policy and revocation controls call their separate management endpoints',async()=>{

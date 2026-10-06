@@ -51,6 +51,8 @@ function startDashboardPolling(){
  const poll=async()=>{
   if(!authenticated||owner!==dashboardPollOwner)return;
   await Promise.allSettled([loadNodes(),loadProjects(),loadHomeActivity(),navigation.current().view==='executions'?loadExecutions():Promise.resolve(),['workers','settings'].includes(navigation.current().view)?loadProvisioning():Promise.resolve()]);
+  const route=navigation.current();
+  if(authenticated&&route.view==='workers'&&route.id)await Promise.allSettled([loadWorker(route.id),loadWorkerAdministration(route.id)]);
   if(authenticated&&owner===dashboardPollOwner)dashboardPollTimer=setTimeout(poll,5000);
  };
  dashboardPollTimer=setTimeout(poll,5000);

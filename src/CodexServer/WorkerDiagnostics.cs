@@ -15,14 +15,15 @@ public sealed record WorkerDiagnostics(string WorkerId, string WorkerVersion, st
     int AvailableCapacity, string ConfigurationSynchronization, string ProvisioningState,
     bool GitHubReady, bool GitReady, bool AiAgentReady, IReadOnlyList<WorkerProjectReadiness> Projects,
     IReadOnlyList<string> Reasons, string? RecentOperationalError, ProvisioningOperationSummary? LatestProvisioningOperation = null,
-    ManagedWorkerDiagnostics? WorkerReportedManagedDiagnostics = null);
+    ManagedWorkerDiagnostics? WorkerReportedManagedDiagnostics = null,
+    bool CanActivate = false, IReadOnlyList<string>? ActivationBlockingReasons = null, bool CapabilityObservationsCurrent = false);
 
 /// <summary>Deterministically explains whether a registered worker can accept work.</summary>
 public static class WorkerDiagnosticsDerivation
 {
     public static WorkerDiagnostics Derive(WorkerRegistrationResponse worker, IReadOnlyList<CentralProject> projects,
         IReadOnlyList<ProvisioningPlan> provisioningPlans, string expectedConfigurationVersion,
-        IReadOnlyList<ProvisioningCommand>? provisioningCommands = null)
+        IReadOnlyList<ProvisioningCommand>? provisioningCommands = null, DateTimeOffset? observedAtUtc = null)
     {
         ArgumentNullException.ThrowIfNull(worker);
         ArgumentNullException.ThrowIfNull(projects);
@@ -119,10 +120,41 @@ public static class WorkerDiagnosticsDerivation
                 configurationSynchronization is "unavailable" or "cached" ? "Configuration synchronization unavailable" :
                 "Configuration synchronization required");
 
+        // A checkout can remain lazy until assignment; Server readability never proves Worker access.
+        var activation = new List<string>();
+        if (worker.Availability != "online" || worker.LifecycleState != "running")
+            activation.Add("A current running Worker heartbeat is required");
+        if (worker.AuthenticationCredentialStatus != "active") activation.Add("Worker API authentication is not active");
+        if (configurationSynchronization != "synchronized") activation.Add("Current managed configuration synchronization is required");
+        if (worker.ManagedDiagnostics is not { Source: "server-retrieved", Retrieval: "retrieved", Synchronization: "synchronized" })
+            activation.Add("Live Server-managed ownership evidence is required");
+        if (!aiReady) activation.Add("Successful Worker Codex execution preflight is required");
+        var now = observedAtUtc ?? TimeProvider.System.GetUtcNow();
+        var observationsCurrent = worker.Availability == "online" && worker.CapabilityInventory is { } observations &&
+            CapabilityCatalog.Definitions.Where(definition => definition.RequiredForExecution).All(definition =>
+                observations.FirstOrDefault(state => state.Id == definition.Id)?.DetectedAtUtc is { } detected &&
+                detected <= now && now - detected <= TimeSpan.FromMinutes(6));
+        if (worker.CapabilityInventory is not { } activationInventory)
+            activation.Add("Current tool and authentication observations are required");
+        else
+        {
+            activation.AddRange(CapabilityCatalog.ExecutionReadiness(activationInventory).BlockingReasons);
+            if (!observationsCurrent)
+                activation.Add("Execution capability observations are stale or unavailable; re-detect on the Worker");
+        }
+        if (!readiness.Any(project => project.IsEligible && projects.Any(central => central.Id == project.ProjectId && central.Enabled) &&
+                project.ObservationStatus == "worker-reported-current-revision" &&
+                project.MaterializationState is "ready" or "not-materialized"))
+            activation.Add("An enabled central project with current Worker revision and scoped access evidence is required");
+        if (typedCommands.Any(command => command.Request.NodeId == worker.WorkerId && !ProvisioningCommandProtocol.Terminal(command.Status)) ||
+            provisioningPlans.Any(plan => plan.WorkerId == worker.WorkerId && plan.State is "Pending" or "Accepted" or "Running"))
+            activation.Add("Reconcile pending provisioning operations before activation");
+
         return new WorkerDiagnostics(worker.WorkerId, worker.WorkerVersion, worker.Availability, worker.LastHeartbeatAtUtc,
             worker.LifecycleState, worker.ActiveExecutions, worker.MaximumCapacity, worker.AvailableCapacity,
             configurationSynchronization, provisioningState, githubReady, gitReady, aiReady, readiness, reasons.Distinct(StringComparer.Ordinal).ToArray(),
-            recentError, latestProvisioning, worker.ManagedDiagnostics);
+            recentError, latestProvisioning, worker.ManagedDiagnostics, activation.Count == 0,
+            activation.Distinct(StringComparer.Ordinal).ToArray(), observationsCurrent);
     }
 
     private static bool Has(IReadOnlyList<WorkerCapability> capabilities, string type, string name, string? scope = null) =>

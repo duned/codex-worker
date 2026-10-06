@@ -5,20 +5,20 @@ const fs=require('node:fs');
 
 test('Server Worker detail distinguishes eligibility from stale preparation observations and escapes identifiers',async()=>{
  const html=require('./server-dashboard-source.cjs').readDashboard();
- const source=html.slice(html.indexOf('async function loadWorker(id)'),html.indexOf('async function loadWorkerAdministration'));
+ const source=html.slice(html.indexOf('function workerPreparation'),html.indexOf('async function loadWorkerAdministration'));
  const elements=new Map();
  const $=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',textContent:''});return elements.get(id)};
  const worker={displayName:'Worker',availability:'online',capabilities:[],activeProjects:[]};
- const diagnostics={reasons:['Worker-observed project: failed'],projects:[{projectName:'<Project>',isEligible:true,
+ const diagnostics={reasons:['Worker-observed project: failed'],projects:[{projectId:'project',projectName:'<Project>',isEligible:true,
   missingRequirements:[],materializationState:'failed',workerReportedRevision:4,observationStatus:'stale-revision',
   diagnosticCode:'project-preparation-failed'}]};
- const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,api:async path=>path.endsWith('/diagnostics')?diagnostics:worker,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,projects:[{id:'project',name:'<Project>',repository:'owner/repo',revision:5,enabled:true,requirements:[]}],api:async path=>path.endsWith('/diagnostics')?diagnostics:worker,
   esc:value=>String(value??'').replaceAll('<','&lt;').replaceAll('>','&gt;')});
  vm.runInContext(source,context);
  await context.loadWorker('worker');
  const rendered=$('worker-detail').innerHTML;
- assert.match(rendered,/Worker observation: failed · revision 4 · stale-revision · project-preparation-failed/);
- assert.match(rendered,/>eligible</);
+ assert.match(rendered,/Checkout: failed · stale-revision · project-preparation-failed/);
+ assert.match(rendered,/Project preparation remains incomplete/);
  assert.match(rendered,/&lt;Project&gt;/);
  assert.doesNotMatch(rendered,/<Project>/);
 });

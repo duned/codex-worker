@@ -9,6 +9,30 @@ using CodexWorker;
 
 public sealed class ProvisioningCommandTests
 {
+    [Fact]
+    public async Task NodePreparationRecoversActiveOperationsBeyondUnrelatedAndTerminalHistory()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new ProvisioningCommandStore(Path.Combine(temporary.Path, "preparation.db"));
+        await store.InitializeAsync();
+        var workerId = Guid.NewGuid().ToString("N");
+        var pending = await store.CreateAsync(new(workerId, "codex-cli", ProvisioningCommandAction.Login));
+        for (var index = 0; index < 105; index++)
+        {
+            var command = await store.CreateAsync(new(workerId, "git", ProvisioningCommandAction.Detect));
+            await store.CancelAsync(command.Id);
+            var unrelated = await store.CreateAsync(new("server", "git", ProvisioningCommandAction.Detect));
+            await store.CancelAsync(unrelated.Id);
+        }
+        Assert.DoesNotContain(await store.ListAsync(), command => command.Id == pending.Id);
+        var retained = await store.ListNodeAsync(workerId);
+        Assert.Equal(pending.Id, retained[0].Id);
+        Assert.All(retained, command => Assert.Equal(workerId, command.Request.NodeId));
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.ListNodeAsync(workerId, cancellation.Token));
+    }
+
     [Theory]
     [InlineData("git", ProvisioningCommandAction.Install, true)]
     [InlineData("git", ProvisioningCommandAction.Update, true)]
@@ -278,6 +302,17 @@ public sealed class ProvisioningCommandTests
         { DeadlineUtc = DateTimeOffset.UtcNow.AddSeconds(1) };
         Assert.Equal(ProvisioningDiagnostic.TimedOut, (await executor.ExecuteAsync(operation, true)).Diagnostic);
         Assert.True(started);
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"provisioning-commands-{Guid.NewGuid():N}");
+        public TemporaryDirectory() => Directory.CreateDirectory(Path);
+        public void Dispose()
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true);
+        }
     }
 
     private sealed class CommandClock : TimeProvider

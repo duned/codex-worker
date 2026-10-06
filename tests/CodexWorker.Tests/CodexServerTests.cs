@@ -632,6 +632,25 @@ public sealed class CodexServerTests
             Assert.Equal(WorkerSchedulingPolicy.Draining, projected.SchedulingPolicy);
             Assert.Equal("unknown", projected.LifecycleState);
 
+            using var prematureActivation = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/scheduling-policy",
+                new WorkerSchedulingPolicyRequest(WorkerSchedulingPolicy.Enabled));
+            Assert.Equal(HttpStatusCode.Conflict, prematureActivation.StatusCode);
+            Assert.Equal(WorkerSchedulingPolicy.Draining, (await registry.GetWorkerAsync(workerId))?.SchedulingPolicy);
+
+            var project = await registry.CreateProjectAsync(new("Prepared project", "owner/repo", "main", ""));
+            var version = ServerApplication.ManagedConfigurationVersion([project]);
+            var now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
+            WorkerCapability[] readyCapabilities = [new("authentication", "github-api", Scope: project.Repository),
+                new("authentication", "git-repository", Scope: project.Repository), new("agent-provider", "codex")];
+            await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0", "running", 0, 1, readyCapabilities, [],
+                "synchronized", version, WorkerPreparationTests.ReadyInventory(now),
+                new("retrieved", "synchronized", "server-retrieved", version, version, null, null,
+                    [new(project.Id, project.Revision, "not-materialized")])));
+            using var activation = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/scheduling-policy",
+                new WorkerSchedulingPolicyRequest(WorkerSchedulingPolicy.Enabled));
+            Assert.Equal(HttpStatusCode.OK, activation.StatusCode);
+            Assert.Equal(WorkerSchedulingPolicy.Enabled, (await registry.GetWorkerAsync(workerId))?.SchedulingPolicy);
+
             using var revokeApi = await management.PostAsync($"/api/v1/workers/{workerId}/authentication/revoke", null);
             Assert.Equal(HttpStatusCode.OK, revokeApi.StatusCode);
             var revoked = await revokeApi.Content.ReadFromJsonAsync<WorkerRegistrationResponse>();

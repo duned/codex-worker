@@ -56,7 +56,15 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
     public async Task<IReadOnlyList<ProvisioningCommand>> ListServerGitHubAsync(CancellationToken token = default)
         => await ListCoreAsync(token, 30, 0, serverGitHub: true);
 
-    private async Task<IReadOnlyList<ProvisioningCommand>> ListCoreAsync(CancellationToken token, int limit, int offset, bool serverGitHub)
+    // Active operations sort first so unrelated node history cannot hide a retained operation.
+    public async Task<IReadOnlyList<ProvisioningCommand>> ListNodeAsync(string nodeId, CancellationToken token = default)
+    {
+        if (nodeId != "server" && !Guid.TryParseExact(nodeId, "N", out _))
+            throw new ArgumentException("Invalid node identity.", nameof(nodeId));
+        return await ListCoreAsync(token, 100, 0, serverGitHub: false, nodeId: nodeId);
+    }
+
+    private async Task<IReadOnlyList<ProvisioningCommand>> ListCoreAsync(CancellationToken token, int limit, int offset, bool serverGitHub, string? nodeId = null)
     {
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit), "Provisioning command history limit must be between 1 and 100.");
         if (offset is < 0 or > 10_000) throw new ArgumentOutOfRangeException(nameof(offset), "Provisioning command history offset must be between 0 and 10000.");
@@ -64,7 +72,9 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         using var command = connection.CreateCommand();
         command.CommandText = serverGitHub
             ? "SELECT body FROM provisioning_commands WHERE node='server' AND capability='github-cli' ORDER BY active DESC, rowid DESC LIMIT $limit OFFSET $offset;"
+            : nodeId is not null ? "SELECT body FROM provisioning_commands WHERE node=$node ORDER BY active DESC, rowid DESC LIMIT $limit OFFSET $offset;"
             : "SELECT body FROM provisioning_commands ORDER BY rowid DESC LIMIT $limit OFFSET $offset;";
+        if (nodeId is not null) command.Parameters.AddWithValue("$node", nodeId);
         command.Parameters.AddWithValue("$limit", limit);
         command.Parameters.AddWithValue("$offset", offset);
         await using var reader = await command.ExecuteReaderAsync(token);

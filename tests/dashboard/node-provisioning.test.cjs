@@ -30,6 +30,17 @@ test('renders independent readiness, escaped names and only advertised actions',
 test('pending operations block every action, including duplicate submissions',async()=>{
  const s=setup();s.context.commands=[s.command];s.run('nodeCommands=commands;renderNode()');assert.ok(s.buttons().every(b=>b.disabled));await s.run("runNodeAction('server','github-cli','refresh')");assert.equal(s.calls.length,0);
 });
+test('expired Worker operations expose contextual reconciliation and policy denials explain node preparation',()=>{
+ const s=setup();s.node.kind='worker';s.node.id='0123456789abcdef0123456789abcdef';s.$('node-select').value=s.node.id;
+ s.context.commands=[{...s.command,request:{...s.command.request,nodeId:s.node.id},status:'Running',deadlineUtc:new Date(Date.now()-1000).toISOString()}];
+ s.run('nodeCommands=commands;renderNode()');
+ const section=s.$('node-detail').children[0];
+ assert.ok(section.children.some(child=>child.textContent.includes('Deadline expired')));
+ assert.ok(section.children.some(child=>child.textContent==='Reconcile after node quiescence'));
+ assert.ok(s.buttons().every(button=>button.disabled));
+ s.context.commands[0].status='Failed';s.context.commands[0].diagnostic='Denied';s.run('renderNode()');
+ assert.ok(s.$('node-detail').children[0].children.some(child=>child.textContent.includes('permit the specific typed action')));
+});
 test('destructive actions require confirmation and installation requires elevation',async()=>{
  const s=setup();await s.run("runNodeAction('server','github-cli','install')");assert.equal(s.calls.length,0);assert.match(s.$('node-message').textContent,/Authorize elevation/);
  s.setConfirmation(false);await s.run("runNodeAction('server','github-cli','logout')");assert.equal(s.calls.length,0);

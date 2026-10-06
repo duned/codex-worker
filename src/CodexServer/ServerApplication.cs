@@ -165,10 +165,17 @@ public static class ServerApplication
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
             foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
                 nodes.Add(NodeProvisioning.Describe(worker, plans));
-            var operations = await commands.ListAsync(context.RequestAborted);
-            var serverGitHub = await commands.ListServerGitHubAsync(context.RequestAborted);
-            var currentOperations = operations.Concat(serverGitHub).DistinctBy(operation => operation.Id).ToArray();
-            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, currentOperations, plans)));
+            var described = new List<ProvisionableNode>();
+            foreach (var node in nodes)
+                described.Add(NodeProvisioning.WithCommands(node, await commands.ListNodeAsync(node.Id, context.RequestAborted), plans));
+            return Results.Ok(described);
+        });
+        app.MapGet("/api/v1/nodes/{nodeId}/commands", async (string nodeId, HttpContext context,
+            ServerConfiguration settings, ProvisioningCommandStore commands) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (nodeId != "server" && !Guid.TryParseExact(nodeId, "N", out _)) return Results.BadRequest(new { error = "Invalid node identity." });
+            return Results.Ok(await commands.ListNodeAsync(nodeId, context.RequestAborted));
         });
         app.MapGet("/api/v1/nodes/server/github-connection", async (HttpContext context, ServerConfiguration settings,
             ProvisioningCommandStore commands) =>
@@ -194,7 +201,7 @@ public static class ServerApplication
             {
                 var worker = await registry.GetWorkerAsync(request.NodeId, context.RequestAborted);
                 if (worker is null) return Results.NotFound();
-                if (worker.Availability == "stale") return Results.Conflict(new { error = "Worker is offline." });
+                if (worker.Availability is not ("online" or "draining")) return Results.Conflict(new { error = "Worker is offline." });
             }
             try
             {
@@ -421,13 +428,24 @@ public static class ServerApplication
             return Results.Ok(await store.GetWorkerAsync(workerId, context.RequestAborted));
         });
         app.MapPut("/api/v1/workers/{workerId}/scheduling-policy", async (string workerId, WorkerSchedulingPolicyRequest request,
-            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+            HttpContext context, ServerConfiguration settings, IRegistryStore store, ProvisioningCommandStore commands, TimeProvider clock) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || !WorkerSchedulingPolicy.IsValid(request.Policy))
                 return Results.BadRequest(new { error = "Policy must be Enabled, Draining, or Disabled." });
             try
             {
+                if (request.Policy == WorkerSchedulingPolicy.Enabled)
+                {
+                    var current = await store.GetWorkerAsync(workerId, context.RequestAborted);
+                    if (current is null) return Results.NotFound();
+                    var projects = await store.GetProjectsAsync(context.RequestAborted);
+                    var diagnostics = WorkerDiagnosticsDerivation.Derive(current, projects,
+                        await store.GetProvisioningPlansAsync(context.RequestAborted), ManagedConfigurationVersion(projects),
+                        await commands.ListNodeAsync(workerId, context.RequestAborted), clock.GetUtcNow());
+                    if (!diagnostics.CanActivate)
+                        return Results.Conflict(new { error = "Worker activation is blocked by current preparation evidence.", reasons = diagnostics.ActivationBlockingReasons });
+                }
                 var worker = await store.SetWorkerSchedulingPolicyAsync(workerId, request.Policy, context.RequestAborted);
                 return worker is null ? Results.NotFound() : Results.Ok(worker);
             }
@@ -559,16 +577,16 @@ public static class ServerApplication
             return worker is null ? Results.NotFound() : Results.Ok(worker);
         });
         app.MapGet("/api/v1/workers/{workerId}/diagnostics", async (string workerId, HttpContext context,
-            ServerConfiguration settings, IRegistryStore store, ProvisioningCommandStore commands) =>
+            ServerConfiguration settings, IRegistryStore store, ProvisioningCommandStore commands, TimeProvider clock) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
-            var typedCommands = await commands.ListAsync(context.RequestAborted);
+            var typedCommands = await commands.ListNodeAsync(workerId, context.RequestAborted);
             return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans,
-                ManagedConfigurationVersion(projects), typedCommands));
+                ManagedConfigurationVersion(projects), typedCommands, clock.GetUtcNow()));
         });
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>

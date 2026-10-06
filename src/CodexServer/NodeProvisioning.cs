@@ -6,7 +6,7 @@ public static class NodeProvisioning
 {
     public static ProvisionableNode Describe(WorkerRegistrationResponse worker, IReadOnlyList<ProvisioningPlan> plans)
     {
-        var connected = worker.Availability != "stale";
+        var connected = worker.Availability is "online" or "draining";
         var capabilities = CapabilityCatalog.Definitions.Select(definition =>
         {
             var observation = worker.CapabilityInventory?.FirstOrDefault(state => state.Id == definition.Id)
