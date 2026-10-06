@@ -6,7 +6,7 @@ const {readDashboard}=require('./server-dashboard-source.cjs');
 const flush=async()=>{for(let i=0;i<100;i++)await Promise.resolve()};
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
 function setup(path='/home'){
- const poc=path.split('?')[0].endsWith('/poc'),pocRenders=[],assignments=[];
+ const poc=path.split('?')[0].endsWith('/poc'),pocRenders=[],pocUpdates=[],assignments=[];
  const html=readDashboard({workerPoc:poc}),elements=new Map(),listeners=new Map(),timers=new Map(),calls=[];
  let timerId=0;
  class Element{
@@ -40,7 +40,7 @@ function setup(path='/home'){
  const origin='https://server.example',entries=[],scrolls=[];let entry=-1;
  const window={location:{origin},scrollX:0,scrollY:0,scrollTo(x,y){this.scrollX=x;this.scrollY=y;scrolls.push([x,y])},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
  window.location.assign=value=>assignments.push(value);
- if(poc)window.codexWorkerPoc={render:(data,loading=false)=>pocRenders.push({data,loading})};
+ if(poc)window.codexWorkerPoc={render:(data,loading=false)=>pocRenders.push({data,loading}),update:data=>pocUpdates.push(data),clear:()=>pocUpdates.push({cleared:true})};
  function location(value){const url=new URL(value,origin);Object.assign(window.location,{pathname:url.pathname,search:url.search,hash:url.hash})}
  window.history={state:null,pushState(state,title,value){entries.splice(++entry);entries.push({state,path:value});this.state=state;location(value)},replaceState(state,title,value){const path=value||window.location.pathname+window.location.search;entries[entry]={state,path};this.state=state;location(path)}};
  window.history.pushState({},'',path);
@@ -80,7 +80,7 @@ function setup(path='/home'){
  });
  vm.runInContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
  const emit=async(name,event={})=>{for(const handler of listeners.get(name)||[])handler(event);await flush()};
- return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,pocRenders,assignments,
+ return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,pocRenders,pocUpdates,assignments,
   async route(path){window.history.pushState({},'',path);await emit('popstate')},
   window,scrolls,documentListeners,async back(){entry--;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},async forward(){entry++;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},
   async poll(){const entry=[...timers.entries()].find(([,timer])=>timer.delay===5000);assert.ok(entry);timers.delete(entry[0]);await entry[1].fn();await flush()},
@@ -297,7 +297,7 @@ test('observation rendering preserves expanded disclosures and summary focus',as
  await s.emit('pagehide');
 });
 
-test('isolated Worker PoC restores the existing session and consumes its single stream without detail reads',async()=>{
+test('isolated Worker PoC restores the existing session and consumes shared snapshots and read-only diagnostics',async()=>{
  const s=setup('/workers/worker-a/poc');await s.flush();
  assert.equal(s.$('view-workers').hidden,false);
  assert.equal(s.$('worker-poc').hidden,false);
@@ -308,12 +308,34 @@ test('isolated Worker PoC restores the existing session and consumes its single 
  await s.workersEvent([s.worker]);
  assert.equal(s.pocRenders.at(-1).data[0].workerId,'worker-a');
  await s.poll();
- assert.ok(!s.calls.some(c=>c.path.startsWith('/api/v1/workers/')));
+ assert.ok(s.calls.some(c=>c.path==='/api/v1/workers/worker-a/diagnostics'));
+ assert.ok(!s.calls.some(c=>c.path==='/api/v1/workers/worker-a'||c.path.endsWith('/credential-access')));
+ assert.ok(s.pocUpdates.some(update=>Array.isArray(update.executions)));
+ assert.ok(s.pocUpdates.some(update=>update.diagnostics));
+ assert.ok(s.pocUpdates.some(update=>Array.isArray(update.nodes)));
  assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
  await s.$('logout').onclick();await s.flush();
  assert.equal(s.$('administration-content').hidden,true);
  assert.equal(s.pocRenders.at(-1).data,null);
  assert.equal([...s.timers.values()].filter(t=>t.delay===5000).length,0);
+ await s.emit('pagehide');
+});
+
+test('PoC failed reads clear individual projections and late diagnostics cannot repopulate logout',async()=>{
+ const s=setup('/workers/worker-a/poc');await s.flush();s.configured();await s.workersEvent([s.worker]);
+ const diagnosticsPath='/api/v1/workers/worker-a/diagnostics',executionsPath='/api/v1/executions?limit=50&offset=0';
+ s.held.set(diagnosticsPath,{promise:Promise.resolve({ok:false,status:500})});
+ s.held.set(executionsPath,{promise:Promise.resolve({ok:false,status:500})});
+ s.rejectNodes();await s.poll();
+ assert.ok(s.pocUpdates.some(update=>update.diagnostics===null));
+ assert.ok(s.pocUpdates.some(update=>update.executions===null));
+ assert.ok(s.pocUpdates.some(update=>update.nodes===null&&update.nodeCommands===null));
+ const late=deferred();s.held.set(diagnosticsPath,late);
+ const polling=s.poll();await s.flush();await s.$('logout').onclick();await s.flush();
+ const updates=s.pocUpdates.length;
+ late.resolve({ok:true,status:200,json:async()=>({workerId:'worker-a'})});await polling;
+ assert.equal(s.pocUpdates.length,updates);
+ assert.ok(s.pocUpdates.some(update=>update.cleared));
  await s.emit('pagehide');
 });
 

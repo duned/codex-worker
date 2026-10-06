@@ -12,7 +12,9 @@ mount and two same-origin asset references only for this explicit route.
 `dashboard-navigation.js` recognizes the isolated route and ordinary links leave
 it by full navigation, loading the ordinary dashboard again. The existing
 session, pending-read generation, overview reads and single Worker SSE owner
-supply snapshots to the React view. No additional fetch, token storage, polling,
+supply snapshots to the React view, including the shared project, node, command
+and bounded execution observations. The route also reads the existing Worker
+diagnostics endpoint through the same authenticated, cancellable request owner. No additional fetch, token storage, polling,
 SSE subscription or frontend router is created. Logout and unavailable Worker
 observations clear the projection. React escapes displayed resource text.
 
@@ -69,12 +71,68 @@ origins are required.
 
 The .NET endpoint regression checks embedded asset responses, deep navigation,
 normal-route asset isolation, missing routes and rejected methods. The Node/VM
-harness checks existing session restoration, one stream, no additional Worker
-detail requests, snapshot delivery, logout clearing and ordinary-page exit. It
-does not establish browser layout/accessibility. For parent integration review,
+harness checks existing session restoration, one stream, read-only Worker
+diagnostics, shared snapshot delivery, logout clearing and ordinary-page exit. Focused model and React rendering tests use JSON-shaped Server fixtures to
+cover Worker filtering, stage/outcome/timing presentation, empty/stale/failed
+reads, escaping and safe Issue links. Install the locked frontend dependencies
+before running the dashboard suite. These tests do not establish browser
+layout/accessibility. For parent integration review,
 use a disposable packaged Server behind the existing HTTPS/VPN proxy: sign in,
 open the PoC, reload, check online/stale/deleted observations, sign out, and follow
 its existing-detail link. Review keyboard focus, narrow viewport and long IDs;
 verify the network panel requests only local assets and the existing API/stream.
 No live provider actions, production deployment, release or version change is
 part of this work.
+
+## Informational projection and contract gaps
+
+The PoC displays the friendly name above the secondary ID, connection availability,
+Worker lifecycle, node execution prerequisites, scheduling policy and capability
+observation freshness separately. Slot usage is the selected Worker's reported
+active executions / maximum capacity (registered capacity is the fallback), with
+available capacity and active Server assignments stated separately. No Server-wide
+capacity or client-derived admission rule is used. Readiness evidence comes from
+Worker diagnostics; node tool authentication is displayed independently.
+
+Current executions and recent terminal outcomes are filtered by `assignedWorkerId`
+from the shared latest 50 Server execution requests. At most 10 terminal outcomes
+are shown. The existing API has no Worker filter, so older history and even active
+work may fall outside this window. The screen states that limit and explicitly
+calls out reported active work whose detail is absent. It is not a complete Worker
+execution-history store. Execution links open the existing details page.
+
+`WorkReference` has type, ID and URL but no Issue title. The screen states that the
+title is unavailable and links the Issue number using a validated canonical GitHub
+Issue URL, falling back to the central project's owner/repository identity. Deleted
+or unavailable projects retain their execution project ID; missing link evidence
+remains plain text. URLs must be HTTPS GitHub Issue paths for the same number, with
+no credentials, query or fragment. No live GitHub enrichment is requested.
+
+Only `currentStage` is displayed; the contract has no stage sequence or per-stage
+completion evidence, so no completed/upcoming steps or progress percentage are
+invented. Elapsed time uses `startedAtUtc` and the refresh time, and terminal duration
+uses the reported duration or start/completion timestamps. Missing/invalid timing
+is unavailable. Failed and cancelled outcomes retain their reported state and
+recovery classification without inventing an outcome from diagnostics.
+
+Capability cards show installation/version, health, authentication/configuration
+(including not-applicable), update and detection evidence, observed operations,
+registered available typed actions and pending/latest command status. Actions are
+informational text; mutations stay in existing administration. Diagnostic codes
+and command IDs live in secondary disclosures; raw failure detail and process
+output are not displayed. Stable React component keys preserve focused links and
+expanded diagnostic disclosures across polling and stream updates. A failed read
+clears its projection, and session teardown clears all snapshots.
+
+For visual review, use the deterministic fixtures in
+`tests/dashboard/worker-poc-fixtures.cjs` at desktop and 375px widths, with a long
+Worker ID/name, stale observations, a pending/failed capability operation, and
+unavailable reads. Check wrapping, text status, keyboard link/disclosure focus,
+scroll stability after refresh and correct Issue navigation. The scoped layout
+switches status, execution and capability grids to one column below 700px.
+
+Local fixture review used Chromium with the existing shell CSS at 1280px and
+375px. Both layouts and a long-name/stale/unavailable variant had no horizontal
+overflow. Issue hrefs, focused links, open diagnostic disclosures and scroll
+position survived snapshot updates. This fixture review does not establish a
+live provider or deployed-session integration campaign.

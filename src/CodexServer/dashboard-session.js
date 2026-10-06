@@ -99,6 +99,7 @@ function startDashboardPolling(){
   if(!authenticated||owner!==dashboardPollOwner)return;
   await Promise.allSettled([loadNodes(),loadProjects(),loadHomeActivity(),navigation.current().view==='executions'?loadExecutions():Promise.resolve(),['workers','settings'].includes(navigation.current().view)?loadProvisioning():Promise.resolve()]);
   const route=navigation.current();
+  if(authenticated&&owner===dashboardPollOwner&&route.poc)await loadWorkerPoc(route.id);
   if(authenticated&&owner===dashboardPollOwner&&route.view==='workers'&&route.id&&!route.poc)await Promise.allSettled([loadWorker(route.id),loadWorkerAdministration(route.id)]);
   if(authenticated&&owner===dashboardPollOwner)dashboardPollTimer=setTimeout(poll,5000);
  };
@@ -106,6 +107,6 @@ function startDashboardPolling(){
 }
 async function loadHomeActivity(){
  const context=navigation.capture();if(!authenticated)return;
- try{const items=await api('/api/v1/executions?limit=50&offset=0');if(navigation.isCurrent(context))navigation.observe('executions',items)}
- catch(e){if(navigation.isCurrent(context)&&e.name!=='AbortError'&&e.message!=='Administration session ended.')navigation.observe('executions',null)}
+ try{const items=await api('/api/v1/executions?limit=50&offset=0');if(navigation.isCurrent(context)){navigation.observe('executions',items);window.codexWorkerPoc?.update?.({executions:items})}}
+ catch(e){if(navigation.isCurrent(context)&&e.name!=='AbortError'&&e.message!=='Administration session ended.'){navigation.observe('executions',null);window.codexWorkerPoc?.update?.({executions:null})}}
 }
