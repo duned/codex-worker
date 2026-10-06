@@ -251,7 +251,29 @@ and a remote managed Worker. The automated `ServerEventStreamTests` use a local
 Kestrel host; they do not establish real VM, systemd, proxy or Worker acceptance.
 Record this manual check as UNRUN until performed.
 
-1. Open several authenticated Server dashboards (for example, seven tabs), and
+Focused automated regressions require .NET 10 and Node.js on `PATH`:
+
+```bash
+dotnet test tests/CodexWorker.Tests/CodexWorker.Tests.csproj --filter FullyQualifiedName~ServerEventStreamTests
+node --test --test-isolation=none tests/dashboard/server-stream-lifecycle.test.cjs
+```
+
+The populated Worker regression compares actual Server SSE events with the HTTP
+Worker API, including nested capabilities, then feeds successive events into the
+dashboard's real event parser and renderer on one simulated tab/connection.
+
+Before the restart check, hard reload one deployed HTTPS dashboard and connect
+once. Leave it idle for at least one minute with the browser console and Network
+panel open. Confirm Worker rows and capacity values render, live update timestamps
+continue advancing, no `toLowerCase` TypeError appears, and the single
+`GET /api/v1/events/stream` stays open without periodic reopening. Do not export
+request headers, tokens or raw event bodies as evidence. Processing failures must
+show **Worker event processing failed** and stop automatic retries; HTTP 401/403
+must show **authentication rejected** and require a new Connect. Transport
+interruptions show **connection interrupted; retrying** and recover automatically.
+
+1. Keep this tab open; optionally open several authenticated Server dashboards
+   (for example, seven tabs), and
    confirm each shows live Worker updates. Keep them open throughout the restart.
    Use the dashboard login; do not put management credentials in shell arguments,
    captured browser requests or evidence.
@@ -263,7 +285,8 @@ Record this manual check as UNRUN until performed.
    shutdown/start timestamps and redacted results; do not increase the timeout.
 3. Confirm the service is active/running with `Result=success`, and check both
    the loopback Server and the deployed HTTPS `/readyz` endpoint return HTTP 200
-   with ready status. Confirm dashboard live updates resume after reconnection.
+   with ready status. Confirm each dashboard has one successful reconnection,
+   resumes live Worker updates and retains one active stream per tab.
 4. Confirm the remote Worker reconnects and its heartbeat/availability becomes
    online in the Server. A transient disconnect or proxy 502 during the restart
    may occur; verify subsequent communication recovers without enrolling again

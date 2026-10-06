@@ -151,10 +151,16 @@ function streamWorkers(){
  owner.done=(async()=>{
   if(previous)await previous.done;
   while(current()){
+   let processing=false;
    try{
     const response=await fetch('/api/v1/events/stream',{headers:{Authorization:'Bearer '+token},signal:owner.controller.signal});
     // A response can arrive after cancellation. Release its body without publishing it.
     if(!current()){if(response.body)await response.body.cancel();break}
+    if(response.status===401||response.status===403){
+     if(response.body)await response.body.cancel();
+     $('live').textContent='Live · authentication rejected ('+response.status+'). Connect with a valid Server token.';
+     break;
+    }
     if(!response.ok||!response.body){if(response.body)await response.body.cancel();throw Error('Stream unavailable')}
     owner.reader=response.body.getReader();
     $('live').textContent='Live · connected';
@@ -166,15 +172,19 @@ function streamWorkers(){
      const events=buffer.split('\n\n');buffer=events.pop()||'';
      for(const item of events){
       const data=item.split('\n').find(line=>line.startsWith('data: '));
-      if(data){renderWorkers(JSON.parse(data.slice(6)));$('live').textContent='Live · updated '+new Date().toLocaleTimeString()}
+      if(data){processing=true;renderWorkers(JSON.parse(data.slice(6)));processing=false;$('live').textContent='Live · updated '+new Date().toLocaleTimeString()}
      }
     }
    }catch{
-    // Stream failures recover below; obsolete owners never update status or retry.
+    // Fixed diagnostics never expose exception text, event bodies or credentials.
+    if(current()&&processing){
+     $('live').textContent='Live · Worker event processing failed. Refresh the dashboard or reconnect after correcting the Server data.';
+     break;
+    }
    }finally{
     if(owner.reader){await cancelWorkerReader(owner);owner.reader.releaseLock();owner.reader=null;owner.readerCancellation=null}
    }
-   if(current()){$('live').textContent='Live status unavailable';await waitForWorkerRetry(owner.controller.signal)}
+   if(current()){$('live').textContent='Live · connection interrupted; retrying';await waitForWorkerRetry(owner.controller.signal)}
   }
  })();
  return owner.done;

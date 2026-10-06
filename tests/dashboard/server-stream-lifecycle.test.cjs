@@ -1,49 +1,7 @@
 // Exercise the dashboard's real Connect/Enter entry points with coordinated fetch/read/timers.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
-const streamStart=html.indexOf('// One owner per page.');
-const streamEnd=html.indexOf('function editProject(',streamStart);
-const connectStart=html.indexOf("$('unlock').onclick=");
-const connectEnd=html.indexOf("$('new-project').onclick=",connectStart);
-const source=html.slice(streamStart,streamEnd)+html.slice(connectStart,connectEnd);
-const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}};
-const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve()};
-
-function setup(){
- const elements=new Map(),$=id=>{
-  if(!elements.has(id))elements.set(id,{value:'',textContent:'',listeners:{},addEventListener(type,handler){this.listeners[type]=handler},click(){this.onclick()}});
-  return elements.get(id);
- };
- const requests=[],timers=new Map(),events={},updates=[];let timerId=0,active=0,maximum=0;
- const context=vm.createContext({$,managementToken:'',AbortController,TextDecoder,Date,JSON,
-  window:{addEventListener:(name,handler)=>events[name]=handler},
-  setTimeout:handler=>{const id=++timerId;timers.set(id,handler);return id},clearTimeout:id=>timers.delete(id),
-  renderWorkers:items=>updates.push(items),
-  ...Object.fromEntries(['loadProjects','loadOverview','loadExecutions','loadNodes','loadProvisioning','loadCredentials'].map(name=>[name,()=>{}])),
-  fetch:(path,options)=>{
-   const response=deferred();active++;maximum=Math.max(maximum,active);
-   const request={path,options,response,closed:false,close(){if(!this.closed){this.closed=true;active--}}};
-   options.signal?.addEventListener('abort',()=>{request.close();if(!request.ignoreAbort)response.reject(Error('aborted'))},{once:true});
-   requests.push(request);return response.promise;
-  }
- });
- vm.runInContext(source,context);
- function respond(request,{ok=true,holdCancellation=false,staleRead=false}={}){
-  let pending=null;const cancellation=deferred();
-  const reader={cancelled:0,released:0,read(){pending=deferred();return pending.promise},cancel(){this.cancelled++;request.close();if(!staleRead)pending?.resolve({done:true});return holdCancellation?cancellation.promise:Promise.resolve()},releaseLock(){this.released++}};
-  const body={cancelled:0,getReader:()=>reader,cancel(){this.cancelled++;request.close();return Promise.resolve()}};
-  request.response.resolve({ok,body});
-  return {reader,body,finishCancellation:()=>cancellation.resolve(),emit:items=>pending.resolve({value:new TextEncoder().encode('data: '+JSON.stringify(items)+'\n\n'),done:false}),end:()=>{request.close();pending.resolve({done:true})},fail:()=>{request.close();pending.reject(Error('outage'))}};
- }
- return {$,requests,timers,events,updates,respond,maximum:()=>maximum,active:()=>active,
-  connect(token='test-token',enter=false){$('token').value=token;if(enter)$('token').listeners.keydown({key:'Enter'});else $('unlock').click()},
-  retry(){assert.equal(timers.size,1);const callback=timers.values().next().value;callback()},
-  async stop(){events.pagehide();await flush();assert.equal(active,0);assert.equal(timers.size,0)}
- };
-}
+const {setup,flush}=require('./server-stream-harness.cjs');
 
 test('repeated Connect and Enter replace the reader before opening a single authenticated request',async()=>{
  const s=setup();s.connect();await flush();
@@ -95,10 +53,12 @@ test('disconnect during retry cancels its timer and reconnect leaves obsolete ca
 
 test('Server outage and clean EOF release readers, then reconnect and resume Worker events',async()=>{
  const s=setup();s.connect();await flush();const first=s.respond(s.requests[0]);await flush();first.fail();await flush();
+ assert.equal(s.$('live').textContent,'Live · connection interrupted; retrying');
  assert.equal(first.reader.cancelled,1);assert.equal(first.reader.released,1);assert.equal(s.timers.size,1);
  s.retry();await flush();const restarted=s.respond(s.requests[1]);await flush();restarted.emit([{workerId:'after-restart'}]);await flush();
  assert.equal(s.updates[0][0].workerId,'after-restart');assert.match(s.$('live').textContent,/updated/);
  restarted.end();await flush();assert.equal(restarted.reader.released,1);assert.equal(s.timers.size,1);assert.equal(s.requests.length,2);
+ assert.equal(s.$('live').textContent,'Live · connection interrupted; retrying');
  s.retry();await flush();assert.equal(s.requests.length,3);assert.equal(s.maximum(),1);await s.stop();
 });
 
@@ -111,4 +71,25 @@ test('page teardown cancels a read and back-forward cache restoration opens one 
 test('independent tabs retain independent stream owners',async()=>{
  const a=setup(),b=setup();a.connect();b.connect();await flush();assert.equal(a.active(),1);assert.equal(b.active(),1);
  await a.stop();assert.equal(b.active(),1);await b.stop();
+});
+
+test('rendering and JSON failures stop retries and report safe processing diagnostics',async()=>{
+ const incompatibleWorker={WorkerId:'private-body',DisplayName:'private-name',WorkerVersion:'1.0',SchedulingPolicy:'Enabled',Availability:'online',MaximumCapacity:4,ActiveExecutions:1,AvailableCapacity:3,LastSeenAtUtc:'2026-01-01T00:00:00Z'};
+ for(const frame of ['event: workers\ndata: '+JSON.stringify([incompatibleWorker])+'\n\n','data: private-invalid-json\n\n']){
+  const s=setup({realRenderer:true});s.connect('private-token');await flush();
+  const connection=s.respond(s.requests[0]);await flush();connection.emitFrame(frame);await flush();
+  assert.match(s.$('live').textContent,/Worker event processing failed/);
+  assert.doesNotMatch(s.$('live').textContent,/private|toLowerCase/);
+  assert.equal(connection.reader.released,1);assert.equal(s.timers.size,0);assert.equal(s.requests.length,1);assert.equal(s.active(),0);
+  s.connect('corrected');await flush();assert.equal(s.requests.length,2);assert.equal(s.maximum(),1);await s.stop();
+ }
+});
+
+test('authentication rejection stops retries and deliberate cancellation reports disconnection',async()=>{
+ for(const status of [401,403]){
+  const s=setup();s.connect();await flush();const rejected=s.respond(s.requests[0],{ok:false,status});await flush();
+  assert.match(s.$('live').textContent,new RegExp('authentication rejected \\('+status+'\\)'));
+  assert.equal(rejected.body.cancelled,1);assert.equal(s.timers.size,0);assert.equal(s.active(),0);
+  await s.stop();assert.equal(s.$('live').textContent,'Live · disconnected');
+ }
 });

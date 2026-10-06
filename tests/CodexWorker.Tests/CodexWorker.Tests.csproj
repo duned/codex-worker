@@ -18,4 +18,9 @@
     <ProjectReference Include="../../src/CodexWorker/CodexWorker.csproj" />
     <ProjectReference Include="../../src/CodexServer/CodexServer.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../dashboard/server-stream-harness.cjs" Link="tests/dashboard/server-stream-harness.cjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../dashboard/server-stream-rendering.cjs" Link="tests/dashboard/server-stream-rendering.cjs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../src/CodexServer/dashboard.html" Link="src/CodexServer/dashboard.html" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

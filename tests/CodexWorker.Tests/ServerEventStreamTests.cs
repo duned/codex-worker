@@ -5,6 +5,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Diagnostics;
+using System.Text.Json;
 using CodexServer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -15,6 +17,91 @@ using Microsoft.Extensions.Hosting;
 public sealed class ServerEventStreamTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(3);
+
+    [Fact]
+    public async Task PopulatedWorkerEventsMatchHttpContractAndRenderAcrossUpdates()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"server-stream-contract-{Guid.NewGuid():N}");
+        var previousToken = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "test-management-token");
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            await using var app = await ServerApplication.BuildAsync(
+                [$"--Server:ListenUrl=http://127.0.0.1:{port}", $"--Server:DatabasePath={Path.Combine(directory, "registry.db")}",
+                 "--Logging:LogLevel:Default=Warning"]);
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var workerId = Guid.NewGuid().ToString("N");
+            WorkerCapability[] capabilities = [new("tool", "git", "2.0", "node")];
+            await store.RegisterWorkerAsync(new(2, workerId, "populated worker", "1.0", "test", 4, capabilities));
+            await store.HeartbeatWorkerAsync(new(2, workerId, "1.0", "running", 1, 4, capabilities, ["project-a"]));
+            await app.StartAsync();
+            using var handler = new SocketsHttpHandler { MaxResponseDrainSize = 0 };
+            using var client = new HttpClient(handler) { BaseAddress = new Uri(Assert.Single(app.Urls)) };
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-management-token");
+            var frames = new List<string>();
+            for (var update = 0; update < 2; update++)
+            {
+                using var response = await client.GetAsync("/api/v1/events/stream", HttpCompletionOption.ResponseHeadersRead)
+                    .WaitAsync(Deadline);
+                response.EnsureSuccessStatusCode();
+                using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+                Assert.Equal("event: workers", await reader.ReadLineAsync().WaitAsync(Deadline));
+                var data = await reader.ReadLineAsync().WaitAsync(Deadline);
+                Assert.NotNull(data);
+                Assert.StartsWith("data: ", data);
+                Assert.Equal(string.Empty, await reader.ReadLineAsync().WaitAsync(Deadline));
+                frames.Add($"event: workers\n{data}\n\n");
+                using var streamed = JsonDocument.Parse(data[6..]);
+                using var http = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
+                Assert.True(JsonElement.DeepEquals(http.RootElement, streamed.RootElement));
+                var worker = streamed.RootElement[0];
+                Assert.Equal(workerId, worker.GetProperty("workerId").GetString());
+                Assert.Equal("Enabled", worker.GetProperty("schedulingPolicy").GetString());
+                Assert.Equal("online", worker.GetProperty("availability").GetString());
+                Assert.Equal(4, worker.GetProperty("capacity").GetInt32());
+                Assert.Equal(4, worker.GetProperty("maximumCapacity").GetInt32());
+                Assert.Equal(1, worker.GetProperty("activeExecutions").GetInt32());
+                Assert.Equal(3, worker.GetProperty("availableCapacity").GetInt32());
+                Assert.Equal("git", worker.GetProperty("capabilities")[0].GetProperty("name").GetString());
+                Assert.Equal("node", worker.GetProperty("capabilities")[0].GetProperty("scope").GetString());
+                if (update == 0)
+                    await store.HeartbeatWorkerAsync(new(2, workerId, "1.1", "running", 1, 4, capabilities, ["project-a"]));
+            }
+
+            // Drive the real event parser and renderer with actual Server frames, on one tab/reader.
+            var start = new ProcessStartInfo("node")
+            {
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "tests", "dashboard", "server-stream-rendering.cjs"));
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("Unable to start dashboard harness.");
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var error = process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.StandardInput.WriteAsync(JsonSerializer.Serialize(frames).AsMemory(), timeout.Token);
+                process.StandardInput.Close();
+                await process.WaitForExitAsync(timeout.Token);
+                Assert.True(process.ExitCode == 0, $"Dashboard harness failed: {await output}{await error}");
+            }
+            finally
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
+            await app.StopAsync().WaitAsync(Deadline);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previousToken);
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Fact]
     public async Task LiveStreamsCompleteOnClientDisconnectAndHostStop()
@@ -120,7 +207,8 @@ public sealed class ServerEventStreamTests
             return Array.Empty<WorkerRegistrationResponse>();
         };
         await using var body = new BlockingResponseStream(operation, entered);
-        var context = new DefaultHttpContext { RequestAborted = disconnected.Token };
+        using var services = new ServiceCollection().AddOptions().BuildServiceProvider();
+        var context = new DefaultHttpContext { RequestAborted = disconnected.Token, RequestServices = services };
         context.Response.Body = body;
         var streaming = ServerApplication.StreamWorkerUpdatesAsync(context, store, stopping.Token);
         try

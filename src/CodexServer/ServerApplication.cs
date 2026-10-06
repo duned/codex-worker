@@ -5,7 +5,9 @@ using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -866,6 +868,7 @@ public static class ServerApplication
         // alone does not end a connected stream when the host begins stopping.
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, applicationStopping);
         var cancellationToken = lifetime.Token;
+        var jsonOptions = context.RequestServices.GetRequiredService<IOptions<JsonOptions>>().Value.SerializerOptions;
         context.Response.ContentType = "text/event-stream";
         context.Response.Headers["Cache-Control"] = "no-cache";
         context.Response.Headers["X-Accel-Buffering"] = "no";
@@ -876,7 +879,7 @@ public static class ServerApplication
             {
                 var workers = await store.GetWorkersAsync(cancellationToken);
                 await context.Response.WriteAsync("event: workers\ndata: ", cancellationToken);
-                await context.Response.WriteAsync(JsonSerializer.Serialize(workers), cancellationToken);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(workers, jsonOptions), cancellationToken);
                 await context.Response.WriteAsync("\n\n", cancellationToken);
                 await context.Response.Body.FlushAsync(cancellationToken);
             } while (await timer.WaitForNextTickAsync(cancellationToken));
