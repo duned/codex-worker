@@ -309,7 +309,8 @@ test('isolated Worker PoC restores the existing session and consumes shared snap
  assert.equal(s.pocRenders.at(-1).data[0].workerId,'worker-a');
  await s.poll();
  assert.ok(s.calls.some(c=>c.path==='/api/v1/workers/worker-a/diagnostics'));
- assert.ok(!s.calls.some(c=>c.path==='/api/v1/workers/worker-a'||c.path.endsWith('/credential-access')));
+ assert.ok(s.calls.some(c=>c.path==='/api/v1/workers/worker-a'));
+ assert.ok(!s.calls.some(c=>c.path.endsWith('/credential-access')));
  assert.ok(s.pocUpdates.some(update=>Array.isArray(update.executions)));
  assert.ok(s.pocUpdates.some(update=>update.diagnostics));
  assert.ok(s.pocUpdates.some(update=>Array.isArray(update.nodes)));
@@ -346,4 +347,21 @@ test('PoC exit restores the ordinary page by same-origin navigation and normal p
  assert.equal(prevented,true);assert.deepEqual(s.assignments,['/workers/worker-a']);
  assert.doesNotMatch(readDashboard(),/src="\/dashboard-assets\/worker-poc|href="\/dashboard-assets\/worker-poc|id="worker-poc"/);
  await s.emit('pagehide');
+});
+
+test('PoC mutations share session CSRF and uncertain responses require explicit refresh without replay',async()=>{
+ const s=setup('/workers/worker-a/poc');await s.flush();s.configured();await s.workersEvent([s.worker]);await s.poll();
+ const control=()=>s.pocUpdates.filter(update=>update.administration).at(-1).administration;
+ const path='/api/v1/workers/worker-a/scheduling-policy';
+ s.held.set(path,{promise:Promise.resolve({ok:false,status:500})});
+ await control().onAction('Draining');
+ const writes=()=>s.calls.filter(call=>call.path===path&&call.options.method==='PUT');
+ assert.equal(writes().length,1);
+ assert.equal(writes()[0].options.headers.get('X-Codex-CSRF'),'test-csrf');
+ assert.equal(writes()[0].options.credentials,'same-origin');
+ assert.equal(JSON.parse(writes()[0].options.body).policy,'Draining');
+ assert.equal(control().needsRefresh,true);
+ await s.poll();await control().onAction('Draining');assert.equal(writes().length,1);
+ await control().onRefresh();assert.equal(control().needsRefresh,false);assert.equal(writes().length,1);
+ await s.$('logout').onclick();await s.emit('pagehide');
 });

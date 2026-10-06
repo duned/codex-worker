@@ -3,9 +3,9 @@
 Open `/workers/{workerId}/poc` directly (using the same registered ID as
 `/workers/{workerId}`). Reload restores the existing administration cookie and
 CSRF session. The existing Worker detail and every other route retain their
-ordinary dashboard assets. The PoC is read-only and links back to the existing
-Worker preparation and administration page; no scheduling or readiness rules
-are introduced.
+ordinary dashboard assets. The PoC links back to the existing Worker preparation and administration page
+and presents scheduling and Worker API-token controls through the existing
+management contracts; no scheduling or readiness rules are introduced.
 
 The Server renders its existing dashboard shell and login, inserting a React
 mount and two same-origin asset references only for this explicit route.
@@ -72,7 +72,7 @@ origins are required.
 The .NET endpoint regression checks embedded asset responses, deep navigation,
 normal-route asset isolation, missing routes and rejected methods. The Node/VM
 harness checks existing session restoration, one stream, read-only Worker
-diagnostics, shared snapshot delivery, logout clearing and ordinary-page exit. Focused model and React rendering tests use JSON-shaped Server fixtures to
+diagnostics, shared snapshot delivery, registry control evidence, logout clearing and ordinary-page exit. Focused model and React rendering tests use JSON-shaped Server fixtures to
 cover Worker filtering, stage/outcome/timing presentation, empty/stale/failed
 reads, escaping and safe Issue links. Install the locked frontend dependencies
 before running the dashboard suite. These tests do not establish browser
@@ -117,8 +117,8 @@ recovery classification without inventing an outcome from diagnostics.
 
 Capability cards show installation/version, health, authentication/configuration
 (including not-applicable), update and detection evidence, observed operations,
-registered available typed actions and pending/latest command status. Actions are
-informational text; mutations stay in existing administration. Diagnostic codes
+registered available typed actions and pending/latest command status. Capability actions remain informational text; provisioning mutations stay in
+existing administration. Diagnostic codes
 and command IDs live in secondary disclosures; raw failure detail and process
 output are not displayed. Stable React component keys preserve focused links and
 expanded diagnostic disclosures across polling and stream updates. A failed read
@@ -136,3 +136,37 @@ Local fixture review used Chromium with the existing shell CSS at 1280px and
 overflow. Issue hrefs, focused links, open diagnostic disclosures and scroll
 position survived snapshot updates. This fixture review does not establish a
 live provider or deployed-session integration campaign.
+
+## Scheduling and Worker API authentication control rail
+
+The right-side rail uses restrained secondary buttons and reflows below the
+information panels on narrow screens. It shows the registry scheduling policy,
+drain progress and Worker API-token status. Activate scheduling uses the existing
+Server diagnostics `canActivate` and blocking reasons; the Server validates again
+at mutation time. Drain and Deactivate affect new assignments and retain existing
+assignments and leases. Already-applied policies and absent/revoked API tokens
+have explicit unavailable reasons. Missing readiness diagnostics block activation
+without combining readiness with the independent drain or token controls.
+
+All mutations use the existing administration session, CSRF request owner and
+native confirmation pattern. API-token revocation denies Worker API calls and may
+cause active leases to expire into recovery. It does not revoke credential delivery,
+node login or provider credentials; there is no second revocation action in this
+rail. React receives state and action callbacks, and owns no requests or timers.
+
+While a request is pending all mutations are disabled. After rejection, conflict,
+timeout or another uncertain response, periodic refresh can display current state
+but cannot unlock the controls. Use **Refresh authoritative state**, inspect the
+registry policy/token and current activation evidence, then deliberately confirm
+any further action. No mutation is automatically replayed. Failed registry reads
+retain the lock. Successful mutations refresh registry/diagnostics and the shared
+Worker overview. Session teardown and obsolete read generations prevent late
+responses from publishing data. Errors use bounded static guidance rather than
+raw response bodies or credential material.
+
+Deterministic control-owner tests cover each contract, confirmation cancellation,
+blocked activation, already-applied policy, absent tokens, unauthorized state,
+pending duplicate submission, stale activation rejection, lost-response refresh,
+failed refresh and late navigation/logout responses. Rendering tests cover state,
+unavailable reasons and accessible description associations. These checks do not
+replace a deployed browser review of layout, focus and the native confirmation.

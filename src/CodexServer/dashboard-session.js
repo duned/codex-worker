@@ -48,7 +48,7 @@ function api(path,options={},sessionRequest=false){
    if(response.status===401||response.status===403){signOut('Your session expired or was rejected. Sign in again.');throw Error('Administration sign in required.');}
    // Never display untrusted error bodies, authentication challenges or query values.
    const resource=path.split('?')[0].slice(0,160);
-   if(!response.ok)throw Error(`${method} ${resource} failed (HTTP ${response.status}). State may be stale; refresh before retrying.`);
+   if(!response.ok)throw Object.assign(Error(`${method} ${resource} failed (HTTP ${response.status}). State may be stale; refresh before retrying.`),{httpStatus:response.status});
    if(!sessionRequest&&!read&&method!=='HEAD')cancelDashboardReads();
    let result;
    try{result=response.status===204?null:await response.json()}

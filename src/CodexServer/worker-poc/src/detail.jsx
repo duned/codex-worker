@@ -44,7 +44,29 @@ function Capability({ capability, commands }) {
     <details><summary>Diagnostic context</summary><p>{state.diagnosticCode || 'No diagnostic code reported'}{state.operation?.diagnosticCode && ' · ' + state.operation.diagnosticCode}</p>{latest && <p>Command {latest.id} · {latest.diagnostic}</p>}</details>
   </article>;
 }
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, now = Date.now() }) {
+function ControlRail({ administration }) {
+  const worker = administration?.worker;
+  const actions = administration?.actions ?? [
+    { key: 'Enabled', label: 'Activate scheduling' }, { key: 'Draining', label: 'Drain worker' },
+    { key: 'Disabled', label: 'Deactivate' }, { key: 'revoke-api', label: 'Revoke Worker API token' }
+  ].map(action => ({ ...action, reason: 'Current administration evidence unavailable. Refresh to recover it.' }));
+  return <aside className="poc-control-rail" aria-labelledby="poc-controls-title">
+    <h3 id="poc-controls-title">Worker controls</h3>
+    <dl className="poc-facts">
+      <Fact label="Scheduling policy"><Status value={worker?.schedulingPolicy ?? 'Unavailable'} />{worker?.schedulingPolicy === 'Draining' && <p>{worker.activeAssignments === 0 ? 'Drained; scheduling is paused.' : `Draining; ${worker.activeAssignments} active assignment(s) keep their leases.`}</p>}</Fact>
+      <Fact label="Worker API token"><Status value={worker?.authenticationCredentialStatus ?? 'Unavailable'} />{worker?.authenticationCredentialRevokedAtUtc && <p>Revoked: {timestamp(worker.authenticationCredentialRevokedAtUtc)}</p>}</Fact>
+    </dl>
+    <p id="poc-policy-effect">Scheduling controls affect new assignments. Existing assignments and leases are not cancelled. Activation requires current Server readiness evidence and validation.</p>
+    <p id="poc-token-effect">Revoking Worker API authentication denies calls using its token; active leases may expire into recovery. It does not revoke credential-delivery authorization, node login or provider credentials.</p>
+    <div className="poc-controls">{actions.map(action => <div key={action.key}>
+      <button type="button" className="poc-secondary" disabled={!!action.reason || !administration?.onAction} aria-describedby={`${action.key === 'revoke-api' ? 'poc-token-effect' : 'poc-policy-effect'} poc-action-${action.key}`} onClick={() => administration?.onAction(action.key)}>{action.label}</button>
+      <p id={'poc-action-' + action.key} className="poc-muted">{action.reason || 'Confirmation required.'}</p>
+    </div>)}</div>
+    <p role="status" aria-live="polite">{administration?.message}</p>
+    <button type="button" className="poc-secondary" disabled={administration?.pending || !administration?.onRefresh} onClick={() => administration?.onRefresh()}>Refresh authoritative state</button>
+  </aside>;
+}
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, now = Date.now() }) {
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
   const items = workerExecutions(executions, id);
@@ -54,7 +76,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   return <section className="poc-card" aria-label="Worker detail proof of concept">
     <header><p className="poc-eyebrow">Worker detail · proof of concept</p><h2>{worker?.displayName || 'Worker details'}</h2><p className="poc-muted poc-identity">ID {id}</p>
       <a href={'/workers/' + encodeURIComponent(id)}>Open Worker detail and administration</a></header>
-    {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <>
+    {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className="poc-layout"><div className="poc-main">
       <dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
         <Fact label="Execution / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
@@ -72,6 +94,6 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
         {diagnostics ? <><p>Reported readiness evidence: Codex preflight {diagnostics.aiAgentReady ? 'present' : 'absent'} · GitHub access {diagnostics.gitHubReady ? 'present' : 'absent'} · Git access {diagnostics.gitReady ? 'present' : 'absent'}</p><p>Configuration synchronization: <Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{diagnostics.latestProvisioningOperation.action} · {diagnostics.latestProvisioningOperation.status}</p>}</> : <p>Worker readiness diagnostics unavailable.</p>}
         {node ? node.capabilities?.length ? <div className="poc-capabilities">{node.capabilities.map(capability => <Capability key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>No capabilities reported.</p> : <p>Capability observations unavailable. Refresh provisioning state.</p>}
       </section>
-    </>}
+    </div><ControlRail administration={administration} /></div>}
   </section>;
 }

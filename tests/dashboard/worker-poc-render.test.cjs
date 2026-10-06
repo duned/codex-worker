@@ -36,15 +36,23 @@ test('Stale, missing, failed reads and absent resources remain understandable',(
  assert.ok(render({observations:null,loading:true}).includes('Loading current Worker observations'));
  assert.ok(render({executions:[]}).includes('Worker reports active work'));
 });
-test('Capabilities expose pending and failed operations without mutation controls or raw diagnostics',()=>{
+test('Capabilities expose pending and failed operations without provisioning mutation controls or raw diagnostics',()=>{
  const request={nodeId:'worker-a',capabilityId:'codex-cli',action:'CheckAuthentication'};
  const html=render({nodeCommands:[{id:'pending',request,status:'Pending',createdAtUtc:'2026-01-01',diagnostic:'Pending'},{id:'failed',request,status:'Failed',createdAtUtc:'2025-12-31',diagnostic:'Denied',failureDetail:{description:'raw private detail'}}],nodes:[{...node,capabilities:[{...capability,state:{...capability.state,operation:{state:'Failed',action:'checkauthentication',diagnosticCode:'authentication-required'}}}]}]});
  assert.ok(html.includes('Pending'));assert.ok(html.includes('Failed'));assert.ok(html.includes('authentication-required'));
- assert.ok(!html.includes('<button'));assert.ok(!html.includes('raw private detail'));
+ assert.ok(!html.includes('CheckAuthentication</button>'));assert.ok(!html.includes('raw private detail'));
  const failed=render({nodeCommands:[{id:'failed',request,status:'Failed',createdAtUtc:'2026-01-01',diagnostic:'Denied'}]});
  assert.ok(failed.includes('Latest command:'));assert.ok(failed.includes('Failed'));
 });
 test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
  const html=render({observations:[{...worker,displayName:'<script>bad</script>'}],executions:[{...current,workReference:{type:'github-issue',id:'27',url:'javascript:alert(1)'}}],projects:null});
  assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));assert.ok(!html.includes('javascript:'));assert.ok(html.includes('Issue link unavailable'));
+});
+
+test('Control rail separates token revocation, explains unavailable actions and associates descriptions',()=>{
+ const html=render({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}}});
+ for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','aria-describedby="poc-token-effect poc-action-revoke-api"','Refresh authoritative state'])assert.ok(html.includes(text),text);
+ assert.match(html,/<button[^>]*disabled=""[^>]*>Activate scheduling/);
+ assert.match(html,/<button(?![^>]*disabled)[^>]*>Deactivate/);
+ assert.ok(!html.includes('Revoke delivery authorization'));
 });

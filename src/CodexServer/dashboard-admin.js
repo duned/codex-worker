@@ -69,6 +69,7 @@ async function loadProjectDiscoveryObservation(projectId){
  }catch(e){if(!navigation.isCurrent(context)||navigation.current().id!==projectId)return;target.textContent='Current queue observation is unavailable. Refresh project executions; discovery-cycle details are not exposed here. '+e.message}
 }
 function resetResources(){
+ workerPocAdministration=null;++workerPocReadGeneration;
  window.codexWorkerPoc?.render(null);
  clearTimeout(githubChallengeTimer);githubChallengeTimer=null;
  $('project-result').hidden=true;
@@ -89,14 +90,69 @@ function invalidateWorkers(){
 function executionFilterRoute(offset=0){navigation.navigate('executions','',{project:$('execution-project-filter').value,state:$('execution-state-filter').value,issue:$('execution-issue-filter').value,offset});}
 /* dashboard-session */
 function renderWorkers(data){window.codexWorkerPoc?.render(data);workerObservationGeneration++;workers=data;navigation.observe('workers',data);renderProjectContext();const online=data.filter(w=>w.availability==='online').length,stale=data.filter(w=>w.availability==='stale').length,offline=data.filter(w=>w.availability==='offline').length;const total=data.reduce((n,w)=>n+w.maximumCapacity,0),used=data.reduce((n,w)=>n+w.activeExecutions,0),free=data.reduce((n,w)=>n+w.availableCapacity,0);$('worker-count').textContent=data.length;$('worker-health').textContent=`${online} online · ${stale} stale · ${offline} offline`;$('capacity-total').textContent=total;$('capacity-used').textContent=used;$('capacity-free').textContent=`Available ${free}`;navigation.updateRows($('workers'),data.length?data.map(w=>`<button class="row" data-worker="${esc(w.workerId)}" style="width:100%;border-left:0;border-right:0;border-top:0;text-align:left;background:transparent;cursor:pointer"><span><span class="primary">${esc(w.displayName)}</span><span class="sub">${esc(w.workerId)} · v${esc(w.workerVersion)}</span><span class="sub">${w.activeExecutions}/${w.maximumCapacity} active · policy ${esc(w.schedulingPolicy.toLowerCase())} · last seen ${esc(new Date(w.lastSeenAtUtc).toLocaleString())}</span></span><span class="badge ${esc(w.availability)}">${esc(w.availability)}</span></button>`).join(''):'<div class="empty">No Workers have registered yet.</div>');document.querySelectorAll('[data-worker]').forEach(el=>el.addEventListener('click',()=>{navigation.navigate('workers',el.dataset.worker)}));}
-// PoC reads use the existing authenticated request/cancellation and polling owner.
-async function loadWorkerPoc(id){
- const context=navigation.capture();
+// The PoC shares the session, request and polling owner; React only presents callbacks.
+let workerPocAdministration=null,workerPocReadGeneration=0;
+const workerPocActions=[
+ {key:'Enabled',label:'Activate scheduling'},
+ {key:'Draining',label:'Drain worker'},
+ {key:'Disabled',label:'Deactivate'},
+ {key:'revoke-api',label:'Revoke Worker API token'}
+];
+function workerPocActionReason(state,key){
+ if(state.pending)return 'An administration operation is pending. Wait for its response.';
+ if(state.needsRefresh)return 'Refresh authoritative state before another action. The previous operation will not be resubmitted.';
+ if(!state.worker)return 'Current registry state unavailable. Refresh to recover it.';
+ if(key==='revoke-api')return state.worker.authenticationCredentialStatus==='active'?'':'No active Worker API token is registered.';
+ if(state.worker.schedulingPolicy===key)return 'This scheduling policy is already applied.';
+ if(key==='Enabled'&&state.diagnostics?.canActivate!==true)return 'Activation blocked: '+(state.diagnostics?.activationBlockingReasons?.length?state.diagnostics.activationBlockingReasons.join('; '):'Readiness evidence unavailable.');
+ return '';
+}
+function publishWorkerPocAdministration(){
+ const state=workerPocAdministration;
+ if(!state)return;
+ window.codexWorkerPoc?.update?.({administration:{
+  worker:state.worker,pending:state.pending,needsRefresh:state.needsRefresh,message:state.message,
+  actions:workerPocActions.map(action=>({...action,reason:workerPocActionReason(state,action.key)})),
+  onAction:key=>runWorkerPocAction(state.id,key),onRefresh:()=>loadWorkerPoc(state.id,true)
+ }});
+}
+async function loadWorkerPoc(id,reconcile=false){
+ const context=navigation.capture(),generation=++workerPocReadGeneration;
+ if(!workerPocAdministration||workerPocAdministration.id!==id)workerPocAdministration={id,worker:null,diagnostics:null,pending:false,needsRefresh:false,message:''};
+ const state=workerPocAdministration;
  try{
-  const diagnostics=await api('/api/v1/workers/'+encodeURIComponent(id)+'/diagnostics');
-  if(navigation.isCurrent(context)&&authenticated)window.codexWorkerPoc?.update?.({diagnostics});
+  const [registry,readiness]=await Promise.allSettled([api('/api/v1/workers/'+encodeURIComponent(id)),api('/api/v1/workers/'+encodeURIComponent(id)+'/diagnostics')]);
+  if(generation!==workerPocReadGeneration||!navigation.isCurrent(context)||!authenticated)return;
+  if(registry.status!=='fulfilled')throw Error('Registry state unavailable.');
+  state.worker=registry.value;state.diagnostics=readiness.status==='fulfilled'?readiness.value:null;
+  if(reconcile&&!state.pending){state.needsRefresh=false;state.message='Authoritative state refreshed. Review the observed policy and token state before confirming any further action.'}
+  window.codexWorkerPoc?.update?.({diagnostics:state.diagnostics});publishWorkerPocAdministration();
  }catch{
-  if(navigation.isCurrent(context)&&authenticated)window.codexWorkerPoc?.update?.({diagnostics:null});
+  if(generation!==workerPocReadGeneration||!navigation.isCurrent(context)||!authenticated)return;
+  state.worker=null;state.diagnostics=null;
+  state.message='Administration evidence unavailable. Check your session and connection, then refresh. No operation has been resubmitted.';
+  window.codexWorkerPoc?.update?.({diagnostics:null});publishWorkerPocAdministration();
+ }
+}
+async function runWorkerPocAction(id,key){
+ const state=workerPocAdministration,context=navigation.capture(),session=sessionGeneration;
+ if(!authenticated||!state||state.id!==id||!workerPocActions.some(action=>action.key===key)||workerPocActionReason(state,key))return;
+ const effect=key==='revoke-api'?'Revoke Worker API authentication? Calls using this token will be denied and active leases may expire into recovery. Credential-delivery authorization and provider credentials are unchanged.':`${workerPocActions.find(action=>action.key===key).label}? This affects new assignments only. Existing assignments and leases are not cancelled. Server validation still applies.`;
+ if(!confirm(effect)||!navigation.isCurrent(context)||!authenticated)return;
+ state.pending=true;state.message='Administration operation pending. Do not submit another action.';
+ ++workerPocReadGeneration;publishWorkerPocAdministration();
+ try{
+  const base='/api/v1/workers/'+encodeURIComponent(id);
+  await api(key==='revoke-api'?base+'/authentication/revoke':base+'/scheduling-policy',key==='revoke-api'?{method:'POST'}:{method:'PUT',body:JSON.stringify({policy:key})});
+  if(session!==sessionGeneration||!navigation.isCurrent(context)||!authenticated)return;
+  state.pending=false;state.needsRefresh=true;state.message='Operation accepted. Refreshing authoritative state…';
+  await loadWorkerPoc(id,true);
+  if(navigation.isCurrent(context)&&authenticated)await loadOverview();
+ }catch(e){
+  if(session!==sessionGeneration||!navigation.isCurrent(context)||!authenticated)return;
+  state.pending=false;state.needsRefresh=true;state.worker=null;state.diagnostics=null;
+  state.message=e.httpStatus===409?'The Server rejected activation because current preparation evidence blocks it. Refresh authoritative state to see current readiness reasons before retrying.':e.httpStatus===404?'The Worker is unavailable or deleted. Refresh authoritative state or return to the Worker inventory.':'The operation was rejected or its result could not be confirmed. Check your session and connection, then refresh authoritative state and readiness evidence. Do not repeat the operation blindly.';
+  publishWorkerPocAdministration();
  }
 }
 function workerPreparation(w,d){
