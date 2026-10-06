@@ -585,6 +585,22 @@ public static class ServerApplication
             await StreamWorkerUpdatesAsync(context, store, app.Lifetime.ApplicationStopping);
             return Results.Empty;
         });
+        app.MapGet("/api/v1/github/repositories", async (int? page, HttpContext context,
+            ServerConfiguration settings, IServerGitHubReadService github) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if ((page ?? 1) is < 1 or > 1000) return Results.BadRequest(new { error = "page must be between 1 and 1000." });
+            try { return Results.Ok(await github.ListRepositoriesAsync(page ?? 1, context.RequestAborted)); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: 503); }
+        });
+        app.MapPost("/api/v1/projects/verify", async (CentralProjectDefinition definition, HttpContext context,
+            ServerConfiguration settings, IServerGitHubReadService github) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (CentralProjectValidation.Error(definition) is { } error) return Results.BadRequest(new { error });
+            try { return Results.Ok(await github.VerifyRepositoryAsync(definition, context.RequestAborted)); }
+            catch (GitHubReadUnavailableException ex) { return Results.Json(new { error = ex.Message, code = ex.Code }, statusCode: 503); }
+        });
         app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
@@ -918,7 +934,7 @@ public static class ServerApplication
             var source = scriptReader.ReadToEnd();
             if (name == "dashboard-admin.js")
             {
-                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues", "onboarding" })
+                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues", "onboarding", "projects" })
                 {
                     using var moduleStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.dashboard-{module}.js")
                         ?? throw new InvalidOperationException("A Server dashboard module resource is missing.");

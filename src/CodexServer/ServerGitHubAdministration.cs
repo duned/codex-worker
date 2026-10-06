@@ -53,6 +53,10 @@ public sealed class ManagedIssueIneligibleException(ManagedGitHubIssue issue)
 
 public interface IServerGitHubReadService
 {
+    Task<ServerRepositoryPage> ListRepositoriesAsync(int page, CancellationToken cancellationToken = default) =>
+        throw new GitHubReadUnavailableException("Server", "Repository discovery is unavailable.", "read-unavailable");
+    Task<ProjectRepositoryCheck> VerifyRepositoryAsync(CentralProjectDefinition definition, CancellationToken cancellationToken = default) =>
+        throw new GitHubReadUnavailableException(definition.Repository, "Repository verification is unavailable.", "read-unavailable");
     Task<ManagedGitHubIssuePage> ReadDiscoveryPageAsync(CentralProject project, GitHubIssueDiscoveryQuery query,
         CancellationToken cancellationToken = default);
     Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default);

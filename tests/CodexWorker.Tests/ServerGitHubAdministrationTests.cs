@@ -578,6 +578,67 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Fact]
+    public async Task ProjectOnboardingApiChecksAccessAndPreservesRegistryRevisionSemanticsWithoutWorkers()
+    {
+        using var temporary = new TemporaryDirectory();
+        const string managementToken = "project-onboarding-test-token";
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", managementToken);
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            var github = new ServerGitHubReadService((arguments, _) => Task.FromResult(new GitHubReadCommandResult(0,
+                arguments[^1].StartsWith("user/repos", StringComparison.Ordinal)
+                    ? "[{\"full_name\":\"team/project\",\"name\":\"Project\",\"default_branch\":\"trunk\"}]"
+                    : arguments[^1].Contains("branches", StringComparison.Ordinal) ? "{\"name\":\"trunk\"}"
+                    : "{\"full_name\":\"team/project\",\"name\":\"Project\",\"default_branch\":\"trunk\"}", "")));
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "onboarding.db")), githubReadService: github);
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            using var unauthorized = await client.GetAsync("/api/v1/github/repositories");
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", managementToken);
+            using var invalidPage = await client.GetAsync("/api/v1/github/repositories?page=1001");
+            Assert.Equal(HttpStatusCode.BadRequest, invalidPage.StatusCode);
+            using var listed = await client.GetAsync("/api/v1/github/repositories");
+            Assert.Equal(HttpStatusCode.OK, listed.StatusCode);
+            var page = await listed.Content.ReadFromJsonAsync<ServerRepositoryPage>();
+            Assert.NotNull(page);
+            var repository = Assert.Single(page.Repositories);
+            Assert.Equal("team/project", repository.Repository);
+            Assert.Equal("Project", repository.Name);
+            Assert.Equal("trunk", repository.DefaultBranch);
+            Assert.Null(page.NextPage);
+            var definition = new CentralProjectDefinition("Project", "team/project", "trunk", "",
+                [new("runtime", "dotnet", ">=10.0"), new("authentication", "github-api", Scope: "team/project")], "approved", "blocked");
+            using var verified = await client.PostAsJsonAsync("/api/v1/projects/verify", definition);
+            Assert.Equal(HttpStatusCode.OK, verified.StatusCode);
+            using var invalidRequirement = await client.PostAsJsonAsync("/api/v1/projects/verify", definition with
+            {
+                Requirements = [new("runtime", "dotnet", "latest")]
+            });
+            Assert.Equal(HttpStatusCode.BadRequest, invalidRequirement.StatusCode);
+            using var createdResponse = await client.PostAsJsonAsync("/api/v1/projects", definition);
+            Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+            var project = await createdResponse.Content.ReadFromJsonAsync<CentralProject>();
+            Assert.NotNull(project);
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            Assert.Empty(await registry.GetWorkersAsync());
+            Assert.Empty(await registry.GetExecutionsAsync());
+            using var duplicate = await client.PostAsJsonAsync("/api/v1/projects", definition);
+            Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+            Assert.Single(await registry.GetProjectsAsync());
+            using var updated = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}",
+                new ProjectUpdateRequest(definition with { Description = "Updated" }, project.Revision));
+            Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+            using var stale = await client.PutAsJsonAsync($"/api/v1/projects/{project.Id}", new ProjectUpdateRequest(definition, project.Revision));
+            Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
     public async Task GitHubApiRequiresManagementAuthBoundsIssueQueriesAndOnlyExplicitlyEnqueuesEligibleIssues()
     {
         using var temporary = new TemporaryDirectory();
