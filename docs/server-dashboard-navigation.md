@@ -4,8 +4,10 @@ This describes the implemented navigation and resumable onboarding experience.
 The Server retains its embedded HTML/plain JavaScript frontend, dark teal
 header, light content surfaces, compact resource rows and contextual next actions.
 All displayed operational facts and mutations use existing Server APIs. There are
-no simulated actions, completion flags, framework dependencies or new scheduling
-rules. The local Worker dashboard and standalone ownership mode are unchanged.
+no simulated actions, completion flags or new scheduling rules. An explicitly
+isolated [React/Untitled UI Worker detail PoC](server-worker-detail-poc.md) is
+available at `/workers/{id}/poc`; ordinary routes retain the existing frontend.
+The local Worker dashboard and standalone ownership mode are unchanged.
 
 ## Presentation and assistants
 
@@ -36,6 +38,7 @@ current checks/actions. Activation remains a separate explicit Server request.
 | Home | `/home` | Resumable setup milestones, actual bounded execution activity, connectivity/scheduling blockers, Server status and capacity. Links to the next resource action. Configured systems show completed milestones in a collapsed disclosure. |
 | Projects | `/projects`, `/projects/{id}`, optionally `?issue={number}` with `issueState`, `label`, `issues=1` list context | Central definitions, create/edit/enable/disable/delete, requirements, Worker-reported preparation/revision/freshness, linked Workers, project-filtered executions, GitHub read checks and Issues. Issue create/edit, configured eligibility labels, blocked-by relationships, enqueue and eligibility refresh retain their existing previews and authorization. |
 | Workers | `/workers`, `/workers/{id}`, `/workers/{id}?step=preparation&project={projectId}` | Connection, capacity, readiness and preparation; project eligibility and materialization diagnostics; scheduling enable/drain/disable and separate API-token/delivery-authorization revocation. Contextual node provisioning for registered Workers and advanced operation history. Add Worker guides new-machine enrollment or safe existing-Worker association with a public pairing request and short-lived authorization. |
+| Worker detail PoC | `/workers/{id}/poc` | Friendly name, secondary ID, independent connection/lifecycle/readiness/freshness, this Worker's capacity, bounded executions and capability observations. A restrained administration rail uses existing scheduling and API-token controls. Direct navigation/reload restores the existing session; leaving loads the ordinary dashboard. |
 | Executions | `/executions`, `/executions/{id}` | Bounded queue, outcomes, assignment, leases, recovery evidence and attempt lineage. `project`, `state`, `issue`, `offset` query parameters preserve filters/pagination on detail, reload and Back. Queued cancellation and uncertain integration reconciliation retain the existing evidence requirements. |
 | Settings | `/settings`, `/settings/{credentialId}`, `/settings?node=server` | Server GitHub login/preparation, Server tool capabilities and advanced provisioning diagnostics/history; credential metadata/create/replace/assign/revoke. Credential detail opens its metadata dialog after session restore. No secret is retrieved by metadata views. |
 

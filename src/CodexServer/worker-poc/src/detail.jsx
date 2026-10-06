@@ -79,7 +79,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className="poc-layout"><div className="poc-main">
       <dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
-        <Fact label="Execution / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
+        <Fact label="Lifecycle / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
         <Fact label="Observation freshness"><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /><p>Last heartbeat: {timestamp(worker.lastHeartbeatAtUtc)}</p></Fact>
         <Fact label="Worker slots"><strong>{worker.activeExecutions ?? 'Unknown'} / {worker.maximumCapacity ?? worker.capacity ?? 'Unknown'} active</strong><p>{worker.availableCapacity ?? 'Unknown'} available · {worker.activeAssignments ?? 'Unknown'} active Server assignments</p></Fact>
       </dl>

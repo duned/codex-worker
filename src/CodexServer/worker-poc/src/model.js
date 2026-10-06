@@ -1,9 +1,9 @@
 // Presentation only: scheduling and readiness remain Server-owned.
 export function statusColor(value) {
   const state = String(value ?? '').toLowerCase();
-  if (['online', 'connected', 'ready', 'current', 'healthy', 'installed', 'satisfied', 'completed', 'succeeded', 'synchronized'].includes(state)) return 'success';
-  if (['stale', 'offline', 'disconnected', 'draining', 'not-ready', 'required', 'missing', 'degraded', 'pending', 'running', 'assigned', 'busy', 'available', 'cached', 'out-of-sync'].includes(state)) return 'warning';
-  if (['failed', 'error', 'timedout'].includes(state)) return 'error';
+  if (['online', 'connected', 'ready', 'current', 'healthy', 'installed', 'satisfied', 'completed', 'succeeded', 'synchronized', 'active', 'updated'].includes(state)) return 'success';
+  if (['stale', 'offline', 'disconnected', 'draining', 'drain-requested', 'starting', 'updating', 'restarting', 'reconnecting', 'not-ready', 'required', 'missing', 'degraded', 'pending', 'running', 'assigned', 'busy', 'available', 'cached', 'out-of-sync', 'not-synchronized'].includes(state)) return 'warning';
+  if (['failed', 'error', 'timedout', 'update-failed', 'restart-failed', 'capability-regression', 'configuration-incompatible'].includes(state)) return 'error';
   return 'gray';
 }
 export const terminalStates = ['Completed', 'Failed', 'Cancelled'];

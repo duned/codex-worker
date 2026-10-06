@@ -303,6 +303,9 @@ test('isolated Worker PoC restores the existing session and consumes shared snap
  assert.equal(s.$('worker-poc').hidden,false);
  assert.equal(s.$('worker-detail-panel').hidden,true);
  assert.equal(s.$('worker-admin-panel').hidden,true);
+ assert.equal(s.$('view-title').hidden,true);
+ assert.equal(s.$('view-context').hidden,true);
+ assert.equal(s.$('worker-registration-guidance').hidden,true);
  assert.equal(s.calls.filter(c=>c.path==='/api/v1/administration/session').length,1);
  assert.equal(s.calls.filter(c=>c.path==='/api/v1/events/stream').length,1);
  await s.workersEvent([s.worker]);
@@ -319,6 +322,13 @@ test('isolated Worker PoC restores the existing session and consumes shared snap
  assert.equal(s.$('administration-content').hidden,true);
  assert.equal(s.pocRenders.at(-1).data,null);
  assert.equal([...s.timers.values()].filter(t=>t.delay===5000).length,0);
+ await s.emit('pagehide');
+});
+
+test('PoC query context cannot expose the ordinary node administration panel',async()=>{
+ const s=setup('/workers/worker-a/poc?step=preparation');await s.flush();
+ assert.equal(s.$('worker-poc').hidden,false);
+ assert.equal(s.$('node-context').hidden,true);
  await s.emit('pagehide');
 });
 

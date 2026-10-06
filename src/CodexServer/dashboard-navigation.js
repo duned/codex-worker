@@ -34,8 +34,10 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
   $('view-title').textContent=route.view[0].toUpperCase()+route.view.slice(1);
   document.title='Codex Server · '+$('view-title').textContent+(route.id?' · '+route.id:'');
   $('view-context').textContent=route.id?'Selected '+({projects:'project',workers:'Worker',executions:'execution',settings:'credential'}[route.view]||'resource')+': '+route.id:'';
+  // The isolated detail owns its friendly-name title and secondary identity.
+  $('view-title').hidden=!!route.poc;$('view-context').hidden=!!route.poc;
   const step=route.params.get('step')||(route.params.has('project')?'project':route.params.has('prepare')?'preparation':'registration');
-  $('node-context').hidden=!['workers','settings'].includes(route.view)||(route.view==='workers'&&(!route.id||step!=='preparation'));
+  $('node-context').hidden=!!route.poc||!['workers','settings'].includes(route.view)||(route.view==='workers'&&(!route.id||step!=='preparation'));
   if(route.view==='workers')$('node-context').open=true;else if(previous?.view!==route.view)$('node-context').open=false;
   $('worker-authentication-guidance').hidden=route.view!=='workers';
   $('project-context').hidden=route.view!=='projects'||!route.id;
@@ -45,6 +47,7 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
   $('worker-list-panel').hidden=route.view==='workers'&&!!route.id;
   $('worker-detail-panel').hidden=!route.id||!!route.poc;
   $('worker-admin-panel').hidden=!route.id||step!=='activation'||!!route.poc;
+  $('worker-registration-guidance').hidden=!!route.poc;
   if($('worker-poc'))$('worker-poc').hidden=!route.poc;
   if(active){
    const loaded=onRoute(route,previous);

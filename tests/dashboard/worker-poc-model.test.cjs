@@ -33,4 +33,7 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  const {statusColor}=await model;
  for(const state of ['Unknown','Unavailable','Not applicable'])assert.equal(statusColor(state),'gray');
  assert.equal(statusColor('Stale'),'warning');assert.equal(statusColor('Failed'),'error');assert.equal(statusColor('ready'),'success');
+ for(const state of ['update-failed','restart-failed','capability-regression','configuration-incompatible'])assert.equal(statusColor(state),'error');
+ for(const state of ['starting','drain-requested','updating','restarting','reconnecting','not-synchronized'])assert.equal(statusColor(state),'warning');
+ assert.equal(statusColor('active'),'success');
 });

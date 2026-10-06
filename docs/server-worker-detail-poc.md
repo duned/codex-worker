@@ -170,3 +170,82 @@ pending duplicate submission, stale activation rejection, lost-response refresh,
 failed refresh and late navigation/logout responses. Rendering tests cover state,
 unavailable reasons and accessible description associations. These checks do not
 replace a deployed browser review of layout, focus and the native confirmation.
+
+## Parent integration review and evaluation
+
+The integrated route retains the existing navigation shell while the React view
+owns its friendly-name heading and secondary Worker ID. The generic shell title
+and selected-ID text, plus the generic registration guidance, are hidden only on
+the PoC. Query parameters such as
+`?step=preparation` cannot expose the ordinary node administration panel alongside
+the PoC. The top summary labels the heartbeat lifecycle separately from execution
+prerequisites: a `running` lifecycle does not by itself mean a task is executing.
+Reported update/restart failures, capability regression and incompatible
+configuration receive red textual badges; transitional lifecycle states are amber,
+and missing observations remain gray. No admission policy is derived from colors.
+
+Final review found two material contract limits: Issue titles are unavailable in
+execution references, and stage history/completed/upcoming evidence is absent.
+The view therefore displays the linked Issue number with an explicit missing-title
+message and emphasizes only the reported current stage. Validation can repeat
+after rebase or recovery, so a stage name cannot safely imply prior stages completed
+or a fixed remaining sequence. These are documented limitations against the visual
+reference, not evidence of a complete history/progress API. Adding such evidence
+would require separately scoped contract work. Worker capacity, readiness,
+provisioning actions and token effects match the existing contracts; administration
+still validates on the Server and uncertain responses require explicit refresh.
+
+The optional browser harness renders the delivered shell and production bundle
+against the shared deterministic fixtures, without a live provider or credentials:
+
+```sh
+npm run build --prefix src/CodexServer/worker-poc
+# Make an independently installed Playwright available via NODE_PATH and install
+# its Chromium browser/dependencies in the review environment.
+node tests/dashboard/worker-poc-browser-review.cjs /tmp/codex-worker-poc-review
+```
+
+It checks desktop (1280px) and narrow (375px) layout, the administration rail,
+direct navigation/reload, canonical Issue links, focus/disclosure retention,
+long names, stale/unavailable observations, logout and exit to the ordinary route.
+Representative fixture screenshots are retained below. These contain fixture data
+only; API authorization/deep-route packaging is covered by the .NET tests, while
+deployed HTTPS/VPN session behavior remains a separate integration campaign.
+
+- [Desktop Worker detail](images/worker-detail-poc/worker-detail-1280.png)
+- [Narrow Worker detail](images/worker-detail-poc/worker-detail-375.png)
+
+Local integration validation passed the 124-test dashboard suite, production
+frontend bundling, and `dotnet test CodexWorker.sln -m:1` (1,513 Worker/Server
+tests and 269 toolbox tests). The final shell-guidance adjustment passed the
+28-test navigation/model subset and the browser harness; screenshots reflect that
+adjustment. The default sandbox blocked npm network restore and MSBuild process
+pipes; package restore, .NET validation and Chromium review succeeded with the
+available validation escalation. No live provider or deployed HTTPS campaign was
+run. These are local checks, not the Worker's separately configured authoritative
+validation gate.
+
+Embedding this island required two generated assembly resources, an MSBuild
+lockfile restore/bundle step and a snapshot/callback bridge into the existing
+request/session owner. The production bundle is approximately 237 KB of JavaScript
+and 3.5 KB of CSS before transfer compression. The installed Server has no Node or
+CDN dependency, but **every Server build now needs Node/npm and the locked packages**,
+even when operators use only the ordinary dashboard. Offline builders must provide
+the npm cache as well as NuGet packages. Publish includes the assets through the
+assembly resources rather than a second deployment artifact.
+
+Maintenance costs include React/esbuild dependency and lockfile updates, the
+adapted Untitled UI Badge source/license, scoped CSS, and tests for the JavaScript
+snapshot boundary alongside existing dashboard tests. This is a small Untitled UI
+evaluation: it does not establish the cost of its full component system, Tailwind,
+paid components or a dashboard migration. React preserves focused elements and
+disclosures without bespoke DOM restoration in this view; the shared request owner
+avoids duplicate authentication, streams and scheduling state. The callback bridge
+and separately maintained presentation model are additional seams to keep aligned
+with Server contracts.
+
+Continue evaluating this one route if the name/status/current-work hierarchy and
+React's update behavior justify those build and maintenance costs. First resolve
+the title/stage evidence requirements as explicit product decisions, and measure
+operator usability and packaged deployment behavior. This review does not select
+React or Untitled UI as the dashboard architecture or authorize other migrations.
