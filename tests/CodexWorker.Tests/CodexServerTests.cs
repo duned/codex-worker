@@ -322,12 +322,20 @@ public sealed class CodexServerTests
                 capabilityDiscovery: TestCapabilityDiscovery.Create());
             var store = app.Services.GetRequiredService<IRegistryStore>();
             await store.RegisterWorkerAsync(new(2, new string('a', 32), "Worker", "1.0", "linux", 1, []));
+            var commands = app.Services.GetRequiredService<ProvisioningCommandStore>();
+            var login = await commands.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Login, 600));
+            await commands.ClaimAsync("server");
             await app.StartAsync();
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/nodes")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/v1/nodes/server/github-connection")).StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/api/v1/nodes/server/capabilities/refresh", null)).StatusCode);
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-management-token");
             using var nodes = JsonDocument.Parse(await client.GetStringAsync("/api/v1/nodes"));
+            using var connection = JsonDocument.Parse(await client.GetStringAsync("/api/v1/nodes/server/github-connection"));
+            Assert.False(connection.RootElement.GetProperty("provisioningEnabled").GetBoolean());
+            Assert.False(connection.RootElement.GetProperty("elevationAllowed").GetBoolean());
+            Assert.Equal(1, connection.RootElement.GetProperty("commands").GetArrayLength());
             Assert.Equal(2, nodes.RootElement.GetArrayLength());
             var server = nodes.RootElement[0];
             Assert.Equal("server", server.GetProperty("id").GetString());
@@ -336,6 +344,15 @@ public sealed class CodexServerTests
             Assert.Equal("Missing", server.GetProperty("capabilities")[0].GetProperty("state").GetProperty("installation").GetString());
             Assert.Equal("disconnected", nodes.RootElement[1].GetProperty("connectivity").GetString());
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/v1/nodes/server/capabilities/refresh", null)).StatusCode);
+            await commands.ReportAsync(login.Id, "server", new(ProvisioningCommandStatus.Running,
+                ProvisioningDiagnostic.Executing, LoginInstructions: new("https://github.com/login/device", "ABCD-1234")));
+            using var activeConnection = JsonDocument.Parse(await client.GetStringAsync("/api/v1/nodes/server/github-connection"));
+            var activeLogin = activeConnection.RootElement.GetProperty("commands")[0];
+            Assert.Equal(login.Id, activeLogin.GetProperty("id").GetString());
+            Assert.Equal("Running", activeLogin.GetProperty("status").GetString());
+            Assert.Equal("ABCD-1234", activeLogin.GetProperty("loginInstructions").GetProperty("userCode").GetString());
+            await commands.ReportAsync(login.Id, "server", new(ProvisioningCommandStatus.Cancelled, ProvisioningDiagnostic.Cancelled));
+            Assert.DoesNotContain("ABCD-1234", await client.GetStringAsync("/api/v1/nodes/server/github-connection"), StringComparison.Ordinal);
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }

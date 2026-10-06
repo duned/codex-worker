@@ -29,7 +29,7 @@ function applyRoute(route){
   loadExecutions();if(route.id)showExecutionDetail(route.id);
  }
  if(route.view==='settings'&&route.id)showCredential(route.id);
- if(route.view==='workers'||route.view==='settings'){selectContextNode();loadProvisioning();if(route.params.has('node')||route.params.has('prepare'))$('node-panel').scrollIntoView({block:'start'})}
+ if(route.view==='workers'||route.view==='settings'){selectContextNode();loadProvisioning();if(route.view==='settings'&&route.params.has('node'))$('github-connection-panel').scrollIntoView({block:'start'});else if(route.params.has('prepare'))$('node-panel').scrollIntoView({block:'start'})}
 }
 function selectContextNode(){
  const previous=$('node-select').value;
@@ -49,8 +49,10 @@ function renderProjectContext(){
  $('project-detail').innerHTML=`<h3>${esc(p.name)}</h3><p>${esc(p.repository)} · ${esc(p.defaultBranch)} · revision ${p.revision} · ${p.enabled?'Enabled':'Disabled'}</p><p>${esc(p.description)}</p><h3>Contextual preparation</h3><p>Worker project materialization and eligibility are reported in Worker diagnostics. Tool readiness and repository access are separate checks.</p><p class="sub">Requirements: ${p.requirements.length?p.requirements.map(r=>esc(r.type)+' · '+esc(r.name)+(r.version?' '+esc(r.version):'')).join('; '):'No additional project requirements'}</p><a class="button" href="#/executions?project=${encodeURIComponent(p.id)}">Project executions</a> <a class="button" href="#/workers">Inspect Worker readiness</a><h3>Linked Workers</h3>${linked.join('')||'<p class="sub">No Worker has reported preparation for this central project.</p>'}`;
 }
 function resetResources(){
- workers=[];projects=[];nodes=[];nodeCommands=[];nodeSnapshotValid=false;
- for(const id of ['workers','projects','credentials','executions','provisioning','node-detail'])$(id).innerHTML='<div class="empty">Waiting for current Server state…</div>';
+ clearTimeout(githubChallengeTimer);githubChallengeTimer=null;
+ workers=[];projects=[];nodes=[];nodeCommands=[];serverGitHub=null;nodeSnapshotValid=false;
+ $('github-provisioning-consent').checked=false;$('github-elevation-consent').checked=false;
+ for(const id of ['workers','projects','credentials','executions','provisioning','node-detail','github-connection'])$(id).innerHTML='<div class="empty">Waiting for current Server state…</div>';
 }
 function invalidateWorkers(){
  navigation.observe('workers',null);

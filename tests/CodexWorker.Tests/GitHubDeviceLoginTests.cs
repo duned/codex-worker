@@ -8,6 +8,32 @@ using Microsoft.Data.Sqlite;
 
 public sealed class GitHubDeviceLoginTests
 {
+    [Fact]
+    public async Task ServerConnectionRecoversActiveLoginBeyondGeneralHistoryAndClearsCompletedChallenge()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "registry.db");
+        var store = new ProvisioningCommandStore(database);
+        await store.InitializeAsync();
+        var login = await store.CreateAsync(new("server", "github-cli", ProvisioningCommandAction.Login, 600));
+        await store.ClaimAsync("server");
+        await store.ReportAsync(login.Id, "server", new(ProvisioningCommandStatus.Running,
+            ProvisioningDiagnostic.Executing, LoginInstructions: new("https://github.com/login/device", "ABCD-1234")));
+        for (var index = 0; index < 101; index++)
+        {
+            var unrelated = await store.CreateAsync(new("server", "git", ProvisioningCommandAction.Detect));
+            await store.CancelAsync(unrelated.Id);
+        }
+        Assert.DoesNotContain(await store.ListAsync(), operation => operation.Id == login.Id);
+        var recovered = Assert.Single(await new ProvisioningCommandStore(database).ListServerGitHubAsync());
+        Assert.Equal(login.Id, recovered.Id);
+        Assert.Equal("ABCD-1234", recovered.LoginInstructions?.UserCode);
+        await store.ReportAsync(login.Id, "server", new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed));
+        var completed = Assert.Single(await new ProvisioningCommandStore(database).ListServerGitHubAsync());
+        Assert.Equal(ProvisioningCommandStatus.Succeeded, completed.Status);
+        Assert.Null(completed.LoginInstructions);
+    }
+
     [Theory]
     [InlineData("! First copy your one-time code: ABCD-1234\nOpen this URL to continue in your web browser: https://github.com/login/device\n", true)]
     [InlineData("! First copy your one-time code: \u001b[1mABCD-1234\u001b[0m\nhttps://github.com/login/device\nprivate-token", true)]

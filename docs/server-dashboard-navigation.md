@@ -26,7 +26,7 @@ sign in. URLs contain IDs and filters only. Dialog edit/secret drafts are transi
 and are cleared/closed when leaving the context.
 
 The shared node panel selects only Workers in Workers and the Server in Settings.
-Prepare links scroll to it. Operation history filters to the selected node; when
+Worker prepare links scroll to it; the Home Server connection link scrolls to the guided Settings panel. Operation history filters to the selected node; when
 no node is selected, the advanced history can show all operations. Capability
 command IDs and the Worker provisioning summary live in advanced disclosures.
 Public SSH identities, active device-login instructions, command cancellation,
@@ -60,8 +60,7 @@ execution-time project names alone do not establish a central association.
 
 `dashboard-navigation.js` owns fragment routing, active navigation semantics,
 view generation and Home projections. Resource responses and mutation follow-up
-rendering check that their initiating view is still current. Rendering a view
-never registers polling timers or global listeners. Stable Home markup is not
+rendering check that their initiating view is still current. Rendering a view never starts a provisioning operation or registers polling timers or global listeners. The Server connection challenge has one transient deadline timer to remove it from the UI at expiry. Stable Home markup is not
 replaced on every unchanged poll; refreshed Worker/project/execution rows preserve
 the identity of focused resource actions.
 
@@ -89,19 +88,23 @@ assembles these same modules for the existing Node/VM tests.
 
 ## Validation and manual HTTPS acceptance
 
-Local automated validation for this change:
+Local automated validation for the guided Server connection change:
 
-- `node --test --test-isolation=none tests/dashboard/*.test.cjs`: 53 passed. Tests
-  cover the assembled dashboard's first-use/alternate-order/configured/stale/
-  unavailable states, route/session restore, filters, Back-style transitions,
-  malformed routes, delayed success/failure publication, teardown of in-flight
-  polling, contextual node selection, and existing administration controls.
-- The existing Server dashboard HTTP test now checks all navigation links and
-  that the embedded module placeholders have been expanded.
-- `dotnet test CodexWorker.sln -m:1 --nologo -p:UseSharedCompilation=false`:
-  unavailable at restore (`NU1301`, permission denied connecting to
-  `api.nuget.org:443`). Compilation and .NET assertions did not run. Worker-run
-  configured validation remains the authoritative gate.
+- `node --test --test-isolation=none tests/dashboard/*.test.cjs`: 60 passed,
+  including explicit consent/local policy, preparation refusal, completion,
+  challenge expiry, queued cancellation, reload and lost-response recovery.
+- `dotnet build CodexWorker.sln --no-restore -m:1 -p:UseSharedCompilation=false`:
+  passed with zero warnings/errors.
+- `dotnet test CodexWorker.sln --no-build --no-restore -m:1`: 1,474 Worker/Server
+  and 269 toolbox tests passed. The revised Server connection API regression
+  also passed separately after making its setup independent of the background
+  dispatch timer. Tests verify authenticated challenge recovery/cleanup and
+  recovery beyond the general history limit, alongside existing executor and
+  storage failure/cancellation/expiry coverage.
+- Initial restore could not reach NuGet and the sandbox denied MSBuild/test
+  sockets. Offline restore from the existing package cache succeeded; tests ran
+  with local socket access. Worker-run configured validation remains the
+  authoritative gate before integration.
 
 The Node/VM seams do not establish browser layout or screen-reader behavior.
 Live HTTPS/provider actions, a real browser accessibility/responsive review and
@@ -139,3 +142,54 @@ the configured administration origin and disposable registry data:
    login/credential delivery/provisioning requires a separately authorized live
    campaign; it is not needed for automated dashboard validation. Keep tokens,
    device codes and secrets out of screenshots, exported traces and notes.
+
+
+## Guided Server GitHub device login
+
+Home → Connect Server GitHub opens Settings → Server GitHub connection. The
+panel uses the existing typed provisioning commands, managed GitHub CLI directory,
+and service-account authentication probes. It never stores a browser token or
+starts login on render. The authenticated `GET /api/v1/nodes/server/github-connection`
+returns the latest 30 Server GitHub operations with active operations first, plus
+Server-local provisioning/elevation policy. Unrelated history cannot hide an
+in-flight login. The node inventory also includes these operations for readiness.
+
+The operator explicitly authorizes preparation/device login, and separately
+installation elevation when required. Node-local permission remains authoritative.
+After successful preparation, Start device login queues `Login`; only a running,
+unexpired challenge shows the fixed GitHub verification URL and temporary code.
+Successful process submission is pending, not Connected. Connected requires a
+current, healthy Server GitHub authentication observation in the managed service
+account context. Repository reads, Issue writes, Worker login and repository pushes
+remain separate checks; use Projects and Workers for their evidence.
+
+Queued operations can be cancelled. Running operations stop at their deadline;
+expired or uncertain operations must be confirmed stopped before retrying.
+Submission/cancellation response loss disables actions until a fresh snapshot
+recovers the actual operation. Reload, navigation and provider return use that
+same snapshot without submitting again. Completion/expiry removes the challenge
+from active UI/API responses; terminal reports erase it from existing durable
+storage. Existing protected storage and log redaction remain unchanged. Preparation
+refuses unrelated operator authentication rather than replacing it. Advanced node
+capabilities and history remain available; Worker remote login is unchanged.
+
+Manual HTTPS acceptance (not run as part of automated tests):
+
+1. Use a disposable Server with a dedicated service account and the existing
+   trusted HTTPS deployment/administration session. Do not change operator VMs.
+   Confirm disabled provisioning explains recovery and still permits auth checks.
+2. With local provisioning enabled, authorize preparation. If GitHub CLI is
+   missing, separately authorize installation only where local elevation is allowed.
+   Confirm an unrelated operator configuration is refused and left intact.
+3. Prepare, start login, open the verification URL and approve only the displayed
+   code. Navigate away/back and reload before approval; the same operation/code
+   should return. No new Login should appear in advanced history.
+4. Complete GitHub verification. Confirm the challenge disappears and Connected
+   appears only after the service-account authentication check. Check repository
+   reads and Issue write authorization in Projects, and Worker login/push separately.
+5. Repeat without approval until expiry; confirm code removal and retry only after
+   terminal confirmation. Cancel a queued operation. Simulate a lost POST response
+   and confirm refresh recovers the existing operation rather than replaying it.
+6. Sign out while a challenge is visible; confirm challenge/consent are cleared.
+   Verify no device code/token appears in Server logs. No live provider credentials
+   are required by the automated dashboard, store, executor or API tests.

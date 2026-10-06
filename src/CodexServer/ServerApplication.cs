@@ -55,7 +55,9 @@ public static class ServerApplication
         builder.Services.AddSingleton<AdministrationSessions>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
-        builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
+        // Server readiness uses the same managed authentication context as Server GitHub reads/writes.
+        // Shared defaults retain standalone Worker service-account authentication.
+        builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery(requireManagedGitHubAuthentication: true));
         builder.Services.AddSingleton<IServerGitHubReadService>(githubReadService ?? new ServerGitHubReadService());
 
         builder.Services.AddSingleton<ServerGitHubAdministrationService>(services => new ServerGitHubAdministrationService(
@@ -71,7 +73,8 @@ public static class ServerApplication
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
-        builder.Services.AddSingleton<NodeProvisioningCommandExecutor>();
+        builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
+            services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
         builder.Services.AddHostedService<LocalProvisioningCommandService>();
         builder.Services.AddHostedService<ExecutionLeaseExpirationService>();
         builder.Services.AddSingleton(new ServerStatus("ready", DisplayVersion, DateTimeOffset.UtcNow));
@@ -163,7 +166,17 @@ public static class ServerApplication
             foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
                 nodes.Add(NodeProvisioning.Describe(worker, plans));
             var operations = await commands.ListAsync(context.RequestAborted);
-            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, operations, plans)));
+            var serverGitHub = await commands.ListServerGitHubAsync(context.RequestAborted);
+            var currentOperations = operations.Concat(serverGitHub).DistinctBy(operation => operation.Id).ToArray();
+            return Results.Ok(nodes.Select(node => NodeProvisioning.WithCommands(node, currentOperations, plans)));
+        });
+        app.MapGet("/api/v1/nodes/server/github-connection", async (HttpContext context, ServerConfiguration settings,
+            ProvisioningCommandStore commands) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            return Results.Ok(new { commands = await commands.ListServerGitHubAsync(context.RequestAborted),
+                provisioningEnabled = settings.EnableLocalProvisioning,
+                elevationAllowed = settings.AllowLocalProvisioningElevation });
         });
         app.MapPost("/api/v1/nodes/server/capabilities/refresh", async (HttpContext context, ServerConfiguration settings,
             NodeCapabilityDiscovery discovery) =>

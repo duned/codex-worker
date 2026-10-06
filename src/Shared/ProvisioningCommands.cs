@@ -144,7 +144,7 @@ public sealed partial class NodeProvisioningCommandExecutor
         Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null,
         Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>>? login = null,
         Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>>? processRunner = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null, bool requireManagedGitHubAuthentication = false)
     {
         _discovery = discovery;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -152,7 +152,7 @@ public sealed partial class NodeProvisioningCommandExecutor
         if (run is not null && processRunner is not null)
             throw new ArgumentException("Specify either a process runner or an exit-code runner, not both.", nameof(processRunner));
         _run = processRunner ?? (run is null
-            ? RunAsync
+            ? (executable, arguments, token) => RunAsync(executable, arguments, token, requireManagedGitHubAuthentication)
             : async (executable, arguments, token) => new ProvisioningProcessResult(await run(executable, arguments, token)));
         _supportsApt = supportsApt ?? SupportsPackageProvisioning;
         // A username is not proof of effective filesystem privileges (for example after
@@ -394,14 +394,16 @@ public sealed partial class NodeProvisioningCommandExecutor
               result.StandardError.Contains("docker-daemon-unavailable", StringComparison.Ordinal)
                 ? ProvisioningFailureCode.DockerDaemonUnavailable : Classify(result);
 
-    private static async Task<ProvisioningProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken token)
+    private static async Task<ProvisioningProcessResult> RunAsync(string executable, IReadOnlyList<string> arguments,
+        CancellationToken token, bool requireManagedGitHubAuthentication)
     {
         using var process = new Process { StartInfo = new(executable) { UseShellExecute = false,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["DEBIAN_FRONTEND"] = "noninteractive";
         process.StartInfo.Environment["LC_ALL"] = "C";
-        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, token);
+        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, token,
+            requireManagedAuthentication: requireManagedGitHubAuthentication && arguments.Count > 0 && arguments[0] == "auth");
         if (executable == CodexServiceEnvironment.Executable) CodexServiceEnvironment.Apply(process.StartInfo);
         process.Start();
         process.StandardInput.Close();

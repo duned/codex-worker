@@ -43,10 +43,10 @@ function createDashboardNavigation({document,window,onRoute}){
  function renderHome(){
   const server=state.nodes?.find(n=>n.kind==='server');
   const github=server?.capabilities.find(c=>c.definition.id==='github-cli');
-  const githubReady=!!server&&!server.observationsStale&&github?.state.installation==='Installed'&&github.state.authentication==='Satisfied'&&github.state.health==='Healthy';
+  const githubReady=!!server&&!server.observationsStale&&github?.state.installation==='Installed'&&github.state.authentication==='Satisfied'&&github.state.health==='Healthy'&&github.state.operation?.state!=='Running'&&!(github.state.operation?.state==='Failed'&&['login','checkauthentication'].includes(github.state.operation.action));
   const prepared=state.nodes?.find(n=>n.kind==='worker'&&!n.observationsStale&&n.connectivity==='connected'&&n.executionReadiness==='ready');
   const milestones=[
-   {label:'Connect Server GitHub',complete:githubReady,known:state.nodes!==null,href:'#/settings?node=server',action:'Prepare Server GitHub',detail:server?.observationsStale?'Observations stale — check authentication':github?'Authentication: '+github.state.authentication:'Server capability state unavailable'},
+   {label:'Connect Server GitHub',complete:githubReady,known:state.nodes!==null,href:'#/settings?node=server',action:'Connect Server GitHub',detail:server?.observationsStale?'Observations stale — check authentication':github?'Authentication: '+github.state.authentication:'Server capability state unavailable'},
    {label:'Create a project',complete:!!state.projects?.length,known:state.projects!==null,href:'#/projects',action:'Manage projects',detail:state.projects===null?'Central definitions unavailable':state.projects.length+' central project(s)'},
    {label:'Prepare a Worker',complete:!!prepared,known:state.nodes!==null,href:prepared?'#/workers/'+encodeURIComponent(prepared.id):'#/workers?prepare=1',action:prepared?'Inspect Worker':'Prepare Worker',detail:prepared?prepared.displayName+' has current execution prerequisites':'Register a Worker and inspect tools, authentication and configuration'}
   ];

@@ -15,7 +15,7 @@ function setup(){
  const calls=[];let confirmation=true;
  const node={id:'server',displayName:'Server <unsafe>',kind:'server',connectivity:'connected',health:'healthy',executionReadiness:'not-applicable',provisioningReadiness:'ready',observationsStale:false,capabilities:[{definition:{id:'github-cli',displayName:'GitHub CLI',requiresAuthentication:true},availableActions:['refresh','install','uninstall','logout','checkauthentication'],state:{installation:'Missing',update:'Unknown',health:'Healthy',authentication:'Required',operation:{state:'Idle'}}}]};
  const command={id:'operation',request:{nodeId:'server',capabilityId:'github-cli',action:'Install'},status:'Pending',diagnostic:'Queued',createdAtUtc:'2026-01-01T00:00:00Z'};
- const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,document:{createElement:()=>new Element()},authenticated:true,setInterval:()=>{},confirm:()=>confirmation,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),api:async(path,options)=>{calls.push({path,options});if(options)return command;return path==='/api/v1/nodes'?[node]:[]}});
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,document:{createElement:()=>new Element()},authenticated:true,setTimeout:()=>0,clearTimeout:()=>{},setInterval:()=>{},confirm:()=>confirmation,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),api:async(path,options)=>{calls.push({path,options});if(options)return command;return path==='/api/v1/nodes'?[node]:path==='/api/v1/nodes/server/github-connection'?{commands:[],provisioningEnabled:true,elevationAllowed:true}:[]}});
  vm.runInContext(source,context);
  const run=code=>vm.runInContext(code,context);
  context.inventory=[node];context.commands=[];run('nodes=inventory;nodeCommands=commands;nodeSnapshotValid=true;renderNode()');
@@ -43,7 +43,7 @@ test('failed refresh disables stale actions and preserves diagnostics',async()=>
  const s=setup();s.context.api=async()=>{throw Error('Server API returned 401')};await s.run('loadNodes()');assert.ok(s.buttons().every(b=>b.disabled));assert.match(s.$('node-message').textContent,/401/);await s.run("runNodeAction('server','github-cli','refresh')");assert.equal(s.calls.length,0);
 });
 test('in-flight submission prevents a second command',async()=>{
- const s=setup();let finish;let posts=0;s.context.api=(path,options)=>{if(options){posts++;return new Promise(resolve=>{finish=resolve})}return Promise.resolve(path==='/api/v1/nodes'?[s.node]:[s.command])};
+ const s=setup();let finish;let posts=0;s.context.api=(path,options)=>{if(options){posts++;return new Promise(resolve=>{finish=resolve})}return Promise.resolve(path==='/api/v1/nodes'?[s.node]:path==='/api/v1/nodes/server/github-connection'?{commands:[],provisioningEnabled:true,elevationAllowed:true}:[s.command])};
  const first=s.run("runNodeAction('server','github-cli','refresh')");await s.run("runNodeAction('server','github-cli','refresh')");assert.equal(posts,1);assert.ok(s.buttons().every(b=>b.disabled));finish(s.command);await first;
 });
 
@@ -86,4 +86,59 @@ test('Docker configuration is typed and requires explicit elevation',async()=>{
  await s.run("runNodeAction('server','docker','configure')");assert.equal(s.calls.length,0);
  s.$('node-elevation').checked=true;await s.run("runNodeAction('server','docker','configure')");
  assert.deepEqual(JSON.parse(s.calls[0].options.body),{nodeId:'server',capabilityId:'docker',action:'Configure',timeoutSeconds:120,allowElevation:true});
+});
+
+function connectionSetup(){
+ const s=setup();s.node.capabilities[0].state.installation='Installed';
+ s.node.capabilities[0].availableActions=['prepareauthentication','login','checkauthentication','install'];
+ s.connection={commands:[],provisioningEnabled:true,elevationAllowed:true};s.context.connection=s.connection;
+ s.context.selectContextNode=()=>s.run('renderNode()');
+ s.run('serverGitHub=connection;renderNode()');
+ s.connectionText=()=>s.$('github-connection').children.map(e=>e.textContent+' '+e.innerHTML).join(' ');
+ s.connectionButtons=()=>s.$('github-connection').children.filter(e=>e.onclick);
+ s.login=(status='Running')=>({...s.command,request:{nodeId:'server',capabilityId:'github-cli',action:'Login'},status,deadlineUtc:'2030-01-01T00:00:00Z',loginInstructions:{verificationUri:'https://github.com/login/device',userCode:'ABCD-1234'}});
+ s.clock={now:Date.parse('2026-01-01T00:00:00Z')};
+ s.context.Date=class extends Date{constructor(...args){super(...(args.length?args:[s.clock.now]))}static now(){return s.clock.now}};
+ s.context.setTimeout=(callback,delay)=>{s.timer={callback,delay};return 1};s.context.clearTimeout=()=>{s.timer=null};
+ return s;
+}
+test('Server connection requires an explicit choice and honors local provisioning policy',async()=>{
+ const s=connectionSetup();await s.run("runServerGitHub('prepareauthentication')");assert.equal(s.calls.length,0);assert.match(s.$('github-connection-message').textContent,/Authorize/);
+ s.connection.provisioningEnabled=false;s.run('renderNode()');assert.match(s.connectionText(),/Provisioning is disabled/);assert.deepEqual(s.connectionButtons().map(b=>b.textContent),['Check Server authentication']);
+ s.connection.provisioningEnabled=true;s.$('github-provisioning-consent').checked=true;
+ await s.run("runServerGitHub('prepareauthentication')");assert.deepEqual(JSON.parse(s.calls[0].options.body),{nodeId:'server',capabilityId:'github-cli',action:'PrepareAuthentication',timeoutSeconds:120,allowElevation:false});
+});
+test('preparation, refusal and verified completion use real operation and capability states',()=>{
+ const s=connectionSetup();s.connection.commands=[{...s.login('Succeeded'),request:{...s.login().request,action:'PrepareAuthentication'},loginInstructions:null}];s.run('renderNode()');assert.ok(s.connectionButtons().some(b=>b.textContent==='Start device login'));
+ s.connection.commands[0].status='Failed';s.connection.commands[0].diagnostic='Denied';s.run('renderNode()');assert.match(s.connectionText(),/Existing operator authentication is preserved/);assert.ok(s.connectionButtons().some(b=>b.textContent==='Retry preparation'));
+ s.connection.commands=[s.login('Succeeded')];s.run('renderNode()');assert.doesNotMatch(s.connectionText(),/Connected ·/);assert.doesNotMatch(s.connectionText(),/ABCD-1234/);
+ s.node.capabilities[0].state.authentication='Satisfied';s.run('renderNode()');assert.match(s.connectionText(),/Connected ·/);assert.match(s.connectionText(),/Issue write authorization: not yet verified/);assert.deepEqual(s.connectionButtons().map(b=>b.textContent),['Check Server authentication']);
+ s.connection.commands=[s.login('Failed')];s.run('renderNode()');assert.doesNotMatch(s.connectionText(),/Connected ·/);
+});
+test('reload recovers a live challenge without submitting, and expiry and unavailable snapshots hide it',async()=>{
+ const s=connectionSetup();const login=s.login();s.context.api=async path=>{s.calls.push({path});return path==='/api/v1/nodes'?[s.node]:path==='/api/v1/nodes/server/github-connection'?{...s.connection,commands:[login]}:[]};
+ await s.run('loadNodes();');assert.match(s.connectionText(),/ABCD-1234/);assert.match(s.connectionText(),/GitHub verification/);assert.ok(s.calls.every(c=>!c.options));assert.equal(s.connectionButtons().length,0);
+ login.deadlineUtc='2025-01-01T00:00:00Z';s.run('renderNode()');assert.doesNotMatch(s.connectionText(),/ABCD-1234/);assert.match(s.connectionText(),/deadline expired/);
+ login.deadlineUtc='2030-01-01T00:00:00Z';s.context.api=async()=>{throw Error('unavailable')};await s.run('loadNodes()');assert.doesNotMatch(s.connectionText(),/ABCD-1234/);assert.match(s.connectionText(),/Connection state unavailable/);
+});
+test('lost submission response is recovered before retry and never creates a duplicate login',async()=>{
+ const s=connectionSetup();s.connection.commands=[{...s.login('Succeeded'),request:{...s.login().request,action:'PrepareAuthentication'}}];s.$('github-provisioning-consent').checked=true;
+ let posts=0;const login=s.login();s.context.api=async(path,options)=>{if(options){posts++;throw Error('response lost')}return path==='/api/v1/nodes'?[s.node]:path==='/api/v1/nodes/server/github-connection'?{...s.connection,commands:[login]}:[]};
+ await s.run("runServerGitHub('login')");assert.match(s.connectionText(),/ABCD-1234/);await s.run("runServerGitHub('login')");assert.equal(posts,1);assert.match(s.$('github-connection-message').textContent,/could not be confirmed/);
+});
+test('only queued operations can be cancelled and confirmed cancellation allows a safe retry',async()=>{
+ const s=connectionSetup();const login=s.login('Pending');s.connection.commands=[login];s.run('renderNode()');assert.deepEqual(s.connectionButtons().map(b=>b.textContent),['Cancel queued operation']);
+ const calls=[];s.context.api=async(path,options)=>{calls.push({path,options});if(options){login.status='Cancelled';login.loginInstructions=null;return login}return path==='/api/v1/nodes'?[s.node]:path==='/api/v1/nodes/server/github-connection'?s.connection:[]};
+ await s.run("cancelServerGitHub('operation')");assert.equal(calls[0].path,'/api/v1/provisioning/commands/operation/cancel');assert.ok(s.connectionButtons().some(b=>b.textContent==='Retry device login'));assert.doesNotMatch(s.connectionText(),/ABCD-1234/);
+ login.status='Running';await s.run("cancelServerGitHub('operation')");assert.equal(calls.filter(c=>c.options).length,1);
+});
+test('unsupported flow and missing tools offer bounded recovery and installation requires elevation',async()=>{
+ const s=connectionSetup();s.node.capabilities[0].availableActions=['checkauthentication'];s.run('renderNode()');assert.match(s.connectionText(),/device flow is unavailable/);
+ s.node.capabilities[0].state.installation='Missing';s.node.capabilities[0].availableActions=['install'];s.run('renderNode()');await s.run("runServerGitHub('install')");assert.equal(s.calls.length,0);assert.match(s.$('github-connection-message').textContent,/explicit elevation/);
+ s.$('github-elevation-consent').checked=true;await s.run("runServerGitHub('install')");assert.equal(JSON.parse(s.calls[0].options.body).allowElevation,true);
+});
+
+test('challenge deadline clears active display without waiting for polling',()=>{
+ const s=connectionSetup();s.connection.commands=[s.login()];s.run('renderNode()');assert.match(s.connectionText(),/ABCD-1234/);assert.ok(s.timer);
+ const callback=s.timer.callback;s.clock.now=Date.parse('2030-01-01T00:00:00Z');callback();assert.doesNotMatch(s.connectionText(),/ABCD-1234/);assert.match(s.connectionText(),/deadline expired/);assert.equal(s.timer,null);
 });

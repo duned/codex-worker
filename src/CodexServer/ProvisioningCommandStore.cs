@@ -50,12 +50,21 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
     }
 
     public async Task<IReadOnlyList<ProvisioningCommand>> ListAsync(CancellationToken token = default, int limit = 100, int offset = 0)
+        => await ListCoreAsync(token, limit, offset, serverGitHub: false);
+
+    // Recover an active Server login even when unrelated history fills the general page.
+    public async Task<IReadOnlyList<ProvisioningCommand>> ListServerGitHubAsync(CancellationToken token = default)
+        => await ListCoreAsync(token, 30, 0, serverGitHub: true);
+
+    private async Task<IReadOnlyList<ProvisioningCommand>> ListCoreAsync(CancellationToken token, int limit, int offset, bool serverGitHub)
     {
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit), "Provisioning command history limit must be between 1 and 100.");
         if (offset is < 0 or > 10_000) throw new ArgumentOutOfRangeException(nameof(offset), "Provisioning command history offset must be between 0 and 10000.");
         await using var connection = await OpenAsync(token);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT body FROM provisioning_commands ORDER BY rowid DESC LIMIT $limit OFFSET $offset;";
+        command.CommandText = serverGitHub
+            ? "SELECT body FROM provisioning_commands WHERE node='server' AND capability='github-cli' ORDER BY active DESC, rowid DESC LIMIT $limit OFFSET $offset;"
+            : "SELECT body FROM provisioning_commands ORDER BY rowid DESC LIMIT $limit OFFSET $offset;";
         command.Parameters.AddWithValue("$limit", limit);
         command.Parameters.AddWithValue("$offset", offset);
         await using var reader = await command.ExecuteReaderAsync(token);

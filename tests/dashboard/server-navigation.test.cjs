@@ -56,6 +56,7 @@ function setup(hash='#/home'){
    else if(path==='/api/v1/projects')body=data.projects;
    else if(path==='/api/v1/workers')body=data.workers;
    else if(path==='/api/v1/nodes')body=data.nodes;
+   else if(path==='/api/v1/nodes/server/github-connection')body={commands:[],provisioningEnabled:true,elevationAllowed:false};
    else if(path.includes('/diagnostics'))body={projects:[],reasons:[],configurationSynchronization:'Current'};
    else if(path.includes('/credential-access'))body={status:'Authorized'};
    else if(path.startsWith('/api/v1/workers/'))body={...worker,workerId:path.split('/')[4]};
@@ -84,6 +85,9 @@ test('first-use milestones support alternate order, configured state, stale fact
  assert.doesNotMatch(s.$('home-next').innerHTML,/>Complete</);
  s.data.projects=[s.project];await s.poll();assert.match(s.$('home-next').innerHTML,/1 central project/);assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,1);
  s.configured();await s.poll();assert.equal(s.$('home-heading').textContent,'Activity and next steps');assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,3);
+ s.github.state.operation={state:'Running',action:'login'};await s.poll();assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,2);
+ s.github.state.operation={state:'Failed',action:'login'};await s.poll();assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,2);
+ s.github.state.operation={state:'Idle'};
  s.data.nodes=[s.server,{...s.node,observationsStale:true}];await s.poll();assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,2);
  s.rejectNodes();await s.poll();assert.match(s.$('home-next').innerHTML,/Unavailable/);assert.doesNotMatch(s.$('home-next').innerHTML,/Worker A has current/);
  await s.emit('pagehide');
@@ -118,7 +122,7 @@ test('a delayed detail response or failure cannot overwrite a new resource conte
 
 test('selected Server and Worker provisioning stays contextual and navigation rejects malformed fragments',async()=>{
  const s=setup();s.configured();await s.flush();
- await s.route('#/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('node-panel').scrolled,true);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
+ await s.route('#/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('github-connection-panel').scrolled,true);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
  await s.route('#/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
  await s.route('#/workers/%invalid');assert.equal(s.$('view-title').textContent,'Home');
  await s.emit('pagehide');

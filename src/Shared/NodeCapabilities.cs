@@ -153,8 +153,9 @@ public sealed class NodeCapabilityDiscovery
     private IReadOnlyList<CapabilityState>? _cached;
     private DateTimeOffset _detected;
     private int _detecting;
-    public NodeCapabilityDiscovery(Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? run = null) =>
-        _run = run ?? RunAsync;
+    public NodeCapabilityDiscovery(Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? run = null,
+        bool requireManagedGitHubAuthentication = false) =>
+        _run = run ?? ((executable, arguments, token) => RunAsync(executable, arguments, token, requireManagedGitHubAuthentication));
 
     public async Task<IReadOnlyList<CapabilityState>> GetAsync(bool refresh = false, CancellationToken cancellationToken = default)
     {
@@ -278,7 +279,8 @@ public sealed class NodeCapabilityDiscovery
         return result.ExitCode == 0 && version is not null && version == state.DetectedVersion;
     }
 
-    private static async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    private static async Task<(int ExitCode, string Output)> RunAsync(string executable, IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken, bool requireManagedGitHubAuthentication)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
@@ -286,7 +288,8 @@ public sealed class NodeCapabilityDiscovery
             { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
         foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.StartInfo.Environment["LC_ALL"] = "C";
-        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, cancellationToken);
+        await NodeGitHubSetup.ApplyGitHubEnvironmentAsync(process.StartInfo, cancellationToken,
+            requireManagedAuthentication: requireManagedGitHubAuthentication && arguments.Count > 0 && arguments[0] == "auth");
         if (executable == CodexServiceEnvironment.Executable) CodexServiceEnvironment.Apply(process.StartInfo);
         process.Start();
         var stdout = DrainAsync(process.StandardOutput, timeout.Token);
