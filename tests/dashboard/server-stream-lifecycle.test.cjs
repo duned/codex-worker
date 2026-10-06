@@ -93,3 +93,10 @@ test('authentication rejection stops retries and deliberate cancellation reports
   await s.stop();assert.equal(s.$('live').textContent,'Live · disconnected');
  }
 });
+
+test('oversized unterminated SSE frames stop with bounded processing diagnostics',async()=>{
+ const s=setup();s.connect();await flush();const connection=s.respond(s.requests[0]);await flush();
+ connection.emitFrame('data: '+ 'x'.repeat(1024*1024));await flush();
+ assert.match(s.$('live').textContent,/Worker event processing failed/);assert.ok(s.$('live').textContent.length<200);
+ assert.equal(s.timers.size,0);assert.equal(connection.reader.released,1);assert.equal(s.active(),0);await s.stop();
+});

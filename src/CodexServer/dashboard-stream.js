@@ -48,6 +48,7 @@ function streamWorkers(){
      const {value,done}=await owner.reader.read();
      if(!current()||done)break;
      buffer+=decoder.decode(value,{stream:true});
+     if(buffer.length>1024*1024){processing=true;throw Error('Worker event exceeds processing bound')}
      const events=buffer.split('\n\n');buffer=events.pop()||'';
      for(const item of events){
       const data=item.split('\n').find(line=>line.startsWith('data: '));
@@ -68,5 +69,5 @@ function streamWorkers(){
  })();
  return owner.done;
 }
-window.addEventListener('pagehide',()=>{stopWorkerStream();stopDashboardPolling();for(const controller of administrationRequests)controller.abort();sessionGeneration++;navigation.stop()});
+window.addEventListener('pagehide',()=>{stopWorkerStream();stopDashboardPolling();cancelDashboardReads();for(const controller of administrationRequests)controller.abort();sessionGeneration++;navigation.stop()});
 window.addEventListener('pageshow',event=>{if(event.persisted)restoreSession()});

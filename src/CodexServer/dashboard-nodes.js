@@ -1,7 +1,7 @@
 // Only wire actions registered by the API are offered. Labels do not decide availability.
 const nodeActions={configure:{command:'Configure',label:'Configure daemon access',elevation:true},login:{command:'Login',label:'Sign in with device code'},refresh:{command:'Detect',label:'Refresh / Re-detect'},install:{command:'Install',label:'Install',elevation:true},update:{command:'Update',label:'Update',elevation:true},uninstall:{command:'Uninstall',label:'Uninstall',elevation:true,destructive:true},checkauthentication:{command:'CheckAuthentication',label:'Check authentication'},logout:{command:'Logout',label:'Logout / Remove authentication',destructive:true},checkconfiguration:{command:'CheckConfiguration',label:'Check configuration'},prepareauthentication:{command:'PrepareAuthentication',label:'Prepare GitHub login'},generatesshkey:{command:'GenerateSshKey',label:'Generate SSH key'},inspectsshkey:{command:'InspectSshKey',label:'Inspect public key'},removesshkey:{command:'RemoveSshKey',label:'Remove SSH key',destructive:true},verifyrepositoryaccess:{command:'VerifyRepositoryAccess',label:'Verify repository access'}};
 let nodes=[],nodeCommands=[],nodesLoading=false,nodeSubmitting=false,nodeSnapshotValid=false;
-let serverGitHub=null,githubChallengeTimer=null;
+let serverGitHub=null,githubChallengeTimer=null,nodeLoadGeneration=0;
 function selectedNode(){return nodes.find(n=>n.id===$('node-select').value)}
 function commandActive(c){return c.status==='Pending'||c.status==='Running'}
 function renderNode(){
@@ -38,10 +38,10 @@ function renderNode(){
  }
 }
 async function loadNodes(){
- if(!authenticated||nodesLoading||nodeSubmitting)return;nodesLoading=true;
- try{const [inventory,commands,connection]=await Promise.all([api('/api/v1/nodes'),api(navigation.current().view==='workers'&&navigation.current().id?'/api/v1/nodes/'+encodeURIComponent(navigation.current().id)+'/commands':'/api/v1/provisioning/commands'),api('/api/v1/nodes/server/github-connection')]);serverGitHub=connection;const selected=$('node-select').value;nodes=inventory;nodeCommands=[...commands.filter(c=>!connection.commands.some(g=>g.id===c.id)),...connection.commands].sort((a,b)=>Date.parse(a.createdAtUtc)-Date.parse(b.createdAtUtc));nodeSnapshotValid=true;navigation.observe('nodes',nodes);$('node-select').innerHTML=nodes.map(n=>`<option value="${esc(n.id)}">${esc(n.displayName)} · ${esc(n.kind)} · ${esc(n.connectivity)}</option>`).join('');$('node-select').disabled=false;$('node-select').value=selected;selectContextNode()}
- catch(e){if(e.name==='AbortError'||e.message==='Administration session ended.')return;navigation.observe('nodes',null);nodeSnapshotValid=false;renderNode();$('node-message').textContent='Cannot refresh provisioning state: '+e.message}
- finally{nodesLoading=false}
+ if(!authenticated||nodeSubmitting)return;const generation=++nodeLoadGeneration,context=navigation.capture();nodesLoading=true;nodeSnapshotValid=false;renderNode();
+ try{const [inventory,commands,connection]=await Promise.all([api('/api/v1/nodes'),api(navigation.current().view==='workers'&&navigation.current().id?'/api/v1/nodes/'+encodeURIComponent(navigation.current().id)+'/commands':'/api/v1/provisioning/commands'),api('/api/v1/nodes/server/github-connection')]);if(generation!==nodeLoadGeneration||!navigation.isCurrent(context))return;serverGitHub=connection;const selected=$('node-select').value;nodes=inventory;nodeCommands=[...commands.filter(c=>!connection.commands.some(g=>g.id===c.id)),...connection.commands].sort((a,b)=>Date.parse(a.createdAtUtc)-Date.parse(b.createdAtUtc));nodeSnapshotValid=true;navigation.observe('nodes',nodes);$('node-select').innerHTML=nodes.map(n=>`<option value="${esc(n.id)}">${esc(n.displayName)} · ${esc(n.kind)} · ${esc(n.connectivity)}</option>`).join('');$('node-select').disabled=false;$('node-select').value=selected;selectContextNode()}
+ catch(e){if(generation!==nodeLoadGeneration||!navigation.isCurrent(context)||e.name==='AbortError'||e.message==='Administration session ended.')return;navigation.observe('nodes',null);nodeSnapshotValid=false;renderNode();$('node-message').textContent='Cannot refresh provisioning state: '+e.message}
+ finally{if(generation===nodeLoadGeneration)nodesLoading=false}
 }
 async function runNodeAction(nodeId,capabilityId,action){
  const context=navigation.capture();

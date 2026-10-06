@@ -16,7 +16,7 @@ function setup(hash='#/home'){
   setAttribute(name,value){this.attributes[name]=value}
   removeAttribute(name){delete this.attributes[name]}
   addEventListener(){}
-  querySelectorAll(selector){return ['a','button,select,a,input'].includes(selector)?this.children:[]}
+  querySelectorAll(selector){if(['a','button,select,a,input'].includes(selector))return this.children;const key=selector.match(/^\[data-([a-z-]+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,c)=>c.toUpperCase());return key?this.children.filter(c=>key in c.dataset):[]}
   contains(element){return this.children.includes(element)}
   querySelector(selector){return this.markup.includes(selector.slice(1,-1))?new Element():null}
   append(child){this.children.push(child)}
@@ -34,18 +34,18 @@ function setup(hash='#/home'){
  const github={definition:{id:'github-cli',displayName:'GitHub CLI'},state:{installation:'Installed',authentication:'Satisfied',health:'Healthy',operation:{state:'Idle'}},availableActions:[]};
  const server={id:'server',kind:'server',displayName:'Server',observationsStale:false,capabilities:[github],connectivity:'connected',health:'healthy'};
  const node={id:'worker-a',kind:'worker',displayName:'Worker A',connectivity:'connected',executionReadiness:'ready',observationsStale:false,capabilities:[]};
- const data={workers:[],projects:[],nodes:[{...server,capabilities:[{...github,state:{...github.state,authentication:'Required'}}]}],executions:[]};
- const held=new Map();let rejectNodes=false;
+ const data={workers:[],projects:[],nodes:[{...server,capabilities:[{...github,state:{...github.state,authentication:'Required'}}]}],executions:[],commands:[]};
+ const held=new Map();let rejectNodes=false,streamRead=null;
  const window={location:{hash},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
  const context=vm.createContext({window,document:{getElementById:$,querySelectorAll:selector=>selector==='[data-view]'?views:selector==='dialog'?[...elements.values()].filter(el=>el.id?.endsWith('dialog')):[],createElement:()=>new Element()},
-  Headers,AbortController,AbortSignal,TextDecoder,Date,URLSearchParams,Set,Math,JSON,encodeURIComponent,decodeURIComponent,confirm:()=>true,prompt:()=>null,
+  Headers,AbortController,AbortSignal,TextDecoder,TextEncoder,Date,URLSearchParams,Set,Math,JSON,encodeURIComponent,decodeURIComponent,confirm:()=>true,prompt:()=>null,
   setTimeout(fn,delay){const id=++timerId;timers.set(id,{fn,delay});return id},clearTimeout:id=>timers.delete(id),
   fetch:async(path,options)=>{
    calls.push({path,options});
    if(held.has(path))return held.get(path).promise;
    if(path==='/api/v1/events/stream'){
-    const read=deferred();options.signal.addEventListener('abort',()=>read.resolve({done:true}));
-    return {ok:true,status:200,body:{getReader:()=>({read:()=>read.promise,cancel:async()=>read.resolve({done:true}),releaseLock(){}})}};
+    options.signal.addEventListener('abort',()=>streamRead?.resolve({done:true}));
+    return {ok:true,status:200,body:{getReader:()=>({read(){streamRead=deferred();return streamRead.promise},cancel:async()=>streamRead?.resolve({done:true}),releaseLock(){}})}};
    }
    if(path==='/api/v1/nodes'&&rejectNodes)throw Error('inventory unavailable');
    let body;
@@ -57,6 +57,7 @@ function setup(hash='#/home'){
    else if(path==='/api/v1/workers')body=data.workers;
    else if(path==='/api/v1/nodes')body=data.nodes;
    else if(path==='/api/v1/nodes/server/github-connection')body={commands:[],provisioningEnabled:true,elevationAllowed:false};
+   else if(path==='/api/v1/provisioning/commands')body=options.method?{}:data.commands;
    else if(path.includes('/diagnostics'))body={projects:[],reasons:[],configurationSynchronization:'Current'};
    else if(path.includes('/credential-access'))body={status:'Authorized'};
    else if(path.startsWith('/api/v1/workers/'))body={...worker,workerId:path.split('/')[4]};
@@ -75,7 +76,7 @@ function setup(hash='#/home'){
   async route(hash){window.location.hash=hash;await emit('hashchange')},
   async poll(){const entry=[...timers.entries()].find(([,timer])=>timer.delay===5000);assert.ok(entry);timers.delete(entry[0]);await entry[1].fn();await flush()},
   configured(){data.workers=[worker];data.projects=[project];data.nodes=[server,node]},
-  rejectNodes(){rejectNodes=true},emit,flush
+  rejectNodes(){rejectNodes=true},async workersEvent(items){streamRead.resolve({value:new TextEncoder().encode('data: '+JSON.stringify(items)+'\n\n'),done:false});await flush()},emit,flush
  };
 }
 
@@ -154,5 +155,57 @@ test('project observation refresh keeps the focused resource action reachable',a
  const s=setup('#/projects');s.configured();await s.flush();
  s.document.activeElement=s.$('projects').children.find(button=>button.dataset.edit==='project-a');assert.ok(s.document.activeElement);
  await s.poll();assert.ok(s.$('projects').children.find(button=>button.dataset.edit==='project-a').focused);
+ await s.emit('pagehide');
+});
+
+test('delivered Home and route loaders share equivalent reads and keep one stream and poll owner',async()=>{
+ const s=setup();await s.flush();
+ const count=path=>s.calls.filter(c=>c.path===path).length;
+ for(const path of ['/api/v1/projects','/api/v1/nodes','/api/v1/workers','/api/v1/provisioning/commands','/api/v1/executions?limit=50&offset=0'])assert.equal(count(path),1,path);
+ for(const route of ['#/projects/project-a','#/workers/worker-a','#/settings?node=server','#/home']){
+  s.configured();const start=s.calls.length;await s.route(route);
+  const reads=s.calls.slice(start).filter(c=>(c.options.method||'GET')==='GET');
+  const paths=reads.map(c=>c.path);assert.equal(new Set(paths).size,paths.length,route+': '+paths.join(', '));
+  assert.equal(s.calls.filter(c=>c.path==='/api/v1/events/stream'&&!c.options.signal.aborted).length,1);
+  assert.equal([...s.timers.values()].filter(t=>t.delay===5000).length,1);
+ }
+ const start=s.calls.length;await s.poll();assert.equal(s.calls.slice(start).filter(c=>c.path==='/api/v1/provisioning/commands').length,1);
+ await s.emit('pagehide');assert.equal(s.calls.filter(c=>c.path==='/api/v1/events/stream'&&!c.options.signal.aborted).length,0);
+});
+
+test('route cancellation ignores stale shared inventory and command completions and loads the active view',async()=>{
+ const s=setup();await s.flush();s.configured();
+ const inventory=deferred(),commands=deferred();s.held.set('/api/v1/nodes',inventory);s.held.set('/api/v1/provisioning/commands',commands);
+ await s.route('#/settings?node=server');const obsolete=s.calls.filter(c=>s.held.has(c.path)).slice(-2);
+ s.held.clear();await s.route('#/workers/worker-a');
+ assert.ok(obsolete.every(c=>c.options.signal.aborted));
+ const markup=s.$('node-detail').innerHTML;
+ inventory.resolve({ok:true,status:200,json:async()=>[{...s.server,displayName:'obsolete secret'}]});commands.resolve({ok:true,status:200,json:async()=>[]});await s.flush();
+ assert.equal(s.$('node-detail').innerHTML,markup);assert.match(markup,/Worker A/);assert.doesNotMatch(s.$('provisioning').innerHTML,/obsolete/);
+ await s.emit('pagehide');
+});
+
+test('mutation invalidates pending observations and refreshes provisioning progress without duplicate command reads',async()=>{
+ const s=setup('#/settings');await s.flush();
+ s.data.commands=[{id:'command-a',request:{nodeId:'server',capabilityId:'github-cli',action:'Detect'},status:'Pending',createdAtUtc:'2026-01-01T00:00:00Z',diagnostic:'Queued'}];
+ s.$('refresh-provisioning').onclick();await s.flush();
+ const button=s.$('provisioning').children.find(c=>c.dataset.provisioningAction==='cancel');assert.ok(button);
+ const pending=deferred();s.held.set('/api/v1/provisioning/commands',pending);
+ s.$('refresh-nodes').onclick();s.$('refresh-provisioning').onclick();await s.flush();
+ const old=s.calls.filter(c=>c.path==='/api/v1/provisioning/commands').at(-1);
+ s.held.clear();s.data.commands=[];const start=s.calls.length;
+ await button.onclick();await s.flush();assert.equal(old.options.signal.aborted,true);
+ assert.equal(s.calls.slice(start).filter(c=>c.path==='/api/v1/provisioning/commands/command-a/cancel').length,1);
+ pending.resolve({ok:true,status:200,json:async()=>[{...s.data.commands[0],id:'obsolete'}]});await s.flush();
+ assert.doesNotMatch(s.$('provisioning').innerHTML,/obsolete/);assert.match(s.$('provisioning').innerHTML,/No provisioning/);
+ await s.emit('pagehide');
+});
+
+test('a delayed overview snapshot cannot replace fresher Worker stream observations',async()=>{
+ const s=setup();await s.flush();const pending=deferred();s.held.set('/api/v1/workers',pending);
+ s.$('refresh-workers').onclick();await s.flush();
+ await s.workersEvent([{...s.worker,displayName:'Fresh Worker observation'}]);
+ pending.resolve({ok:true,status:200,json:async()=>[{...s.worker,displayName:'Old HTTP observation'}]});await s.flush();
+ assert.match(s.$('workers').innerHTML,/Fresh Worker observation/);assert.doesNotMatch(s.$('workers').innerHTML,/Old HTTP/);
  await s.emit('pagehide');
 });

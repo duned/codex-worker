@@ -65,3 +65,36 @@ test('expiry and API rejection stop streams and future dashboard requests',async
   assert.equal(s.context.authenticated,false);assert.equal(s.stops(),2);assert.equal(s.timers.size,0);assert.match(s.$('session-message').textContent,/expired/);
  }
 });
+
+test('ordinary reads coalesce only while pending and isolate filters and sessions',async()=>{
+ const s=setup();const restoring=s.run('restoreSession()');s.respond(0);await restoring;
+ const a=s.run("api('/api/v1/executions?projectId=a')"),b=s.run("api('/api/v1/executions?projectId=a')"),c=s.run("api('/api/v1/executions?projectId=b')");
+ assert.equal(s.requests.length,3);s.respond(1,200,[]);s.respond(2,200,[]);await Promise.all([a,b,c]);
+ const fresh=s.run("api('/api/v1/executions?projectId=a')");assert.equal(s.requests.length,4);s.respond(3,200,[]);await fresh;
+ const old=s.run("api('/api/v1/workers')").catch(e=>e.name);s.run('signOut()');assert.equal(await old,'AbortError');assert.equal(s.run('dashboardReads.size'),0);
+ const next=s.run('restoreSession()');s.respond(5);await next;const read=s.run("api('/api/v1/workers')");assert.equal(s.requests.length,7);s.respond(6,200,[]);await read;
+});
+
+test('logout during JSON decoding ignores obsolete completion and old expiry callbacks',async()=>{
+ const s=setup();const restoring=s.run('restoreSession()');s.respond(0);await restoring;
+ const expiry=s.timers.values().next().value;let finish;
+ const decoding=new Promise(resolve=>finish=resolve);const pending=s.run("api('/api/v1/workers')").catch(e=>e.name);
+ s.requests[1].resolve({ok:true,status:200,json:()=>decoding});await flush();s.run('signOut()');
+ const next=s.run('restoreSession()');s.respond(2);await next;expiry();assert.equal(s.context.authenticated,true);
+ finish([{private:'obsolete'}]);assert.equal(await pending,'AbortError');assert.equal(s.starts(),2);
+});
+
+test('API diagnostics name the failed resource without exposing bodies or filter values',async()=>{
+ const s=setup();const restoring=s.run('restoreSession()');s.respond(0);await restoring;
+ const read=s.run("api('/api/v1/projects?secret=private-query')");s.respond(1,500,{error:'private-token authentication challenge'});
+ await assert.rejects(read,e=>/GET \/api\/v1\/projects.*HTTP 500.*refresh/.test(e.message)&&!e.message.includes('private'));
+ const invalid=s.run("api('/api/v1/nodes')");s.requests[2].resolve({ok:true,status:200,json:async()=>{throw Error('private-body')}});
+ await assert.rejects(invalid,/GET \/api\/v1\/nodes: invalid Server data/);
+});
+
+test('pending read registry has a fixed bound and cancellation releases capacity',async()=>{
+ const s=setup();const restoring=s.run('restoreSession()');s.respond(0);await restoring;
+ const pending=Array.from({length:64},(_,i)=>s.run(`api('/api/v1/executions?offset=${i}')`).catch(e=>e.name));
+ await assert.rejects(s.run("api('/api/v1/executions?offset=64')"),/capacity/);assert.equal(s.run('dashboardReads.size'),64);
+ s.run('signOut()');await Promise.all(pending);assert.equal(s.run('dashboardReads.size'),0);
+});
