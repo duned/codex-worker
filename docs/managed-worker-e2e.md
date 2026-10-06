@@ -155,3 +155,7 @@ SQLite and local Git repositories. Existing readiness tests exercise WorkerHost
 with deterministic Server/process seams. These tests need no live authentication;
 they complement the executable live campaign and do not certify VM installation
 or first successful authenticated execution.
+
+For distinct Server/A/B machines, TLS faults, identity/delivery boundaries and
+redacted evidence, use the [23.6 acceptance campaign](remote-https-acceptance.md).
+A same-host harness run does not establish separate-host HTTPS acceptance.

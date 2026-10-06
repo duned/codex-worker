@@ -8,7 +8,7 @@ Use a disposable deployment for acceptance; these instructions do not authorize
 changes to an existing operator VM.
 
 This is a reviewed deployment recipe, not evidence of a live separate-host pass.
-Run the remote acceptance campaign through **23.6's runbook** when hosts are
+Run the remote acceptance campaign through [23.6's runbook](remote-https-acceptance.md) when hosts are
 available. Record artifact versions/checksums, OS/package versions, topology,
 redacted effective policy and each observation. The
 [managed Worker campaign](managed-worker-e2e.md) and

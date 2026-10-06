@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using CodexWorker;
@@ -30,8 +29,10 @@ public sealed class WorkerServerHttpTransportTests
     public async Task RedirectsNeverDeliverCredentialsOrBodiesToDestination(int status, bool crossOrigin, bool bootstrap)
     {
         using var temporary = new TemporaryDirectory();
-        await using var destination = new HttpFixture("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-        await using var origin = new HttpFixture(url => $"HTTP/1.1 {status} Redirect\r\nLocation: {(crossOrigin ? destination.Url : url)}/destination\r\nContent-Length: 0\r\n\r\n");
+        using var certificates = new IsolatedHttpsCertificates();
+        using var http = certificates.CreateClient();
+        await using var destination = new HttpFixture("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", certificates.Server);
+        await using var origin = new HttpFixture(url => $"HTTP/1.1 {status} Redirect\r\nLocation: {(crossOrigin ? destination.Url : url)}/destination\r\nContent-Length: 0\r\n\r\n", certificates.Server);
         var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
         Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", "credential-test-secret");
         try
@@ -40,7 +41,7 @@ public sealed class WorkerServerHttpTransportTests
             var settings = new WorkerServerSettings { Enabled = true, Url = origin.Url, IdentityFile = identity };
             // Credential delivery uses an enrolled identity and must not create one implicitly.
             if (!bootstrap) await WorkerIdentity.LoadOrCreateAsync(identity);
-            var client = new WorkerRegistrationClient(provisioningDiscovery: TestCapabilityDiscovery.Create(),
+            var client = new WorkerRegistrationClient(http, provisioningDiscovery: TestCapabilityDiscovery.Create(),
                 capabilityDiscovery: new WorkerCapabilityDiscovery((_, _, _, _, _) =>
                     Task.FromException<ProcessResult>(new FileNotFoundException())));
             Exception failure;
@@ -104,25 +105,9 @@ public sealed class WorkerServerHttpTransportTests
     [InlineData("wrong-host")]
     public async Task RealTlsEnforcesChainValidityAndHostname(string scenario)
     {
-        using var rootKey = RSA.Create(2048);
-        var rootRequest = new CertificateRequest("CN=Isolated Worker Test CA", rootKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        rootRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
-        using var root = rootRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(2));
-        using var key = RSA.Create(2048);
-        var request = new CertificateRequest("CN=Worker Test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var san = new SubjectAlternativeNameBuilder();
-        san.AddIpAddress(scenario == "wrong-host" ? IPAddress.Parse("192.0.2.1") : IPAddress.Loopback);
-        request.CertificateExtensions.Add(san.Build());
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
-        using var issued = request.Create(root, DateTimeOffset.UtcNow.AddDays(-1),
-            DateTimeOffset.UtcNow.AddHours(scenario == "expired" ? -1 : 1), RandomNumberGenerator.GetBytes(16));
-        using var certificate = issued.CopyWithPrivateKey(key);
-        await using var server = new HttpFixture("HTTP/1.1 204 No Content\r\n\r\n", certificate);
-        using var handler = WorkerServerHttpTransport.CreateHandler();
-        // Isolated trust-store seam: built-in TLS chain/time/name verification remains active.
-        handler.SslOptions.CertificateChainPolicy = new X509ChainPolicy { TrustMode = X509ChainTrustMode.CustomRootTrust, RevocationMode = X509RevocationMode.NoCheck };
-        if (scenario != "untrusted") handler.SslOptions.CertificateChainPolicy.CustomTrustStore.Add(root);
-        using var client = new HttpClient(handler);
+        using var certificates = new IsolatedHttpsCertificates(scenario);
+        await using var server = new HttpFixture("HTTP/1.1 204 No Content\r\n\r\n", certificates.Server);
+        using var client = certificates.CreateClient(trustRoot: scenario != "untrusted");
         using var message = new HttpRequestMessage(HttpMethod.Get, server.Url);
         message.Headers.Add("X-Worker-Credential-Token", "tls-test-secret");
         if (scenario == "trusted")
