@@ -16,7 +16,7 @@ function setup(){
  const calls=[];let confirmation=true;
  const node={id:'server',displayName:'Server <unsafe>',kind:'server',connectivity:'connected',health:'healthy',executionReadiness:'not-applicable',provisioningReadiness:'ready',observationsStale:false,capabilities:[{definition:{id:'github-cli',displayName:'GitHub CLI',requiresAuthentication:true},availableActions:['refresh','install','uninstall','logout','checkauthentication'],state:{installation:'Missing',update:'Unknown',health:'Healthy',authentication:'Required',operation:{state:'Idle'}}}]};
  const command={id:'operation',request:{nodeId:'server',capabilityId:'github-cli',action:'Install'},status:'Pending',diagnostic:'Queued',createdAtUtc:'2026-01-01T00:00:00Z'};
- const context=vm.createContext({$,document:{createElement:()=>new Element()},managementToken:'management',setInterval:()=>{},confirm:()=>confirmation,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),api:async(path,options)=>{calls.push({path,options});if(options)return command;return path==='/api/v1/nodes'?[node]:[]}});
+ const context=vm.createContext({$,document:{createElement:()=>new Element()},authenticated:true,setInterval:()=>{},confirm:()=>confirmation,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),api:async(path,options)=>{calls.push({path,options});if(options)return command;return path==='/api/v1/nodes'?[node]:[]}});
  vm.runInContext(source,context);
  const run=code=>vm.runInContext(code,context);
  context.inventory=[node];context.commands=[];run('nodes=inventory;nodeCommands=commands;nodeSnapshotValid=true;renderNode()');

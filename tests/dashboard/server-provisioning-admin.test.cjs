@@ -24,7 +24,7 @@ function setup(){
   {id:'expired-command',request:{nodeId:'server',capabilityId:'git',action:'Install'},status:'Running',diagnostic:'Executing',createdAtUtc:'2026-10-01T00:02:00Z',deadlineUtc:'2000-01-01T00:00:00Z'},
   {id:'failed-command',request:{nodeId:'server',capabilityId:'github-cli',action:'Install'},status:'Failed',diagnostic:'ProcessFailed',failureDetail:{code:'ElevationDenied',description:'Non-interactive sudo authorization was denied.'},createdAtUtc:'2026-10-01T00:03:00Z'}
  ];
- const context=vm.createContext({$,managementToken:'management',provisioningActionPending:false,confirm:()=>confirmation,Date,encodeURIComponent,
+ const context=vm.createContext({$,authenticated:true,provisioningActionPending:false,confirm:()=>confirmation,Date,encodeURIComponent,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   loadNodes:async()=>{},api:async(path,options)=>{calls.push({path,options});if(options)return {};if(path==='/api/v1/provisioning')return [plan];if(path==='/api/v1/provisioning/commands')return commands;throw Error('unexpected endpoint')}});
  vm.runInContext(source,context);

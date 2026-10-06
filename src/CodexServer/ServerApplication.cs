@@ -51,6 +51,8 @@ public static class ServerApplication
         configuration.Validate();
         builder.WebHost.UseUrls(configuration.ListenUrl);
         builder.Services.AddSingleton(configuration);
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<AdministrationSessions>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
         builder.Services.AddSingleton(capabilityDiscovery ?? new NodeCapabilityDiscovery());
@@ -112,6 +114,25 @@ public static class ServerApplication
         }
         app.Logger.LogInformation("Codex Server {Version} initialized in {RuntimeMode} mode; listening on {ListenUrl}; persistent data directory: {DataDirectory}",
             DisplayVersion, app.Environment.EnvironmentName, configuration.ListenUrl, configuration.ResolveDataDirectory());
+        app.MapPost("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
+        {
+            if (!sessions.OriginAllowed(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+            if (!sessions.BearerAuthorized(context)) return Results.Unauthorized();
+            var session = sessions.Create(context);
+            return session is null ? Results.StatusCode(StatusCodes.Status429TooManyRequests)
+                : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
+        });
+        app.MapGet("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
+        {
+            var session = sessions.Validate(context);
+            return session is null ? Results.Unauthorized() : Results.Ok(new { session.CsrfToken, session.ExpiresAtUtc });
+        });
+        app.MapDelete("/api/v1/administration/session", (HttpContext context, AdministrationSessions sessions) =>
+        {
+            if (sessions.Validate(context, mutation: true) is null) return Results.Unauthorized();
+            sessions.Logout(context);
+            return Results.NoContent();
+        });
         app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
         app.MapGet("/readyz", async (IServerHealthService healthService, HttpContext context) =>
         {
@@ -867,7 +888,11 @@ public static class ServerApplication
         // Kestrel waits for active requests during graceful shutdown; RequestAborted
         // alone does not end a connected stream when the host begins stopping.
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, applicationStopping);
-        var cancellationToken = lifetime.Token;
+        var sessions = context.RequestServices.GetService<AdministrationSessions>();
+        var session = context.Request.Headers.ContainsKey("Authorization") ? null : sessions?.Validate(context);
+        if (sessions is not null && !context.Request.Headers.ContainsKey("Authorization") && session is null) return;
+        using var sessionLifetime = session is null ? null : CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, session.CancellationToken);
+        var cancellationToken = sessionLifetime?.Token ?? lifetime.Token;
         var jsonOptions = context.RequestServices.GetRequiredService<IOptions<JsonOptions>>().Value.SerializerOptions;
         context.Response.ContentType = "text/event-stream";
         context.Response.Headers["Cache-Control"] = "no-cache";
@@ -877,6 +902,7 @@ public static class ServerApplication
         {
             do
             {
+                if (session is not null && sessions?.Validate(context) is null) break;
                 var workers = await store.GetWorkersAsync(cancellationToken);
                 await context.Response.WriteAsync("event: workers\ndata: ", cancellationToken);
                 await context.Response.WriteAsync(JsonSerializer.Serialize(workers, jsonOptions), cancellationToken);
@@ -902,13 +928,7 @@ public static class ServerApplication
 
     private static bool AuthorizedManagement(HttpContext context, ServerConfiguration configuration)
     {
-        var expected = configuration.ManagementToken;
-        var supplied = context.Request.Headers.Authorization.ToString();
-        const string prefix = "Bearer ";
-        if (string.IsNullOrWhiteSpace(expected) || !supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
-        var actualBytes = Encoding.UTF8.GetBytes(supplied[prefix.Length..]);
-        var expectedBytes = Encoding.UTF8.GetBytes(expected);
-        return actualBytes.Length == expectedBytes.Length && CryptographicOperations.FixedTimeEquals(actualBytes, expectedBytes);
+        return context.RequestServices.GetRequiredService<AdministrationSessions>().Authorized(context);
     }
 
     private static IResult RegistrationError(WebApplication app, HttpContext context, int statusCode, string code, string error)

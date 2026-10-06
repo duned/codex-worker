@@ -142,7 +142,10 @@ def main():
                     for name in ['Authorization', 'X-Codex-Worker-Token', 'X-Worker-Credential-Token']:
                         assert upstream[name] == headers[name]
                 before = len(seen)
-                for method, path in [('GET', '/'), ('GET', '/api/v1/projects'),
+                for method, path in [('GET', '/'),
+                                     ('GET', '/api/v1/administration/session'),
+                                     ('POST', '/api/v1/administration/session'),
+                                     ('DELETE', '/api/v1/administration/session'), ('GET', '/api/v1/projects'),
                                      ('GET', '/api/v1/workers/w'),
                                      ('PUT', '/api/v1/workers/w/credential-access'),
                                      ('POST', '/api/v1/workers/w/authentication/revoke'),

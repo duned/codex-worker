@@ -1,21 +1,21 @@
-// Exercise the dashboard's real Connect/Enter entry points with coordinated fetch/read/timers.
+// Exercise cookie-authenticated stream ownership with coordinated fetch/read/timers.
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {setup,flush}=require('./server-stream-harness.cjs');
 
-test('repeated Connect and Enter replace the reader before opening a single authenticated request',async()=>{
+test('repeated session connections replace the reader before opening a single authenticated request',async()=>{
  const s=setup();s.connect();await flush();
  const first=s.respond(s.requests[0],{holdCancellation:true});await flush();
- s.connect('replacement-token',true);s.connect('latest-token');await flush();
+ s.connect('replacement-token',true);s.connect('latest-session');await flush();
  assert.equal(s.requests.length,1);assert.equal(first.reader.cancelled,1);assert.equal(s.requests[0].options.signal.aborted,true);
  first.finishCancellation();await flush();
  assert.equal(first.reader.released,1);assert.equal(s.requests.length,2);assert.equal(s.maximum(),1);
- assert.equal(s.requests[1].path,'/api/v1/events/stream');assert.equal(s.requests[1].options.headers.Authorization,'Bearer latest-token');assert.equal(s.$('token').value,'');
+ assert.equal(s.requests[1].path,'/api/v1/events/stream');assert.equal(s.requests[1].options.credentials,'same-origin');assert.equal(s.requests[1].options.headers,undefined);assert.equal(s.$('token').value,'');
  const latest=s.respond(s.requests[1]);await flush();latest.emit([{workerId:'current'}]);await flush();
  assert.equal(s.updates.length,1);assert.match(s.$('live').textContent,/updated/);await s.stop();assert.equal(latest.reader.released,1);
 });
 
-test('empty Connect disconnects during read and rapid reconnect cannot revive the obsolete reader',async()=>{
+test('clearing the session disconnects during read and rapid reconnect cannot revive the obsolete reader',async()=>{
  const s=setup();s.connect();await flush();const first=s.respond(s.requests[0],{staleRead:true});await flush();
  s.connect('');s.connect('next-token');await flush();assert.equal(s.requests.length,1);
  first.emit([{workerId:'obsolete'}]);await flush();
@@ -31,7 +31,7 @@ test('a stale fetch response releases its body without publishing status or star
  await s.stop();
 });
 
-test('failed requests use one cancellable retry wait and token replacement cancels that wait',async()=>{
+test('failed requests use one cancellable retry wait and session replacement cancels that wait',async()=>{
  const s=setup();s.connect();await flush();const failed=s.respond(s.requests[0],{ok:false});await flush();
  assert.equal(failed.body.cancelled,1);assert.equal(s.active(),0);assert.equal(s.timers.size,1);
  const obsoleteTimer=s.timers.values().next().value;
@@ -88,7 +88,7 @@ test('rendering and JSON failures stop retries and report safe processing diagno
 test('authentication rejection stops retries and deliberate cancellation reports disconnection',async()=>{
  for(const status of [401,403]){
   const s=setup();s.connect();await flush();const rejected=s.respond(s.requests[0],{ok:false,status});await flush();
-  assert.match(s.$('live').textContent,new RegExp('authentication rejected \\('+status+'\\)'));
+  assert.equal(s.$('live').textContent,'Live · signed out');
   assert.equal(rejected.body.cancelled,1);assert.equal(s.timers.size,0);assert.equal(s.active(),0);
   await s.stop();assert.equal(s.$('live').textContent,'Live · disconnected');
  }

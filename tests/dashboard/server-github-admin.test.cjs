@@ -26,7 +26,7 @@ function setup(apiHandler){
  const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id)};
  const calls=[],confirmMessages=[],answers=[];
  const projects=[{id:'project-id',name:'Project',repository:'team/project',issueReadyLabel:'ready',issueBlockedLabel:'blocked'}];
- const context=vm.createContext({$,projects,managementToken:'management',confirm:message=>{confirmMessages.push(message);return true},prompt:()=>answers.shift(),
+ const context=vm.createContext({$,projects,authenticated:true,confirm:message=>{confirmMessages.push(message);return true},prompt:()=>answers.shift(),
   URLSearchParams,encodeURIComponent,Number,JSON,console,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});return apiHandler(path,options,calls)}});

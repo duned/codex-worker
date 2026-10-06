@@ -22,7 +22,7 @@ function setup(){
   {id:'uncertain-id',projectId:'project-id',state:'Failed',recoveryState:'LeaseExpiredUncertain',workReference:{type:'github-issue',id:'8'},createdAtUtc:'2026-10-01T00:00:00Z',attemptNumber:1}
  ];
  const detail={...items[0],lease:{generation:1,state:'Released'},retryOfExecutionId:null};
- const context=vm.createContext({$,managementToken:'management',confirm:()=>true,prompt:()=>promptAnswers.shift(),Date,URLSearchParams,encodeURIComponent,JSON,
+ const context=vm.createContext({$,authenticated:true,confirm:()=>true,prompt:()=>promptAnswers.shift(),Date,URLSearchParams,encodeURIComponent,JSON,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});if(options)return {execution:detail,retry:null};if(path.startsWith('/api/v1/executions?'))return items;if(path.startsWith('/api/v1/executions/'))return detail;throw Error('unexpected endpoint '+path)}});
  vm.runInContext(source,context);

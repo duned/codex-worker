@@ -6,6 +6,8 @@ public sealed class ServerConfiguration
     public string? DisplayName { get; set; }
     public string EffectiveDisplayName => string.IsNullOrWhiteSpace(DisplayName) ? Environment.MachineName : DisplayName;
     public CodexProvisioning.GeneratedMessageOrigin MessageOrigin => new(CodexProvisioning.CodexComponent.Server, EffectiveDisplayName);
+    /// <summary>Exact browser origin for administration sessions; HTTPS except explicit direct loopback HTTP.</summary>
+    public string? AdministrationOrigin { get; set; }
     public string ListenUrl { get; set; } = "http://127.0.0.1:5090";
     /// <summary>Directory for durable Server state. Relative paths are resolved from the user's home directory.</summary>
     public string DataDirectory { get; set; } = Path.Combine(
@@ -32,6 +34,14 @@ public sealed class ServerConfiguration
         if (uri.Scheme == "http" && !(System.Net.IPAddress.TryParse(uri.Host, out var address)
                 ? System.Net.IPAddress.IsLoopback(address) : uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidDataException("Server:ListenUrl must use HTTPS unless it binds to loopback.");
+        if (AdministrationOrigin is not null &&
+            (!Uri.TryCreate(AdministrationOrigin, UriKind.Absolute, out var origin) ||
+             origin.Scheme is not ("http" or "https") || origin.UserInfo.Length != 0 ||
+             origin.AbsolutePath != "/" || origin.Query.Length != 0 || origin.Fragment.Length != 0 ||
+             AdministrationOrigin != origin.GetLeftPart(UriPartial.Authority) ||
+             (origin.Scheme == "http" && (!origin.IsLoopback || uri.Scheme != "http" ||
+                 AdministrationOrigin != uri.GetLeftPart(UriPartial.Authority)))))
+            throw new InvalidDataException("Server:AdministrationOrigin must be an exact HTTPS origin, or the direct loopback HTTP ListenUrl origin, without a trailing slash.");
         if (string.IsNullOrWhiteSpace(DataDirectory))
             throw new InvalidDataException("Server:DataDirectory must not be empty.");
         if (DatabasePath is not null && string.IsNullOrWhiteSpace(DatabasePath))

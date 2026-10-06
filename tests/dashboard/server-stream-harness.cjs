@@ -5,9 +5,7 @@ const path=require('node:path');
 const html=fs.readFileSync(path.join(__dirname,'../../src/CodexServer/dashboard.html'),'utf8');
 const streamStart=html.indexOf('// One owner per page.');
 const streamEnd=html.indexOf('function editProject(',streamStart);
-const connectStart=html.indexOf("$('unlock').onclick=");
-const connectEnd=html.indexOf("$('new-project').onclick=",connectStart);
-const source=html.slice(streamStart,streamEnd)+html.slice(connectStart,connectEnd);
+const source=html.slice(streamStart,streamEnd);
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject}};
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve()};
 
@@ -17,7 +15,7 @@ function setup({realRenderer=false}={}){
   return elements.get(id);
  };
  const requests=[],timers=new Map(),events={},updates=[];let timerId=0,active=0,maximum=0;
- const context=vm.createContext({$,managementToken:'',workers:[],AbortController,TextDecoder,Date,JSON,
+ const context=vm.createContext({$,authenticated:false,workers:[],AbortController,TextDecoder,Date,JSON,
   document:{querySelectorAll:()=>[]},
   window:{addEventListener:(name,handler)=>events[name]=handler},
   setTimeout:handler=>{const id=++timerId;timers.set(id,handler);return id},clearTimeout:id=>timers.delete(id),
@@ -34,6 +32,8 @@ function setup({realRenderer=false}={}){
  const renderEnd=html.indexOf('\n',renderStart);
  const escapeStart=html.indexOf('const esc=');
  const escapeEnd=html.indexOf('\n',escapeStart);
+ context.restoreSession=()=>{if(context.authenticated)vm.runInContext('streamWorkers()',context)};
+ context.signOut=()=>{context.authenticated=false;vm.runInContext('stopWorkerStream()',context);$('live').textContent='Live · signed out'};
  vm.runInContext((realRenderer?html.slice(escapeStart,escapeEnd)+html.slice(renderStart,renderEnd):'')+source,context);
  function respond(request,{ok=true,status=ok?200:503,holdCancellation=false,staleRead=false}={}){
   let pending=null;const cancellation=deferred();
@@ -43,7 +43,7 @@ function setup({realRenderer=false}={}){
   return {reader,body,finishCancellation:()=>cancellation.resolve(),emit:items=>pending.resolve({value:new TextEncoder().encode('data: '+JSON.stringify(items)+'\n\n'),done:false}),emitFrame:frame=>pending.resolve({value:new TextEncoder().encode(frame),done:false}),end:()=>{request.close();pending.resolve({done:true})},fail:()=>{request.close();pending.reject(Error('outage'))}};
  }
  return {$,requests,timers,events,updates,respond,maximum:()=>maximum,active:()=>active,
-  connect(token='test-token',enter=false){$('token').value=token;if(enter)$('token').listeners.keydown({key:'Enter'});else $('unlock').click()},
+  connect(session='test-session'){context.authenticated=Boolean(session);$('token').value='';vm.runInContext('streamWorkers()',context)},
   retry(){assert.equal(timers.size,1);const callback=timers.values().next().value;callback()},
   async stop(){events.pagehide();await flush();assert.equal(active,0);assert.equal(timers.size,0)}
  };

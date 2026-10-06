@@ -171,7 +171,9 @@ routes. Everything else requires the VPN source subnet, including the dashboard,
 health/status, management APIs, credential metadata/mutations, scheduling policy,
 revocation and event streaming. New routes default to VPN-only; review the map
 when upgrading. The dashboard shell is VPN-restricted; its management API calls
-also require the application management token. A Worker token grants no management
+also require a finite administration session or the application management bearer token.
+`GET`, `POST` and `DELETE /api/v1/administration/session` remain VPN-only; never
+add them to the public Worker route map. A Worker token grants no management
 access, even over VPN. Do not expose `/api/v1/workers/` as a blanket public prefix.
 
 No forwarded-header middleware is enabled. The proxy removes Forwarded,
@@ -179,6 +181,66 @@ X-Forwarded-For/Host/Proto and X-Real-IP and fixes the upstream Host. Do not ena
 ASP.NET automatic forwarded headers or Nginx real_ip in this topology. If future
 code requires forwarding, explicitly trust only the actual loopback proxy and
 replace incoming values rather than appending arbitrary client headers.
+
+### Dashboard administration sessions
+
+Set `Server:AdministrationOrigin` to the exact browser origin, for example
+`https://codex-server.example.com` (no trailing slash), through Server configuration
+or `Server__AdministrationOrigin` in the service environment. It must match the
+fixed upstream Host including any non-default port. The origin is operator
+configuration, never inferred from forwarded headers or the HTTP upstream scheme.
+An unset origin disables browser session login; bearer API/CLI clients still work.
+Keep the loopback listener, proxy TLS and VPN route restrictions in place.
+
+Sign in at the dashboard's Administration sign in panel with the management token.
+Only the login request carries this token; it is cleared from the input immediately
+and never written to browser storage, URLs or cookies. The Server issues an opaque
+`__Host-CodexAdministration` cookie with Secure, HttpOnly, SameSite=Strict, Path=/,
+no Domain and an explicit eight-hour expiration. Sessions have no sliding renewal,
+are bounded to 256 per Server, and remain only in Server memory (outside backups).
+Reload retrieves the session's expiration and a separate CSRF token. Cookie-authenticated
+mutations require both the exact configured Origin and this token in `X-Codex-CSRF`.
+No cross-origin credential/CORS access is enabled. An explicit Authorization header
+never falls back to a cookie for management APIs; Worker APIs still require Worker
+bearer credentials, and Worker credentials cannot establish sessions.
+
+Logout invalidates the Server session and cancels its streams. The page stops
+pending requests, hides administration and clears transient credentials. If logout
+cannot reach the Server, it offers an explicit retry; the cookie may remain valid
+until logout succeeds or expiration. Expiration, observed management-token rotation
+(including removing the token), and Server restart invalidate sessions. Rotation
+is checked on each session request and at most every five seconds on an idle SSE
+stream; expired sessions cancel connected streams at their deadline. Do not rely
+on hot-changing a service environment: restart after changing the service token,
+which immediately drops all sessions. Rejections return to sign in without automatic
+authentication retries; transport failures remain connection failures.
+
+For direct local administration only, explicitly set the origin to the exact
+loopback HTTP `ListenUrl`, for example `http://127.0.0.1:5090`. This uses a separate
+HttpOnly, SameSite=Strict `CodexLocalAdministration` cookie without Secure. This
+configuration is accepted only for the matching direct loopback HTTP listener;
+it does not downgrade the HTTPS cookie or accept forwarded-header claims. Use
+bearer CLI access if browser sessions are not configured. Never select HTTP origin
+for a production TLS proxy.
+
+Manual HTTPS verification on a disposable deployment (no provider credentials):
+
+1. From VPN, configure the HTTPS origin, sign in, inspect the cookie flags and
+   no-store headers in browser tools, reload and confirm projects/Workers restore.
+   Verify the management token appears only in the login request and not in storage.
+2. Sign out while a stream and API request are active. Confirm teardown, an expired
+   Set-Cookie and 401 on reuse of the old session cookie; reload remains signed out.
+3. Restart with a changed management token and confirm old tabs return to sign in.
+   Confirm expiry after eight hours, with no automatic login retry. Interrupt the
+   proxy temporarily to verify connection failures remain distinct from rejection.
+4. Submit a cookie mutation with missing/wrong CSRF or foreign/missing Origin;
+   confirm rejection and no mutation. Confirm supported bearer requests still work.
+5. Outside VPN, verify all three session methods and SSE are denied by the proxy,
+   even with valid credentials. Verify spoofed forwarding headers change neither
+   cookie flags nor origin authorization. Do not capture tokens in logs/screenshots.
+
+These live HTTPS/browser steps are operator validation; deterministic tests do not
+establish their deployment result.
 
 All proxy responses carry non-storage headers, including rejections. Cache
 lookup/write/store are off, conditional validators are removed, response/request
