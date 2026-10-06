@@ -2,8 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const start=html.indexOf('async function loadCredentials');
 const end=html.indexOf('async function loadProjects',start);
 const formStart=html.indexOf('async function submitCredential');
@@ -23,7 +22,7 @@ function setup(){
  const credential={id:'credential-1',provider:'<provider>',type:'api-token',status:'Ready',version:2,
   assignedWorkerId:null,updatedAtUtc:'2026-10-01T00:00:00Z',secretReference:'credential:1',secret:'should-never-render'};
  const worker={workerId:'worker-1',displayName:'Worker <unsafe>'};
- const context=vm.createContext({$,authenticated:true,workers:[],Date,encodeURIComponent,confirm:()=>confirmed,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,authenticated:true,workers:[],Date,encodeURIComponent,confirm:()=>confirmed,
   document:{querySelectorAll:()=>[]},
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});if(options)return path.includes('/revoke')?{status:'Revoked'}:credential;

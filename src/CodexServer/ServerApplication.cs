@@ -879,7 +879,27 @@ public static class ServerApplication
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CodexServer.dashboard.html")
             ?? throw new InvalidOperationException("The Server dashboard resource is missing.");
         using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
+        var html = reader.ReadToEnd();
+        var scripts = new StringBuilder();
+        foreach (var name in new[] { "dashboard-navigation.js", "dashboard-admin.js" })
+        {
+            using var scriptStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.{name}")
+                ?? throw new InvalidOperationException("A Server dashboard script resource is missing.");
+            using var scriptReader = new StreamReader(scriptStream);
+            var source = scriptReader.ReadToEnd();
+            if (name == "dashboard-admin.js")
+            {
+                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues" })
+                {
+                    using var moduleStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.dashboard-{module}.js")
+                        ?? throw new InvalidOperationException("A Server dashboard module resource is missing.");
+                    using var moduleReader = new StreamReader(moduleStream);
+                    source = source.Replace($"/* dashboard-{module} */", moduleReader.ReadToEnd(), StringComparison.Ordinal);
+                }
+            }
+            scripts.AppendLine(source);
+        }
+        return html.Replace("<!-- dashboard-scripts -->", $"<script>{scripts}</script>", StringComparison.Ordinal);
     }
 
     internal static async Task StreamWorkerUpdatesAsync(HttpContext context, IRegistryStore store,

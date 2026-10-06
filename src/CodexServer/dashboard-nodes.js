@@ -1,0 +1,49 @@
+// Only wire actions registered by the API are offered. Labels do not decide availability.
+const nodeActions={configure:{command:'Configure',label:'Configure daemon access',elevation:true},login:{command:'Login',label:'Sign in with device code'},refresh:{command:'Detect',label:'Refresh / Re-detect'},install:{command:'Install',label:'Install',elevation:true},update:{command:'Update',label:'Update',elevation:true},uninstall:{command:'Uninstall',label:'Uninstall',elevation:true,destructive:true},checkauthentication:{command:'CheckAuthentication',label:'Check authentication'},logout:{command:'Logout',label:'Logout / Remove authentication',destructive:true},checkconfiguration:{command:'CheckConfiguration',label:'Check configuration'},prepareauthentication:{command:'PrepareAuthentication',label:'Prepare GitHub login'},generatesshkey:{command:'GenerateSshKey',label:'Generate SSH key'},inspectsshkey:{command:'InspectSshKey',label:'Inspect public key'},removesshkey:{command:'RemoveSshKey',label:'Remove SSH key',destructive:true},verifyrepositoryaccess:{command:'VerifyRepositoryAccess',label:'Verify repository access'}};
+let nodes=[],nodeCommands=[],nodesLoading=false,nodeSubmitting=false,nodeSnapshotValid=false;
+function selectedNode(){return nodes.find(n=>n.id===$('node-select').value)}
+function commandActive(c){return c.status==='Pending'||c.status==='Running'}
+function renderNode(){
+ const node=selectedNode();if(!node){$('node-detail').innerHTML='<div class="empty">No node selected.</div>';return}
+ const busy=nodeSubmitting||!nodeSnapshotValid||node.provisioningReadiness==='busy'||nodeCommands.some(c=>c.request.nodeId===node.id&&commandActive(c));
+ $('node-detail').innerHTML=`<h3>${esc(node.displayName)} · ${esc(node.kind)}</h3><dl><dt>Connectivity</dt><dd>${esc(node.connectivity)}</dd><dt>Service health</dt><dd>${esc(node.health)}</dd><dt>Execution readiness</dt><dd>${esc(node.executionReadiness)}</dd><dt>Provisioning readiness</dt><dd>${esc(node.provisioningReadiness)}</dd><dt>Observations</dt><dd>${node.observationsStale?'Stale — re-detect before relying on these facts':'Current'}</dd></dl>${busy?'<p class="sub">Actions are disabled while an operation is pending/running or current state is unavailable.</p>':''}`;
+ for(const capability of node.capabilities){
+  const state=capability.state,actions=capability.availableActions.filter(a=>nodeActions[a]);
+  const latest=nodeCommands.filter(c=>c.request.nodeId===node.id&&c.request.capabilityId===capability.definition.id).at(-1);
+  const section=document.createElement('section');
+  section.innerHTML=`<h3>${esc(capability.definition.displayName)}</h3><dl><dt>Installation</dt><dd>${esc(state.installation)} · version ${esc(state.detectedVersion||'unknown')}</dd><dt>Update</dt><dd>${esc(state.update)}</dd><dt>Health</dt><dd>${esc(state.health)}</dd>${state.authentication!=null?`<dt>Authentication</dt><dd>${esc(state.authentication)}</dd>`:''}${state.configuration!=null?`<dt>Configuration</dt><dd>${esc(state.configuration)}</dd>`:''}<dt>Detected</dt><dd>${esc(state.detectedAtUtc?new Date(state.detectedAtUtc).toLocaleString():'Not detected')}</dd><dt>Operation</dt><dd>${esc(state.operation.state)} ${esc(state.operation.action)} ${esc(state.operation.diagnosticCode)}</dd>${state.diagnosticCode?`<dt>Diagnostic</dt><dd>${esc(state.diagnosticCode)}</dd>`:''}</dl>${latest?`<details><summary>Advanced · last provisioning command</summary><p class="operation">Last command: ${esc(latest.request.action)} · ${esc(latest.status)} · ${esc(latest.diagnostic)}${latest.failureDetail?' · '+esc(latest.failureDetail.description):''}<br>ID ${esc(latest.id)} · queued ${esc(new Date(latest.createdAtUtc).toLocaleString())}${latest.startedAtUtc?' · started '+esc(new Date(latest.startedAtUtc).toLocaleString()):''}${latest.deadlineUtc?' · deadline '+esc(new Date(latest.deadlineUtc).toLocaleString()):''}${latest.completedAtUtc?' · completed '+esc(new Date(latest.completedAtUtc).toLocaleString()):''}</p></details>`:''}`;
+  for(const command of nodeCommands.filter(c=>c.request.nodeId===node.id&&c.request.capabilityId===capability.definition.id&&c.publicIdentity).slice(-30)){const identity=document.createElement('div');identity.innerHTML=`<p class="sub">Public SSH identity</p><pre>${esc(command.publicIdentity.publicKey)}\n${esc(command.publicIdentity.fingerprint)}</pre>`;section.append(identity)}
+  if(latest?.loginInstructions&&latest.status==='Running'&&new Date(latest.deadlineUtc)>new Date()){
+   const guide=document.createElement('p');guide.className='operation';
+   const isGitHub=latest.loginInstructions.verificationUri==='https://github.com/login/device';const loginUrl=isGitHub?'https://github.com/login/device':'https://auth.openai.com/codex/device';
+   guide.innerHTML=`Sign in at <a href="${loginUrl}" target="_blank" rel="noopener noreferrer">${isGitHub?'GitHub':'OpenAI'} device login</a> and enter <strong>${esc(latest.loginInstructions.userCode)}</strong>. Only approve the login you started for this node. ${isGitHub?'Authentication is stored in the Server managed GitHub CLI configuration.':'Enable device code login in ChatGPT security settings or workspace permissions if required.'} Waiting for verification; expires by ${esc(new Date(latest.deadlineUtc).toLocaleString())}.`;section.append(guide)
+  }
+  if(capability.definition.requiresAuthentication&&!capability.definition.supportedActions?.includes('prepareauthentication')&&!actions.includes('prepareauthentication')&&!actions.some(a=>a==='login'||a==='authenticate')){const note=document.createElement('p');note.className='sub';note.textContent='Remote login is not supported by this node API. Complete authentication in the node service account environment, then re-detect. No credentials are collected or displayed here.';section.append(note)}
+  const buttons=document.createElement('div');buttons.className='capability-actions';
+  function addAction(action,label){const button=document.createElement('button');button.className='button'+(nodeActions[action].destructive?' danger':'');button.textContent=label;button.disabled=busy;button.onclick=()=>runNodeAction(node.id,capability.definition.id,action);buttons.append(button)}
+  if(!actions.length){const note=document.createElement('p');note.className='sub';note.textContent='No actions are currently available for this capability.';section.append(note)}
+  for(const action of actions)addAction(action,nodeActions[action].label);
+  const retry=latest&&Object.keys(nodeActions).find(a=>nodeActions[a].command===latest.request.action);
+  if(latest&&['Failed','TimedOut','Cancelled'].includes(latest.status)&&actions.includes(retry))addAction(retry,'Retry '+nodeActions[retry].label);
+  section.append(buttons);$('node-detail').append(section);
+ }
+}
+async function loadNodes(){
+ if(!authenticated||nodesLoading||nodeSubmitting)return;nodesLoading=true;
+ try{const [inventory,commands]=await Promise.all([api('/api/v1/nodes'),api('/api/v1/provisioning/commands')]);const selected=$('node-select').value;nodes=inventory;nodeCommands=commands;nodeSnapshotValid=true;navigation.observe('nodes',nodes);$('node-select').innerHTML=nodes.map(n=>`<option value="${esc(n.id)}">${esc(n.displayName)} · ${esc(n.kind)} · ${esc(n.connectivity)}</option>`).join('');$('node-select').disabled=false;$('node-select').value=selected;selectContextNode()}
+ catch(e){if(e.name==='AbortError'||e.message==='Administration session ended.')return;navigation.observe('nodes',null);nodeSnapshotValid=false;renderNode();$('node-message').textContent='Cannot refresh provisioning state: '+e.message}
+ finally{nodesLoading=false}
+}
+async function runNodeAction(nodeId,capabilityId,action){
+ const context=navigation.capture();
+ const node=selectedNode(),spec=nodeActions[action],capability=node?.capabilities.find(c=>c.definition.id===capabilityId);
+ if(nodeSubmitting||!nodeSnapshotValid||nodesLoading||!spec||node?.id!==nodeId||!capability?.availableActions.includes(action)||node.provisioningReadiness==='busy'||nodeCommands.some(c=>c.request.nodeId===nodeId&&commandActive(c)))return;
+ if(spec.elevation&&!$('node-elevation').checked){$('node-message').textContent='Authorize elevation before launching this tool action. Node-local policy must also permit it.';return}
+ let repository=null;if(action==='verifyrepositoryaccess'){repository=prompt('GitHub repository to verify (owner/repository):');if(!repository)return;}
+ if(spec.destructive&&!confirm(action==='removesshkey'?'Remove the product SSH keypair? GitHub registrations must be removed separately.':action==='logout'&&capabilityId==='github-cli'?'Remove product-managed GitHub authentication on this node?':`${spec.label} ${capability.definition.displayName} on ${node.displayName}? This may prevent task execution.`))return;
+ nodeSubmitting=true;renderNode();$('node-message').textContent='Submitting '+spec.label+'…';
+ try{const command=await api('/api/v1/provisioning/commands',{method:'POST',body:JSON.stringify({nodeId,capabilityId,action:spec.command,timeoutSeconds:action==='login'?600:120,allowElevation:!!spec.elevation&&$('node-elevation').checked,...(repository?{repository}:{})})});nodeCommands.push(command);if(!navigation.isCurrent(context))return;$('node-message').textContent='Operation queued. Progress is refreshed automatically; command details are in advanced history.'}
+ catch(e){nodeSnapshotValid=false;if(!navigation.isCurrent(context))return;$('node-message').textContent='Action submission could not be confirmed: '+e.message+'. Refresh state before trying again.'}
+ finally{nodeSubmitting=false;renderNode();await loadNodes()}
+}
+$('node-select').onchange=()=>{const route=navigation.current();navigation.navigate(route.view,route.view==='workers'?$('node-select').value:'',{node:$('node-select').value})};$('refresh-nodes').onclick=loadNodes;

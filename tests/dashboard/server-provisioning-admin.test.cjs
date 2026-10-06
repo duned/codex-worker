@@ -2,8 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const start=html.indexOf('async function loadProvisioning');
 const actionStart=html.indexOf('async function runProvisioningCommandAction',start);
 const end=html.indexOf('\n',actionStart);
@@ -24,11 +23,11 @@ function setup(){
   {id:'expired-command',request:{nodeId:'server',capabilityId:'git',action:'Install'},status:'Running',diagnostic:'Executing',createdAtUtc:'2026-10-01T00:02:00Z',deadlineUtc:'2000-01-01T00:00:00Z'},
   {id:'failed-command',request:{nodeId:'server',capabilityId:'github-cli',action:'Install'},status:'Failed',diagnostic:'ProcessFailed',failureDetail:{code:'ElevationDenied',description:'Non-interactive sudo authorization was denied.'},createdAtUtc:'2026-10-01T00:03:00Z'}
  ];
- const context=vm.createContext({$,authenticated:true,provisioningActionPending:false,confirm:()=>confirmation,Date,encodeURIComponent,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,authenticated:true,provisioningActionPending:false,confirm:()=>confirmation,Date,encodeURIComponent,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
-  loadNodes:async()=>{},api:async(path,options)=>{calls.push({path,options});if(options)return {};if(path==='/api/v1/provisioning')return [plan];if(path==='/api/v1/provisioning/commands')return commands;throw Error('unexpected endpoint')}});
+  selectedNode:()=>null,loadNodes:async()=>{},api:async(path,options)=>{calls.push({path,options});if(options)return {};if(path==='/api/v1/provisioning')return [plan];if(path==='/api/v1/provisioning/commands')return commands;throw Error('unexpected endpoint')}});
  vm.runInContext(source,context);
- return {$,calls,plan,commands,run:code=>vm.runInContext(code,context),setConfirmation:value=>confirmation=value};
+ return {$,calls,plan,commands,context,run:code=>vm.runInContext(code,context),setConfirmation:value=>confirmation=value};
 }
 
 test('history combines legacy plans and typed commands while offering only applicable lifecycle actions',async()=>{
@@ -54,4 +53,9 @@ test('queued cancellation uses the API and reconciliation requires explicit quie
  s.setConfirmation(true);await s.$('provisioning').children[0].onclick();
  assert.equal(s.calls.at(-3).path,'/api/v1/provisioning/commands/expired-command/reconcile?nodeQuiescent=true');
  assert.equal(s.calls.at(-3).options.method,'POST');
+});
+
+test('contextual advanced history filters plans and commands to the selected node',async()=>{
+ const s=setup();s.context.selectedNode=()=>({id:'worker'});await s.run('loadProvisioning()');
+ assert.match(s.$('provisioning').innerHTML,/legacy-plan/);assert.match(s.$('provisioning').innerHTML,/pending-command/);assert.doesNotMatch(s.$('provisioning').innerHTML,/expired-command|failed-command/);
 });

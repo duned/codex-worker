@@ -2,9 +2,8 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
 
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const start=html.indexOf('async function loadWorkerAdministration');
 const end=html.indexOf('async function loadProjects',start);
 const source=html.slice(start,end);
@@ -17,7 +16,7 @@ function setup(){
  const calls=[];
  const worker={workerId:'worker-id',schedulingPolicy:'Draining',activeAssignments:2,authenticationCredentialStatus:'revoked',authenticationCredentialRevokedAtUtc:'2026-09-01T00:00:00Z'};
  const credentialDelivery={status:'active'};
- const context=vm.createContext({$,document:{querySelectorAll:selector=>selector==='[data-worker-policy]'?policyButtons:revokeButtons},
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,document:{querySelectorAll:selector=>selector==='[data-worker-policy]'?policyButtons:revokeButtons},
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});if(path.endsWith('/credential-access'))return credentialDelivery;return worker},
   loadOverview:async()=>{},loadWorker:async()=>{}});
@@ -45,4 +44,13 @@ test('policy and revocation controls call their separate management endpoints',a
  await s.revokeButtons[1].onclick();
  assert.ok(s.calls.some(call=>call.path==='/api/v1/workers/worker-id/authentication/revoke'));
  assert.ok(s.calls.some(call=>call.path==='/api/v1/workers/worker-id/credential-access/revoke'));
+});
+
+test('a completed policy mutation cannot publish its old Worker after navigation changes context',async()=>{
+ const s=setup();let current=true,resolveMutation;
+ s.context.navigation={...s.context.navigation,capture:()=>0,isCurrent:()=>current};
+ s.context.api=()=>new Promise(resolve=>{resolveMutation=resolve});
+ let reloads=0;s.context.loadWorkerAdministration=async()=>reloads++;
+ const pending=s.context.updateWorkerPolicy('old-worker','Draining');current=false;resolveMutation({});await pending;
+ assert.equal(reloads,0);
 });

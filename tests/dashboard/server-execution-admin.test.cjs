@@ -2,8 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const start=html.indexOf('let executionOffset=0;');
 const end=html.indexOf('async function loadOverview()',start);
 const source=html.slice(start,end);
@@ -22,11 +21,11 @@ function setup(){
   {id:'uncertain-id',projectId:'project-id',state:'Failed',recoveryState:'LeaseExpiredUncertain',workReference:{type:'github-issue',id:'8'},createdAtUtc:'2026-10-01T00:00:00Z',attemptNumber:1}
  ];
  const detail={...items[0],lease:{generation:1,state:'Released'},retryOfExecutionId:null};
- const context=vm.createContext({$,authenticated:true,confirm:()=>true,prompt:()=>promptAnswers.shift(),Date,URLSearchParams,encodeURIComponent,JSON,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,authenticated:true,confirm:()=>true,prompt:()=>promptAnswers.shift(),Date,URLSearchParams,encodeURIComponent,JSON,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});if(options)return {execution:detail,retry:null};if(path.startsWith('/api/v1/executions?'))return items;if(path.startsWith('/api/v1/executions/'))return detail;throw Error('unexpected endpoint '+path)}});
  vm.runInContext(source,context);
- return {$,calls,items,run:code=>vm.runInContext(code,context),answer:values=>{promptAnswers=values}};
+ return {$,calls,items,context,run:code=>vm.runInContext(code,context),answer:values=>{promptAnswers=values}};
 }
 
 test('execution list applies bounded filters and exposes details and only valid queue/recovery actions',async()=>{
@@ -35,7 +34,7 @@ test('execution list applies bounded filters and exposes details and only valid 
  assert.match(s.calls[0].path,/limit=50/);assert.match(s.calls[0].path,/projectId=project-id/);assert.match(s.calls[0].path,/state=Queued/);assert.match(s.calls[0].path,/workId=7/);
  assert.match(s.$('executions').innerHTML,/Cancel queued/);assert.match(s.$('executions').innerHTML,/Reconcile uncertain/);
  assert.deepEqual(s.$('executions').children.map(button=>Object.keys(button.dataset)[0]),['executionDetail','executionCancel','executionDetail','executionReconcile']);
- await s.$('executions').children[0].onclick();assert.equal(s.calls[1].path,'/api/v1/executions/queued-id');assert.match(s.$('execution-detail').innerHTML,/lease/);
+ let navigated; s.context.navigation={...s.context.navigation,navigate:(...args)=>{navigated=args}};await s.$('executions').children[0].onclick();assert.equal(navigated[0],'executions');assert.equal(navigated[1],'queued-id');await s.run("showExecutionDetail('queued-id')");assert.equal(s.calls[1].path,'/api/v1/executions/queued-id');assert.match(s.$('execution-detail').innerHTML,/lease/);
 });
 
 test('queued cancellation and uncertain reconciliation send explicit operator evidence',async()=>{

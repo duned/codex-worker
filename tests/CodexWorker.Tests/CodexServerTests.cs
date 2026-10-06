@@ -1316,6 +1316,11 @@ public sealed class CodexServerTests
             Assert.Contains("/api/v1/events/stream", await dashboardResponse.Content.ReadAsStringAsync());
             Assert.Contains("Worker details", await dashboardResponse.Content.ReadAsStringAsync());
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
+            foreach (var view in new[] { "home", "projects", "workers", "executions", "settings" })
+                Assert.Contains($"href=\"#/{view}\"", dashboard);
+            Assert.DoesNotContain("<!-- dashboard-scripts -->", dashboard);
+            foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues" })
+                Assert.DoesNotContain($"/* dashboard-{module} */", dashboard);
             Assert.Contains("Node provisioning", dashboard);
             Assert.Contains("/api/v1/nodes", dashboard);
             Assert.Contains("/api/v1/provisioning/commands", dashboard);

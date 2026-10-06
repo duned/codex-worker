@@ -1,8 +1,6 @@
 const vm=require('node:vm');
 const assert=require('node:assert/strict');
-const fs=require('node:fs');
-const path=require('node:path');
-const html=fs.readFileSync(path.join(__dirname,'../../src/CodexServer/dashboard.html'),'utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const streamStart=html.indexOf('// One owner per page.');
 const streamEnd=html.indexOf('function editProject(',streamStart);
 const source=html.slice(streamStart,streamEnd);
@@ -15,7 +13,7 @@ function setup({realRenderer=false}={}){
   return elements.get(id);
  };
  const requests=[],timers=new Map(),events={},updates=[];let timerId=0,active=0,maximum=0;
- const context=vm.createContext({$,authenticated:false,workers:[],AbortController,TextDecoder,Date,JSON,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,authenticated:false,workers:[],AbortController,TextDecoder,Date,JSON,
   document:{querySelectorAll:()=>[]},
   window:{addEventListener:(name,handler)=>events[name]=handler},
   setTimeout:handler=>{const id=++timerId;timers.set(id,handler);return id},clearTimeout:id=>timers.delete(id),

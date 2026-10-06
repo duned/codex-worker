@@ -2,8 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const start=html.indexOf('function populateGithubProjects()');
 const end=html.indexOf('async function loadOverview()',start);
 const source=html.slice(start,end);
@@ -26,7 +25,7 @@ function setup(apiHandler){
  const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id)};
  const calls=[],confirmMessages=[],answers=[];
  const projects=[{id:'project-id',name:'Project',repository:'team/project',issueReadyLabel:'ready',issueBlockedLabel:'blocked'}];
- const context=vm.createContext({$,projects,authenticated:true,confirm:message=>{confirmMessages.push(message);return true},prompt:()=>answers.shift(),
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,projects,authenticated:true,confirm:message=>{confirmMessages.push(message);return true},prompt:()=>answers.shift(),
   URLSearchParams,encodeURIComponent,Number,JSON,console,
   esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
   api:async(path,options)=>{calls.push({path,options});return apiHandler(path,options,calls)}});

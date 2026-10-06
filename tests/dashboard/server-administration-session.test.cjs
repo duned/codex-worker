@@ -2,15 +2,14 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
-const fs=require('node:fs');
-const html=fs.readFileSync('src/CodexServer/dashboard.html','utf8');
+const html=require('./server-dashboard-source.cjs').readDashboard();
 const source=html.slice(html.indexOf('// Administration requests'),html.indexOf('function renderWorkers('));
 const binding=html.slice(html.indexOf("$('unlock').onclick="),html.indexOf("$('new-project').onclick="));
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve()};
 function setup(){
  const elements=new Map(),$=id=>{if(!elements.has(id))elements.set(id,{value:'',hidden:false,listeners:{},addEventListener(name,fn){this.listeners[name]=fn},click(){return this.onclick()}});return elements.get(id)};
  const requests=[],timers=new Map();let timerId=0,streamStarts=0,streamStops=0;
- const context=vm.createContext({$,authenticated:false,workers:[],projects:[],Headers,AbortController,AbortSignal,Date,Set,Math,
+ const context=vm.createContext({...require('./server-dashboard-source.cjs').dashboardDependencies(),$,authenticated:false,workers:[],projects:[],Headers,AbortController,AbortSignal,Date,Set,Math,
   document:{querySelectorAll:()=>[]},stopWorkerStream:()=>streamStops++,streamWorkers:()=>streamStarts++,
   setTimeout:fn=>{const id=++timerId;timers.set(id,fn);return id},clearTimeout:id=>timers.delete(id),
   ...Object.fromEntries(['loadProjects','loadOverview','loadExecutions','loadNodes','loadProvisioning','loadCredentials'].map(name=>[name,()=>{}])),
