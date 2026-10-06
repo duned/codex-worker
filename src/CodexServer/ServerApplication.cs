@@ -530,7 +530,7 @@ public static class ServerApplication
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
-            await StreamWorkerUpdatesAsync(context, store);
+            await StreamWorkerUpdatesAsync(context, store, app.Lifetime.ApplicationStopping);
             return Results.Empty;
         });
         app.MapGet("/api/v1/projects", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
@@ -859,8 +859,13 @@ public static class ServerApplication
         return reader.ReadToEnd();
     }
 
-    private static async Task StreamWorkerUpdatesAsync(HttpContext context, IRegistryStore store)
+    internal static async Task StreamWorkerUpdatesAsync(HttpContext context, IRegistryStore store,
+        CancellationToken applicationStopping)
     {
+        // Kestrel waits for active requests during graceful shutdown; RequestAborted
+        // alone does not end a connected stream when the host begins stopping.
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, applicationStopping);
+        var cancellationToken = lifetime.Token;
         context.Response.ContentType = "text/event-stream";
         context.Response.Headers["Cache-Control"] = "no-cache";
         context.Response.Headers["X-Accel-Buffering"] = "no";
@@ -869,14 +874,14 @@ public static class ServerApplication
         {
             do
             {
-                var workers = await store.GetWorkersAsync(context.RequestAborted);
-                await context.Response.WriteAsync("event: workers\ndata: ", context.RequestAborted);
-                await context.Response.WriteAsync(JsonSerializer.Serialize(workers), context.RequestAborted);
-                await context.Response.WriteAsync("\n\n", context.RequestAborted);
-                await context.Response.Body.FlushAsync(context.RequestAborted);
-            } while (await timer.WaitForNextTickAsync(context.RequestAborted));
+                var workers = await store.GetWorkersAsync(cancellationToken);
+                await context.Response.WriteAsync("event: workers\ndata: ", cancellationToken);
+                await context.Response.WriteAsync(JsonSerializer.Serialize(workers), cancellationToken);
+                await context.Response.WriteAsync("\n\n", cancellationToken);
+                await context.Response.Body.FlushAsync(cancellationToken);
+            } while (await timer.WaitForNextTickAsync(cancellationToken));
         }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
     private static IResult WorkerUnauthorized() => Results.Json(new

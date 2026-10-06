@@ -243,3 +243,33 @@ Cleanup: disposable secrets/provider tokens revoked; rules restored; retained
 recovery state handed to owner; no current deployment changes:
 Reviewer / unresolved failures / overall acceptance (UNRUN until complete):
 ```
+
+## Server restart with active dashboard streams
+
+This is a manual packaged-service check on an authorized deployment with Nginx
+and a remote managed Worker. The automated `ServerEventStreamTests` use a local
+Kestrel host; they do not establish real VM, systemd, proxy or Worker acceptance.
+Record this manual check as UNRUN until performed.
+
+1. Open several authenticated Server dashboards (for example, seven tabs), and
+   confirm each shows live Worker updates. Keep them open throughout the restart.
+   Use the dashboard login; do not put management credentials in shell arguments,
+   captured browser requests or evidence.
+2. Record the UTC start time and run `sudo systemctl restart codex-server.service`.
+   Inspect `sudo journalctl -u codex-server.service --since '<UTC start time>'`
+   and `sudo systemctl show codex-server.service -p ActiveState -p SubState -p Result`.
+   Confirm the old process stopped cleanly well before the packaged
+   `TimeoutStopSec=30`, with no stop timeout, SIGKILL or timeout result. Record
+   shutdown/start timestamps and redacted results; do not increase the timeout.
+3. Confirm the service is active/running with `Result=success`, and check both
+   the loopback Server and the deployed HTTPS `/readyz` endpoint return HTTP 200
+   with ready status. Confirm dashboard live updates resume after reconnection.
+4. Confirm the remote Worker reconnects and its heartbeat/availability becomes
+   online in the Server. A transient disconnect or proxy 502 during the restart
+   may occur; verify subsequent communication recovers without enrolling again
+   or granting scheduling authority from cached configuration. Record Worker ID,
+   recovery timestamps and redacted status, without tokens or raw process logs.
+
+If shutdown remains slow, inspect the remaining requests, hosted operations and
+service journal separately. Stream cancellation does not establish that every
+possible provisioning or external-service operation will stop promptly.
