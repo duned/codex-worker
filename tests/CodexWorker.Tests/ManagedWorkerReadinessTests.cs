@@ -508,7 +508,8 @@ public sealed class ManagedWorkerReadinessTests
                 Assert.DoesNotContain("Server execution", message, StringComparison.Ordinal);
             });
             Assert.Equal(managed.Length, managed.Distinct(StringComparer.Ordinal).Count());
-            Assert.DoesNotContain("Managed ·", output.ToString(), StringComparison.Ordinal);
+            lock (output)
+                Assert.DoesNotContain("Managed ·", output.ToString(), StringComparison.Ordinal);
             if (scenario == "materialization")
             {
                 Assert.DoesNotContain(managed, message => message.Contains("project ready", StringComparison.Ordinal));

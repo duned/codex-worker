@@ -13,6 +13,11 @@ function openProject(p){
  projectConflict=null;$('reload-project').hidden=true;projectDialogGeneration++;projectDraft=p||null;projectReviewed=null;repositoryChoices=[];repositoryNextPage=null;
  $('project-form').reset();$('project-id').value=p?.id||'';$('revision').value=p?.revision||'';
  for(const [id,value] of Object.entries({name:p?.name,repository:p?.repository,branch:p?.defaultBranch,description:p?.description,'issue-ready-label':p?.issueReadyLabel,'issue-blocked-label':p?.issueBlockedLabel}))$(id).value=value||'';
+ const discovery=p?.automaticDiscovery;
+ $('discovery-enabled').checked=discovery?.enabled===true;
+ $('discovery-interval').value=discovery?.intervalSeconds??300;
+ $('discovery-page-size').value=discovery?.pageSize??25;
+ $('discovery-deadline').value=discovery?.deadlineSeconds??120;
  $('dialog-title').textContent=p?'Edit project':'Create project';$('manual-repository').open=!!p;
  $('repository-selection').innerHTML='<option value="">Choose a repository</option>';$('more-repositories').hidden=true;$('repository-discovery-message').textContent='';
  $('requirements').innerHTML='';for(const requirement of p?.requirements||[])addProjectRequirement(requirement);
@@ -27,9 +32,11 @@ function addProjectRequirement(requirement={type:'runtime',name:'',version:null,
  row.querySelector('button').onclick=()=>{row.remove();invalidateProjectReview()};$('requirements').appendChild(row);invalidateProjectReview();
 }
 function projectDefinition(){
+ const discoveryEnabled=$('discovery-enabled').checked;
  return {name:$('name').value.trim(),repository:$('repository').value.trim(),defaultBranch:$('branch').value.trim(),description:$('description').value.trim(),
  requirements:[...$('requirements').querySelectorAll('.project-requirement')].map(row=>Object.fromEntries(['type','name','version','scope'].map(field=>[field,row.querySelector(`[data-field="${field}"]`).value.trim()||null]))),
- issueReadyLabel:$('issue-ready-label').value.trim()||null,issueBlockedLabel:$('issue-blocked-label').value.trim()||null,automaticDiscovery:projectDraft?.automaticDiscovery||null};
+ issueReadyLabel:$('issue-ready-label').value.trim()||null,issueBlockedLabel:$('issue-blocked-label').value.trim()||null,
+ automaticDiscovery:discoveryEnabled||projectDraft?.automaticDiscovery?{enabled:discoveryEnabled,intervalSeconds:Number($('discovery-interval').value),pageSize:Number($('discovery-page-size').value),deadlineSeconds:Number($('discovery-deadline').value)}:null};
 }
 async function discoverProjectRepositories(page=1){
  const generation=projectDialogGeneration;$('repository-discovery-message').textContent='Reading repositories using Server GitHub authentication…';
@@ -53,8 +60,9 @@ async function reviewProject(){
   'Description: '+(definition.description||'None'),
   'Worker requirements: '+(definition.requirements.length?definition.requirements.map(r=>r.type+' · '+r.name+(r.version?' '+r.version:'')+(r.scope?' for '+r.scope:'')).join('; '):'None added'),
   'Issue ready label: '+(definition.issueReadyLabel||'None'),'Issue blocked label: '+(definition.issueBlockedLabel||'None'),
-  ...(definition.automaticDiscovery?['Existing discovery policy: every '+definition.automaticDiscovery.intervalSeconds+' seconds; page size '+definition.automaticDiscovery.pageSize+'; deadline '+definition.automaticDiscovery.deadlineSeconds+' seconds.']:[])
- ].join('\n');$('project-review-access').textContent=result.diagnostic+' Lifecycle policy: '+(projectDraft?.enabled===false?'disabled':'enabled')+'. Automatic discovery: '+(definition.automaticDiscovery?.enabled?'enabled under the existing policy':'disabled')+'.';showProjectStep(3);$('save-project').disabled=false;
+  'Automatic Issue discovery: '+(definition.automaticDiscovery?.enabled?'enabled':'disabled'),
+  ...(definition.automaticDiscovery?['Discovery interval: '+definition.automaticDiscovery.intervalSeconds+' seconds; maximum page size: '+definition.automaticDiscovery.pageSize+'; cycle deadline: '+definition.automaticDiscovery.deadlineSeconds+' seconds.']:[])
+ ].join('\n');$('project-review-access').textContent=result.diagnostic+' Lifecycle policy: '+(projectDraft?.enabled===false?'disabled':'enabled')+'. Automatic discovery: '+(definition.automaticDiscovery?.enabled?'enabled; eligible Issues can be queued automatically':'disabled')+'. Execution still requires an eligible authorized Worker and available capacity.';showProjectStep(3);$('save-project').disabled=false;
  }catch(e){if(generation===projectDialogGeneration)projectError(e.message)}finally{projectBusy=false}
 }
 function sameProjectDefinition(p,d){

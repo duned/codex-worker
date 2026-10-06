@@ -25,6 +25,9 @@ administration session. Do not disable certificate checks or modify operator VMs
 4. Verify and review a valid definition, then change a field. Saving must require a
    fresh review. Confirm the review shows lifecycle and automatic-discovery policy,
    requirements and labels, and keeps Worker authentication and push access separate.
+   Automatic discovery starts off for new projects. Enable it deliberately and review
+   the polling interval; page size and cycle deadline are available under advanced
+   tuning. The Server remains authoritative for defaults and bounds.
 5. Save with no registered Workers. Confirm the result offers Add / associate Worker
    and explains remaining preparation. Confirm no Issue labels or queue entries change.
    New definitions retain the established enabled lifecycle default, explicitly shown
@@ -39,5 +42,33 @@ administration session. Do not disable certificate checks or modify operator VMs
    confirm no mutation repeats. Reloading the browser loses the in-memory draft; refresh
    Projects to recover persisted definitions before creating another project. Registry
    uniqueness continues to prevent duplicate names, identities and repositories.
+
+## Manual automatic-discovery acceptance: codex-worker-test
+
+Use an authorized administration session and the existing disposable/test project. Do
+not change any live project as part of automated validation.
+
+1. Open Projects → `codex-worker-test` and inspect Automatic Issue discovery, central
+   project lifecycle, the polling interval, and configured ready/blocked labels. A
+   missing or legacy policy is shown as disabled. Dashboard inspection itself must
+   not enqueue work.
+2. Confirm the Server service account can read the repository in Settings → Server
+   GitHub connection, and confirm the project's configured ready label matches the
+   intended test Issues. Inspect blocked-by dependencies as well; setting discovery
+   does not alter GitHub labels or bypass eligibility.
+3. Edit the test project, enable discovery, review the opt-in policy and interval,
+   then save. Wait at least one configured interval for the normal Server cycle. One
+   bounded page is read per due cycle, so later pages may require more intervals.
+4. Inspect project executions and Issue eligibility. Distinguish an eligible Issue
+   that has not yet been discovered (the dashboard has no last-cycle count), an Issue
+   rejected by ready-label/dependency rules, and a queued request waiting for an
+   eligible authorized Worker with capacity/readiness. Automatic discovery does not
+   retry terminal requests. Execution still follows normal Worker admission and
+   assignment.
+5. If no eligible requests appear, check Server repository read access/authentication,
+   the ready label and open blockers, project lifecycle, and the queue. Explicit
+   enqueue and queued eligibility refresh remain available in Issue administration;
+   they do not bypass admission. Disabling discovery pauses future discovery cycles
+   without canceling existing queued requests or active leases.
 
 Live provider and manual HTTPS checks are not part of the deterministic test suite.

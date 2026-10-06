@@ -1905,6 +1905,28 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public void AutomaticDiscoveryDefaultsAndBoundsAreValidatedEvenWhenDisabled()
+    {
+        var defaults = new AutomaticIssueDiscovery();
+        Assert.False(defaults.Enabled);
+        Assert.Equal(300, defaults.IntervalSeconds);
+        Assert.Equal(25, defaults.PageSize);
+        Assert.Equal(120, defaults.DeadlineSeconds);
+
+        static CentralProjectDefinition Definition(AutomaticIssueDiscovery policy) =>
+            new("Compiler", "team/compiler", "main", "", [], AutomaticDiscovery: policy);
+
+        Assert.Null(CentralProjectValidation.Error(Definition(new(false, 30, 1, 10))));
+        Assert.Null(CentralProjectValidation.Error(Definition(new(false, 86400, 100, 120))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 29, 25, 120))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 86401, 25, 120))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 300, 0, 120))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 300, 101, 120))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 300, 25, 9))));
+        Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 300, 25, 121))));
+    }
+
+    [Fact]
     public void WorkerEligibilityMatchesAllRequirementsAndExplainsMissingOrIncompatibleCapabilities()
     {
         ProjectRequirement[] requirements =

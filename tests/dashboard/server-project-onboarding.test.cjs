@@ -47,7 +47,24 @@ test('edit preserves advanced policies and lifecycle labels and submits the expe
  const project={...stored,revision:8,issueReadyLabel:'approved',issueBlockedLabel:'blocked',automaticDiscovery:{enabled:true,intervalSeconds:120}};
  const s=setup(async(url,options)=>url.endsWith('/verify')?checked:{...project,...JSON.parse(options.body).definition,revision:9},[project]);
  s.run('editProject("project")');s.$('description').value='Updated';await s.run('reviewProject()');await s.run('submitProject({preventDefault(){}})');
- const request=JSON.parse(s.calls[1].options.body);assert.equal(request.expectedRevision,8);assert.equal(request.definition.issueReadyLabel,'approved');assert.deepEqual(request.definition.automaticDiscovery,project.automaticDiscovery);
+ const request=JSON.parse(s.calls[1].options.body);assert.equal(request.expectedRevision,8);assert.equal(request.definition.issueReadyLabel,'approved');assert.deepEqual(request.definition.automaticDiscovery,{enabled:true,intervalSeconds:120,pageSize:25,deadlineSeconds:120});
+});
+test('discovery is opt-in with server defaults and typed settings persist through review',async()=>{
+ const s=setup(async()=>checked);s.run('newProject()');fill(s);
+ assert.equal(s.definition().automaticDiscovery,null);
+ s.$('discovery-enabled').checked=true;
+ assert.deepEqual(s.definition().automaticDiscovery,{enabled:true,intervalSeconds:300,pageSize:25,deadlineSeconds:120});
+ s.$('discovery-interval').value='86400';s.$('discovery-page-size').value='100';s.$('discovery-deadline').value='10';
+ assert.deepEqual(s.definition().automaticDiscovery,{enabled:true,intervalSeconds:86400,pageSize:100,deadlineSeconds:10});
+ await s.run('reviewProject()');assert.match(s.$('project-review-definition').textContent,/Automatic Issue discovery: enabled/);assert.match(s.$('project-review-definition').textContent,/86400 seconds/);assert.match(s.$('project-review-access').textContent,/eligible Issues can be queued automatically/);assert.match(s.$('project-review-access').textContent,/eligible authorized Worker and available capacity/);
+ s.$('discovery-enabled').checked=false;assert.equal(s.definition().automaticDiscovery,null);
+});
+test('editing disabled discovery policy preserves its tuning while allowing an explicit disable',()=>{
+ const project={...stored,automaticDiscovery:{enabled:false,intervalSeconds:600,pageSize:10,deadlineSeconds:30}};
+ const s=setup(async()=>checked,[project]);s.run('editProject("project")');
+ assert.deepEqual(s.definition().automaticDiscovery,project.automaticDiscovery);
+ s.$('discovery-enabled').checked=true;assert.deepEqual(s.definition().automaticDiscovery,{...project.automaticDiscovery,enabled:true});
+ s.$('discovery-enabled').checked=false;assert.deepEqual(s.definition().automaticDiscovery,project.automaticDiscovery);
 });
 test('typed requirements retain versions and authentication scope',()=>{
  const s=setup(async()=>{});s.run('newProject()');fill(s);
