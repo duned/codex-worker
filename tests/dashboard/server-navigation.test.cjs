@@ -34,7 +34,7 @@ function setup(hash='#/home'){
  const github={definition:{id:'github-cli',displayName:'GitHub CLI'},state:{installation:'Installed',authentication:'Satisfied',health:'Healthy',operation:{state:'Idle'}},availableActions:[]};
  const server={id:'server',kind:'server',displayName:'Server',observationsStale:false,capabilities:[github],connectivity:'connected',health:'healthy'};
  const node={id:'worker-a',kind:'worker',displayName:'Worker A',connectivity:'connected',executionReadiness:'ready',observationsStale:false,capabilities:[]};
- const data={workers:[],projects:[],nodes:[{...server,capabilities:[{...github,state:{...github.state,authentication:'Required'}}]}],executions:[],commands:[]};
+ const data={workers:[],projects:[],nodes:[{...server,capabilities:[{...github,state:{...github.state,authentication:'Required'}}]}],executions:[],commands:[],githubCommands:[]};
  const held=new Map();let rejectNodes=false,streamRead=null;
  const window={location:{hash},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
  const context=vm.createContext({window,document:{getElementById:$,querySelectorAll:selector=>selector==='[data-view]'?views:selector==='dialog'?[...elements.values()].filter(el=>el.id?.endsWith('dialog')):[],createElement:()=>new Element()},
@@ -56,7 +56,7 @@ function setup(hash='#/home'){
    else if(path==='/api/v1/projects')body=data.projects;
    else if(path==='/api/v1/workers')body=data.workers;
    else if(path==='/api/v1/nodes')body=data.nodes;
-   else if(path==='/api/v1/nodes/server/github-connection')body={commands:[],provisioningEnabled:true,elevationAllowed:false};
+   else if(path==='/api/v1/nodes/server/github-connection')body={commands:data.githubCommands,provisioningEnabled:true,elevationAllowed:false};
    else if(path==='/api/v1/provisioning/commands')body=options.method?{}:data.commands;
    else if(path.includes('/diagnostics'))body={projects:[],reasons:[],configurationSynchronization:'Current'};
    else if(path.includes('/credential-access'))body={status:'Authorized'};
@@ -123,8 +123,8 @@ test('a delayed detail response or failure cannot overwrite a new resource conte
 
 test('selected Server and Worker provisioning stays contextual and navigation rejects malformed fragments',async()=>{
  const s=setup();s.configured();await s.flush();
- await s.route('#/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('github-connection-panel').scrolled,true);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
- await s.route('#/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
+ await s.route('#/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('worker-authentication-guidance').hidden,true);assert.equal(s.$('github-connection-panel').scrolled,true);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
+ await s.route('#/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.equal(s.$('worker-authentication-guidance').hidden,false);assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
  await s.route('#/workers/%invalid');assert.equal(s.$('view-title').textContent,'Home');
  await s.emit('pagehide');
 });
@@ -207,5 +207,46 @@ test('a delayed overview snapshot cannot replace fresher Worker stream observati
  await s.workersEvent([{...s.worker,displayName:'Fresh Worker observation'}]);
  pending.resolve({ok:true,status:200,json:async()=>[{...s.worker,displayName:'Old HTTP observation'}]});await s.flush();
  assert.match(s.$('workers').innerHTML,/Fresh Worker observation/);assert.doesNotMatch(s.$('workers').innerHTML,/Old HTTP/);
+ await s.emit('pagehide');
+});
+
+
+test('Home and guided Server connection agree on pending, failed and recovered authentication',async()=>{
+ const s=setup();s.configured();await s.flush();
+ const command={id:'login',request:{nodeId:'server',capabilityId:'github-cli',action:'Login'},createdAtUtc:'2026-01-01T00:00:00Z',diagnostic:'Operation failed'};
+ for(const status of ['Pending','Running','Failed','TimedOut']){
+  s.data.githubCommands=[{...command,status,deadlineUtc:'2026-01-01T00:01:00Z'}];await s.poll();
+  assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,2,status);
+  assert.ok(!s.$('github-connection').children.some(e=>e.textContent.startsWith('Connected')),status);
+ }
+ s.data.githubCommands=[{...command,status:'Succeeded'}];await s.poll();
+ assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,3);
+ assert.ok(s.$('github-connection').children.some(e=>e.textContent.startsWith('Connected')));
+ s.github.state.operation={state:'Running',action:'checkauthentication'};await s.poll();
+ assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,2);
+ assert.ok(!s.$('github-connection').children.some(e=>e.textContent.startsWith('Connected')));
+ await s.emit('pagehide');
+});
+
+test('leaving Settings clears Server connection consent before returning',async()=>{
+ const s=setup('#/settings');await s.flush();
+ s.$('github-provisioning-consent').checked=true;s.$('github-elevation-consent').checked=true;
+ await s.route('#/workers');await s.route('#/settings');
+ assert.equal(s.$('github-provisioning-consent').checked,false);
+ assert.equal(s.$('github-elevation-consent').checked,false);
+ assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
+ await s.emit('pagehide');
+});
+
+test('Worker-first onboarding remains resumable without a project or scheduling activation',async()=>{
+ const s=setup();await s.flush();
+ s.data.workers=[{...s.worker,schedulingPolicy:'Disabled'}];s.data.nodes.push(s.node);
+ await s.workersEvent(s.data.workers);await s.poll();
+ assert.equal((s.$('home-next').innerHTML.match(/>Complete</g)||[]).length,1);
+ assert.match(s.$('home-next').innerHTML,/Create a project/);
+ assert.match(s.$('home-next').innerHTML,/scheduling Disabled/);
+ await s.route('#/workers/worker-a');
+ assert.match(s.$('worker-detail').innerHTML,/No central project exists/);
+ assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
  await s.emit('pagehide');
 });

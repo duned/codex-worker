@@ -153,3 +153,15 @@ test('challenge deadline clears active display without waiting for polling',()=>
  const s=connectionSetup();s.connection.commands=[s.login()];s.run('renderNode()');assert.match(s.connectionText(),/ABCD-1234/);assert.ok(s.timer);
  const callback=s.timer.callback;s.clock.now=Date.parse('2030-01-01T00:00:00Z');callback();assert.doesNotMatch(s.connectionText(),/ABCD-1234/);assert.match(s.connectionText(),/deadline expired/);assert.equal(s.timer,null);
 });
+
+
+test('contextual preparation retains active operations ahead of newer terminal reports',()=>{
+ const s=setup();s.node.kind='worker';
+ s.context.commands=[{...s.command,status:'Running',deadlineUtc:new Date(Date.now()-1000).toISOString()},
+  {...s.command,id:'newer',status:'Failed',diagnostic:'Denied',createdAtUtc:'2026-01-02T00:00:00Z'}];
+ s.run('nodeCommands=commands;renderNode()');
+ const section=s.$('node-detail').children[0];
+ assert.ok(section.children.some(child=>child.textContent.includes('Deadline expired')));
+ assert.ok(section.children.some(child=>child.textContent==='Reconcile after node quiescence'));
+ assert.ok(s.buttons().every(button=>button.disabled));
+});

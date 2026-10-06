@@ -1,5 +1,5 @@
 // One navigation owner per page. Routes contain resource IDs and filters, never credentials.
-function createDashboardNavigation({document,window,onRoute}){
+function createDashboardNavigation({document,window,onRoute,isServerGitHubConnected}){
  const views=['home','projects','workers','executions','settings'];
  const $=id=>document.getElementById(id);
  const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -22,6 +22,7 @@ function createDashboardNavigation({document,window,onRoute}){
   document.title='Codex Server · '+$('view-title').textContent+(route.id?' · '+route.id:'');
   $('view-context').textContent=route.id?'Selected '+({projects:'project',workers:'Worker',executions:'execution',settings:'credential'}[route.view]||'resource')+': '+route.id:'';
   $('node-context').hidden=!['workers','settings'].includes(route.view);
+  $('worker-authentication-guidance').hidden=route.view!=='workers';
   $('project-context').hidden=route.view!=='projects'||!route.id;
   if(active){$('view-title').scrollIntoView({block:'start'});onRoute(route)}
  }
@@ -43,7 +44,7 @@ function createDashboardNavigation({document,window,onRoute}){
  function renderHome(){
   const server=state.nodes?.find(n=>n.kind==='server');
   const github=server?.capabilities.find(c=>c.definition.id==='github-cli');
-  const githubReady=!!server&&!server.observationsStale&&github?.state.installation==='Installed'&&github.state.authentication==='Satisfied'&&github.state.health==='Healthy'&&github.state.operation?.state!=='Running'&&!(github.state.operation?.state==='Failed'&&['login','checkauthentication'].includes(github.state.operation.action));
+  const githubReady=!!server&&isServerGitHubConnected(server);
   const prepared=state.nodes?.find(n=>n.kind==='worker'&&!n.observationsStale&&n.connectivity==='connected'&&n.executionReadiness==='ready');
   const milestones=[
    {label:'Connect Server GitHub',complete:githubReady,known:state.nodes!==null,href:'#/settings?node=server',action:'Connect Server GitHub',detail:server?.observationsStale?'Observations stale — check authentication':github?'Authentication: '+github.state.authentication:'Server capability state unavailable'},

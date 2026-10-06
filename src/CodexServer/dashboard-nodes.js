@@ -11,7 +11,8 @@ function renderNode(){
  $('node-detail').innerHTML=`<h3>${esc(node.displayName)} · ${esc(node.kind)}</h3><dl><dt>Connectivity</dt><dd>${esc(node.connectivity)}</dd><dt>Service health</dt><dd>${esc(node.health)}</dd><dt>Execution readiness</dt><dd>${esc(node.executionReadiness)}</dd><dt>Provisioning readiness</dt><dd>${esc(node.provisioningReadiness)}</dd><dt>Observations</dt><dd>${node.observationsStale?'Stale — re-detect before relying on these facts':'Current'}</dd></dl>${busy?'<p class="sub">Actions are disabled while an operation is pending/running or current state is unavailable.</p>':''}`;
  for(const capability of node.capabilities){
   const state=capability.state,actions=capability.availableActions.filter(a=>nodeActions[a]);
-  const latest=nodeCommands.filter(c=>c.request.nodeId===node.id&&c.request.capabilityId===capability.definition.id).at(-1);
+  const capabilityCommands=nodeCommands.filter(c=>c.request.nodeId===node.id&&c.request.capabilityId===capability.definition.id);
+  const latest=capabilityCommands.find(commandActive)||capabilityCommands.at(-1);
   const section=document.createElement('section');
   section.innerHTML=`<h3>${capability.definition.id==='codex-cli'?'Codex authentication / tools':capability.definition.id==='github-cli'?'Worker / node GitHub authentication':capability.definition.id==='git'?'Repository access / Git':esc(capability.definition.displayName)}</h3><dl><dt>Installation</dt><dd>${esc(state.installation)} · version ${esc(state.detectedVersion||'unknown')}</dd><dt>Update</dt><dd>${esc(state.update)}</dd><dt>Health</dt><dd>${esc(state.health)}</dd>${state.authentication!=null?`<dt>Authentication</dt><dd>${esc(state.authentication)}</dd>`:''}${state.configuration!=null?`<dt>Configuration</dt><dd>${esc(state.configuration)}</dd>`:''}<dt>Detected</dt><dd>${esc(state.detectedAtUtc?new Date(state.detectedAtUtc).toLocaleString():'Not detected')}</dd><dt>Operation</dt><dd>${esc(state.operation.state)} ${esc(state.operation.action)} ${esc(state.operation.diagnosticCode)}</dd>${state.diagnosticCode?`<dt>Diagnostic</dt><dd>${esc(state.diagnosticCode)}</dd>`:''}</dl>${latest?`<details><summary>Advanced · last provisioning command</summary><p class="operation">Last command: ${esc(latest.request.action)} · ${esc(latest.status)} · ${esc(latest.diagnostic)}${latest.failureDetail?' · '+esc(latest.failureDetail.description):''}<br>ID ${esc(latest.id)} · queued ${esc(new Date(latest.createdAtUtc).toLocaleString())}${latest.startedAtUtc?' · started '+esc(new Date(latest.startedAtUtc).toLocaleString()):''}${latest.deadlineUtc?' · deadline '+esc(new Date(latest.deadlineUtc).toLocaleString()):''}${latest.completedAtUtc?' · completed '+esc(new Date(latest.completedAtUtc).toLocaleString()):''}</p></details>`:''}`;
   if(latest){
@@ -57,6 +58,15 @@ async function runNodeAction(nodeId,capabilityId,action){
 }
 $('node-select').onchange=()=>{const route=navigation.current();navigation.navigate(route.view,route.view==='workers'?$('node-select').value:'',{node:$('node-select').value})};$('refresh-nodes').onclick=loadNodes;
 // The connection view reads durable operations; rendering never starts authentication.
+// Home and guided connection use the same current capability and retained-operation evidence.
+function serverGitHubConnected(node,commands){
+ const capability=node?.capabilities.find(c=>c.definition.id==='github-cli');
+ if(!capability||!commands||node.observationsStale)return false;
+ const latest=commands.find(commandActive)||commands[0],operation=capability.state.operation;
+ const failed=latest&&['Login','CheckAuthentication'].includes(latest.request.action)&&['Failed','TimedOut'].includes(latest.status);
+ const observationFailed=operation&&['login','checkauthentication'].includes(operation.action)&&['Failed','TimedOut'].includes(operation.state);
+ return !commands.some(commandActive)&&!failed&&operation?.state!=='Running'&&!observationFailed&&capability.state.installation==='Installed'&&capability.state.health==='Healthy'&&capability.state.authentication==='Satisfied';
+}
 function serverGitHubState(){
  const node=nodes.find(n=>n.id==='server'&&n.kind==='server'),capability=node?.capabilities.find(c=>c.definition.id==='github-cli');
  const commands=serverGitHub?.commands||[];
@@ -72,8 +82,7 @@ function renderServerGitHub(){
  function button(label,action,disabled=busy){const b=document.createElement('button');b.className='button';b.textContent=label;b.disabled=disabled;b.onclick=action;panel.append(b)}
  if(!nodeSnapshotValid||!serverGitHub||!capability){paragraph('Connection state unavailable. Refresh connection before starting or retrying. An unconfirmed submission may still be running.');return}
  const active=latest&&commandActive(latest);
- const authenticationFailed=latest&&['Login','CheckAuthentication'].includes(latest.request.action)&&['Failed','TimedOut'].includes(latest.status);
- const connected=!active&&!authenticationFailed&&!node.observationsStale&&capability.state.installation==='Installed'&&capability.state.health==='Healthy'&&capability.state.authentication==='Satisfied';
+ const connected=serverGitHubConnected(node,serverGitHub.commands);
  paragraph(connected?'Connected · GitHub authentication checked in the Server service account.':'Connect GitHub for the Server service account.');
  paragraph('Repository read access: not yet verified for a selected project. Issue write authorization: not yet verified. Worker authentication: checked separately on each Worker. Repository push access: checked separately by the Worker. Server login does not grant these permissions.');
  if(active){

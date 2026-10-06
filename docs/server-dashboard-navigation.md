@@ -1,7 +1,7 @@
 # Server dashboard screen and flow map
 
-This is the approved navigation and onboarding map for subsequent dashboard
-work. The Server retains its embedded HTML/plain JavaScript frontend, dark teal
+This describes the implemented navigation and resumable onboarding experience.
+The Server retains its embedded HTML/plain JavaScript frontend, dark teal
 header, light content surfaces, compact resource rows and contextual next actions.
 All displayed operational facts and mutations use existing Server APIs. There are
 no simulated actions, completion flags, framework dependencies or new scheduling
@@ -13,7 +13,7 @@ rules. The local Worker dashboard and standalone ownership mode are unchanged.
 | --- | --- | --- |
 | Home | `#/home` | Resumable setup milestones, actual bounded execution activity, connectivity/scheduling blockers, Server status and capacity. Links to the next resource action. Configured systems show completed milestones in a collapsed disclosure. |
 | Projects | `#/projects`, `#/projects/{id}`, optionally `?issue={number}` with `issueState`, `label`, `issues=1` list context | Central definitions, create/edit/enable/disable/delete, requirements, Worker-reported preparation/revision/freshness, linked Workers, project-filtered executions, GitHub read checks and Issues. Issue create/edit, configured eligibility labels, blocked-by relationships, enqueue and eligibility refresh retain their existing previews and authorization. |
-| Workers | `#/workers`, `#/workers/{id}`, `#/workers?prepare=1` | Connection, capacity, readiness and preparation; project eligibility and materialization diagnostics; scheduling enable/drain/disable and separate API-token/delivery-authorization revocation. Contextual node provisioning for registered Workers and advanced operation history. Registration remains the existing node-local procedure. |
+| Workers | `#/workers`, `#/workers/{id}`, `#/workers?prepare=1` | Connection, capacity, readiness and preparation; project eligibility and materialization diagnostics; scheduling enable/drain/disable and separate API-token/delivery-authorization revocation. Contextual node provisioning for registered Workers and advanced operation history. Add Worker guides new-machine enrollment or safe existing-Worker association with a public pairing request and short-lived authorization. |
 | Executions | `#/executions`, `#/executions/{id}` | Bounded queue, outcomes, assignment, leases, recovery evidence and attempt lineage. `project`, `state`, `issue`, `offset` query parameters preserve filters/pagination on detail, reload and Back. Queued cancellation and uncertain integration reconciliation retain the existing evidence requirements. |
 | Settings | `#/settings`, `#/settings/{credentialId}`, `#/settings?node=server` | Server GitHub login/preparation, Server tool capabilities and advanced provisioning diagnostics/history; credential metadata/create/replace/assign/revoke. Credential detail opens its metadata dialog after session restore. No secret is retrieved by metadata views. |
 
@@ -42,9 +42,9 @@ There is no required wizard order or browser-persisted completion bit.
 
 | Milestone | Completion source | Next action when incomplete or unavailable |
 | --- | --- | --- |
-| Connect Server GitHub | `/api/v1/nodes`: Server GitHub CLI installed, authentication satisfied, healthy capability and non-stale observations | Settings → Server node → GitHub login preparation/check authentication. Authentication does not establish repository write or Git push permission. |
+| Connect Server GitHub | `/api/v1/nodes` and `/api/v1/nodes/server/github-connection`: Server GitHub CLI installed, authentication satisfied, healthy capability and non-stale observations; no active retained operation or failed latest authentication check | Settings → Server node → GitHub login preparation/check authentication. Authentication does not establish repository write or Git push permission. |
 | Create a project | `/api/v1/projects`: at least one persisted central definition | Projects → Add project or inspect definitions. A disabled project is still a created definition, not permission to schedule it. |
-| Prepare a Worker | `/api/v1/nodes`: a connected Worker with current observations and authoritative `ready` execution prerequisites | Workers → register through the supported node-local procedure, then inspect tools, login and configuration. Preparation does not grant project eligibility, scheduling permission or provider access. |
+| Prepare a Worker | `/api/v1/nodes`: a connected Worker with current observations and authoritative `ready` execution prerequisites | Workers → Add Worker to enroll or associate, then inspect tools, login and configuration. Preparation does not grant project eligibility, scheduling permission or provider access. |
 
 Failures and unavailable inventory reset the corresponding projection to
 Unavailable. Stale observations cannot complete GitHub/Worker milestones.
@@ -88,7 +88,8 @@ assembles these same modules for the existing Node/VM tests.
 
 ## Validation and manual HTTPS acceptance
 
-Local automated validation for the guided Server connection change:
+Historical local validation for the guided Server connection child change
+(the final integration results are recorded in the linked acceptance document):
 
 - `node --test --test-isolation=none tests/dashboard/*.test.cjs`: 60 passed,
   including explicit consent/local policy, preparation refusal, completion,
@@ -271,3 +272,15 @@ Manual HTTPS acceptance (live checks not run by automated tests):
 A full provisioning assistant, arbitrary project runtime installation, automatic
 provider authorization and autonomous remote login are deferred. This iteration
 presents actual supported observations and operations, not simulated completion.
+
+
+## Final integration acceptance
+
+The combined dashboard is reviewed in [guided dashboard integration acceptance](server-dashboard-integration-acceptance.md).
+Home and Settings share the same Server GitHub connection projection, including
+retained pending/running commands and failed/timed-out authentication checks.
+Worker capability preparation prioritizes active retained commands over newer
+terminal reports so cancellation and expired-operation reconciliation stay
+reachable. Navigating away clears Server preparation/elevation consent. Worker
+service-account instructions appear in Workers; Settings uses its guided Server
+connection instead of duplicating those instructions.

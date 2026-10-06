@@ -2,11 +2,12 @@
 (()=>{
 const $=id=>document.getElementById(id);let authenticated=false,workers=[],projects=[],provisioningActionPending=false,workerObservationGeneration=0;
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const navigation=createDashboardNavigation({document,window,onRoute:applyRoute});
+const navigation=createDashboardNavigation({document,window,onRoute:applyRoute,isServerGitHubConnected:node=>serverGitHubConnected(node,serverGitHub?.commands)});
 function applyRoute(route){
  cancelDashboardReads();
  // Restart route observations after obsolete readers are cancelled. In-flight reads coalesce.
  loadProjects();loadNodes();loadOverview();
+ $('github-provisioning-consent').checked=false;$('github-elevation-consent').checked=false;
  $('node-elevation').checked=false;$('node-message').textContent='';$('github-message').hidden=true;
  for(const dialog of document.querySelectorAll('dialog')){if(dialog.open)dialog.close()}$('credential-secret').value='';clearOnboardingAuthorization();
  if(route.view==='workers'){
