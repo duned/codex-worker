@@ -15,7 +15,8 @@ parity at `/dashboard-preview/home`; the [Home parity inventory](server-dashboar
 independent setup and retained administration links. Projects and their
 configuration/Issue administration are also available in that shared preview; see
 the [React Projects and Issue parity inventory](server-projects-react.md).
-Canonical cutover remains separate.
+Settings, credential detail and Server preparation also have shared React parity;
+see the [Settings parity inventory](server-settings-react.md). Canonical cutover remains separate.
 
 ## Presentation and assistants
 

@@ -8,3 +8,5 @@ export function WorkerDetail(props: {
   executions?: ExecutionSummary[] | null; diagnostics?: WorkerDiagnostics | null;
   administrationHref?: string; workersHref?: string; nodeCommands?: NodeCommandSummary[] | null; administration?: AdministrationPresentation; readOnly: boolean; now?: number;
 }): ReactElement;
+
+export function Capability(props: { capability: import('./shared/api/contracts').Capability; commands?: NodeCommandSummary[] | null }): ReactElement;

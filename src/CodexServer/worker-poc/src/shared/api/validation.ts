@@ -64,15 +64,36 @@ export function sessionDocument(value: unknown) {
 export const worker: Validator<import('./contracts').WorkerAdministration> = value => {
   validateWorker(value); return value as import('./contracts').WorkerAdministration;
 };
-export const commands = list<import('./contracts').NodeCommandSummary>(value => {
+// Project only safe metadata: device instructions must never enter the query cache.
+export const command: Validator<import('./contracts').NodeCommandSummary> = value => {
   const item = fields(value, ['id', 'createdAtUtc', 'status']);
-  fields(item.request, ['nodeId', 'capabilityId', 'action']);
-});
-
+  const request = fields(item.request, ['nodeId', 'capabilityId', 'action']);
+  optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc']);
+  let failureDetail;
+  if (item.failureDetail != null) {
+    const failure = fields(item.failureDetail, ['description']);
+    if (String(failure.description).length > 2048) throw Error('Invalid failure detail.');
+    failureDetail = { description: String(failure.description) };
+  }
+  let publicIdentity;
+  if (item.publicIdentity != null) {
+    const identity = fields(item.publicIdentity, ['publicKey', 'fingerprint']);
+    publicIdentity = { publicKey: String(identity.publicKey), fingerprint: String(identity.fingerprint) };
+  }
+  return { id: String(item.id), createdAtUtc: String(item.createdAtUtc), status: String(item.status),
+    request: { nodeId: String(request.nodeId), capabilityId: String(request.capabilityId), action: String(request.action) },
+    diagnostic: typeof item.diagnostic === 'string' ? item.diagnostic : undefined,
+    startedAtUtc: typeof item.startedAtUtc === 'string' ? item.startedAtUtc : undefined,
+    deadlineUtc: typeof item.deadlineUtc === 'string' ? item.deadlineUtc : undefined,
+    completedAtUtc: typeof item.completedAtUtc === 'string' ? item.completedAtUtc : undefined, publicIdentity, failureDetail };
+};
+export const commands: Validator<import('./contracts').NodeCommandSummary[]> = value => {
+  if (!Array.isArray(value) || value.length > 10000) throw Error('Invalid commands.');
+  return value.map(command);
+};
 export const serverGitHubConnection: Validator<import('./contracts').ServerGitHubConnection> = value => {
   const item = fields(value, [], ['provisioningEnabled', 'elevationAllowed']);
-  commands(item.commands);
-  return value as import('./contracts').ServerGitHubConnection;
+  return { commands: commands(item.commands), provisioningEnabled: Boolean(item.provisioningEnabled), elevationAllowed: Boolean(item.elevationAllowed) };
 };
 export const serverStatus: Validator<import('./contracts').ServerStatus> = value => {
   fields(value, ['state', 'version', 'startedAtUtc']);

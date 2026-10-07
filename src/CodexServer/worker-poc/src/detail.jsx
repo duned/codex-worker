@@ -25,7 +25,7 @@ function Execution({ item, projects, now, active }) {
     </div>
   <p className="col-span-full text-xs text-tertiary">Only the reported current stage is available; stage history is not provided.</p></div></TableCard.Root>;
 }
-function Capability({ capability, commands }) {
+export function Capability({ capability, commands }) {
   const { definition, state, availableActions } = capability;
   const matching = commands?.filter(command => command.request.capabilityId === definition.id)
     .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc));

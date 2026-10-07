@@ -313,3 +313,11 @@ permitted network access; Chromium used existing temporary libraries and permitt
 process access. The optional .NET Server test attempt with `--no-restore` could not
 run because this checkout lacks restored test assets (`NETSDK1004`). No live
 HTTPS/provider/node campaign or Worker-configured authoritative check is claimed.
+
+## Settings, credentials and Server preparation (24.12.8)
+
+The shared preview Settings routes now provide guided Server preparation, advanced
+capabilities/history and credential administration. See the complete
+[Settings parity inventory](server-settings-react.md) for route/action/API coverage,
+transient input handling, authoritative recovery and deterministic review fixtures.
+Canonical cutover remains separate.
