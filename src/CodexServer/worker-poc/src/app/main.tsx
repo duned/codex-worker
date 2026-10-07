@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { RouterProvider } from 'react-aria-components';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -14,6 +15,7 @@ function Dashboard() {
   const session = useSession();
   const navigate = useNavigate();
   const location = useLocation();
+  useEffect(() => { document.querySelector<HTMLElement>('#poc-content h1')?.focus({ preventScroll: true }); }, [location.pathname]);
   const active = location.pathname.split('/')[1] || 'home';
   const items = sections.map((section, index) => ({ label: section.charAt(0).toUpperCase() + section.slice(1), href: `${migrationBase}/${section}`, icon: icons[index] }));
   return <RouterProvider navigate={href => {

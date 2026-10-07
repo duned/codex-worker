@@ -1,8 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { queryKeys } from '../../shared/api/runtime';
 import { useState } from 'react';
-import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
-import { Button } from '../../untitled/components/base/buttons/button';
+import { ConfirmationDialog } from '../../shared/Dialogs';
 import { WorkerDetailPage } from './WorkerDetailPage';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
 import { worker, diagnostics } from '../../shared/api/validation';
@@ -58,7 +57,6 @@ export function WorkerPocPage({ id }: { id: string }) {
     }) });
   const submit = async () => {
     const key = selected, generation = session.generation;
-    setSelected(undefined);
     if (!key || pending || locked) return;
     setPending(true); setMessage('Administration operation pending. Do not submit another action.');
     try {
@@ -76,18 +74,14 @@ export function WorkerPocPage({ id }: { id: string }) {
     onRefresh: () => { void refresh(); }
   };
   return <><WorkerDetailPage workerId={id} administration={administration} />
-    <ModalOverlay isOpen={!!selected} onOpenChange={open => { if (!open) setSelected(undefined); }} isDismissable
-      className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm">
-      <Modal className="w-full max-w-md rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary">
-        <Dialog className="flex flex-col gap-4 outline-none">
-          <Heading slot="title" className="text-lg font-semibold text-primary">{actions.find(action => action.key === selected)?.label}</Heading>
-          <p className="text-sm text-secondary">{selected === 'revoke-api'
-            ? 'Calls using this token will be denied and active leases may expire into recovery. Credential-delivery authorization, node login and provider credentials are unchanged.'
-            : 'This affects new assignments only. Existing assignments and leases are not cancelled. Current Server validation still applies.'}</p>
-          <div className="flex justify-end gap-3"><Button color="secondary" onPress={() => setSelected(undefined)}>Cancel</Button>
-            <Button color="primary" onPress={() => { void submit(); }}>Confirm</Button></div>
-        </Dialog>
-      </Modal>
-    </ModalOverlay>
+    <ConfirmationDialog key={selected ?? 'closed'} isOpen={!!selected} onClose={() => setSelected(undefined)}
+      title={actions.find(action => action.key === selected)?.label ?? 'Confirm action'} actionLabel="Confirm"
+      destructive={selected === 'revoke-api' || selected === 'Disabled'} disabled={pending || locked}
+      description={selected === 'revoke-api'
+        ? 'Calls using this token will be denied and active leases may expire into recovery. Credential-delivery authorization, node login and provider credentials are unchanged.'
+        : selected === 'Enabled' ? 'Allow new assignments after current Server readiness validation. Existing assignments and leases are not cancelled.'
+        : selected === 'Draining' ? 'Pause new assignments while existing assignments keep their leases and finish. This does not cancel running work.'
+        : 'Stop new assignments. Existing assignments and leases are not cancelled. Current Server validation still applies.'}
+      onSubmit={submit} />
   </>;
 }

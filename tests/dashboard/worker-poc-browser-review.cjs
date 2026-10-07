@@ -27,11 +27,13 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       };
     });
     let signedIn = true, canActivate = true, loseResponse = false, empty = false;
-    let policy = 'Disabled';
+    let policy = 'Disabled', releaseWrite, writeStarted;
+    const writing = new Promise(resolve => { writeStarted = resolve; });
     const commands = [{ id: 'fixture-command', createdAtUtc: '2026-01-01T00:02:00Z', status: 'Pending', request: { nodeId: 'worker-a', capabilityId: 'codex-cli', action: 'CheckAuthentication' } }];
     const registry = () => ({ ...props.observations[0], schedulingPolicy: policy, authenticationCredentialStatus: 'active' });
     await page.route('https://worker.test/**', async route => {
       const request = route.request(), endpoint = new URL(request.url()).pathname;
+      if (endpoint === '/dashboard-assets/preview/assets/theme.js') return route.fulfill({ path: path.join(assets, 'preview/assets/theme.js'), contentType: 'text/javascript' });
       if (endpoint.startsWith('/dashboard-assets/')) return route.fulfill({ path: path.join(assets, endpoint.endsWith('.js') ? 'poc.js' : 'poc.css'), contentType: endpoint.endsWith('.js') ? 'text/javascript' : 'text/css' });
       if (endpoint === '/workers/worker-a/poc') return route.fulfill({ body: readDashboard({ workerPoc: true }), contentType: 'text/html' });
       if (endpoint === '/api/v1/administration/session') {
@@ -45,6 +47,7 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
         writes.push({ endpoint, csrf: request.headers()['x-codex-csrf'], body: request.postDataJSON() });
         assert.equal(endpoint, '/api/v1/workers/worker-a/scheduling-policy');
         policy = request.postDataJSON().policy;
+        if (loseResponse) { writeStarted(); await new Promise(resolve => { releaseWrite = resolve; }); }
         return route.fulfill({ status: loseResponse ? 503 : 200, json: registry() });
       }
       const fixtures = { '/api/v1/workers': empty ? [] : [registry()], '/api/v1/workers/worker-a': registry(),
@@ -54,8 +57,11 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       return route.fulfill({ json: fixtures[endpoint] });
     });
     const url = 'https://worker.test/workers/worker-a/poc?step=preparation&project=project-a';
-    for (const width of [1280, 375]) {
+    for (const theme of ['dark', 'light']) for (const width of [1280, 375, 640]) {
       await page.setViewportSize({ width, height: 900 }); await page.goto(url);
+      await page.evaluate(theme => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme } })), theme);
+      await page.reload();
+      assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), theme === 'dark');
       await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
       await page.getByRole('link', { name: 'Issue #27' }).waitFor();
       await page.getByText('Pending', { exact: true }).waitFor();
@@ -67,10 +73,20 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       assert.ok(width > 1000 ? rail.x >= main.x + main.width : rail.y >= main.y + main.height);
       await page.getByRole('button', { name: 'Activate scheduling' }).click();
       const dialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Activate scheduling' }) });
-      await dialog.waitFor(); await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
+      await dialog.waitFor();
+      assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).evaluate(element => element === document.activeElement), true);
+      for (let step = 0; step < 4; step++) {
+        await page.keyboard.press('Tab');
+        assert.equal(await dialog.evaluate(element => element.contains(document.activeElement)), true, 'Modal contains keyboard focus.');
+      }
+      await page.screenshot({ path: path.join(output, `confirmation-${theme}-${width}.png`), fullPage: true });
+      await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
+      await page.clock.runFor(20); // React Aria restores focus on the next animation frame.
       assert.equal(writes.length, 0, 'Dismissal never submits.');
-      await page.screenshot({ path: path.join(output, `worker-detail-${width}.png`), fullPage: true });
+      assert.equal(await page.getByRole('button', { name: 'Activate scheduling' }).evaluate(element => element === document.activeElement), true, 'Focus restores to trigger.');
+      await page.screenshot({ path: path.join(output, `worker-detail-${theme}-${width}.png`), fullPage: true });
     }
+    await page.evaluate(() => localStorage.removeItem('codex-dashboard-preferences')); await page.reload();
     await page.setViewportSize({ width: 1280, height: 900 });
     // Cache says activation is possible; the uncached current check refuses it.
     canActivate = false;
@@ -83,6 +99,12 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
     loseResponse = true;
     await page.getByRole('button', { name: 'Drain worker' }).click();
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await writing;
+    assert.equal(await page.getByRole('button', { name: 'Confirm', exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).isDisabled(), true);
+    await page.keyboard.press('Enter'); await page.keyboard.press('Escape');
+    assert.equal(await page.getByRole('dialog').count(), 1, 'Pending cannot dismiss.');
+    assert.equal(writes.length, 1); releaseWrite();
     await page.getByText('Request failed (HTTP 503). State may be stale; refresh before retrying.', { exact: true }).waitFor();
     await page.clock.runFor(5001);
     assert.equal(await page.getByRole('button', { name: 'Deactivate', exact: true }).isDisabled(), true);
@@ -101,6 +123,13 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await page.getByText('Administration sign in', { exact: true }).waitFor();
+    for (const theme of ['dark', 'light']) for (const width of [1280, 375, 640]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(theme => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme } })), theme);
+      await page.reload(); await page.getByText('Administration sign in', { exact: true }).waitFor();
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.screenshot({ path: path.join(output, `login-${theme}-${width}.png`), fullPage: true });
+    }
     await page.getByLabel('Server management token').fill('fixture-token');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();

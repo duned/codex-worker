@@ -59,6 +59,21 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No horizontal overflow at ${width}px.`);
       const legacy = page.getByRole('link', { name: 'Open Worker detail and administration' });
       assert.equal(await legacy.getAttribute('href'), '/workers/worker-a?step=preparation&project=project-a');
+      if (width === 375) {
+        await page.getByRole('button', { name: 'Expand navigation menu' }).click();
+        const drawer = page.getByRole('dialog', { name: 'Main navigation' });
+        await drawer.waitFor();
+        assert.equal(await drawer.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page');
+        await page.keyboard.press('Tab');
+        assert.equal(await drawer.evaluate(element => element.contains(document.activeElement)), true);
+        await page.keyboard.press('Escape'); await drawer.waitFor({ state: 'hidden' });
+        await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Expand navigation menu');
+        await page.getByRole('button', { name: 'Expand navigation menu' }).click();
+        await drawer.getByRole('link', { name: 'Home', exact: true }).click();
+        await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+        await drawer.waitFor({ state: 'hidden' });
+        await page.goBack(); await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
+      }
       await page.screenshot({ path: path.join(output, `worker-${width}.png`), fullPage: true });
       await page.reload();
       await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();

@@ -993,6 +993,7 @@ public static class ServerApplication
         {
             return "<!DOCTYPE html><html lang=\"en\" class=\"dark-mode\"><head><meta charset=\"utf-8\">"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Codex Server · Worker</title>"
+                + "<script src=\"/dashboard-assets/preview/assets/theme.js\"></script>"
                 + "<link rel=\"stylesheet\" href=\"/dashboard-assets/worker-poc.css\"></head>"
                 + "<body><div id=\"worker-poc\"></div><script src=\"/dashboard-assets/worker-poc.js\"></script></body></html>";
         }

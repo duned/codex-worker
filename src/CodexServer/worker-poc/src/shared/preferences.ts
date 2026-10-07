@@ -6,10 +6,19 @@ const browserStorage: StateStorage = {
   setItem: (key, value) => { try { localStorage.setItem(key, value); } catch { /* Visit preference still works. */ } },
   removeItem: key => { try { localStorage.removeItem(key); } catch { /* Storage unavailable. */ } }
 };
+function versionedPreference(value: string | null): string | null {
+  try { return value && JSON.parse(value)?.version === 1 ? value : null; }
+  catch { return null; }
+}
 export function createPreferences(storage: StateStorage = browserStorage) {
   // Allowlist on both write and rehydration, including untrusted/corrupt storage.
   const safe: StateStorage = {
-    getItem: key => { try { return storage.getItem(key); } catch { return null; } },
+    getItem: key => {
+      try {
+        const value = storage.getItem(key);
+        return typeof value === 'string' || value === null ? versionedPreference(value) : value.then(versionedPreference, () => null);
+      } catch { return null; }
+    },
     setItem: (key, value) => { try { return storage.setItem(key, value); } catch { return; } },
     removeItem: key => { try { return storage.removeItem(key); } catch { return; } }
   };

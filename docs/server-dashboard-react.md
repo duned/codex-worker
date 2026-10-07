@@ -196,3 +196,68 @@ checks, explicit reconciliation, safe diagnostics and preference reload/storage
 failure. Browser review covers the built shared preview at desktop/mobile widths.
 Live HTTPS/provider/node acceptance remains a deployment check, and Worker-run
 validation remains the authoritative gate.
+
+## Shared shell and composition (24.12.3)
+
+Compose new screens in this same package. Import product patterns from `shared/`
+and the original public components from `untitled/components/`; never copy screen
+variants or load legacy dashboard CSS. `Application` owns responsive navigation,
+selected links, skip navigation and login/session presentation. `PageHeading`
+owns the h1, breadcrumb landmark and secondary resource ID; use `ResourceIdentity`
+for name-first list identities. Route changes focus the heading, while query-only
+changes and observation refreshes retain focus. Mobile navigation closes after a
+navigation choice and uses React Aria focus restoration.
+
+Use `TableCard`/`Table` for surfaces and accessible tables, `Input` with its label,
+required/invalid state and hint for forms, `Notice` for live feedback, `ViewState`
+for loading/empty/error surfaces, and `AdvancedDisclosure` for technical evidence.
+Use `StatusBadge` with **text** and an explicit gray/success/warning/error tone
+chosen by the feature's existing evidence mapping. Visual primitives do not
+compute lifecycle, readiness, permissions or scheduling policy. The approved
+Worker capability/command composition remains in the reused Worker presentation;
+its detection and command evidence are not converted into new readiness rules.
+Do not add speculative universal tables, forms or provisioning controllers.
+
+Use `ConfirmationDialog` for action consequences, or `ActionDialog` with labeled
+inputs for form submission. Both compose `FormDialog`, upstream Untitled UI
+buttons/tokens and React Aria ModalOverlay/Modal/Dialog. React Aria owns focus
+containment/restoration and dismissal; no native browser confirmation or unmanaged
+dialog is used. Cancel is initially focused. Pending submissions disable fields and controls
+and dismissal, and a synchronous guard prevents double acceptance. Native form
+validation precedes submission. Supply action-specific consequences and a precise
+action label; destructive actions use the upstream destructive button variant.
+Mount dialogs only for the selected operation and key them by operation/resource
+so transient drafts and failure state cannot leak into another operation.
+
+The submit callback must use the shared mutation owner with fresh authoritative
+checks. The dialog never retries or releases resource fences. Present uncertainty
+and explicit reconciliation through the feature/data owner, even after a dialog
+closes. A callback rejection disables further acceptance and shows a fixed safe
+message; it must not expose response bodies or exception details. Existing Worker
+controls continue to reconcile only on an explicit authoritative refresh.
+
+Theme remains the version-1 Zustand preference owner, allowlisting only light/dark.
+The tiny classic `public/assets/theme.js` boundary reads that same versioned theme
+before CSS/visible paint in both production entries. Missing, corrupt, unsupported
+or unavailable storage defaults to dark regardless of OS. Its version/allowlist
+must remain synchronized with `shared/preferences.ts`; focused bootstrap fixtures
+cover this contract. Vite injects the same-origin blocking script before styles,
+and its bytes are included in the verified embedding asset manifest. No inline
+script, external theme service or secret storage is introduced. Theme changes
+update both upstream `dark-mode` tokens and native control color-scheme.
+
+The browser fixture review covers dark/light shell, login and confirmation at
+1280px, 375px and 640px (the CSS layout width of a 1280px viewport at 200% zoom),
+focus containment/restoration, cancellation with no writes, pending dismissal and
+exactly one acceptance write, fresh activation rejection and lost-response fences.
+It uses Server-shaped fixtures; deployed HTTPS/provider/node checks remain separate.
+
+Local review for 24.12.3 passed typecheck, lint, production compilation, 25 focused
+Node regressions, and all three Chromium reviews (preview, Worker confirmation,
+and shared form composition). Screenshots under `/tmp/shared-shell-review` were
+inspected. The 640px layout checks cover zoom reflow; they do not claim an actual
+browser zoom/OS assistive-technology campaign. Chromium initially required
+permitted process access; locked npm restore required permitted network access.
+The optional .NET test attempt with `--no-restore` could not run because this
+checkout had no restored test assets (`NETSDK1004`). Worker-configured checks
+remain the authoritative gate.

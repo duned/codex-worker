@@ -1439,6 +1439,8 @@ public sealed class CodexServerTests
                 var preview = await previewResponse.Content.ReadAsStringAsync();
                 Assert.Contains("class=\"dark-mode\"", preview);
                 Assert.Contains("id=\"worker-poc\"", preview);
+                Assert.Contains("src=\"/dashboard-assets/preview/assets/theme.js\"", preview);
+                Assert.True(preview.IndexOf("assets/theme.js", StringComparison.Ordinal) < preview.IndexOf("rel=\"stylesheet\"", StringComparison.Ordinal));
                 Assert.DoesNotContain("poc-legacy-owner", preview);
                 foreach (System.Text.RegularExpressions.Match asset in System.Text.RegularExpressions.Regex.Matches(
                     preview, "(?:src|href)=\"(/dashboard-assets/preview/[^\"]+)\""))
@@ -1464,6 +1466,12 @@ public sealed class CodexServerTests
             Assert.Contains("src=\"/dashboard-assets/worker-poc.js\"", poc);
             Assert.Contains("href=\"/dashboard-assets/worker-poc.css\"", poc);
             Assert.DoesNotContain("dashboard-scripts", poc);
+            Assert.Contains("src=\"/dashboard-assets/preview/assets/theme.js\"", poc);
+            Assert.True(poc.IndexOf("assets/theme.js", StringComparison.Ordinal) < poc.IndexOf("rel=\"stylesheet\"", StringComparison.Ordinal));
+            using var themeResponse = await client.GetAsync("/dashboard-assets/preview/assets/theme.js");
+            Assert.Equal(HttpStatusCode.OK, themeResponse.StatusCode);
+            Assert.Equal("text/javascript", themeResponse.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("codex-dashboard-preferences", await themeResponse.Content.ReadAsStringAsync());
             foreach (var (asset, mediaType, content) in new[] {
                 ("js", "text/javascript", "/api/v1/events/stream"), ("css", "text/css", "#worker-poc") })
             {

@@ -6,5 +6,5 @@ export function WorkerDetail(props: {
   id: string; observations: WorkerObservation[] | null; loading?: boolean;
   nodes?: NodeSummary[] | null; projects?: ProjectSummary[] | null;
   executions?: ExecutionSummary[] | null; diagnostics?: WorkerDiagnostics | null;
-  administrationHref?: string; nodeCommands?: NodeCommandSummary[] | null; administration?: AdministrationPresentation; readOnly: boolean; now?: number;
+  administrationHref?: string; workersHref?: string; nodeCommands?: NodeCommandSummary[] | null; administration?: AdministrationPresentation; readOnly: boolean; now?: number;
 }): ReactElement;

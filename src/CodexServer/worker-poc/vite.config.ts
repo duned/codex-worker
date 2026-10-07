@@ -4,6 +4,17 @@ import { resolve } from 'node:path';
 import tailwindcss from '@tailwindcss/postcss';
 
 export default defineConfig(({ command }) => ({
+  plugins: [{
+    name: 'dashboard-pre-paint-theme',
+    transformIndexHtml: {
+      order: 'post',
+      handler: () => [{
+        tag: 'script',
+        attrs: { src: `${command === 'serve' ? '/dashboard-preview/' : '/dashboard-assets/preview/'}assets/theme.js` },
+        injectTo: 'head-prepend'
+      }]
+    }
+  }],
   base: command === 'serve' ? '/dashboard-preview/' : '/dashboard-assets/preview/',
   esbuild: { jsx: 'automatic' },
   resolve: { alias: { '@': resolve(import.meta.dirname, 'src/untitled') } },

@@ -48,7 +48,9 @@ export const MobileNavigationHeader = ({ children }: PropsWithChildren) => {
                         </AriaButton>
 
                         <AriaModal className="w-full max-w-74 cursor-auto will-change-transform">
-                            <AriaDialog aria-label="Main navigation" className="h-dvh outline-hidden focus:outline-hidden">{children}</AriaDialog>
+                            <AriaDialog aria-label="Main navigation" onClickCapture={event => {
+                                if (event.target instanceof Element && event.target.closest('nav a[href]')) state.close();
+                            }} className="h-dvh outline-hidden focus:outline-hidden">{children}</AriaDialog>
                         </AriaModal>
                     </>
                 )}

@@ -33,3 +33,9 @@ Deliberate adaptations:
 
 `../poc.css` contains layout/composition rules only. Component styling remains in
 these upstream modules, using the upstream tokens and utility classes.
+
+- Mobile navigation closes its React Aria state after selecting a navigation link.
+  Product dialog patterns in `shared/Dialogs.tsx` compose the retained public
+  Button source and tokens with upstream React Aria modal primitives, using the
+  same overlay/surface composition as the approved shell. They are product
+  composition rather than a claimed copy of a paid Untitled UI modal component.

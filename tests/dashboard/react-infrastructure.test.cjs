@@ -161,6 +161,7 @@ test('preferences reload only versioned theme; corrupt/unavailable storage keeps
   saved = JSON.stringify({ state: { theme: 'light', csrf: 'private', project: 'secret' }, version: 1 });
   assert.deepEqual(Object.keys(createPreferences(storage).getState()).sort(), ['setTheme', 'theme']);
   saved = JSON.stringify({ state: { theme: 'light' }, version: 99 }); assert.equal(createPreferences(storage).getState().theme, 'dark');
+  saved = JSON.stringify({ state: { theme: 'light' } }); assert.equal(createPreferences(storage).getState().theme, 'dark');
   saved = '{corrupt'; assert.equal(createPreferences(storage).getState().theme, 'dark');
   const unavailable = createPreferences({ getItem() { throw Error(); }, setItem() { throw Error(); }, removeItem() { throw Error(); } });
   unavailable.getState().setTheme('light'); assert.equal(unavailable.getState().theme, 'light');

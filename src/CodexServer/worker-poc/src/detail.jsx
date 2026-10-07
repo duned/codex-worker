@@ -1,4 +1,4 @@
-import { Badge } from './untitled/components/base/badges/badges';
+import { StatusBadge, PageHeading, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { Table, TableCard } from './untitled/components/application/table/table';
 import { FeaturedIcon } from './untitled/components/foundations/featured-icon/featured-icon';
@@ -6,7 +6,7 @@ import { Activity, Terminal } from '@untitledui/icons';
 
 import { duration, issueLink, statusColor, terminalStates, timestamp, workerExecutions } from './model.js';
 
-function Status({ value }) { return <Badge className="inline-flex max-w-full whitespace-normal align-middle" type="pill-color" size="sm" color={statusColor(value)}>{value ?? 'Unknown'}</Badge>; }
+function Status({ value }) { return <StatusBadge tone={statusColor(value)}>{value ?? 'Unknown'}</StatusBadge>; }
 function Fact({ label, children }) { return <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{label}</dt><dd className="text-sm text-secondary">{children}</dd></div>; }
 function Execution({ item, projects, now, active }) {
   const project = projects?.find(project => project.id === item.projectId);
@@ -45,7 +45,7 @@ function Capability({ capability, commands }) {
     {!pending.length && latest && <p>Latest command: <Status value={latest.status} /> {latest.request.action}</p>}
     {commands === null && <p className="poc-muted text-sm text-tertiary">Command history unavailable.</p>}
     <p>Available typed actions: {availableActions?.length ? availableActions.join(', ') : 'None reported'}</p>
-    <details className="mt-4 text-sm text-tertiary"><summary>Diagnostic context</summary><p>{state.diagnosticCode || 'No diagnostic code reported'}{state.operation?.diagnosticCode && ' · ' + state.operation.diagnosticCode}</p>{latest && <p>Command {latest.id} · {latest.diagnostic}</p>}</details>
+    <AdvancedDisclosure title="Diagnostic context"><p>{state.diagnosticCode || 'No diagnostic code reported'}{state.operation?.diagnosticCode && ' · ' + state.operation.diagnosticCode}</p>{latest && <p>Command {latest.id} · {latest.diagnostic}</p>}</AdvancedDisclosure>
   </div></TableCard.Root>;
 }
 function ControlRail({ administration }) {
@@ -70,7 +70,7 @@ function ControlRail({ administration }) {
     <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>Refresh authoritative state</Button></div></TableCard.Root>
   </aside>;
 }
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, now = Date.now() }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now() }) {
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
   const items = workerExecutions(executions, id);
@@ -89,10 +89,9 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     };
   });
   return <section className="poc-card text-sm text-secondary" aria-label="Worker detail proof of concept">
-    <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
-      <div className="min-w-0"><p className="mb-2 text-sm font-medium text-tertiary">Workers / Detail preview</p><h1 className="text-display-sm font-semibold text-primary">{worker?.displayName || 'Worker details'}</h1><p className="poc-identity mt-2 text-sm text-tertiary">ID {id}</p></div>
-      <Button href={administrationHref ?? '/workers/' + encodeURIComponent(id)} color="secondary" size="sm">Open Worker detail and administration</Button>
-    </header>
+    <PageHeading title={worker?.displayName || 'Worker details'} resourceId={id}
+      breadcrumbs={[{ label: 'Workers', href: workersHref }, { label: 'Detail preview' }]}
+      actions={<Button href={administrationHref ?? '/workers/' + encodeURIComponent(id)} color="secondary" size="sm">Open Worker detail and administration</Button>} />
     {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className={readOnly ? "poc-layout poc-read-only" : "poc-layout"}><div className="poc-main">
       <TableCard.Root><div className="p-5"><dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
