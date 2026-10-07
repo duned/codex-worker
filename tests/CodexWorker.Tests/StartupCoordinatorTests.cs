@@ -7,22 +7,31 @@ public sealed class StartupCoordinatorTests
     [Fact]
     public async Task HostMapsPreOperationalCheckoutFailureToStartupExitCode()
     {
-        var config = new WorkerConfiguration
+        var temporary = Directory.CreateTempSubdirectory("codex-worker-startup-");
+        try
         {
-            Project = new ProjectSettings { Name = "Test", Repository = "owner/repo", Directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")) },
-            GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
-            Codex = new CodexSettings { InstructionsFile = "instructions.md" }
-        };
-        var output = new StringWriter();
-        var errors = new StringWriter();
-        var host = new WorkerHost(new GlobalWorkerConfiguration { Api = new ManagementApiSettings { Enabled = false } }, [("project.yml", config)],
-            new WorkerConsole(output, interactive: false, errorWriter: errors));
+            var config = new WorkerConfiguration
+            {
+                Project = new ProjectSettings { Name = "Test", Repository = "owner/repo", Directory = Path.Combine(temporary.FullName, "missing-checkout") },
+                GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", BlockedLabel = "blocked", FailedLabel = "failed", DoneLabel = "done" },
+                Codex = new CodexSettings { InstructionsFile = "instructions.md" }
+            };
+            var output = new StringWriter();
+            var errors = new StringWriter();
+            var host = new WorkerHost(new GlobalWorkerConfiguration { Api = new ManagementApiSettings { Enabled = false } }, [("project.yml", config)],
+                new WorkerConsole(output, interactive: false, errorWriter: errors),
+                executionHistoryPath: Path.Combine(temporary.FullName, "history.db"));
 
-        var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
+            var failure = await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
 
-        Assert.Contains("checkout does not exist", failure.Message);
-        Assert.Equal(ProcessExitCodes.StartupFailure, Program.ExitCodeFor(failure));
-        Assert.Contains("Infrastructure failure: Project configuration 'project.yml' failed read-only startup validation", errors.ToString());
+            Assert.Contains("checkout does not exist", failure.Message);
+            Assert.Equal(ProcessExitCodes.StartupFailure, Program.ExitCodeFor(failure));
+            Assert.Contains("Infrastructure failure: Project configuration 'project.yml' failed read-only startup validation", errors.ToString());
+        }
+        finally
+        {
+            temporary.Delete(recursive: true);
+        }
     }
 
     [Fact]

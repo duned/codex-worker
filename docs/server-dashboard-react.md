@@ -14,10 +14,12 @@ persists only a light/dark preference. Worker detail reuses the fixture-tested P
 presentation through a typed boundary. Its control rail is omitted: administration
 uses the current dashboard. Home now renders the operational overview described below.
 Projects and Issue administration now use shared React flows; see the
-[project and Issue parity inventory](server-projects-react.md). Remaining lists,
-Executions and Settings administration explicitly link to their current implementation
+[project and Issue parity inventory](server-projects-react.md). Executions now use
+shared React list, detail and recovery controls; see the
+[execution and recovery parity inventory](server-executions-react.md). Remaining lists and
+Settings administration explicitly link to their current implementation
 with the selected resource and query intact.
-They do not offer simulated observations or unfinished actions. Legacy `/home`,
+These views do not offer simulated observations or unfinished actions. Legacy `/home`,
 resource routes and `/workers/{id}/poc` remain usable; default-route cutover and PoC
 removal belong to 24.12.9.
 
@@ -40,7 +42,8 @@ cannot receive the shell. The canonical map remains
 
 `src/app` owns mounting, routes and error handling; `src/pages` owns section pages;
 `src/features/workers` owns Worker presentation; `src/features/projects` owns
-project configuration and GitHub Issue administration; `src/shared`
+project configuration and GitHub Issue administration; `src/features/executions`
+owns execution browsing and evidence-based recovery; `src/shared`
 owns the shell, theme and typed API/session hooks. `src/untitled` remains upstream
 source. The retained PoC `detail.jsx` and `model.js` are reused presentation modules;
 further migration should type them alongside their feature work, rather than copy
