@@ -12,8 +12,9 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
     SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
-    WorkerRegistrationClient? registrationClient = null)
+    WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly WorkerRegistrationClient _registration = registrationClient ?? new WorkerRegistrationClient();
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
@@ -33,6 +34,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         await _repositoryGate.WaitAsync(ct);
         try { await git.InitializeAsync(ct); }
         finally { _repositoryGate.Release(); }
+        await new CodexRecoveryCoordinator(config, git, history, _repositoryGate, _output, _clock,
+            entry => ReportServerAsync(entry, ExecutionState.InfrastructureFailure, ct)).ReconcileAsync(ct);
         await ReconcileIntegrationRecoveryAsync(ct);
     }
 
@@ -49,6 +52,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
         if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
+        var interrupted = await ClaimCodexRecoveryAsync(null, ct);
+        if (interrupted is not null) return interrupted;
         foreach (var label in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel }
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -81,6 +86,69 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             var execution = await ClaimIssueAsync(issue, null, null, null, ct);
             if (execution is not null) return execution;
         }
+    }
+
+    private async Task<Task<IssueProcessingResult?>?> ClaimCodexRecoveryAsync(WorkerAssignmentContract? assignment, CancellationToken ct)
+    {
+        if (history is null) return null;
+        var entries = await history.ReadAllAsync(ct);
+        var candidates = entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
+            entry.RecoveryState == "codex-interrupted" && !entries.Any(other => other.Project == entry.Project &&
+                other.Repository == entry.Repository && other.IssueNumber == entry.IssueNumber &&
+                (other.AttemptNumber > entry.AttemptNumber || other.State == "Completed")))
+            .OrderBy(entry => entry.StartedAtUtc);
+        foreach (var source in candidates)
+        {
+            if (source.CodexRecovery?.RetryAfterUtc > _clock.GetUtcNow()) continue;
+            if (assignment is not null && (!assignment.Metadata.TryGetValue("codexRecoveryExecutionId", out var sourceId) ||
+                sourceId != source.ExecutionId.ToString() || !assignment.Metadata.TryGetValue("originalServerExecutionId", out var serverId) ||
+                serverId != source.ServerExecutionId)) continue;
+            if (assignment is null && source.ServerExecutionId is not null) continue; // Cached managed history grants no authority.
+            if (!_activeIssues.TryAdd(source.IssueNumber, 0)) continue;
+            var handedOff = false;
+            try
+            {
+                var snapshot = source.CodexRecovery;
+                var originalBody = source.OriginalIssueBody;
+                var metadataError = CodexRecoveryCoordinator.ValidateMetadata(source, entries, config);
+                if (metadataError is not null || snapshot is null || originalBody is null)
+                {
+                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct);
+                    _output.Warning($"Codex recovery requires inspection · execution {source.ExecutionId} · {metadataError ?? "workspace snapshot missing"}.");
+                    continue;
+                }
+                string? rejection;
+                await _repositoryGate.WaitAsync(ct);
+                try { rejection = await git.ValidateCodexRecoveryAsync(source, ct); }
+                finally { _repositoryGate.Release(); }
+                if (rejection is not null)
+                {
+                    await history.UpdateRecoveryAsync(source.ExecutionId, "codex-recovery-inspection-required", ct);
+                    _output.Warning($"Codex recovery requires inspection · execution {source.ExecutionId} · {FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray())}");
+                    continue;
+                }
+                if (!await github.IsIssueOpenAsync(source.IssueNumber, ct)) continue;
+                var issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc);
+                var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: source.ExecutionId,
+                    attemptNumber: source.AttemptNumber + 1, resumed: true, featureBranchOverride: source.FeatureBranch,
+                    codexSettings: config.Codex, settingsSource: source, serverExecutionId: assignment?.ServerExecutionId,
+                    assignmentId: assignment?.AssignmentId, ownershipGeneration: assignment?.Lease?.Generation);
+                execution.CodexRecovery = snapshot with { ResumeCount = snapshot.ResumeCount + 1 };
+                if (!await history.TryClaimCodexRecoveryAsync(source, CreateInitialEntry(execution) with { RecoveryBaseCommit = source.RecoveryBaseCommit, RecoveryStatus = source.RecoveryStatus }, ct)) continue;
+                await TransitionAsync(execution, ExecutionState.Claimed, ct);
+                _output.Warning($"Resuming execution {execution.ExecutionId} · interrupted execution {source.ExecutionId} · " +
+                    (snapshot.SessionId is null ? "continuing preserved workspace with new Codex session" : $"attempting Codex session {snapshot.SessionId}"));
+                // ProcessClaimedAsync now owns the in-memory Issue claim until its finally block.
+                handedOff = true;
+                return ProcessClaimedAsync(execution, issue, source, source.IssueNumber, ct);
+            }
+            finally
+            {
+                // Preserve the claim only while the independent execution task is active.
+                if (!handedOff) _activeIssues.TryRemove(source.IssueNumber, out _);
+            }
+        }
+        return null;
     }
 
     private async Task<Task<IssueProcessingResult?>?> ClaimIntegrationRecoveryAsync(GitHubIssue issue, CancellationToken ct, bool explicitRecovery = true,
@@ -197,6 +265,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 featureBranchOverride: source.FeatureBranch, codexSettings: config.Codex, settingsSource: source,
                 resumed: true, serverExecutionId: assignment?.ServerExecutionId, assignmentId: assignment?.AssignmentId,
                 ownershipGeneration: assignment?.Lease?.Generation);
+            execution.CodexRecovery = source.CodexRecovery;
             if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
                     CreateInitialEntry(execution), integrationBase ?? "explicit", explicitRecovery, ct))
             {
@@ -231,8 +300,42 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
     }
 
-    public Task<IReadOnlyList<CodexProvisioning.IntegrationRecoveryCandidate>> DiscoverManagedIntegrationRecoveriesAsync(
-        string projectId, CancellationToken ct) => IntegrationRecovery.DiscoverManagedAsync(projectId, ct);
+    public async Task<IReadOnlyList<CodexProvisioning.IntegrationRecoveryCandidate>> DiscoverManagedIntegrationRecoveriesAsync(
+        string projectId, CancellationToken ct)
+    {
+        var candidates = (await IntegrationRecovery.DiscoverManagedAsync(projectId, ct)).ToList();
+        if (history is null) return candidates;
+        var entries = await history.ReadAllAsync(ct);
+        foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
+                     entry.RecoveryState == "codex-interrupted" && entry.ServerExecutionId is not null &&
+                     !_activeIssues.ContainsKey(entry.IssueNumber) && !entries.Any(other => other.Project == entry.Project &&
+                         other.Repository == entry.Repository && other.IssueNumber == entry.IssueNumber &&
+                         (other.AttemptNumber > entry.AttemptNumber || other.State == "Completed"))))
+        {
+            var metadataError = CodexRecoveryCoordinator.ValidateMetadata(entry, entries, config);
+            if (metadataError is not null)
+            {
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct);
+                _output.Warning($"Codex recovery requires inspection · execution {entry.ExecutionId} · {metadataError}.");
+                continue;
+            }
+            if (entry.CodexRecovery?.RetryAfterUtc > _clock.GetUtcNow()) continue;
+            string? rejection;
+            await _repositoryGate.WaitAsync(ct);
+            try { rejection = await git.ValidateCodexRecoveryAsync(entry, ct); }
+            finally { _repositoryGate.Release(); }
+            if (rejection is not null)
+            {
+                await history.UpdateRecoveryAsync(entry.ExecutionId, "codex-recovery-inspection-required", ct);
+                _output.Warning($"Codex recovery requires inspection · execution {entry.ExecutionId} · {FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray())}");
+                continue;
+            }
+            // A per-attempt fingerprint makes Server queueing idempotent across readiness checks/restart.
+            candidates.Add(new(projectId, entry.ServerExecutionId ?? "", entry.ExecutionId.ToString(),
+                entry.RecoveryBaseCommit ?? "", "Codex"));
+        }
+        return candidates.Take(128).ToArray();
+    }
 
     public async Task ReportIntegrationRecoveryRejectionAsync(Guid sourceId, string reason, CancellationToken ct)
     {
@@ -266,6 +369,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 throw new WorkerInfrastructureException("Recovery assignment does not match local preserved execution ownership.");
             return await ClaimIntegrationRecoveryAsync(issue, ct, explicitRecovery: false, assignment: assignment);
         }
+        if (assignment.Metadata.ContainsKey("codexRecoveryExecutionId"))
+            return await ClaimCodexRecoveryAsync(assignment, ct);
         return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct);
     }
 
@@ -291,6 +396,11 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             return null;
         }
         var latest = issueHistory.FirstOrDefault();
+        if (latest?.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
+        {
+            _activeIssues.TryRemove(issueKey, out _);
+            return null;
+        }
         // Ready is an explicit request for new implementation after an integration conflict,
         // including older rows that recorded the conflict as a failed task.
         var freshAfterConflict = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
@@ -402,6 +512,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 IssueOutcomeKind.Superseded => ExecutionState.Superseded,
                 _ => throw new ArgumentOutOfRangeException()
             };
+            if (retryOf?.RecoveryState == "codex-interrupted" && history is not null)
+                await history.UpdateRecoveryAsync(retryOf.ExecutionId, result.Kind == IssueOutcomeKind.Succeeded ? "codex-recovered" : "codex-recovery-finished", ct);
             var reportedResult = result with { Report = report };
             try
             {
@@ -445,7 +557,8 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         }
         catch (Exception ex)
         {
-            await ReportInterruptedExecutionAsync(execution, issue, ex.Message, ex);
+            await ReportInterruptedExecutionAsync(execution, issue,
+                ex is CodexExecutionInfrastructureException codexError ? $"{codexError.Category}. Execution preserved; waiting for Codex readiness." : ex.Message, ex);
             if (ex is GitHubOperationException githubFailure)
                 throw githubFailure.ForExecution(execution.ExecutionId);
             throw;
@@ -502,15 +615,22 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         {
             // These reporting mutations are attempted once. A failed mutation is retained for
             // reconciliation and must never be replayed as an automatic retry.
-            await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
+            if (primaryFailure is not CodexExecutionInfrastructureException { Recoverable: true })
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, CancellationToken.None);
             await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) +
                 $"### Execution interrupted\n\nExecution `{execution.ExecutionId}` stopped because of an infrastructure failure.\n\n{safeReason}\n\n" +
                 (execution.CodexProfile is { } profile ? $"Codex model: `{profile.EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{profile.Effort}`.\n\n" : "") +
-                "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n", CancellationToken.None);
+                (primaryFailure is CodexExecutionInfrastructureException { Recoverable: true }
+                    ? "### Recovery\n\n- The implementation workspace is preserved.\n- Eligible recovery resumes automatically after Codex execution readiness returns, within a bounded resume budget.\n"
+                    : "### Recovery\n\n- Inspect execution history and the preserved workspace before restarting.\n- Reconcile Git and GitHub state before requesting another attempt.\n"), CancellationToken.None);
             if (history is not null)
             {
                 var entry = (await history.ReadAllAsync(CancellationToken.None)).Single(row => row.ExecutionId == execution.ExecutionId);
-                await ReportServerAsync(entry, execution.State, CancellationToken.None);
+                try { await ReportServerAsync(entry, execution.State, CancellationToken.None); }
+                catch (HttpRequestException) when (primaryFailure is CodexExecutionInfrastructureException)
+                {
+                    _operationalLog($"Execution {execution.ExecutionId} · Codex interruption durably recorded; Server outcome reporting pending. Managed continuation still requires a fresh lease.");
+                }
             }
         }
         catch (GitHubOperationException reportingFailure)
@@ -645,7 +765,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock);
         return runner.RunAsync(context, ct);
     }
 
@@ -761,7 +881,7 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
-            OwnershipGeneration: execution.OwnershipGeneration);
+            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
 
     private static string? Extract(string? text, string pattern)
     {

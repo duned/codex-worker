@@ -711,7 +711,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
             stage, entry.StartedAtUtc, final ? entry.CompletedAtUtc ?? DateTimeOffset.UtcNow : null,
             entry.DurationMilliseconds, Bound(entry.ValidationOutcome, 1000),
             state == "Completed" ? "passed" : null,
-            state == "Failed" ? Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict",
+            state == "Failed" ? entry.RecoveryState == "codex-interrupted" ? "CodexInterruption" : Bound(entry.State, 100) : null, entry.RecoveryState is "recoverable" or "integration-conflict" or "codex-interrupted",
             Bound(state == "Completed" ? entry.ImplementationSummary : entry.FailureReason ?? entry.ImplementationSummary, 1000), generation);
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"),
             $"api/v1/workers/{workerId}/executions/{entry.ServerExecutionId}/report"));

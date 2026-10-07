@@ -207,14 +207,14 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 if (retryOf is null || retryOf.State is not ("Failed" or "Blocked") || retryOf.RecoveryState != "recoverable" ||
                     string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit))
                     throw new IssuePreparationRejectedException("Retry resume was requested, but the previous failed execution has no complete recoverable-state metadata.");
-                await ValidateRecoveryWorkspaceAsync(Path.Combine(root, retryOf.ExecutionId.ToString("N")), retryOf, ct);
+                await ValidateRecoveryWorkspaceAsync(RecoveryWorkspacePath(retryOf), retryOf, ct);
             }
             await GitAsync(["worktree", "add", "-b", _featureBranch, _executionDirectory, startingCommit], ct);
             if (resume)
             {
                 var recovery = retryOf ?? throw new IssuePreparationRejectedException("Retry resume has no source execution metadata.");
                 var recoveryBaseCommit = recovery.RecoveryBaseCommit ?? throw new IssuePreparationRejectedException("Retry resume has no recorded base commit.");
-                var recoveryPath = Path.Combine(root, recovery.ExecutionId.ToString("N"));
+                var recoveryPath = RecoveryWorkspacePath(recovery);
                 try
                 {
                     await ApplyRecoveryDeltaAsync(recoveryPath, _executionDirectory, recoveryBaseCommit, ct);
@@ -246,6 +246,51 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         return (await GitAsync(["rev-parse", $"refs/remotes/origin/{settings.BaseBranch}"], ct)).StandardOutput.Trim();
     }
 
+    public async Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct)
+    {
+        await VerifyCodexStateAsync(ct);
+        if (_featureBranch is null || _startingCommit is null) return null;
+        var status = (await GitAtAsync(ExecutionDirectory, ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
+        return new GitRecoveryInfo(_featureBranch, _startingCommit,
+            $"{status.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length} changed path(s); implementation workspace preserved.");
+    }
+
+    public async Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+    {
+        try
+        {
+            var recovery = source.CodexRecovery;
+            if (recovery is null || recovery.WorkspaceExecutionId == Guid.Empty || recovery.WorkspaceAttemptNumber < 1 ||
+                source.RecoveryBaseCommit is null || source.OriginalIssueBody is null || source.BaseBranch != settings.BaseBranch)
+                return "Interrupted execution has insufficient original intent/workspace/base metadata or a changed base branch.";
+            await EnsureOriginAsync(ct);
+            var owner = source with { ExecutionId = recovery.WorkspaceExecutionId, AttemptNumber = recovery.WorkspaceAttemptNumber };
+            await ValidateRecoveryWorkspaceAsync(Path.Combine(Path.GetFullPath(worktreeRoot), owner.ExecutionId.ToString("N")), owner, ct);
+            return null;
+        }
+        catch (WorkerInfrastructureException ex) when (!ct.IsCancellationRequested)
+        { return ex.Message; }
+    }
+
+    public async Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+    {
+        var recovery = source.CodexRecovery ?? throw new IssuePreparationRejectedException("Interrupted execution has no workspace ownership snapshot.");
+        if (source.RecoveryBaseCommit is null || source.OriginalIssueBody is null || source.BaseBranch != settings.BaseBranch)
+            throw new IssuePreparationRejectedException("Interrupted execution has insufficient original intent/base metadata or a changed base branch.");
+        var owner = source with { ExecutionId = recovery.WorkspaceExecutionId, AttemptNumber = recovery.WorkspaceAttemptNumber };
+        var path = Path.Combine(Path.GetFullPath(worktreeRoot), owner.ExecutionId.ToString("N"));
+        await EnsureOriginAsync(ct);
+        await EnsureCleanAsync("before Codex interruption recovery", ct);
+        await ValidateRecoveryWorkspaceAsync(path, owner, ct);
+        _executionDirectory = path;
+        _executionId = owner.ExecutionId;
+        _featureBranch = owner.FeatureBranch;
+        _startingCommit = owner.RecoveryBaseCommit;
+        _completedBranch = await SelectCompletedBranchAsync(new GitHubIssue(owner.IssueNumber, owner.IssueTitle,
+            owner.OriginalIssueBody ?? "", owner.StartedAtUtc), source.AttemptNumber, source.ExecutionId, ct);
+        _forcePostRebaseValidation = true;
+    }
+
     public async Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
     {
         try
@@ -259,7 +304,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             await GitAsync(["switch", "--", settings.BaseBranch], ct);
             await GitAsync(["fetch", "origin", $"refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}"], ct);
             await GitAsync(["merge", "--ff-only", $"refs/remotes/origin/{settings.BaseBranch}"], ct);
-            var sourcePath = Path.Combine(Path.GetFullPath(worktreeRoot), source.ExecutionId.ToString("N"));
+            var sourcePath = RecoveryWorkspacePath(source);
             await ValidateRecoveryWorkspaceAsync(sourcePath, source, ct);
             _executionDirectory = sourcePath;
             _featureBranch = source.FeatureBranch;
@@ -267,7 +312,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 new GitHubIssue(source.IssueNumber, source.IssueTitle, "", source.StartedAtUtc),
                 source.AttemptNumber, source.ExecutionId, ct, source.RecoveryBaseCommit);
             _startingCommit = source.RecoveryBaseCommit;
-            _executionId = source.ExecutionId;
+            _executionId = source.CodexRecovery?.WorkspaceExecutionId ?? source.ExecutionId;
             _implementationAlreadyCommitted = true;
             _forcePostRebaseValidation = true;
         }
@@ -284,7 +329,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 return "recovery state invalid: repository or integration branch differs from persisted execution configuration";
             if (source.State != "IntegrationConflict" || string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
                 return "recovery state invalid: implementation commit metadata is missing";
-            await ValidateRecoveryWorkspaceAsync(Path.Combine(Path.GetFullPath(worktreeRoot), source.ExecutionId.ToString("N")), source, ct);
+            await ValidateRecoveryWorkspaceAsync(RecoveryWorkspacePath(source), source, ct);
             return null;
         }
         catch (WorkerInfrastructureException ex) { return ex.Message; }
@@ -300,12 +345,12 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
 
     public async Task ValidateRecoveryWorkspaceAsync(string source, ExecutionHistoryEntry recovery, CancellationToken ct)
     {
-        var root = Path.GetFullPath(worktreeRoot);
-        var expectedPath = Path.GetFullPath(Path.Combine(root, recovery.ExecutionId.ToString("N")));
+        var expectedPath = RecoveryWorkspacePath(recovery);
         if (!PathEquals(Path.GetFullPath(source), expectedPath))
             throw new IssuePreparationRejectedException("Persisted recovery path does not match its execution ID.");
         var expectedBranch = FeatureBranchName(settings, new GitHubIssue(recovery.IssueNumber, recovery.IssueTitle, "", recovery.StartedAtUtc));
-        if (recovery.AttemptNumber > 1) expectedBranch += $"-retry-{recovery.AttemptNumber}";
+        var workspaceAttempt = recovery.CodexRecovery?.WorkspaceAttemptNumber ?? recovery.AttemptNumber;
+        if (workspaceAttempt > 1) expectedBranch += $"-retry-{workspaceAttempt}";
         if (recovery.FeatureBranch != expectedBranch)
             throw new IssuePreparationRejectedException("Persisted recovery branch does not match its Issue identity.");
         if (!Directory.Exists(source)) throw new IssuePreparationRejectedException($"Recoverable execution workspace is missing: {source}");
@@ -331,7 +376,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             if (!string.IsNullOrWhiteSpace(status) || !string.IsNullOrWhiteSpace((await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput))
                 throw new IssuePreparationRejectedException("Integration-conflict recovery workspace is not clean; refusing to reconcile it.");
         }
-        else if (string.IsNullOrWhiteSpace(status))
+        else if (string.IsNullOrWhiteSpace(status) && recovery.CodexRecovery is null)
             throw new IssuePreparationRejectedException("Persisted recoverable execution workspace has no useful changes; refusing to resume it.");
         var unmerged = (await GitAtAsync(source, ["ls-files", "-u"], ct)).StandardOutput;
         if (!string.IsNullOrWhiteSpace(unmerged))
@@ -534,7 +579,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         Directory.Exists(RecoveryWorkspacePath(recovery));
 
     public string RecoveryWorkspacePath(ExecutionHistoryEntry recovery) =>
-        Path.GetFullPath(Path.Combine(worktreeRoot, recovery.ExecutionId.ToString("N")));
+        Path.GetFullPath(Path.Combine(worktreeRoot, (recovery.CodexRecovery?.WorkspaceExecutionId ?? recovery.ExecutionId).ToString("N")));
 
     private static IReadOnlyList<(string Path, string? Branch)> ParseWorktrees(string output)
     {

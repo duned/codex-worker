@@ -11,6 +11,8 @@ public sealed record CodexExecutionProfile(string? Model, string Effort, string?
     {
         // Older history has no snapshot. Resolve it once using today's configured defaults,
         // without applying edited Issue metadata to recovery of an existing execution.
+        if (source?.RecoveryState == "codex-interrupted" && source.EffectiveModel is not null && source.EffectiveEffort is not null)
+            return new(source.EffectiveModel, source.EffectiveEffort);
         if (source is not null && source.EffectiveEffort is not null)
             return source.ModelSelectedByCli
                 ? new(null, source.EffectiveEffort, source.EffectiveModel)

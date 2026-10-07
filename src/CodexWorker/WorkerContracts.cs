@@ -49,6 +49,11 @@ public interface IGitRepository : IDisposable
     Task InitializeAsync(CancellationToken ct);
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct);
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct) => StartIssueAsync(executionId, issue, ct);
+    Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        Task.FromResult<string?>("This Git repository cannot verify interrupted implementation ownership.");
+    Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This Git repository cannot safely resume interrupted implementation.");
+    Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct) => Task.FromResult<GitRecoveryInfo?>(null);
     Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
     Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
@@ -79,6 +84,7 @@ public interface IGitRepository : IDisposable
 
 public interface ICodexExecutor
 {
+    ICodexExecutor WithSessionObserver(Func<string, Task> observer) => this;
     ICodexExecutor WithModelObserver(Action<string?> observer) => this;
     ICodexExecutor WithProfile(CodexExecutionProfile profile) => this;
     Task PreflightAsync(CancellationToken ct);

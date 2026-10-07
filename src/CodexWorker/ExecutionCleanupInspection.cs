@@ -39,7 +39,8 @@ public sealed partial class GitRepository
     {
         RecoveryOwnership Reject(string code, string message) => new(false, false, new(code, message));
         var expectedBranch = FeatureBranchName(settings, new GitHubIssue(entry.IssueNumber, entry.IssueTitle, "", entry.StartedAtUtc));
-        if (entry.AttemptNumber > 1) expectedBranch += $"-retry-{entry.AttemptNumber}";
+        var workspaceAttempt = entry.CodexRecovery?.WorkspaceAttemptNumber ?? entry.AttemptNumber;
+        if (workspaceAttempt > 1) expectedBranch += $"-retry-{workspaceAttempt}";
         if (entry.ExecutionId == Guid.Empty || entry.IssueNumber < 1 || entry.AttemptNumber < 1 ||
             entry.Repository != repository || entry.BaseBranch != settings.BaseBranch || entry.FeatureBranch != expectedBranch)
             return Reject("ownership-metadata-mismatch", "Persisted repository, base, branch or Issue identity differs from configured ownership.");
@@ -100,8 +101,10 @@ public sealed partial class GitRepository
                 !related.Any(e => e.ExecutionId != entry.ExecutionId && e.AttemptNumber == entry.AttemptNumber - 1)) ||
             related.Any(e => e.ExecutionId != entry.ExecutionId && e.AttemptNumber == entry.AttemptNumber))
             return Result("review", "lineage-inconsistent", "Attempt lineage is missing or inconsistent.");
+        if (entry.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
+            return Result("keep", "codex-interruption-recovery", "Codex interruption resources are retained for continuation or inspection; automatic cleanup is not authorized.");
         if (entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
-            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "operator-cleaned"))
+            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
         {
@@ -110,7 +113,7 @@ public sealed partial class GitRepository
             if (!ownership.DirectoryExists && !ownership.BranchExists)
             {
                 if (entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
-                    "superseded" or "integration-recovered" or "cleanup-pending" or "operator-cleaned")
+                    "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "cleanup-pending" or "operator-cleaned")
                     return Result("safe", "already-clean", "No managed workspace, Git registration or feature branch remains.");
                 return Result("review", "missing-recovery-resources", "History still requires recovery resources that no longer exist.");
             }

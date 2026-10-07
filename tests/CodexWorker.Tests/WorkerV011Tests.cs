@@ -5,6 +5,85 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerV011Tests
 {
+    [Fact]
+    public async Task CodexFailureDuringRequestedShutdownDoesNotBecomeWorkerFailure()
+    {
+        await WorkerHost.AwaitShutdownExecutionsAsync([
+            Task.FromException<IssueProcessingResult?>(new CodexExecutionInfrastructureException("Codex usage limit", "Execution preserved") { Recoverable = true })]);
+    }
+
+    [Theory]
+    [InlineData("snapshot", "snapshot is missing")]
+    [InlineData("intent", "Issue intent is missing")]
+    [InlineData("configuration", "configuration changed")]
+    [InlineData("owner", "ownership history is missing")]
+    public async Task IncompleteInterruptedRecoveryIsParkedWithSpecificReasonInsteadOfReimplemented(string missing, string reason)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.GitHub.CancelWhenEmpty = false;
+        var id = Guid.NewGuid();
+        var snapshot = new CodexInterruptionRecovery(missing == "owner" ? Guid.NewGuid() : id, 1, 0,
+            missing == "configuration" ? "changed" : CodexInterruptionRecovery.Fingerprint(h.Worker.Configuration));
+        await history.CreateAsync(new ExecutionHistoryEntry(id, "Test Project", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch,
+            "InfrastructureFailure", 1, null, null, 0, [], null, null, null, "usage limit", "codex-interrupted", "base-sha",
+            OriginalIssueBody: missing == "intent" ? null : "Original intent", EffectiveEffort: "medium",
+            CodexRecovery: missing == "snapshot" ? null : snapshot));
+        Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(0, h.Git.Started);
+        var preserved = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(id, preserved.ExecutionId);
+        Assert.Equal("codex-recovery-inspection-required", preserved.RecoveryState);
+        Assert.Contains(reason, h.Output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InterruptedCodexRecoveryPreservesIntentProfileAndBudgetWithoutReadyRelabel()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var clock = new RecoveryClock();
+        using var h = new Harness(history: history, timeProvider: clock);
+        h.Git.Snapshot = new("feature/example-task-17", "base-sha", "1 changed path; preserved");
+        h.Codex.CliModel = "original-model";
+        h.Codex.InitialException = new CodexExecutionInfrastructureException("Codex usage limit", "usage limit reached") { Recoverable = true };
+        await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => h.ProcessOneAsync());
+        var original = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("codex-interrupted", original.RecoveryState);
+        Assert.NotNull(original.CodexRecovery);
+        Assert.Equal(0, original.CodexRecovery.ResumeCount);
+        Assert.Equal("base-sha", original.RecoveryBaseCommit);
+        Assert.Equal(0, h.Git.Cleanups);
+        Assert.DoesNotContain("working->blocked", h.GitHub.Labels);
+        Assert.Contains("automatically", Assert.Single(h.GitHub.Comments), StringComparison.Ordinal);
+        h.GitHub.CancelWhenEmpty = false;
+        Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        clock.Advance(TimeSpan.FromMinutes(5));
+        h.Codex.InitialException = null;
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Changed issue intent" };
+        var resume = await h.Worker.ClaimNextAsync(CancellationToken.None);
+        Assert.NotNull(resume);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await resume)?.Kind);
+        Assert.Equal(1, h.Git.Started);
+        Assert.Equal(1, h.Git.CodexResumes);
+        Assert.Equal("Implement this request", h.Codex.Issues[1].Body);
+        Assert.Equal("original-model", h.Codex.Profiles[1].Model);
+        var completed = (await history.ReadAllAsync()).Single(entry => entry.State == "Completed");
+        Assert.Equal(original.ExecutionId, completed.RetryOfExecutionId);
+        Assert.Equal(original.ExecutionId, completed.CodexRecovery?.WorkspaceExecutionId);
+        Assert.Equal(1, completed.CodexRecovery?.ResumeCount);
+    }
+
+    private sealed class RecoveryClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan duration) => _now += duration;
+    }
+
     [Theory]
     [InlineData(false, "restart")]
     [InlineData(false, "resume")]
@@ -1835,7 +1914,7 @@ public sealed class WorkerV011Tests
         private readonly HttpClient? _telegramClient;
         private readonly StubTelegramHandler? _telegramHandler;
 
-        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false)
+        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false, TimeProvider? timeProvider = null)
         {
             Directory.CreateDirectory(_directory);
             var instructions = Path.Combine(_directory, "AGENTS.md");
@@ -1860,7 +1939,7 @@ public sealed class WorkerV011Tests
             }
             else _telegram = new TelegramNotifier(false, output);
             Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history,
-                operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default);
+                operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default, timeProvider: timeProvider);
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
@@ -2010,6 +2089,12 @@ public sealed class WorkerV011Tests
         public Action? BeforeIntegration { get; set; }
         public WorkerInfrastructureException? StartFailure { get; set; }
         public int? FailIssueNumber { get; set; }
+        public GitRecoveryInfo? Snapshot { get; set; }
+        public int CodexResumes { get; private set; }
+        public Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct) => Task.FromResult(Snapshot);
+        public Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) => Task.FromResult<string?>(null);
+        public Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
+        { CodexResumes++; return Task.CompletedTask; }
         public Task InitializeAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, CancellationToken ct) { Started++; LastExecutionId = executionId; return Task.CompletedTask; }
         public Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)

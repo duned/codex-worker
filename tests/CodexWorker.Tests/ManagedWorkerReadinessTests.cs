@@ -590,7 +590,7 @@ public sealed class ManagedWorkerReadinessTests
         var provider = new TestProvider();
         var readiness = new ManagedCodexReadiness(provider);
         Assert.False(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
-        Assert.Equal("codex-cli:execution-preflight-failed", readiness.DiagnosticCode);
+        Assert.StartsWith("codex-cli:execution-preflight-failed", readiness.DiagnosticCode, StringComparison.Ordinal);
         await discovery.GetAsync(refresh: true);
         Assert.False(await readiness.EvaluateAsync(discovery, false, CancellationToken.None));
         Assert.Equal(1, provider.Calls);

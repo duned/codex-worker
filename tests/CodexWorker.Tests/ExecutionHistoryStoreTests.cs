@@ -5,6 +5,35 @@ namespace CodexWorker.Tests;
 public sealed class ExecutionHistoryStoreTests
 {
     [Fact]
+    public async Task CodexRecoveryClaimAndConsumedBudgetSurviveRestartAndCannotBeDoubleClaimed()
+    {
+        using var database = new TemporaryDatabase();
+        var now = DateTimeOffset.UtcNow;
+        var source = Entry(Guid.NewGuid(), now) with
+        {
+            State = "InfrastructureFailure", CompletedAtUtc = now, RecoveryState = "codex-interrupted",
+            CodexRecovery = new(Guid.NewGuid(), 1, 2, "fingerprint", Guid.NewGuid().ToString())
+        };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(source);
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var persisted = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal(source.CodexRecovery, persisted.CodexRecovery);
+        var attempt = Entry(Guid.NewGuid(), now.AddSeconds(1)) with
+        {
+            AttemptNumber = 2, RetryOfExecutionId = source.ExecutionId,
+            CodexRecovery = source.CodexRecovery with { ResumeCount = 3 }
+        };
+        Assert.True(await reopened.TryClaimCodexRecoveryAsync(persisted, attempt, CancellationToken.None));
+        Assert.False(await reopened.TryClaimCodexRecoveryAsync(persisted, attempt with { ExecutionId = Guid.NewGuid() }, CancellationToken.None));
+        using var again = new ExecutionHistoryStore(database.Path);
+        var consumed = (await again.ReadAllAsync()).Single(entry => entry.ExecutionId == attempt.ExecutionId);
+        Assert.Equal(3, consumed.CodexRecovery?.ResumeCount);
+        await again.UpdateAsync(consumed with { State = "InfrastructureFailure", CompletedAtUtc = now, RecoveryState = "codex-interrupted" });
+        Assert.False(await again.TryClaimCodexRecoveryAsync(consumed,
+            attempt with { ExecutionId = Guid.NewGuid(), AttemptNumber = 3 }, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task CreationAndUpdatesSurviveStoreRecreationWithLifecycleDetails()
     {
         using var database = new TemporaryDatabase();
@@ -64,7 +93,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -85,7 +114,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -110,7 +139,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -263,7 +292,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(10L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(11L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

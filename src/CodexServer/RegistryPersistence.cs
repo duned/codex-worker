@@ -949,7 +949,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             request.ProjectCapacities.Any(p => !Printable(p.Key, 80) || p.Value is < 0 or > 8) ||
             request.IntegrationRecoveries is { Count: > 128 } || request.IntegrationRecoveries?.Any(item => item is null ||
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
-                !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
+                item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
         if (!request.WorkerEnabled || request.AvailableCapacity == 0 || request.ProjectCapacities.Count == 0 || request.ProjectCapacities.All(p => p.Value == 0))
             return NoAssignment(request.WorkerId, "worker-disabled-or-no-capacity");
@@ -1056,8 +1056,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 }
                 else recoveryMetadata = null;
             }
-            if (queuedItem.WorkspaceRecovery == "PreservedIntegrationImplementation" &&
-                (recoveryMetadata is null || !recoveryMetadata.TryGetValue("integrationRecoveryExecutionId", out var localId) ||
+            if (queuedItem.WorkspaceRecovery == "ReturnedCodexWorkspaceRequired") continue;
+            if (queuedItem.WorkspaceRecovery is "PreservedIntegrationImplementation" or "PreservedCodexImplementation" &&
+                (recoveryMetadata is null || !recoveryMetadata.TryGetValue(queuedItem.WorkspaceRecovery == "PreservedCodexImplementation" ? "codexRecoveryExecutionId" : "integrationRecoveryExecutionId", out var localId) ||
                     !Guid.TryParse(localId, out _) || !recoveryMetadata.TryGetValue("originalServerExecutionId", out var originalId) ||
                     !Guid.TryParse(originalId, out _) || !recoveryMetadata.ContainsKey("integrationBase")))
             {
@@ -1149,6 +1150,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         {
             if (!request.ProjectCapacities.TryGetValue(recovery.ProjectId, out var capacity) || capacity <= 0 ||
                 !projects.TryGetValue(recovery.ProjectId, out var project) || !project.Enabled) continue;
+            if (recovery.Kind == "Codex")
+                await AttachReturnedCodexWorkspaceAsync(command, request.WorkerId, recovery, _timeProvider.GetUtcNow(), ct);
             command.Parameters.Clear();
             // Server outcome and node ownership must independently corroborate the local candidate.
             // Existing reservations include uncertain integration, so another Worker cannot take over its workspace.
@@ -1157,19 +1160,21 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     (SELECT MAX(attempt_number) FROM execution_requests other WHERE other.project_id=source.project_id AND other.work_id=source.work_id)
                 FROM execution_requests source
                 WHERE id=$source AND project_id=$project AND assigned_worker_id=$worker AND worker_execution_id=$local
-                    AND state='Failed' AND failure_classification='IntegrationConflict' AND recoverable=1 AND recovery_state IS NULL
+                    AND state='Failed' AND failure_classification=$classification AND recoverable=1 AND recovery_state IS NULL
                     AND NOT EXISTS (SELECT 1 FROM execution_requests other WHERE other.project_id=source.project_id
                         AND other.work_id=source.work_id AND (other.state IN ('Queued','Assigned','Running','Completed')
                             OR other.recovery_state='LeaseExpiredUncertain'))
                     AND NOT EXISTS (SELECT 1 FROM execution_metadata metadata WHERE metadata.state='IntegrationRecovery'
-                        AND CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationRecoveryExecutionId') END=$local
-                        AND CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationBase') END=$base)
+                        AND CASE WHEN json_valid(metadata.metadata_json) THEN COALESCE(json_extract(metadata.metadata_json,'$.integrationRecoveryExecutionId'),json_extract(metadata.metadata_json,'$.codexRecoveryExecutionId')) END=$local
+                        AND ($kind='Codex' OR CASE WHEN json_valid(metadata.metadata_json) THEN json_extract(metadata.metadata_json,'$.integrationBase') END=$base))
                 """;
             command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
             command.Parameters.AddWithValue("$project", recovery.ProjectId);
             command.Parameters.AddWithValue("$worker", request.WorkerId);
             command.Parameters.AddWithValue("$local", recovery.WorkerExecutionId);
             command.Parameters.AddWithValue("$base", recovery.IntegrationBase);
+            command.Parameters.AddWithValue("$kind", recovery.Kind);
+            command.Parameters.AddWithValue("$classification", recovery.Kind == "Codex" ? "CodexInterruption" : "IntegrationConflict");
             string type, workId, workJson;
             int attempt;
             await using (var reader = await command.ExecuteReaderAsync(ct))
@@ -1187,9 +1192,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                     else if (sourceReader.IsDBNull(1) || sourceReader.GetString(1) != request.WorkerId ||
                         sourceReader.IsDBNull(2) || sourceReader.GetString(2) != recovery.WorkerExecutionId)
                         reason = "The original Server execution does not corroborate this Worker's local execution identity.";
-                    else if (sourceReader.GetString(0) != "Failed" || sourceReader.IsDBNull(3) || sourceReader.GetString(3) != "IntegrationConflict" ||
+                    else if (sourceReader.GetString(0) != "Failed" || sourceReader.IsDBNull(3) || sourceReader.GetString(3) != (recovery.Kind == "Codex" ? "CodexInterruption" : "IntegrationConflict") ||
                         !sourceReader.GetBoolean(4) || !sourceReader.IsDBNull(5))
-                        reason = "The original Server execution is not a verified recoverable integration conflict; inspect its outcome and lease reconciliation state.";
+                        reason = "The original Server execution is not a verified recoverable execution interruption/conflict; inspect its outcome and lease reconciliation state.";
                     if (reason is not null) rejections[recovery.WorkerExecutionId] = reason;
                     continue;
                 }
@@ -1201,7 +1206,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             command.CommandText = """
                 INSERT INTO execution_requests (id,project_id,work_type,work_id,work_reference_json,created_at_utc,state,
                     retry_of_execution_id,attempt_number,workspace_recovery)
-                VALUES ($id,$project,$type,$workId,$work,$now,'Queued',$source,$attempt,'PreservedIntegrationImplementation');
+                VALUES ($id,$project,$type,$workId,$work,$now,'Queued',$source,$attempt,$workspaceRecovery);
                 INSERT INTO execution_metadata (execution_id,worker_id,project_id,state,metadata_json,updated_at_utc)
                 VALUES ($id,$worker,$project,'IntegrationRecovery',$metadata,$now);
                 """;
@@ -1214,15 +1219,60 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
             command.Parameters.AddWithValue("$attempt", attempt);
             command.Parameters.AddWithValue("$worker", request.WorkerId);
+            command.Parameters.AddWithValue("$workspaceRecovery", recovery.Kind == "Codex" ? "PreservedCodexImplementation" : "PreservedIntegrationImplementation");
             command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(new Dictionary<string, string>
             {
-                ["integrationRecoveryExecutionId"] = recovery.WorkerExecutionId,
+                [recovery.Kind == "Codex" ? "codexRecoveryExecutionId" : "integrationRecoveryExecutionId"] = recovery.WorkerExecutionId,
                 ["integrationBase"] = recovery.IntegrationBase,
                 ["originalServerExecutionId"] = recovery.ServerExecutionId
             }));
             await command.ExecuteNonQueryAsync(ct);
         }
         return rejections;
+    }
+
+    /// <summary>When the original node returns after pre-integration lease expiry, reuse the still-queued
+    /// retry under a NEW lease. Never take work back from another active/completed assignment.</summary>
+    private static async Task AttachReturnedCodexWorkspaceAsync(SqliteCommand command, string workerId,
+        IntegrationRecoveryCandidate recovery, DateTimeOffset now, CancellationToken ct)
+    {
+        command.Parameters.Clear();
+        command.CommandText = """
+            SELECT retry.id FROM execution_requests retry JOIN execution_requests source ON source.id=retry.retry_of_execution_id
+            WHERE source.id=$source AND source.project_id=$project AND source.assigned_worker_id=$worker
+                AND source.worker_execution_id=$local AND source.state='Failed' AND source.recovery_state='LeaseExpiredRequeued'
+                AND source.current_stage IN ('Codex','Validation') AND source.integration_result IS NULL
+                AND retry.state='Queued' AND retry.workspace_recovery IN ('FreshWorkspaceRequired','ReturnedCodexWorkspaceRequired')
+                AND NOT EXISTS (SELECT 1 FROM execution_requests other WHERE other.project_id=source.project_id
+                    AND other.work_id=source.work_id AND other.id!=retry.id
+                    AND (other.state IN ('Queued','Assigned','Running','Completed') OR other.recovery_state='LeaseExpiredUncertain'))
+            """;
+        command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
+        command.Parameters.AddWithValue("$project", recovery.ProjectId);
+        command.Parameters.AddWithValue("$worker", workerId);
+        command.Parameters.AddWithValue("$local", recovery.WorkerExecutionId);
+        var retryId = await command.ExecuteScalarAsync(ct) as string;
+        if (retryId is null) return;
+        command.Parameters.Clear();
+        command.CommandText = """
+            UPDATE execution_requests SET workspace_recovery='PreservedCodexImplementation' WHERE id=$retry AND state='Queued';
+            UPDATE execution_requests SET failure_classification='CodexInterruption', recoverable=1, recovery_state=NULL,
+                recovery_reason='Original Worker returned with verified interrupted implementation; continuation requires a new lease.' WHERE id=$source;
+            INSERT INTO execution_metadata (execution_id,worker_id,project_id,state,metadata_json,updated_at_utc)
+                VALUES ($retry,$worker,$project,'IntegrationRecovery',$metadata,$now);
+            """;
+        command.Parameters.AddWithValue("$retry", retryId);
+        command.Parameters.AddWithValue("$source", recovery.ServerExecutionId);
+        command.Parameters.AddWithValue("$worker", workerId);
+        command.Parameters.AddWithValue("$project", recovery.ProjectId);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$metadata", JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["codexRecoveryExecutionId"] = recovery.WorkerExecutionId,
+            ["originalServerExecutionId"] = recovery.ServerExecutionId,
+            ["integrationBase"] = recovery.IntegrationBase
+        }));
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     public async Task<IReadOnlyList<ExecutionRequest>> GetExecutionsAsync(CancellationToken cancellationToken = default)
@@ -1746,7 +1796,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             if (execution is not null) decisions.Add(execution);
             if (!safe) continue;
             command.Parameters.Clear();
-            command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason, workspace_recovery) VALUES ($id,$project,$type,$workId,$work,$created,'Queued',$retryOf,$attempt,'Requeued after lease expiry before integration.','FreshWorkspaceRequired');";
+            command.CommandText = "INSERT INTO execution_requests (id, project_id, work_type, work_id, work_reference_json, created_at_utc, state, retry_of_execution_id, attempt_number, recovery_reason, workspace_recovery) VALUES ($id,$project,$type,$workId,$work,$created,'Queued',$retryOf,$attempt,'Requeued after lease expiry before integration.',$workspace);";
             command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
             command.Parameters.AddWithValue("$project", item.Project);
             command.Parameters.AddWithValue("$type", item.Type);
@@ -1755,6 +1805,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             command.Parameters.AddWithValue("$created", now.ToString("O"));
             command.Parameters.AddWithValue("$retryOf", item.Id);
             command.Parameters.AddWithValue("$attempt", item.Attempt + 1);
+            command.Parameters.AddWithValue("$workspace", item.WorkspaceRecovery == "PreservedCodexImplementation" ? "ReturnedCodexWorkspaceRequired" : "FreshWorkspaceRequired");
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         return decisions;

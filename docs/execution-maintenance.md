@@ -2,6 +2,8 @@
 
 `cw` is the repository developer client. The running Worker's local Management API owns history reads, resource classification and cleanup; the client never opens the execution database or implements Git cleanup rules. Server queue reconciliation remains a separate operation.
 
+For automatic continuation of interrupted Codex implementation, see [Codex interruption recovery](codex-interruption-recovery.md).
+
 ## Inspect and select
 
 ```sh

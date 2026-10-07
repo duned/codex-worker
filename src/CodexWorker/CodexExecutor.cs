@@ -43,12 +43,19 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes
     }, projectEnvironment);
 
+    private Func<string, Task>? _sessionObserver;
+    public ICodexExecutor WithSessionObserver(Func<string, Task> observer)
+    {
+        var scoped = new CodexExecutor(runner, settings, projectEnvironment) { _modelObserver = _modelObserver, _sessionObserver = observer };
+        return scoped;
+    }
     private Action<string?>? _modelObserver;
 
     public ICodexExecutor WithModelObserver(Action<string?> observer)
     {
         var scoped = new CodexExecutor(runner, settings, projectEnvironment);
         scoped._modelObserver = observer;
+        scoped._sessionObserver = _sessionObserver;
         return scoped;
     }
 
@@ -99,7 +106,9 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 Previous recovery state: {retryOf.RecoveryStatus ?? "No recoverable implementation state was recorded."}
                 {(resumed ? "Useful files from the previous attempt are present in this workspace. Inspect them critically; do not assume they are correct. Complete the full original Issue." : "Ignore implementation state from the previous attempt. Start from this attempt's current authoritative base branch and complete the full original Issue.")}
                 """;
-        return await RunStructuredAsync(projectDirectory, prompt, ct);
+        if (retryOf?.RecoveryState == "codex-interrupted")
+            prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. The Worker owns all Git lifecycle operations.\n";
+        return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : null);
     }
 
     public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
@@ -184,7 +193,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 throw new WorkerInfrastructureException(reason, ex);
             }
             if (result.ExitCode != 0)
-                throw new WorkerInfrastructureException($"Codex process started but preflight exited with code {result.ExitCode}. Check Codex authentication, its runtime, and network access as the Worker service account. Process output is omitted to protect authentication material.");
+                throw new WorkerInfrastructureException($"Codex process started but preflight exited with code {result.ExitCode}. {CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError)).Reason}. Exit code {result.ExitCode}. {CodexFailure.Evidence(result.StandardOutput, result.StandardError)}");
             var response = File.Exists(outputPath) ? (await File.ReadAllTextAsync(outputPath, ct)).Trim() : "";
             if (!response.Equals("OK", StringComparison.Ordinal))
                 throw new WorkerInfrastructureException("Codex process started but preflight returned an unexpected response; expected exactly 'OK'. Response omitted to protect authentication material.");
@@ -192,7 +201,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            throw new WorkerInfrastructureException($"Codex execution capability unavailable. {FailureDiagnosticRedactor.Redact(ex.Message)} Worker installation and any completed registration/identity remain valid. Correct the service capability/environment and restart the Worker. No installation or authentication is performed automatically.", ex);
+            throw new WorkerInfrastructureException($"Codex execution capability unavailable. {FailureDiagnosticRedactor.Redact(ex.Message)} Worker installation and any completed registration/identity remain valid. Correct the service capability/environment; execution readiness is rechecked automatically. No installation or authentication is performed automatically.", ex);
         }
         finally
         {
@@ -202,17 +211,28 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     }
 
     private async Task<CodexOutcome> RunStructuredAsync(string projectDirectory, string prompt, CancellationToken ct,
-        bool useStandardInput = false)
+        bool useStandardInput = false, string? sessionId = null)
     {
         var schemaPath = Path.Combine(Path.GetTempPath(), $"codex-worker-schema-{Guid.NewGuid():N}.json");
         var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-output-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(schemaPath, OutputSchema, ct);
         try
         {
-            var args = BuildArguments(settings, schemaPath, outputPath, useStandardInput ? "-" : prompt);
-            var environment = CodexEnvironment.Create(projectEnvironment);
+            using var environment = CodexEnvironment.Create(projectEnvironment);
+            var args = BuildArguments(settings, schemaPath, outputPath, useStandardInput ? "-" : prompt).ToList();
+            args.Insert(1, "--json");
+            if (Guid.TryParse(sessionId, out var parsedSession))
+            {
+                // Resume only by an explicit recorded UUID, never --last or a caller-provided thread name.
+                if (await SupportsResumeAsync(projectDirectory, environment.Variables, ct))
+                {
+                    args.Insert(1, "resume");
+                    args.Insert(args.Count - 1, parsedSession.ToString());
+                }
+            }
             ProcessResult result;
             var modelReported = false;
+            string? observedSession = null;
             void ObserveStartup(string prefix)
             {
                 if (modelReported || !string.IsNullOrWhiteSpace(settings.Model)) return;
@@ -225,22 +245,44 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             {
                 result = await runner.RunAsync(Executable, args, projectDirectory,
                     TimeSpan.FromMinutes(settings.TimeoutMinutes), ct, environment.Variables,
-                    standardInput: useStandardInput ? prompt : null, standardErrorObserver: ObserveStartup);
+                    standardInput: useStandardInput ? prompt : null, standardErrorObserver: ObserveStartup,
+                    standardOutputObserver: async prefix =>
+                    {
+                        var session = TryReadSession(prefix);
+                        if (session is not null && session != observedSession)
+                        {
+                            observedSession = session;
+                            if (_sessionObserver is not null) await _sessionObserver(session);
+                        }
+                    });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
-                throw new CodexExecutionInfrastructureException(ExecutionFailureCategory(ex),
-                    $"Codex execution could not complete reliably: {ex.Message}", ex);
+                var failure = CodexFailure.Classify(ex.Message, ex is TimeoutException);
+                var diagnostic = ex is ProcessTimeoutException timeout
+                    ? CodexFailure.Evidence(timeout.StandardOutput, timeout.StandardError, projectEnvironment?.Values.ToArray())
+                    : FailureDiagnosticRedactor.Redact(ex.Message, projectEnvironment?.Values.ToArray());
+                throw new CodexExecutionInfrastructureException(failure.Category,
+                    failure.Reason + ". " + diagnostic, ex)
+                    { Recoverable = failure.Recoverable };
             }
             finally
             {
-                environment.Dispose();
                 if (!modelReported && string.IsNullOrWhiteSpace(settings.Model)) _modelObserver?.Invoke(null);
             }
             if (result.ExitCode != 0)
-                throw new CodexExecutionInfrastructureException("Codex process failure",
-                    $"Codex execution exited with code {result.ExitCode}; service/authentication/CLI failure is possible.{Diagnostics(result.StandardOutput, result.StandardError)}");
+            {
+                var evidence = result.StandardOutput + "\n" + result.StandardError;
+                if (args.Contains("resume") && TryReadSession(result.StandardOutput) is null &&
+                    (evidence.Contains("No session found", StringComparison.OrdinalIgnoreCase) ||
+                     evidence.Contains("session not found", StringComparison.OrdinalIgnoreCase)))
+                    return await RunStructuredAsync(projectDirectory, prompt, ct, useStandardInput);
+                var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
+                throw new CodexExecutionInfrastructureException(failure.Category,
+                    $"{failure.Reason}. Exit code {result.ExitCode}.\n{CodexFailure.Evidence(result.StandardOutput, result.StandardError, projectEnvironment?.Values.ToArray())}")
+                    { Recoverable = failure.Recoverable };
+            }
             if (!File.Exists(outputPath)) throw new CodexExecutionInfrastructureException("Unknown Codex failure",
                 "Codex execution produced no structured final response.");
             try { return CodexResultParser.Parse(await File.ReadAllTextAsync(outputPath, ct)); }
@@ -253,6 +295,41 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             TryDelete(schemaPath);
             TryDelete(outputPath);
         }
+    }
+
+    private async Task<bool> SupportsResumeAsync(string directory, IReadOnlyDictionary<string, string?> environment, CancellationToken ct)
+    {
+        try
+        {
+            var help = await runner.RunAsync(Executable, ["exec", "resume", "--help"], directory,
+                TimeSpan.FromSeconds(10), ct, environment);
+            return help.ExitCode == 0 && help.StandardOutput.Contains("--output-schema", StringComparison.Ordinal) &&
+                help.StandardOutput.Contains("--json", StringComparison.Ordinal) &&
+                help.StandardOutput.Contains("--approve-for-me", StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException && !ct.IsCancellationRequested)
+        {
+            // A local help probe does not authorize loosening sandbox/approval flags.
+            // Continue the preserved workspace using the already-supported normal invocation.
+            return false;
+        }
+    }
+
+    internal static string? TryReadSession(string jsonLines)
+    {
+        foreach (var line in jsonLines.Split('\n'))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String && type.GetString() == "thread.started" &&
+                    root.TryGetProperty("thread_id", out var id) && id.ValueKind == JsonValueKind.String && Guid.TryParse(id.GetString(), out var session) && session != Guid.Empty)
+                    return session.ToString();
+            }
+            catch (JsonException) { /* Ignore partial and non-event lines. */ }
+        }
+        return null;
     }
 
     public static IReadOnlyList<string> BuildArguments(CodexSettings settings, string schemaPath, string outputPath, string prompt)
@@ -382,10 +459,6 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         """;
 
     private static void TryDelete(string path) { try { File.Delete(path); } catch { /* temp cleanup is best effort */ } }
-    private static string Tail(string value) => value.Length <= 1400 ? value : value[^1400..];
-    private static string Tail(string value, int length) => value.Length <= length ? value : value[^length..];
-    private static string Diagnostics(string stdout, string stderr) =>
-        $"\nstdout: {Tail(stdout, 2500)}\nstderr: {Tail(stderr, 2500)}";
 }
 
 internal sealed class CodexEnvironment : IDisposable

@@ -14,7 +14,7 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
-    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default)
+    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null)
 {
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
@@ -22,6 +22,16 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var execution = context.Execution;
         var issue = context.Issue;
         var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
+        executionCodex = executionCodex.WithSessionObserver(async session =>
+        {
+            if (execution.CodexRecovery is { } recovery)
+            {
+                execution.CodexRecovery = recovery with { SessionId = session };
+                if (context.RetryOf?.RecoveryState == "codex-interrupted" && session != recovery.SessionId)
+                    output.Warning($"Execution {execution.ExecutionId} · continuing preserved workspace with Codex session {session}.");
+                await SaveHistoryAsync(CreateEntry(execution, null, null, null), CancellationToken.None);
+            }
+        });
         executionCodex = executionCodex.WithModelObserver(model =>
         {
             execution.RecordCliModel(model);
@@ -40,7 +50,13 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             await _repositoryGate.WaitAsync(ct);
             try
             {
-                try { await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct); }
+                try
+                {
+                    if (context.RetryOf?.RecoveryState == "codex-interrupted")
+                        await git.StartCodexRecoveryAsync(context.RetryOf, ct);
+                    else
+                        await git.StartIssueAsync(execution.ExecutionId, issue, context.RetryOf, execution.Resumed, execution.AttemptNumber, ct);
+                }
                 catch (Exception ex) when (ex is ProjectCheckoutDirtyException or IssuePreparationRejectedException &&
                     !ct.IsCancellationRequested && !WorkspaceExists())
                 {
@@ -64,6 +80,13 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 }
             }
             finally { _repositoryGate.Release(); }
+            execution.CodexRecovery ??= new CodexInterruptionRecovery(execution.ExecutionId, execution.AttemptNumber,
+                0, CodexInterruptionRecovery.Fingerprint(config));
+            var workspaceSnapshot = await git.InspectExecutionWorkspaceAsync(ct);
+            await SaveHistoryAsync(CreateEntry(execution, null, null, null) with
+            {
+                RecoveryBaseCommit = workspaceSnapshot?.BaseCommit, RecoveryStatus = workspaceSnapshot?.StatusSummary
+            }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
                 executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
@@ -75,7 +98,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     config.Environment.Variables.Values.ToArray());
             await git.VerifyCodexStateAsync(ct);
             var implementationSummary = outcome.Summary;
-            var repairs = new List<ValidationRepairRecord>();
+            var repairs = context.RetryOf?.RecoveryState == "codex-interrupted"
+                ? context.RetryOf.Repairs.ToList() : new List<ValidationRepairRecord>();
             await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
             if (outcome.Status == "blocked") return await CleanupOutcomeAsync(context, IssueOutcomeKind.Blocked,
                 new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
@@ -83,7 +107,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary,
                     FailureCategory: "Codex reported incomplete task"), ct);
 
-            var repairAttempts = 0;
+            var repairAttempts = repairs.Where(repair => !repair.IntegrationRepair).Select(repair => repair.Attempt).DefaultIfEmpty(0).Max();
             while (true)
             {
                 await TransitionAsync(execution, ExecutionState.Validating, ct);
@@ -112,6 +136,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                             FinalValidationDiagnostics: failureSummary, FinalValidationExitCode: failure.ExitCode), ct);
 
                 repairAttempts++;
+                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                    "Repair invocation interrupted before a structured result was available.", false, failureSummary));
+                await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
                 outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", execution), () =>
                     executionCodex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
@@ -124,8 +151,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     if (outcome.Status == "failed")
                         output.FailureReason(execution.ExecutionId, "Codex repair reported incomplete task", outcome.Summary,
                             config.Environment.Variables.Values.ToArray());
-                    repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                        outcome.Summary, false, failureSummary));
+                    repairs[^1] = new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                        outcome.Summary, false, failureSummary);
                     return await CleanupOutcomeAsync(context,
                         outcome.Status == "blocked" ? IssueOutcomeKind.Blocked : IssueOutcomeKind.Failed,
                         new IssueExecutionReport(implementationSummary, repairs,
@@ -133,8 +160,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                             Failure: outcome.Status == "failed" ? outcome.Summary : null,
                             FailureCategory: outcome.Status == "failed" ? "Codex repair reported incomplete task" : null), ct);
                 }
-                repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
-                    outcome.Summary, false, failureSummary));
+                repairs[^1] = new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
+                    outcome.Summary, false, failureSummary);
                 await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
             }
 
@@ -206,6 +233,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             var recoveryState = GitHubOperationException.Find(shutdownError) is { IsMutation: true }
                 ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
+            if (execution.State is ExecutionState.Implementing or ExecutionState.Repairing && execution.CodexRecovery is not null &&
+                recoveryState != GitHubOperationException.ReconciliationRequiredState)
+                recoveryState = "codex-interrupted";
             await RecordInfrastructureFailureAsync(execution, "Execution interrupted by Worker shutdown", recoveryState, shutdown: true);
             throw new WorkerShutdownException(shutdownToken, shutdownError);
         }
@@ -219,6 +249,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (!execution.IsTerminal) await RecordInfrastructureFailureAsync(execution, ex.Message,
                 ex switch
                 {
+                    CodexExecutionInfrastructureException { Recoverable: true } when execution.CodexRecovery is not null &&
+                        execution.State is ExecutionState.Implementing or ExecutionState.Repairing =>
+                        execution.CodexRecovery.ResumeCount >= CodexInterruptionRecovery.MaximumResumes ? "codex-recovery-exhausted" : "codex-interrupted",
                     PreExecutionInfrastructureException { InnerException: ProjectCheckoutDirtyException } => null,
                     PreExecutionInfrastructureException => "preparation-failed",
                     _ => "uncertain"
@@ -403,6 +436,24 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
 
     private async Task RecordInfrastructureFailureAsync(WorkerExecution execution, string reason, string? recoveryState = "uncertain", bool shutdown = false)
     {
+        GitRecoveryInfo? recoverySnapshot = null;
+        if (recoveryState is "codex-interrupted" or "codex-recovery-exhausted")
+        {
+            // Verify ownership again after the child stopped, with a bounded process timeout.
+            // Corrupt Git state remains preserved but must never be automatically resumed.
+            try
+            {
+                recoverySnapshot = await git.InspectExecutionWorkspaceAsync(CancellationToken.None);
+                if (recoverySnapshot is null) recoveryState = "uncertain";
+            }
+            catch (WorkerInfrastructureException verificationError)
+            {
+                recoveryState = "uncertain";
+                reason += " Recovery verification failed: " + verificationError.Message;
+            }
+            if (execution.CodexRecovery is { } recovery)
+                execution.CodexRecovery = recovery with { RetryAfterUtc = (timeProvider ?? TimeProvider.System).GetUtcNow().AddMinutes(5) };
+        }
         if (!execution.IsTerminal) execution.TransitionTo(shutdown ? ExecutionState.Cancelled : ExecutionState.InfrastructureFailure);
         reason = FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray());
         output.Warning($"Execution {execution.ExecutionId} · {(shutdown ? "Worker shutdown" : "infrastructure failure")} · {reason}");
@@ -411,7 +462,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         if (!string.IsNullOrWhiteSpace(workspace) && !string.IsNullOrWhiteSpace(checkout) &&
             !PathEquals(workspace, checkout) && Directory.Exists(workspace))
             reason += $" Preserved execution workspace: {Path.GetFullPath(workspace)}";
-        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState }, CancellationToken.None); }
+        try { await SaveHistoryAsync(CreateEntry(execution, null, null, reason) with { RecoveryState = recoveryState, RecoveryBaseCommit = recoverySnapshot?.BaseCommit, RecoveryStatus = recoverySnapshot?.StatusSummary }, CancellationToken.None); }
         catch (WorkerInfrastructureException) when (!shutdown) { /* Preserve the original failure; the existing row remains incomplete. */ }
     }
 
@@ -447,7 +498,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
-            OwnershipGeneration: execution.OwnershipGeneration);
+            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
 
     private static string? Extract(string? text, string pattern)
     {

@@ -179,7 +179,7 @@ public sealed class WorkerHost
                         entry.State is not ("Completed" or "Blocked" or "Failed" or "IntegrationConflict" or "InfrastructureFailure" or "Cancelled")) continue;
                     // A shutdown interruption leaves the last Server stage/lease intact so
                     // expiry reconciliation can fence retries and retain uncertain integration.
-                    if (IsShutdownInterruption(entry)) continue;
+                    if (IsShutdownInterruption(entry) && entry.RecoveryState != "codex-interrupted") continue;
                     var serverState = entry.State == "Completed" ? "Completed" : "Failed";
                     try { await _registration.ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -323,7 +323,7 @@ public sealed class WorkerHost
             activeProject = null;
             IAgentAuthenticationProvider agentAuthentication = _agentAuthentication ?? new CodexAgentAuthenticationProvider(
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
-            var readiness = new ManagedCodexReadiness(agentAuthentication);
+            var readiness = new ManagedCodexReadiness(agentAuthentication, _timeProvider);
             var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
             var executionDependenciesReady = false;
             IReadOnlyList<string> executionReadinessBlockers = [];
@@ -422,6 +422,20 @@ public sealed class WorkerHost
                     catch (WorkerInfrastructureException ex) when (GitHubOperationException.Find(ex) is { } githubFailure)
                     {
                         PauseProjectForGitHubFailure(runtimeReadModel, project.Configuration.Project.Name, githubFailure);
+                    }
+                    catch (CodexExecutionInfrastructureException ex)
+                    {
+                        // The runner already durably preserved this execution. Keep siblings and
+                        // the control plane alive; stop new Codex work until bounded preflight succeeds.
+                        agentReady = false;
+                        readiness.Interrupt($"{ex.Category} · execution preserved · retrying preflight automatically");
+                        heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability !=
+                            WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).ToArray();
+                        runtimeReadModel.Events.Publish("codex.interrupted", readiness.DiagnosticCode ?? ex.Category,
+                            project.Configuration.Project.Name);
+                        var message = readiness.DiagnosticCode ?? ex.Category;
+                        _output.Warning(message);
+                        _operationalLog($"Scheduler · {message}");
                     }
                     catch (PreExecutionInfrastructureException ex)
                     {
@@ -546,7 +560,14 @@ public sealed class WorkerHost
                         await InitializeProjectsAsync(executionToken);
                     }
                 }
+                var previouslyReady = agentReady;
                 agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, executionToken);
+                if (agentReady && !previouslyReady)
+                {
+                    runtimeReadModel.Events.Publish("codex.ready", "Codex execution readiness restored; preserved recoveries are eligible.");
+                    _output.Warning("Codex execution readiness restored.");
+                    heartbeatCapabilities = heartbeatCapabilities.Append(WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
+                }
                 await PublishReadinessAsync(executionToken);
                 while (agentReady && executionDependenciesReady && (managedConfiguration is null || managedConfiguration.Status.SynchronizationStatus == "synchronized") &&
                     !ct.IsCancellationRequested && active.Count < _global.Worker.MaxParallelTasks)
@@ -907,6 +928,7 @@ public sealed class WorkerHost
         {
             try { await task; }
             catch (WorkerShutdownException) { /* Explicitly recorded controlled interruption. */ }
+            catch (CodexExecutionInfrastructureException) { /* Durable execution failure does not turn requested shutdown into a crash. */ }
             catch (WorkerInfrastructureException error) when (GitHubOperationException.Find(error) is not null)
             {
                 // Shutdown already stopped scheduling. Preserve the recorded remote uncertainty
@@ -1110,7 +1132,7 @@ public sealed class WorkerHost
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken,
-                registrationClient: _registration), codex, github, repositoryGate);
+                registrationClient: _registration, timeProvider: _timeProvider), codex, github, repositoryGate);
     }
 
     private void PauseProjectForGitHubFailure(WorkerRuntimeReadModel runtime, string projectName,

@@ -972,7 +972,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
                 var update = EligibilityUpdate(issue, assignment.Project.Repository,
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture));
-                var recovery = assignment.Metadata.ContainsKey("integrationRecoveryExecutionId");
+                var recovery = (assignment.Metadata.ContainsKey("integrationRecoveryExecutionId") || assignment.Metadata.ContainsKey("codexRecoveryExecutionId"));
                 if (issue?.IsEligible == true || recovery && issue is not null &&
                     issue.State.Equals("open", StringComparison.OrdinalIgnoreCase) &&
                     (assignment.Project.IssueBlockedLabel is null || !issue.Labels.Contains(assignment.Project.IssueBlockedLabel, StringComparer.OrdinalIgnoreCase)) &&

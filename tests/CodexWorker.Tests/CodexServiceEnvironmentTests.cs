@@ -6,6 +6,70 @@ namespace CodexWorker.Tests;
 public sealed class CodexServiceEnvironmentTests
 {
     [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task RecoveryResumesExplicitSessionOrContinuesSameWorkspaceWhenUnavailable(bool supported, bool missing)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var directory = CreateDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE");
+        try
+        {
+            var executable = Path.Combine(directory, "codex");
+            var session = Guid.NewGuid().ToString();
+            await File.WriteAllTextAsync(executable, """
+                #!/bin/sh
+                if [ "$3" = --help ]; then
+                  printf '%s' 'HELP_TEXT'
+                  exit 0
+                fi
+                printf '%s\n' "$PWD" >> "$0.directories"
+                printf '%s\n' "$@" >> "$0.args"
+                if [ "$2" = resume ] && [ MISSING = yes ]; then
+                  printf 'error: No session found' >&2
+                  exit 1
+                fi
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = --output-last-message ]; then shift; output=$1; fi
+                  shift
+                done
+                printf '%s\n' '{"type":"thread.started","thread_id":"SESSION"}'
+                printf '%s' '{"status":"success","summary":"Continued existing implementation","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}' > "$output"
+                """.Replace("HELP_TEXT", supported ? "--output-schema --json --approve-for-me" : "resume unsupported", StringComparison.Ordinal)
+                .Replace("MISSING", missing ? "yes" : "no", StringComparison.Ordinal).Replace("SESSION", session, StringComparison.Ordinal));
+            File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", executable);
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Project instructions");
+            var issue = new GitHubIssue(1, "Original Issue", "Original intent", DateTimeOffset.UnixEpoch);
+            var source = new ExecutionHistoryEntry(Guid.NewGuid(), "project", "owner/repo", 1, issue.Title, "feature/task", "main",
+                DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, "InfrastructureFailure", 1, null, null, 0, [], null, null, null,
+                "usage limit", RecoveryState: "codex-interrupted", CodexRecovery: new(Guid.NewGuid(), 1, 0, "fingerprint", session));
+            var observed = new List<string>();
+            var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings { Model = "original-model", ReasoningEffort = "high" })
+                .WithSessionObserver(id => { observed.Add(id); return Task.CompletedTask; });
+            var result = await executor.RunAsync(directory, instructions, issue, source, true, 2, CancellationToken.None);
+            Assert.Equal("success", result.Status);
+            Assert.Equal(session, Assert.Single(observed));
+            var arguments = await File.ReadAllLinesAsync(executable + ".args");
+            Assert.Equal(supported, arguments.Contains("resume", StringComparer.Ordinal));
+            if (supported) Assert.Contains(session, arguments);
+            Assert.Contains("original-model", arguments);
+            Assert.Contains("model_reasoning_effort=\"high\"", arguments);
+            Assert.Contains("SAME preserved worktree", string.Join("\n", arguments), StringComparison.Ordinal);
+            var directories = await File.ReadAllLinesAsync(executable + ".directories");
+            Assert.Equal(missing ? 2 : 1, directories.Length);
+            Assert.All(directories, path => Assert.Equal(directory, path));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous);
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Theory]
     [InlineData(null, 0)]
     [InlineData(null, 1)]
     [InlineData("issue-model", 0)]

@@ -60,6 +60,7 @@ public sealed class WorkerExecution
     public string? AssignmentId { get; }
     public long? OwnershipGeneration { get; }
     public CodexExecutionProfile? CodexProfile { get; private set; }
+    public CodexInterruptionRecovery? CodexRecovery { get; internal set; }
     public string? MetadataError { get; private set; }
     public ExecutionState State { get; private set; } = ExecutionState.Created;
     public bool IsTerminal => AllowedTransitions[State].Length == 0;

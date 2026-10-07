@@ -2185,6 +2185,61 @@ public sealed class CodexServerTests
         Assert.NotNull(assignment.Lease);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CodexRecoveryRequiresOriginalNodeAndFreshLeaseAndSurvivesExpiry(bool expired)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T00:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "codex-recovery.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Recovery project", "team/recovery", "main", "", []));
+        var owner = Guid.NewGuid().ToString("N");
+        var other = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        foreach (var workerId in new[] { owner, other })
+        {
+            await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 2, capabilities));
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 2, capabilities, []));
+        }
+        var queued = await store.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "17")));
+        var request = new WorkerAssignmentRequest(owner, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var initial = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(request)).Assignment);
+        var localId = Guid.NewGuid().ToString();
+        if (expired)
+        {
+            await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(owner, initial.AssignmentId, localId,
+                "Running", Stage: "Codex", Generation: initial.Lease!.Generation));
+            clock.Advance(TimeSpan.FromMinutes(16));
+            await store.GetExecutionsAsync();
+            await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, owner, "1.0", "running", 0, 2, capabilities, []));
+        }
+        else
+        {
+            await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(owner, initial.AssignmentId, localId,
+                "Failed", FailureClassification: "CodexInterruption", Recoverable: true, Generation: initial.Lease!.Generation));
+            var rejected = await store.RequestAssignmentAsync(request with
+            {
+                WorkerId = other, IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('a', 40), "Codex")]
+            });
+            Assert.False(rejected.HasWork);
+        }
+        request = request with { IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('a', 40), "Codex")] };
+        var recovery = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(request)).Assignment);
+        Assert.Equal(localId, recovery.Metadata["codexRecoveryExecutionId"]);
+        Assert.Equal(queued.Id, recovery.Metadata["originalServerExecutionId"]);
+        Assert.NotEqual(initial.ServerExecutionId, recovery.ServerExecutionId);
+        Assert.NotNull(recovery.Lease);
+        Assert.Equal("Active", recovery.Lease.State);
+        Assert.False((await store.RequestAssignmentAsync(request)).HasWork);
+        // Even a changed base cannot re-arm the same interrupted attempt.
+        await store.ReportExecutionAsync(recovery.ServerExecutionId, new WorkerExecutionReport(owner, recovery.AssignmentId,
+            Guid.NewGuid().ToString(), "Failed", FailureClassification: "CodexInterruption", Recoverable: true, Generation: recovery.Lease.Generation));
+        Assert.False((await store.RequestAssignmentAsync(request with
+        { IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('b', 40), "Codex")] })).HasWork);
+    }
+
     [Fact]
     public async Task RecoveryAssignmentsAreNodeBoundIdempotentAndExhaustedBaseDoesNotRearmAfterRestart()
     {
