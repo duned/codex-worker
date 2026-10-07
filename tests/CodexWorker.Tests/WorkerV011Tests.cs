@@ -2089,6 +2089,8 @@ public sealed class WorkerV011Tests
     [InlineData("new-attempt")]
     [InlineData("managed")]
     [InlineData("corrupt")]
+    [InlineData("corrupt-terminal")]
+    [InlineData("inconsistent-terminal")]
     [InlineData("missing")]
     [InlineData("validation")]
     public async Task CompletionFailsClosedOnConflictingIntentOwnershipOrProvenance(string conflict)
@@ -2111,6 +2113,16 @@ public sealed class WorkerV011Tests
             case "new-attempt": await history.CreateAsync(pending with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2 }); break;
             case "managed": pending = pending with { ServerExecutionId = "original-managed-execution" }; break;
             case "corrupt": pending = pending with { CompletionJson = "{" }; break;
+            case "corrupt-terminal":
+                pending = pending with { CompletionJson = "{" };
+                h.GitHub.Closed = true;
+                h.GitHub.CompletionLabels = ["done"];
+                break;
+            case "inconsistent-terminal":
+                pending = pending with { CompletionJson = "{}" };
+                h.GitHub.Closed = true;
+                h.GitHub.CompletionLabels = ["done"];
+                break;
             case "missing": pending = pending with { CompletionJson = null }; break;
             case "validation": pending = pending with { ValidationOutcome = null }; break;
         }
@@ -2120,11 +2132,8 @@ public sealed class WorkerV011Tests
         Assert.Single(h.Codex.Issues);
     }
 
-    [Theory]
-    [InlineData("missing")]
-    [InlineData("corrupt")]
-    [InlineData("inconsistent")]
-    public async Task TerminalLegacyCompletionLeavesSchedulingAvailableAcrossRestarts(string provenance)
+    [Fact]
+    public async Task TerminalLegacyCompletionLeavesSchedulingAvailableAcrossRestarts()
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
@@ -2136,7 +2145,7 @@ public sealed class WorkerV011Tests
             {
                 IssueNumber = 100 + i, State = "InfrastructureFailure",
                 RecoveryState = GitHubOperationException.ReconciliationRequiredState,
-                CompletionJson = provenance == "missing" ? null : provenance == "corrupt" ? "{" : "{}"
+                CompletionJson = null
             });
         var entries = await history.ReadAllAsync();
         for (var restart = 0; restart < 2; restart++)

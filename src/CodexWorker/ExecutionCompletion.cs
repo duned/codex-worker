@@ -72,10 +72,12 @@ public sealed partial class Worker
             throw new WorkerInfrastructureException("Completion execution belongs to another project or repository.");
         ExecutionCompletion completion;
         try { completion = ExecutionCompletion.Read(entry); }
-        catch (WorkerInfrastructureException)
+        catch (WorkerInfrastructureException) when (entry.CompletionJson is null)
         {
             // Old records cannot authorize completion effects. A terminal Issue can only
             // acknowledge them for scheduling; retain history and all recovery resources.
+            // A modern completion payload must remain fail-closed
+            // when corrupt, even if the Issue is terminal.
             var remote = await github.ReadIssueStateAsync(entry.IssueNumber, ct);
             bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
             if (remote.IsOpen || !Has(config.GitHub.DoneLabel) || Has(config.GitHub.ReadyLabel) ||
