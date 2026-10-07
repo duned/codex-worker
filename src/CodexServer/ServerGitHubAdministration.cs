@@ -972,6 +972,14 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
                 var update = EligibilityUpdate(issue, assignment.Project.Repository,
                     int.Parse(assignment.Work.Id, System.Globalization.CultureInfo.InvariantCulture));
+                var freshRecovery = assignment.Metadata.ContainsKey("freshRecoveryExecutionId");
+                if (freshRecovery && issue is not null)
+                {
+                    var readyReason = $"Issue is missing ready label '{assignment.Project.IssueReadyLabel}'.";
+                    var reasons = issue.EligibilityReasons.Where(reason => reason != readyReason).ToArray();
+                    issue = issue with { IsEligible = reasons.Length == 0, EligibilityReasons = reasons };
+                    update = EligibilityUpdate(issue, assignment.Project.Repository, issue.Number);
+                }
                 var recovery = (assignment.Metadata.ContainsKey("integrationRecoveryExecutionId") || assignment.Metadata.ContainsKey("codexRecoveryExecutionId"));
                 if (issue?.IsEligible == true || recovery && issue is not null &&
                     issue.State.Equals("open", StringComparison.OrdinalIgnoreCase) &&
@@ -980,6 +988,10 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                 {
                     await registry.UpdateManagedEligibilityAsync(assignment.ServerExecutionId,
                         recovery ? new("eligible", [], _clock.GetUtcNow()) : update, CancellationToken.None);
+                    if (assignment.Metadata.ContainsKey("freshRecoveryExecutionId"))
+                        ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "assignment", "interrupted-recovery-accepted",
+                            assignment.Project.Id, assignment.Work, assignment.ServerExecutionId, assignment.WorkerId,
+                            assignment.AssignmentId, assignment.Lease?.Generation);
                     return response;
                 }
                 await registry.RejectManagedAssignmentAsync(assignment.ServerExecutionId, assignment.AssignmentId,

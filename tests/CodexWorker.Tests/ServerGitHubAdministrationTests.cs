@@ -341,6 +341,58 @@ public sealed class ServerGitHubAdministrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task InterruptedClaimReassignsWithoutReadyOnlyWhileIssueIsOpen(bool closed)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-10-07T00:00:00Z"));
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "interrupted.db"),
+            timeProvider: clock, leaseDurationSeconds: 120, leaseRenewalIntervalSeconds: 20);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition("Recovery", issueReadyLabel: "ready"));
+        var workerId = Guid.NewGuid().ToString("N");
+        var capabilities = AuthenticationCapabilities(project.Repository);
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(workerId, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(10, labels: ["ready"]));
+        var service = new ServerGitHubAdministrationService(registry, read);
+        var original = await service.EnqueueIssueAsync(project.Id, new WorkReference("issue", "10"));
+        var first = (await service.RequestAssignmentAsync(request)).Assignment;
+        Assert.NotNull(first);
+        await registry.ReportExecutionAsync(original.Id, new WorkerExecutionReport(workerId, first.AssignmentId,
+            Guid.NewGuid().ToString(), "Running", Stage: "Codex", Generation: first.Lease!.Generation));
+        read.Add(project.Repository, Issue(10, labels: ["codex-working"]) with { State = closed ? "CLOSED" : "OPEN" });
+        Assert.False((await service.RequestAssignmentAsync(request)).HasWork);
+        clock.Advance(TimeSpan.FromSeconds(121));
+        await registry.ExpireLeasesAsync();
+        await registry.ExpireLeasesAsync();
+        await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var retry = Assert.Single(await registry.GetExecutionsAsync(), e => e.RetryOfExecutionId == original.Id);
+        Assert.Equal("FreshWorkspaceRequired", retry.WorkspaceRecovery);
+        var response = await service.RequestAssignmentAsync(request);
+        Assert.Equal(!closed, response.HasWork);
+        if (closed)
+            Assert.Contains("Issue is closed.", (await registry.GetExecutionAsync(retry.Id))!.ManagedEligibilityReasons!);
+        else
+        {
+            Assert.NotNull(response.Assignment);
+            Assert.Equal(original.Id, response.Assignment.Metadata["freshRecoveryExecutionId"]);
+            Assert.False((await service.RequestAssignmentAsync(request)).HasWork);
+            await registry.ReportExecutionAsync(retry.Id, new WorkerExecutionReport(workerId, response.Assignment.AssignmentId,
+                Guid.NewGuid().ToString(), "Running", Stage: "Codex", Generation: response.Assignment.Lease!.Generation));
+            clock.Advance(TimeSpan.FromSeconds(121));
+            await registry.ExpireLeasesAsync();
+            await registry.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+            var repeated = (await service.RequestAssignmentAsync(request)).Assignment;
+            Assert.NotNull(repeated);
+            Assert.Equal(retry.Id, repeated.Metadata["freshRecoveryExecutionId"]);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task ManagedIntegrationRecoveryUsesOwnedLeaseWithoutReadyAndRejectsBlockedOrClosedIssue(bool closed)
     {
         using var temporary = new TemporaryDirectory();
@@ -1128,6 +1180,7 @@ public sealed class ServerGitHubAdministrationTests
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+        public void Advance(TimeSpan duration) => now += duration;
     }
 
     private sealed class TemporaryDirectory : IDisposable

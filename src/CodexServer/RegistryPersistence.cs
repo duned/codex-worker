@@ -1127,9 +1127,21 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (!await projectReader.ReadAsync(cancellationToken)) throw new InvalidDataException("Assigned project was removed during assignment.");
         var project = ToProject(projectReader.GetString(0), projectReader.GetString(1), projectReader.GetString(2));
         await projectReader.DisposeAsync();
+        var assignedExecution = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, candidate.Value.Id, cancellationToken);
+        ExecutionRequest? interrupted = null;
+        if (assignedExecution is { WorkspaceRecovery: "FreshWorkspaceRequired", RetryOfExecutionId: { } previousId })
+            interrupted = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, previousId, cancellationToken);
+        var freshRecovery = assignedExecution is not null && interrupted is { State: "Failed", RecoveryState: "LeaseExpiredRequeued", IntegrationResult: null,
+            CurrentStage: "Preparing" or "Codex" or "Validation", Lease.State: "Expired" } &&
+            interrupted.ProjectId == assignedExecution.ProjectId && interrupted.WorkReference == assignedExecution.WorkReference &&
+            interrupted.AttemptNumber + 1 == assignedExecution.AttemptNumber &&
+            string.Equals(interrupted.WorkReference.Url, $"https://github.com/{project.Repository}/issues/{assignedExecution.WorkReference.Id}",
+                StringComparison.OrdinalIgnoreCase);
         await transaction.CommitAsync(cancellationToken);
         var metadata = recoveryMetadata is null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(recoveryMetadata, StringComparer.Ordinal);
         metadata["assignedAtUtc"] = now.ToString("O");
+        if (freshRecovery && interrupted is not null)
+            metadata["freshRecoveryExecutionId"] = interrupted.Id;
         ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "assignment", "lease-acquired", project.Id, candidate.Value.Work with { Url = $"https://github.com/{project.Repository}/issues/{candidate.Value.Work.Id}" }, candidate.Value.Id, request.WorkerId, assignmentId, generation);
         return new(true, new WorkAssignment(assignmentId, candidate.Value.Id, project, candidate.Value.Work, request.WorkerId, metadata,
             new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active", _leaseRenewalIntervalSeconds)), recoveryRejections);

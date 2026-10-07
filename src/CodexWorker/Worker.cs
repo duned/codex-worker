@@ -371,11 +371,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         }
         if (assignment.Metadata.ContainsKey("codexRecoveryExecutionId"))
             return await ClaimCodexRecoveryAsync(assignment, ct);
-        return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct);
+        return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct, assignment.Metadata.ContainsKey("freshRecoveryExecutionId"));
     }
 
     private async Task<Task<IssueProcessingResult?>?> ClaimIssueAsync(GitHubIssue issue, string? serverExecutionId,
-        string? assignmentId, long? ownershipGeneration, CancellationToken ct)
+        string? assignmentId, long? ownershipGeneration, CancellationToken ct, bool freshRecovery = false)
     {
         var issueKey = issue.Number;
         if (!_activeIssues.TryAdd(issueKey, 0))
@@ -396,7 +396,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             return null;
         }
         var latest = issueHistory.FirstOrDefault();
-        if (latest?.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
+        if (freshRecovery && issueHistory.Any(entry => entry.State == "Completed" || entry.IntegrationBranch is not null ||
+            entry.CompletedBranch is not null || entry.RecoveryState is "codex-resuming" or "codex-recovery-inspection-required"))
+            throw new WorkerInfrastructureException("Fresh recovery conflicts with local completed, integrated, or uncertain execution history; inspect preserved state.");
+        if (!freshRecovery && latest?.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
         {
             _activeIssues.TryRemove(issueKey, out _);
             return null;
@@ -409,7 +412,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // execution state to resume. A new ready label starts a clean attempt even in resume mode.
         var freshAfterPreparationFailure = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
             latest?.RecoveryState == "preparation-failed";
-        var retryOf = !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
+        var retryOf = !freshRecovery && !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         issue = await PrepareCommentContextAsync(issue, ct);
