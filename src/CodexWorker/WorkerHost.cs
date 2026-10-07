@@ -1033,6 +1033,21 @@ public sealed class WorkerHost
         string.Equals(configuration.Project.Repository, assigned.Repository, StringComparison.OrdinalIgnoreCase) &&
         configuration.Git.BaseBranch == assigned.DefaultBranch;
 
+    internal async Task ReconcileCompletionAsync(Worker worker, ExecutionHistoryEntry entry,
+        WorkerRuntimeReadModel runtime, CancellationToken ct)
+    {
+        try { await worker.ResumeCompletionAsync(entry, ct); }
+        catch (WorkerInfrastructureException ex)
+        {
+            var reason = $"Completion reconciliation required for Issue #{entry.IssueNumber}, execution {entry.ExecutionId}: " +
+                LimitCompletionDiagnostic(ex.Message, worker.Configuration);
+            runtime.Registry.MarkUnavailable(worker.Configuration.Project.Name, reason);
+            runtime.Events.Publish("project.github-reconciliation-required", reason, worker.Configuration.Project.Name);
+            _output.Warning(reason);
+            _operationalLog($"Scheduler · {worker.Configuration.Project.Name} · execution {entry.ExecutionId} · completion stopped because remote proof or reporting state is ambiguous · project scheduling paused. {reason}");
+        }
+    }
+
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct)
     {
@@ -1049,16 +1064,7 @@ public sealed class WorkerHost
                 {
                     if (entry.CompletionJson is not null || entry.ValidationOutcome == "passed")
                     {
-                        try { await project.Worker.ResumeCompletionAsync(entry, ct); }
-                        catch (WorkerInfrastructureException ex)
-                        {
-                            var reason = $"Completion reconciliation required for Issue #{entry.IssueNumber}, execution {entry.ExecutionId}: " +
-                                LimitCompletionDiagnostic(ex.Message, project.Configuration);
-                            runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
-                            runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
-                            _output.Warning(reason);
-                            _operationalLog($"Scheduler · {project.Configuration.Project.Name} · execution {entry.ExecutionId} · completion stopped because remote proof or reporting state is ambiguous · project scheduling paused. {reason}");
-                        }
+                        await ReconcileCompletionAsync(project.Worker, entry, runtime, ct);
                         continue;
                     }
                     GitHubIssueState remote;
