@@ -25,11 +25,8 @@ public sealed class GitHubOperationTests
             comments.Add(args[Array.IndexOf(args, "--body") + 1]);
             return Task.FromResult(loseResponse && writes == 1
                 ? new ProcessResult(1, "", "HTTP 500 Internal Server Error") : new ProcessResult(0, "", ""));
-        });
-        if (loseResponse)
-            await Assert.ThrowsAsync<GitHubOperationException>(() => client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None));
-        else
-            await client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None);
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
+        await client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None);
         await client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None);
         Assert.Single(comments);
         Assert.Contains($"<!-- codex-worker-success:{id:D} -->", comments[0], StringComparison.Ordinal);
@@ -55,7 +52,7 @@ public sealed class GitHubOperationTests
                 _ => "invalid-json"
             };
             return Task.FromResult(new ProcessResult(0, output, ""));
-        });
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => client.EnsureSuccessCommentAsync(17, id, "Report", CancellationToken.None));
         Assert.Equal(1, calls);
     }
@@ -68,7 +65,7 @@ public sealed class GitHubOperationTests
         {
             calls++;
             return Task.FromResult(new ProcessResult(0, "[]", ""));
-        });
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => client.EnsureSuccessCommentAsync(17, Guid.NewGuid(),
             "Report", CancellationToken.None, allowCreate: false));
         Assert.Equal(1, calls);
@@ -83,24 +80,47 @@ public sealed class GitHubOperationTests
         await Assert.ThrowsAsync<GitHubOperationException>(() => client.GetIssueAsync(17, CancellationToken.None));
     }
 
-    [Fact]
-    public async Task TransientGraphQlMutationIsClassifiedUncertainAndNeverReplayed()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IssueMutationVerifiesBeforeRetry(bool applied)
     {
-        var calls = 0;
-        var client = new GitHubClient("owner/repo", (_, _) =>
+        var writes = 0;
+        var reads = 0;
+        var client = new GitHubClient("owner/repo", (args, _) =>
         {
-            calls++;
-            return Task.FromResult(new ProcessResult(1, "", "GraphQL: Something went wrong while executing your query"));
-        });
+            if (args.Contains("view"))
+            {
+                reads++;
+                var label = reads > 1 && (applied || writes > 1) ? "blocked" : "working";
+                return Task.FromResult(new ProcessResult(0,
+                    $"{{\"state\":\"OPEN\",\"labels\":[{{\"name\":\"{label}\"}}]}}", ""));
+            }
+            writes++;
+            return Task.FromResult(writes == 1 ? new ProcessResult(1, "", "HTTP 500 Internal Server Error") : new ProcessResult(0, "", ""));
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
+        await client.ReplaceLabelAsync(151, "working", "blocked", CancellationToken.None);
+        Assert.Equal(applied ? 1 : 2, writes);
+    }
 
+    [Fact]
+    public async Task OperatorModifiedIssueStopsAutomaticRetry()
+    {
+        var writes = 0;
+        var reads = 0;
+        var client = new GitHubClient("owner/repo", (args, _) =>
+        {
+            if (args.Contains("view"))
+                return Task.FromResult(new ProcessResult(0, ++reads == 1
+                    ? "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"working\"}]}"
+                    : "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"operator\"}]}", ""));
+            writes++;
+            return Task.FromResult(new ProcessResult(1, "", "HTTP 500"));
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
         var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
-            client.ReplaceLabelAsync(151, "working", "blocked", CancellationToken.None));
-
-        Assert.Equal(GitHubFailureKind.TransientProvider, failure.FailureKind);
-        Assert.Equal(GitHubRemoteState.Uncertain, failure.RemoteState);
-        Assert.Equal(151, failure.IssueNumber);
-        Assert.True(failure.IsMutation);
-        Assert.Equal(1, calls);
+            client.ReplaceLabelAsync(17, "working", "blocked", CancellationToken.None));
+        Assert.True(failure.RemoteStateUncertain);
+        Assert.Equal(1, writes);
     }
 
     [Fact]
@@ -113,7 +133,7 @@ public sealed class GitHubOperationTests
             return Task.FromResult(calls == 1
                 ? new ProcessResult(1, "", "GraphQL: Something went wrong while executing your query")
                 : new ProcessResult(0, "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"ready\"}]}", ""));
-        });
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
 
         var state = await client.ReadIssueStateAsync(151, CancellationToken.None);
 
@@ -128,7 +148,8 @@ public sealed class GitHubOperationTests
     [InlineData("HTTP 403: API rate limit exceeded", GitHubFailureKind.TransientProvider, GitHubRemoteState.Uncertain)]
     public async Task MutationFailuresAreClassifiedConservatively(string error, GitHubFailureKind kind, GitHubRemoteState remoteState)
     {
-        var client = new GitHubClient("owner/repo", (_, _) => Task.FromResult(new ProcessResult(1, "", error)));
+        var client = new GitHubClient("owner/repo", (args, _) => Task.FromResult(args.Contains("view")
+            ? new ProcessResult(0, "{\"state\":\"OPEN\",\"labels\":[]}", "") : new ProcessResult(1, "", error)), retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
 
         var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
             client.CloseAsync(15, CancellationToken.None));
@@ -173,7 +194,7 @@ public sealed class GitHubOperationTests
             return Task.FromResult(command.Length > 1 && command[0] == "issue" && command[1] == "list"
                 ? new ProcessResult(0, "[{\"number\":9,\"title\":\"task\",\"body\":\"\",\"createdAt\":\"2025-01-01T00:00:00Z\",\"labels\":[]}]", "")
                 : new ProcessResult(1, "", "GraphQL: Something went wrong"));
-        });
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
 
         var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
             client.FindOldestReadyAsync("ready", CancellationToken.None));
@@ -181,7 +202,7 @@ public sealed class GitHubOperationTests
         Assert.NotNull(GitHubOperationException.Find(failure));
         Assert.Equal(GitHubRemoteState.NotApplicable, GitHubOperationException.Find(failure)!.RemoteState);
         Assert.Equal(9, GitHubOperationException.Find(failure)!.IssueNumber);
-        Assert.Equal(2, calls.Count(command => command.Length > 1 && command[0] == "api"));
+        Assert.Equal(3, calls.Count(command => command.Length > 1 && command[0] == "api"));
         Assert.DoesNotContain(calls.SelectMany(command => command), arg => arg is "--add-label" or "--remove-label" or "comment");
     }
 }

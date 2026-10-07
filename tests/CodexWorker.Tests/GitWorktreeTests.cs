@@ -309,6 +309,7 @@ public sealed class GitWorktreeTests
               'api repos/owner/repo') printf '%s' '{"push":true}';;
               'api --paginate') printf '%s' '[]';;
               'api '*'/issues/'*) printf '0';;
+              'issue view') printf '%s' '{"state":"OPEN","labels":[{"name":"codex-ready"}]}';;
               'issue list')
                 case " $* " in
                   *' --label codex-ready '*) printf '%s' '[{"number":17,"title":"Example task","body":"Original intent","createdAt":"2026-01-01T00:00:00Z"},{"number":18,"title":"Sibling task","body":"Original sibling intent","createdAt":"2026-01-02T00:00:00Z"}]';;

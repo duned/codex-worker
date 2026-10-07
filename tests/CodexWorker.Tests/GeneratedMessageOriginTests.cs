@@ -66,6 +66,8 @@ public sealed class GeneratedMessageOriginTests
         var calls = new List<string[]>();
         var client = new GitHubClient("owner/repo", (args, _) =>
         {
+            if (args.Take(2).SequenceEqual(new[] { "issue", "view" }))
+                return Task.FromResult(new ProcessResult(0, "{\"state\":\"OPEN\",\"labels\":[{\"name\":\"working\"}]}", ""));
             calls.Add(args.ToArray());
             return Task.FromResult(new ProcessResult(0, "", ""));
         }, new(CodexComponent.Worker, "codex2-vm"));

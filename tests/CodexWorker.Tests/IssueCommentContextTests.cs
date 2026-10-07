@@ -179,11 +179,11 @@ public sealed class IssueCommentContextTests
             if (args.Last() == ".comments") return Task.FromResult(new ProcessResult(0, "1", ""));
             reads++;
             return Task.FromResult(new ProcessResult(1, "", "HTTP 503 temporarily unavailable"));
-        });
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
 
         var error = await Assert.ThrowsAsync<GitHubOperationException>(() => client.GetIssueCommentContextAsync(8, CancellationToken.None));
 
-        Assert.Equal(2, reads);
+        Assert.Equal(3, reads);
         Assert.Equal(GitHubFailureKind.TransientProvider, error.FailureKind);
         Assert.False(error.IsMutation);
         Assert.Equal(GitHubRemoteState.NotApplicable, error.RemoteState);

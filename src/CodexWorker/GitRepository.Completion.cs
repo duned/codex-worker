@@ -20,7 +20,7 @@ public sealed partial class GitRepository
 
     public async Task FinishIntegratedExecutionAsync(ExecutionHistoryEntry entry, CancellationToken ct)
     {
-        if (!await VerifyRemoteIntegrationAsync(entry, ct))
+        if (!await VerifyRemoteIntegrationAsync(entry, ct) || entry.CommitSha is not { } commit)
             throw new WorkerInfrastructureException("Remote no longer contains the validated integration commit; preserve completion resources.");
         var integration = ExecutionCompletion.Read(entry).Report.Integration;
         if (integration?.ResourceExecutionId is not { } resourceId || integration.ResourceAttemptNumber is not > 0)
@@ -43,7 +43,7 @@ public sealed partial class GitRepository
             {
                 // The configured archive is a pending completion operation, not a base retry.
                 // Push only the proven commit to its persisted, Worker-owned archive name.
-                await GitAsync(["push", "origin", $"{entry.CommitSha}:refs/heads/{completed}"], ct);
+                await PushVerifiedAsync(completed, commit, null, ct);
                 remote = (await GitAsync(["ls-remote", "--heads", "origin", $"refs/heads/{completed}"], ct)).StandardOutput;
                 lines = remote.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             }

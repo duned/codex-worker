@@ -713,14 +713,15 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
                     _resourceExecutionId, _resourceAttemptNumber);
                 if (_integrationObserver is not null) await _integrationObserver(prepared, false, ct);
+                var prePush = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
-                await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
+                await PushVerifiedAsync(settings.BaseBranch, commit, prePush, ct, ensureAuthority);
                 if (_integrationObserver is not null) await _integrationObserver(prepared, true, ct);
                 if (settings.PushCompletedBranch)
                 {
                     try
                     {
-                        await GitAsync(["push", "origin", $"{_featureBranch}:refs/heads/{_completedBranch}"], ct);
+                        await PushVerifiedAsync(_completedBranch!, commit, null, ct, ensureAuthority);
                     }
                     catch (WorkerInfrastructureException ex) when (!WorkerShutdown.IsCancellation(ex))
                     {
@@ -1038,8 +1039,37 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal));
     }
 
+    private async Task PushVerifiedAsync(string branch, string commit, string? previous, CancellationToken ct,
+        Func<CancellationToken, Task>? ensureAuthority = null)
+    {
+        var policy = new GitHubRetryPolicy();
+        await policy.ExecuteAsync("Git push", async token =>
+        {
+            if (ensureAuthority is not null) await ensureAuthority(token);
+            return await GitAsync(["push", "origin", $"{commit}:refs/heads/{branch}"], token);
+        }, ex => ex is WorkerInfrastructureException &&
+            GitHubClient.ClassifyFailure(ex.Message) == GitHubFailureKind.TransientProvider, ct, async token =>
+        {
+            await EnsureOriginAsync(token);
+            var result = await GitAsync(["ls-remote", "--heads", "origin", $"refs/heads/{branch}"], token);
+            var lines = result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (lines.Length == 1 && lines[0] == $"{commit}\trefs/heads/{branch}") return true;
+            if (previous is null && lines.Length == 0 || previous is not null && lines.Length == 1 &&
+                lines[0] == $"{previous}\trefs/heads/{branch}") return false;
+            throw new WorkerInfrastructureException("Remote push state changed unexpectedly; reconciliation is required.");
+        }, new ProcessResult(0, "", ""));
+    }
+
     private async Task<ProcessResult> GitAsync(IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null)
-        => await GitAtAsync(directory, args, ct, allowExitCodes);
+    {
+        var arguments = args.ToArray();
+        if (arguments.FirstOrDefault() is not ("fetch" or "ls-remote"))
+            return await GitAtAsync(directory, arguments, ct, allowExitCodes);
+        return await new GitHubRetryPolicy().ExecuteAsync("Git remote read",
+            token => GitAtAsync(directory, arguments, token, allowExitCodes),
+            ex => ex is WorkerInfrastructureException &&
+                GitHubClient.ClassifyFailure(ex.Message) == GitHubFailureKind.TransientProvider, ct);
+    }
 
     private async Task<ProcessResult> GitAtAsync(string workingDirectory, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null, bool readOnly = false)
     {
@@ -1062,7 +1092,9 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             {
                 var detail = managedCredentials && credentialOperation ? "Managed Git remote command failed; raw credential-helper diagnostics are withheld."
                     : string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
-                throw new WorkerInfrastructureException($"git {string.Join(' ', args)} failed (exit {result.ExitCode}). {Tail(detail)}");
+                var transient = credentialOperation && GitHubClient.ClassifyFailure(result.StandardError) == GitHubFailureKind.TransientProvider;
+                throw new WorkerInfrastructureException($"git {string.Join(' ', args)} failed (exit {result.ExitCode}). " +
+                    (transient ? "Transient provider failure (temporarily unavailable). " : "") + Tail(detail));
             }
             return result;
         }

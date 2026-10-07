@@ -10,6 +10,7 @@ public sealed record RequiredGitHubLabel(string Name, string Color, string Descr
 public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 {
     private readonly string repository;
+    private readonly GitHubRetryPolicy retry;
     private readonly Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand;
     private readonly CodexProvisioning.GeneratedMessageOrigin origin;
 
@@ -21,9 +22,10 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     internal GitHubClient(string repository,
         Func<IEnumerable<string>, CancellationToken, Task<ProcessResult>> runCommand,
-        CodexProvisioning.GeneratedMessageOrigin? origin = null)
+        CodexProvisioning.GeneratedMessageOrigin? origin = null, GitHubRetryPolicy? retry = null)
     {
         this.repository = repository;
+        this.retry = retry ?? new GitHubRetryPolicy();
         this.runCommand = runCommand;
         this.origin = origin ?? new(CodexProvisioning.CodexComponent.Worker, WorkerIdentity.DisplayName);
     }
@@ -401,7 +403,21 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
         if (!allowCreate)
             throw new WorkerInfrastructureException("Previously confirmed success report is missing; manual reconciliation is required.");
-        await CommentAsync(issueNumber, body, ct);
+        await retry.ExecuteAsync("success comment", async token =>
+        {
+            await CommentAsync(issueNumber, body, token);
+            return true;
+        }, ex => ex is GitHubOperationException { FailureKind: GitHubFailureKind.TransientProvider }, ct,
+            async token =>
+            {
+                var proof = await RunGhAsync(["api", $"repos/{repository}/issues/{issueNumber}/comments?per_page=100",
+                    "--paginate", "--slurp", "--jq", $"[.[][] | select(.body | contains(\"{marker}\")) | .body]"], token,
+                    allowGracefulCancellation: true);
+                var matches = JsonSerializer.Deserialize<string[]>(proof.StandardOutput);
+                if (matches is { Length: 0 }) return false;
+                if (matches is { Length: 1 } && matches[0] == origin.Format(body)) return true;
+                throw new WorkerInfrastructureException("Success report proof changed or is ambiguous; reconciliation is required.");
+            }, true);
     }
 
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
@@ -434,60 +450,85 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     private async Task<ProcessResult> RunGhAsync(IEnumerable<string> args, CancellationToken ct, bool allowGracefulCancellation = false)
     {
         var arguments = args.ToArray();
+        var mutation = IsMutation(arguments);
+        var number = IssueNumber(arguments);
+        // Comments without a durable identity remain fail-closed: absence alone cannot prove
+        // that a delayed provider write will not eventually appear.
+        if (mutation && arguments[1] == "comment")
+            return await RunGhOnceAsync(arguments, ct, allowGracefulCancellation);
+        GitHubIssueState? before = mutation && number is { } issue ? await ReadIssueStateAsync(issue, ct) : null;
+        return await retry.ExecuteAsync(DescribeOperation(arguments),
+            token => RunGhOnceAsync(arguments, token, allowGracefulCancellation),
+            ex => ex is GitHubOperationException { FailureKind: GitHubFailureKind.TransientProvider }, ct,
+            before is null ? null : async token =>
+            {
+                var current = await ReadIssueStateAsync(number.GetValueOrDefault(), token);
+                var intendedLabels = before.Labels.ToHashSet(StringComparer.Ordinal);
+                var remove = Array.IndexOf(arguments, "--remove-label");
+                var add = Array.IndexOf(arguments, "--add-label");
+                if (remove >= 0) intendedLabels.Remove(arguments[remove + 1]);
+                if (add >= 0) intendedLabels.Add(arguments[add + 1]);
+                var intendedOpen = arguments[1] == "close" ? false : before.IsOpen;
+                if (current.IsOpen == intendedOpen && intendedLabels.SetEquals(current.Labels)) return true;
+                if (current.IsOpen == before.IsOpen && before.Labels.ToHashSet(StringComparer.Ordinal).SetEquals(current.Labels)) return false;
+                throw new GitHubOperationException(DescribeOperation(arguments), number, true,
+                    GitHubFailureKind.Unknown, GitHubRemoteState.Uncertain,
+                    "Unexpected remote Issue state; manual reconciliation is required.");
+            }, new ProcessResult(0, "", ""));
+    }
+
+    private async Task<ProcessResult> RunGhOnceAsync(IEnumerable<string> args, CancellationToken ct, bool allowGracefulCancellation = false)
+    {
+        var arguments = args.ToArray();
         var operation = DescribeOperation(arguments);
         var issueNumber = IssueNumber(arguments);
         var mutation = IsMutation(arguments);
-        for (var attempt = 0; ; attempt++)
-        {
-            ProcessResult result;
-            try
-            {
-                result = await runCommand(arguments, ct);
-            }
-            catch (OperationCanceledException) when (allowGracefulCancellation && ct.IsCancellationRequested) { throw; }
-            catch (OperationCanceledException ex)
-            {
-                var remoteState = mutation ? GitHubRemoteState.Uncertain : GitHubRemoteState.NotApplicable;
-                throw new GitHubOperationException(operation, issueNumber, mutation, GitHubFailureKind.Cancellation,
-                    remoteState, $"GitHub CLI {operation} was cancelled; remote Issue state is " +
-                    $"{(mutation ? "uncertain" : "not changed by this read") }.", ex);
-            }
-            catch (GitHubOperationException ex)
-            {
-                if (!mutation && attempt == 0 && ex.FailureKind == GitHubFailureKind.TransientProvider) continue;
-                throw;
-            }
-            catch (WorkerInfrastructureException ex)
-            {
-                var kind = ClassifyFailure(ex.Message);
-                if (!mutation && attempt == 0 && kind == GitHubFailureKind.TransientProvider) continue;
-                var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
-                throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
-                    $"GitHub CLI {operation} could not complete; remote Issue state is " +
-                    $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
-                    Sanitize(ex.Message, 1000), ex);
-            }
-            catch (Exception ex)
-            {
-                var kind = ClassifyFailure(ex.Message);
-                if (!mutation && attempt == 0 && kind == GitHubFailureKind.TransientProvider) continue;
-                var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
-                throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
-                    $"GitHub CLI {operation} failed or timed out; remote Issue state is " +
-                    $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
-                    Sanitize(ex.Message, 1000), ex);
-            }
 
-            if (result.ExitCode == 0) return result;
-            var detail = Sanitize(Tail(result.StandardError), 1000);
-            var failureKind = ClassifyFailure(detail);
-            if (!mutation && attempt == 0 && failureKind == GitHubFailureKind.TransientProvider) continue;
-            var failedRemoteState = mutation ? RemoteState(failureKind) : GitHubRemoteState.NotApplicable;
-            throw new GitHubOperationException(operation, issueNumber, mutation, failureKind, failedRemoteState,
-                $"GitHub CLI {operation} failed (exit {result.ExitCode}); remote Issue state is " +
-                $"{(failedRemoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : failedRemoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. {detail}");
+        ProcessResult result;
+        try
+        {
+            result = await runCommand(arguments, ct);
         }
+        catch (OperationCanceledException) when (allowGracefulCancellation && ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException ex)
+        {
+            var remoteState = mutation ? GitHubRemoteState.Uncertain : GitHubRemoteState.NotApplicable;
+            throw new GitHubOperationException(operation, issueNumber, mutation, GitHubFailureKind.Cancellation,
+                remoteState, $"GitHub CLI {operation} was cancelled; remote Issue state is " +
+                $"{(mutation ? "uncertain" : "not changed by this read") }.", ex);
+        }
+        catch (GitHubOperationException)
+        {
+            throw;
+        }
+        catch (WorkerInfrastructureException ex)
+        {
+            var kind = ClassifyFailure(ex.Message);
+            var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
+            throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
+                $"GitHub CLI {operation} could not complete; remote Issue state is " +
+                $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
+                Sanitize(ex.Message, 1000), ex);
+        }
+        catch (Exception ex)
+        {
+            var kind = ClassifyFailure(ex.Message);
+            var remoteState = mutation ? RemoteState(kind) : GitHubRemoteState.NotApplicable;
+            throw new GitHubOperationException(operation, issueNumber, mutation, kind, remoteState,
+                $"GitHub CLI {operation} failed or timed out; remote Issue state is " +
+                $"{(remoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : remoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. " +
+                Sanitize(ex.Message, 1000), ex);
+        }
+
+        if (result.ExitCode == 0) return result;
+        var detail = Sanitize(Tail(result.StandardError), 1000);
+        var failureKind = ClassifyFailure(detail);
+        var failedRemoteState = mutation ? RemoteState(failureKind) : GitHubRemoteState.NotApplicable;
+        throw new GitHubOperationException(operation, issueNumber, mutation, failureKind, failedRemoteState,
+            $"GitHub CLI {operation} failed (exit {result.ExitCode}); remote Issue state is " +
+            $"{(failedRemoteState == GitHubRemoteState.Uncertain ? "uncertain and requires reconciliation" : failedRemoteState == GitHubRemoteState.NotChanged ? "known unchanged" : "not changed by this read")}. {detail}");
     }
+
 
     private static bool IsMutation(IReadOnlyList<string> args) => args.Count >= 2 && args[0] == "issue" &&
         args[1] is "edit" or "comment" or "close";
@@ -518,10 +559,10 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         ? $"issue {args[1]}"
         : args.Count > 0 && args[0] == "api" ? "Issue API read" : "Issue query";
 
-    private static GitHubFailureKind ClassifyFailure(string detail)
+    internal static GitHubFailureKind ClassifyFailure(string detail)
     {
         if (System.Text.RegularExpressions.Regex.IsMatch(detail,
-                @"(?i)rate limit|secondary rate limit|abuse detection|\b429\b|\b(500|502|503|504)\b|something went wrong|temporarily unavailable|timed? out|connection reset|try again later"))
+                @"(?i)rate limit|secondary rate limit|abuse detection|\b429\b|\b(500|502|503|504)\b|internal server error|internal provider error|something went wrong|temporarily unavailable|timed? out|connection reset|connection timed out|temporary failure in name resolution|unexpected EOF|try again later"))
             return GitHubFailureKind.TransientProvider;
         if (System.Text.RegularExpressions.Regex.IsMatch(detail,
                 @"(?i)\b(401|403)\b|authentication required|not authorized|permission denied|resource not accessible"))
