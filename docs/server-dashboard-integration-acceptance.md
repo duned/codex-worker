@@ -1,3 +1,8 @@
+> This document records the earlier guided legacy-dashboard integration.
+> The sole production UI is now React + Untitled UI. Use the
+> [final migration checklist and evidence](server-dashboard-final-review.md) for
+> current architecture, parity, browser and packaged-artifact acceptance.
+
 # Guided Server dashboard integration acceptance
 
 The implemented journey is administration sign in → Settings / Server GitHub

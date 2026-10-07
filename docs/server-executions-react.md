@@ -60,7 +60,7 @@ dispositions, response loss and explicit authoritative refresh.
 
 ```sh
 npm run check --prefix src/CodexServer/worker-poc
-node --test --test-isolation=none tests/dashboard/executions-react.test.cjs tests/dashboard/server-execution-admin.test.cjs tests/dashboard/react-infrastructure.test.cjs
+node --test --test-isolation=none tests/dashboard/executions-react.test.cjs tests/dashboard/react-infrastructure.test.cjs
 NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/executions-browser-review.cjs
 ```
 

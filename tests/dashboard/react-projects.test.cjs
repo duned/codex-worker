@@ -43,9 +43,11 @@ test('native relationship and configured label reconciliation uses observable Is
   assert.equal(issueUrl(p.repository, { ...i, url: 'javascript:private' }), 'https://github.com/owner/repo/issues/27');
 });
 test('Worker readiness retains stale/current revision, materialization and eligibility separately', () => {
-  const d = { aiAgentReady: true, gitHubReady: false, gitReady: false, configurationSynchronization: 'synchronized', provisioningState: 'not-required', projects: [{ projectId: p.id, isEligible: true, missingRequirements: [], workerReportedRevision: 1, materializationState: 'failed', observationStatus: 'stale-heartbeat' }] };
+  const d = { aiAgentReady: true, gitHubReady: false, gitReady: false, configurationSynchronization: 'synchronized', provisioningState: 'not-required', projects: [{ projectId: p.id, projectName: p.name, isEligible: true, missingRequirements: [], workerReportedRevision: 1, materializationState: 'failed', observationStatus: 'stale-heartbeat' }] };
   assert.deepEqual(readiness(d).projects, d.projects);
-  assert.throws(() => readiness({ ...d, projects: [{ ...d.projects[0], workerReportedRevision: '2' }] }));
+  for (const workerReportedRevision of ['2', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => readiness({ ...d, projects: [{ ...d.projects[0], workerReportedRevision }] }));
+  assert.deepEqual(readiness({ ...d, projects: undefined }).projects, []);
 });
 test('shared preview forces non-effect requests, keeps CSRF and rejects effects outside its allowlist', async () => {
   const calls = [];

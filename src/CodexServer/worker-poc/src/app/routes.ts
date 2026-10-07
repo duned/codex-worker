@@ -1,10 +1,10 @@
 // One canonical application; historical preview paths are redirected by the Server.
-export const migrationBase = '/dashboard-preview';
+const legacyPreviewBase = '/dashboard-preview';
 export const sections = ['home', 'projects', 'workers', 'executions', 'settings'] as const;
 export type Section = typeof sections[number];
 export const resourceSections = sections.filter(section => section !== 'home');
 export function canonicalPath(pathname: string, search: string): string {
-  const path = pathname.startsWith(migrationBase) ? pathname.slice(migrationBase.length) : pathname;
+  const path = pathname.startsWith(legacyPreviewBase) ? pathname.slice(legacyPreviewBase.length) : pathname;
   return (path === '' || path === '/' ? '/home' : path) + search;
 }
 

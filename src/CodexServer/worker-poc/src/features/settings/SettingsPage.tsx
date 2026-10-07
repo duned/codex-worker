@@ -10,7 +10,6 @@ import { PageHeading, Notice, ResourceIdentity, StatusBadge, AdvancedDisclosure 
 import { ThemeControl } from '../../shared/ThemeControl';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../untitled/components/base/input/input';
-import { migrationBase } from '../../app/routes';
 type Edit = { kind: 'create' } | { kind: 'replace' | 'assign' | 'revoke'; before: Credential };
 export function SettingsPage() {
   const location = useLocation(), session = useSession();
@@ -48,11 +47,11 @@ function SettingsView() {
       {list.data?.map(c => <article key={c.id} className="space-y-3 rounded-xl border border-secondary bg-primary p-5">
         <div className="flex flex-wrap items-start justify-between gap-3"><ResourceIdentity name={`${c.provider} · ${c.type}`} id={c.id} /><StatusBadge tone={c.status === 'Ready' ? 'success' : c.status === 'NeedsReprovision' ? 'warning' : 'gray'}>{c.status}</StatusBadge></div>
         <p className="text-sm text-secondary">Version {c.version} · {c.assignedWorkerId ? `Assigned to ${registered.data?.find(w => w.workerId === c.assignedWorkerId)?.displayName ?? c.assignedWorkerId}` : 'Unassigned'}</p>
-        <div className="flex flex-wrap gap-3"><Button color="secondary" href={`${migrationBase}/settings/${encodeURIComponent(c.id)}${location.search}`}>Show metadata</Button>
+        <div className="flex flex-wrap gap-3"><Button color="secondary" href={`/settings/${encodeURIComponent(c.id)}${location.search}`}>Show metadata</Button>
           <Button color="secondary" isDisabled={owner.locked(c.id) || c.status !== 'Ready' || !registered.data?.length} onPress={() => open({ kind: 'assign', before: c })}>Assign</Button>
           <Button color="secondary" isDisabled={owner.locked(c.id) || !['Ready', 'NeedsReprovision'].includes(c.status)} onPress={() => open({ kind: 'replace', before: c })}>Replace secret</Button>
           <Button color="secondary-destructive" isDisabled={owner.locked(c.id) || !['Ready', 'NeedsReprovision'].includes(c.status)} onPress={() => open({ kind: 'revoke', before: c })}>Revoke</Button>
-        </div><AdvancedDisclosure title="Credential resource details"><p>Updated {c.updatedAtUtc}{c.revokedAtUtc && ` · Revoked ${c.revokedAtUtc}`}</p>{c.assignedWorkerId && <Button color="link-gray" href={`${migrationBase}/workers/${encodeURIComponent(c.assignedWorkerId)}`}>Assigned Worker</Button>}</AdvancedDisclosure>
+        </div><AdvancedDisclosure title="Credential resource details"><p>Updated {c.updatedAtUtc}{c.revokedAtUtc && ` · Revoked ${c.revokedAtUtc}`}</p>{c.assignedWorkerId && <Button color="link-gray" href={`/workers/${encodeURIComponent(c.assignedWorkerId)}`}>Assigned Worker</Button>}</AdvancedDisclosure>
       </article>)}
       {owner.message && <Notice>{owner.message}</Notice>}
       {Object.keys(owner.attempts).filter(key => owner.locked(key.slice('credential:'.length))).map(key => <Notice key={key}>A credential action is unconfirmed. No secret input was retained. <Button color="secondary" onPress={() => { void owner.reconcile(key); }}>Refresh authoritative credential state</Button></Notice>)}

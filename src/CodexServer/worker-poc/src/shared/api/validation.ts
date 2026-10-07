@@ -56,7 +56,12 @@ export const diagnostics: Validator<WorkerDiagnostics> = value => {
   optional(item, ['workerVersion', 'recentOperationalError'], ['canActivate', 'capabilityObservationsCurrent']);
   if (item.projects != null) {
     if (!Array.isArray(item.projects)) throw new Error('Invalid project readiness.');
-    item.projects.forEach(value => { const project = fields(value, ['projectId', 'projectName', 'observationStatus'], ['isEligible']); optional(project, ['materializationState', 'diagnosticCode'], [], ['workerReportedRevision']); stringList(project.missingRequirements); });
+    item.projects.forEach(value => {
+      const project = fields(value, ['projectId', 'projectName', 'observationStatus'], ['isEligible']);
+      optional(project, ['materializationState', 'diagnosticCode'], [], ['workerReportedRevision']);
+      if (project.workerReportedRevision != null && (!Number.isSafeInteger(project.workerReportedRevision) || Number(project.workerReportedRevision) < 1)) throw new Error('Invalid project revision.');
+      stringList(project.missingRequirements);
+    });
   }
   if (item.reasons != null) stringList(item.reasons);
   if (item.activationBlockingReasons != null && (!Array.isArray(item.activationBlockingReasons) || item.activationBlockingReasons.some(value => typeof value !== 'string'))) throw new Error('Invalid reasons.');

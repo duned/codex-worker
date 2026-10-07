@@ -33,8 +33,11 @@ const clone = value => structuredClone(value);
       if (method !== 'GET') assert.equal(request.headers()['x-codex-csrf'], 'fixture-csrf');
       if (endpoint === '/api/v1/projects/verify') return route.fulfill({ status: failVerify ? 503 : 200, json: { repository: body.repository, defaultBranch: body.defaultBranch, repositoryReadable: true, branchExists: true, diagnostic: 'Server read verified.' } });
       if (endpoint === '/api/v1/github/repositories') return route.fulfill({ json: { repositories: [{ repository: 'owner/new', name: 'New project', description: 'Discovered repository', defaultBranch: 'trunk' }], nextPage: null } });
+      if (endpoint === '/api/status') return route.fulfill({ json: { state: 'running', version: 'fixture-version', startedAtUtc: '2026-01-01T00:00:00Z' } });
+      if (endpoint === '/api/v1/nodes') return route.fulfill({ json: props.nodes });
+      if (endpoint === '/api/v1/nodes/server/github-connection') return route.fulfill({ json: { commands: [], provisioningEnabled: true, elevationAllowed: false } });
       if (endpoint === '/api/v1/workers') return route.fulfill({ json: [props.observations[0]] });
-      if (endpoint.endsWith('/diagnostics')) return route.fulfill({ json: { ...props.diagnostics, projects: [{ projectId: 'project-a', isEligible: true, missingRequirements: [], workerReportedRevision: 1, materializationState: 'failed', observationStatus: 'stale-heartbeat' }] } });
+      if (endpoint.endsWith('/diagnostics')) return route.fulfill({ json: { ...props.diagnostics, projects: [{ projectId: 'project-a', projectName: 'Sample project', isEligible: true, missingRequirements: [], workerReportedRevision: 1, materializationState: 'failed', observationStatus: 'stale-heartbeat' }] } });
       if (endpoint === '/api/v1/executions') {
         const items = queue.filter(e => !url.searchParams.get('projectId') || e.projectId === url.searchParams.get('projectId')).filter(e => !url.searchParams.get('workId') || e.workReference.id === url.searchParams.get('workId'));
         return route.fulfill({ json: items });

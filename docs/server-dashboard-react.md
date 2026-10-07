@@ -3,150 +3,91 @@
 > Server frontend are removed. See [final cutover evidence](server-dashboard-cutover.md).
 > Migration-stage descriptions and earlier validation below are historical evidence.
 
-# Production dashboard foundation (temporary migration entry)
+# Production React dashboard architecture and build
 
-`src/CodexServer/worker-poc` is the single production frontend package. Its
-historical directory name remains to preserve tooling and source provenance;
-`package.json` now names it `codex-server-dashboard`. The approved Worker PoC,
-official public Untitled UI source, tokens and MIT license are retained. There is
-no second application package or copied component library. The legacy entry and
-Vite SPA share the shell, components, Worker presentation and presentation helpers.
+`src/CodexServer/worker-poc` is the single frontend package, named
+`codex-server-dashboard`. The historical directory name preserves the accepted
+Worker detail design and official public Untitled UI source/license provenance.
+All canonical screens use one Vite graph, React root and BrowserRouter. There is
+no legacy entry, PoC application, DOM bridge or dashboard JavaScript request owner.
+The standalone Worker dashboard is unchanged.
 
-Open `/dashboard-preview` or `/dashboard-preview/workers/{id}`. The preview has a
-TypeScript application/router boundary, app error boundary, typed session/read
-hooks and page/feature/shared layout. Dark mode is the default; the theme control
-persists only a light/dark preference. Worker detail reuses the fixture-tested PoC
-presentation through a typed boundary. Workers now includes the control rail, enrollment
-and preparation on preview and canonical routes; see the Worker parity inventory below.
-Home renders the operational overview described below. Projects and Issue administration
-use shared React flows; see the [project and Issue parity inventory](server-projects-react.md).
-Executions use shared React list, detail and recovery controls; see the
-[execution and recovery parity inventory](server-executions-react.md). Settings, credentials
-and Server preparation also have shared React parity; see the
-[Settings parity inventory](server-settings-react.md). These views use reported observations
-and existing Server actions. Legacy `/home` and non-Worker resource routes remain
-legacy-owned. `/workers` and `/workers/{id}` use this shared React application;
-`/workers/{id}/poc` redirects to canonical detail with its query intact. The remaining
-default-route cutover belongs to 24.12.9.
+See [navigation](server-dashboard-navigation.md) for canonical routes and query
+context, and [final integration acceptance](server-dashboard-final-review.md) for
+the route/action/API checklist and current evidence. Preview and PoC bookmarks
+redirect to canonical routes; the Server rejects unknown routes and assets rather
+than serving a catch-all shell.
 
-## Route and migration inventory
+`src/app` owns mounting, routing and errors; cohesive modules under `src/features`
+own Home, Projects/Issues, Workers, Executions and Settings composition. Shared
+shell, dialogs, status, forms and API/session hooks live under `src/shared`.
+`src/untitled` retains public upstream navigation, inputs, buttons, badges, tables,
+checkboxes and tokens. The accepted `detail.jsx` and `model.js` remain reused
+presentation modules, not a separate application. Custom CSS handles composition.
 
-React Router owns preview history routes. The Server has the same explicit GET
-shell allowlist, prefixed with `/dashboard-preview`. `/dashboard-preview` normalizes
-to preview `/home`, preserving its query. No catch-all Server fallback exists.
-Unknown sections, nested paths, API/protocol/health paths and unsupported methods
-cannot receive the shell. The canonical map remains
-[Server dashboard navigation](server-dashboard-navigation.md).
-
-| Canonical route | Query context | Read APIs / later migration scope |
-| --- | --- | --- |
-| `/home` | none | Workers, projects, latest bounded executions, nodes, Server status; authoritative setup projections |
-| `/projects`, `/projects/{id}` | `issue`, `issueState`, `label`, `issues`, preparation context | Migrated in preview: projects, GitHub access/issues/relationships; verified revision-fenced create/edit/lifecycle/delete, Issue preview/editing/eligibility/enqueue. [Parity inventory](server-projects-react.md) |
-| `/workers`, `/workers/{id}` | `step`, `project` | Worker registry/diagnostics, nodes/commands, projects and latest 50 executions; enrollment, preparation, activation/drain/disable, API-token and delivery revocation |
-| `/executions`, `/executions/{id}` | `project`, `state`, `issue`, `offset` | Execution list/detail; queued cancellation and evidence-based uncertain integration reconciliation |
-| `/settings`, `/settings/{credentialId}` | `node` | Credential metadata, nodes, Server GitHub connection, command history; credential create/replace/assign/revoke and typed provisioning |
-
-`src/app` owns mounting, routes and error handling; `src/pages` owns section pages;
-`src/features/workers` owns Worker enrollment, preparation and administration; `src/features/projects` owns
-project configuration and GitHub Issue administration; `src/features/executions`
-owns execution browsing and evidence-based recovery; `src/shared`
-owns the shell, theme and typed API/session hooks. `src/untitled` remains upstream
-source. The retained PoC `detail.jsx` and `model.js` are reused presentation modules;
-further migration should type them alongside their feature work, rather than copy
-them. The compatibility entry `shell.jsx` re-exports the shared TypeScript shell.
-
-The preview and canonical Workers share React-owned administration sessions, validated
-TanStack Query reads, a single Worker SSE stream/fallback refresh owner and Zustand
-theme preferences. See the shared infrastructure contract below. Read-only screens
-present observations; administration actions remain available through explicit links
-to the current dashboard. No backend or standalone Worker API changes are included.
+`SessionProvider` creates one `DashboardRuntime` and TanStack Query cache per tab.
+The runtime owns CSRF, generation fencing, query cancellation/invalidation, expiry,
+one bounded Worker SSE reader and sequential fallback polling. Zustand persists
+only a versioned light/dark preference. Project/credential workspaces retain
+transient drafts and uncertain attempts, not separate registries. Shared node
+components and Server readiness projections serve multiple screens. Diagnostics
+validation, including positive safe-integer reported revisions, has one shared
+boundary. Secret inputs and device challenges never enter persistent preferences
+or the private query cache. Server authorization/readiness and node-local consent
+remain authoritative; no render, route, refresh or hydration submits a mutation.
 
 ## Development and validation
 
-Build machines need .NET 10, Node >=22.12 and npm with the locked public packages.
+Build machines require .NET 10, Node >=22.12 and npm with locked public packages.
+Installed nodes require no Node/npm, CDN or frontend process.
 
 ```sh
 npm ci --prefix src/CodexServer/worker-poc --no-audit --no-fund
 npm run check --prefix src/CodexServer/worker-poc
 npm run dev --prefix src/CodexServer/worker-poc
+node --test --test-isolation=none tests/dashboard/*.test.cjs
 ```
 
-The development URL is `/dashboard-preview/`. Vite supports direct history routes.
-For authenticated development, use a trusted local HTTPS reverse proxy whose
-external origin exactly matches Server `AdministrationOrigin`. Route preview
-paths, `/src`, `/@vite`, `/@id`, `/node_modules` and Vite WebSocket traffic to the
-loopback Vite process, and `/api` to the Server. Keep the proxy upstream Host
-consistent with the configured administration authority. Use disposable local
-registry data and existing management-network access. An ordinary direct HTTP
-Vite port or a different-origin API URL cannot establish the secure Server session.
-Do not disable cookie/origin checks, add CORS bypasses or persist management tokens.
+Vite serves canonical paths such as `/home` and `/settings` at its root. For
+cookie-authenticated development, use a trusted disposable HTTPS reverse proxy
+whose external origin exactly matches Server `AdministrationOrigin`. Route UI,
+Vite modules and WebSocket traffic to loopback Vite, and `/api` to the Server.
+Keep upstream Host consistent with the configured authority and management-network
+policy. `DASHBOARD_API_ORIGIN` optionally configures Vite's API upstream; it does
+not rewrite Host/Origin, bypass TLS, enable CORS or persist tokens. Production
+assets use the fixed same-origin `/dashboard-assets/preview/` prefix.
 
-Alternatively set `DASHBOARD_API_ORIGIN` to the Server upstream for Vite's `/api`
-proxy, still behind that same trusted HTTPS external origin. The proxy does not
-rewrite Host/Origin and does not disable TLS verification. Production asset base
-is `/dashboard-assets/preview/`; development base is `/dashboard-preview/`.
+## Embedded assets and publish
 
-Normal Server Debug/Release builds run typecheck, lint and production compilation.
-`npm run check` also performs those checks independently; deterministic legacy
-regressions remain `node --test --test-isolation=none tests/dashboard/*.test.cjs`.
-Optional Playwright review uses the production graph and Server-shaped fixtures:
+Normal Debug/Release builds typecheck, lint and regenerate the Vite graph.
+`build.mjs` invokes only Vite, empties its output and records every local asset's
+SHA-256. MSBuild embeds shell/manifest/assets from configuration-specific output;
+always rebuilding handles deleted sources and stale bundles. Startup validates
+manifest paths, hashes and shell references; only listed assets receive endpoints.
+Source, node_modules and private dependencies do not become deployment content.
+Upstream MIT source licenses remain in source and production JavaScript banners.
 
-```sh
-NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/dashboard-preview-browser-review.cjs
-```
-
-## Embedded output and artifacts
-
-`build.mjs` retains the PoC esbuild/PostCSS entry and invokes Vite in a separate
-process. Tailwind's input cache must not be shared between these two compilations.
-Vite empties its output directory each build, emits hashed assets and a Vite
-manifest; the embedding manifest additionally records SHA-256 for every local
-asset. Empty/missing JS/CSS fails the build. MSBuild embeds the shell, manifest
-and local asset graph from configuration-specific intermediate output; regeneration
-on every build handles deleted inputs and stale output without timestamp inference.
-Frontend source and node_modules never become publish content. Source licenses
-are retained and included in production JavaScript.
-
-The Server verifies manifest paths, resource existence, hashes and shell references
-on startup, then maps only manifest-listed asset URLs. There is no filesystem or
-HTML fallback for unknown assets. Publish must build: `--no-build` is rejected
-because it cannot establish that the assembly contains current frontend inputs.
-Both release entry points already perform normal `dotnet publish` and therefore
-use this same pipeline, without a separate copy stage or runtime Node process.
+Publish rejects `--no-build`. Both packaging entry points use normal publish and
+therefore the same current embedded graph. No separate copy or runtime install is
+required. Validation may use a disposable publish directory or extracted archive:
 
 ```sh
 dotnet publish src/CodexServer/CodexServer.csproj -c Release -r linux-x64 --self-contained true -o /tmp/dashboard-publish
 (cd src/CodexServer/worker-poc && node build.mjs /tmp/dashboard-reference)
 node tests/dashboard/worker-poc-artifact-review.cjs /tmp/dashboard-publish /tmp/dashboard-reference
 bash tests/release-tests.sh
+NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/dashboard-preview-browser-review.cjs
 ```
 
-The artifact check accepts a clean publish directory or extracted Linux Server
-archive, compares every served byte with fresh output and runs the installed
-Server with Node/npm absent from PATH. It covers both entries, legacy isolation,
-unknown routes/assets, unsupported methods and protected API authorization.
-These local checks do not replace Worker-configured authoritative validation or
-deployed HTTPS session/real-node acceptance.
+Artifact checks compare every served byte with fresh reference output, exercise
+canonical deep links/reload and redirect targets, reject unknown paths/assets and
+check protected API authorization with Node/npm absent from the Server PATH.
+Playwright/Chromium and OS libraries are separate review tools, never product
+dependencies. Feature browser harnesses use Server-shaped deterministic fixtures;
+see final acceptance for commands, evidence and remaining live-deployment limits.
 
-## Local review evidence
-
-Local typecheck/lint/production builds passed, as did the 126 deterministic Node
-regressions, nine focused Server route/session tests and Debug compilation with
-zero warnings/errors. A self-contained Release publish and actual disposable
-Linux archives passed the expanded artifact check, with Node/npm absent from the
-installed Server PATH. The stubbed release suite covered both packaging entry
-points; no GitHub release was published. `--no-build` publish was rejected as
-intended.
-
-Chromium reviewed the final production bundle at 1280px and 375px. The fixture
-harness passed direct resource/query context, reload/Back, SPA navigation retaining
-its session owner, dark/light persistence, failed/deleted reads and logout during
-a coordinated in-flight read, with no resource mutations or horizontal overflow.
-Desktop/mobile screenshots were inspected locally. Initial package/socket/browser
-restrictions were resolved with permitted tooling access and browser libraries
-and fonts extracted under `/tmp`; no machine packages were installed. Live HTTPS,
-provider actions and real nodes were not exercised. Worker-configured validation
-remains a separate authoritative gate.
+The following feature-stage descriptions record the migration design and earlier
+local checks; final integration evidence supersedes their route/build claims.
 
 ## Shared React API, session, live updates and preferences (24.12.2)
 

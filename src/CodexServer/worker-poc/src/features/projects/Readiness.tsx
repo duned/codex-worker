@@ -1,22 +1,12 @@
 import { Link } from 'react-router-dom';
 import { useApiRead } from '../../shared/api/session';
-import { workers, diagnostics, record } from '../../shared/api/validation';
+import { workers, diagnostics } from '../../shared/api/validation';
 import { AdvancedDisclosure, Notice, StatusBadge, ViewState } from '../../shared/Presentation';
 import type { Project } from './contracts';
-import { array } from './contracts';
-interface Report { projectId: string; isEligible: boolean; missingRequirements: string[]; workerReportedRevision?: number; materializationState?: string; diagnosticCode?: string; observationStatus: string }
 const observationLabels: Record<string, string> = { 'worker-reported-current-revision': 'Current reported revision', 'stale-heartbeat': 'Stale heartbeat · check Worker connection', 'cached-worker-observation': 'Cached observation · reconnect Worker', 'stale-revision': 'Stale revision · synchronize Worker configuration', 'not-reported': 'Not reported · prepare Worker' };
 export function readiness(value: unknown) {
-  const shared = diagnostics(value), d = record(value);
-  const projects = array(d.projects, value => {
-    const p = record(value);
-    if (typeof p.projectId !== 'string' || typeof p.isEligible !== 'boolean' || typeof p.observationStatus !== 'string') throw Error('Invalid readiness.');
-    for (const key of ['materializationState', 'diagnosticCode']) if (p[key] != null && typeof p[key] !== 'string') throw Error('Invalid evidence.');
-    if (p.workerReportedRevision != null && (typeof p.workerReportedRevision !== 'number' || !Number.isSafeInteger(p.workerReportedRevision) || p.workerReportedRevision < 1)) throw Error('Invalid revision.');
-    array(p.missingRequirements, r => { if (typeof r !== 'string') throw Error('Invalid reason.'); return r; });
-    return value as Report;
-  });
-  return { ...shared, projects };
+  const shared = diagnostics(value);
+  return { ...shared, projects: shared.projects ?? [] };
 }
 export function ProjectWorkers({ project }: { project: Project }) {
   const read = useApiRead('/api/v1/workers', workers);

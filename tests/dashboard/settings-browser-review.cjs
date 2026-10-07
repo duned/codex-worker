@@ -80,8 +80,12 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
         await page.getByRole('button', { name: 'Connect · prepare authentication', exact: true }).click();
         assert.equal(await page.getByRole('dialog').getByRole('checkbox').isChecked(), false);
         await page.keyboard.press('Escape');
-        await page.getByRole('link', { name: 'Show metadata', exact: true }).first().click();
+        const metadataLink = page.getByRole('link', { name: 'Show metadata', exact: true }).first();
+        assert.equal(await metadataLink.getAttribute('href'), '/settings/credential-a?node=server');
+        await page.evaluate(() => { window.settingsNavigationFixture = 'retained'; });
+        await metadataLink.click();
         await page.getByRole('dialog').getByText('credential:credential-a', { exact: true }).waitFor();
+        assert.equal(await page.evaluate(() => window.settingsNavigationFixture), 'retained', 'Metadata navigation retains the session and pending mutation owners.');
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         await page.screenshot({ timeout: 10000, animations: 'disabled', path: path.join(output, `metadata-${theme}-${width}.png`), fullPage: false });
         await page.reload();

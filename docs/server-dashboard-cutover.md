@@ -1,3 +1,6 @@
+> Final combined review and current evidence: [24.12 acceptance](server-dashboard-final-review.md).
+> The validation restrictions below describe the earlier cutover execution.
+
 # Canonical React dashboard cutover (24.12.9)
 
 The route/action/API inventories in the Home, Projects, Workers, Executions and

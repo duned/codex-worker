@@ -8,7 +8,7 @@ Vite application and asset graph. The local standalone Worker dashboard is uncha
 | --- | --- |
 | Home | `/home` |
 | Projects | `/projects`, `/projects/{id}`; `issue`, `issueState`, `label`, `issues` |
-| Workers | `/workers`, `/workers/{id}`; preparation `step` and `project` |
+| Workers | `/workers`, `/workers/{id}`; preparation `step`, `project`, and enrollment `enroll=1` / `prepare=1` |
 | Executions | `/executions`, `/executions/{id}`; `project`, `state`, `issue`, `offset` |
 | Settings | `/settings`, `/settings/{credentialId}`; `node=server` |
 
@@ -32,5 +32,5 @@ asset prefix is retained. Allow only that same-origin prefix in addition to the
 explicit dashboard routes; do not allow arbitrary filesystem/static resources or
 API fallback. Legacy `/dashboard-assets/worker-poc.js` and `.css` return 404.
 
-See [final cutover evidence](server-dashboard-cutover.md) for parity and validation,
+See [final integration checklist and evidence](server-dashboard-final-review.md) for parity and validation,
 and [React development/build guidance](server-dashboard-react.md).

@@ -114,6 +114,17 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     blockedRead.release();
     await page.getByText('Administration sign in', { exact: true }).waitFor();
     assert.equal(await page.getByRole('heading', { name: 'Build Worker North' }).count(), 0);
+    for (const theme of ['light', 'dark']) {
+      await page.setViewportSize({ width: 1280, height: 1000 });
+      if (theme === 'dark') await page.getByRole('button', { name: 'Use dark mode', exact: true }).click();
+      for (const width of [1280, 375]) {
+        await page.setViewportSize({ width, height: 1000 });
+        assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), theme === 'dark');
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Login overflow at ${width}px.`);
+        assert.equal(await page.getByLabel(/Server management token/).inputValue(), '');
+        await page.screenshot({ path: path.join(output, `login-${theme}-${width}.png`), fullPage: true, animations: 'disabled' });
+      }
+    }
     assert.deepEqual(mutations, [{ path: '/api/v1/administration/session', method: 'DELETE', csrf: 'fixture-csrf' }]);
     assert.deepEqual(errors, []);
     assert.ok(streamReads > 0, 'React owns its live subscription.');

@@ -36,15 +36,28 @@ const { once } = require('node:events');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     assert.ok(ready, 'Published Server did not start within 30 seconds.');
-    const route = await read('/workers/fixture-worker/poc');
+    const route = await read('/workers/fixture-worker?step=preparation&project=fixture-project');
     assert.equal(route.status, 200); const html = await route.text();
     assert.ok(html.includes('id="worker-poc"') && !html.includes('id="poc-legacy-owner"'));
     assert.ok(!html.includes('dashboard-session') && !html.includes('codexWorkerPoc'));
     assert.ok(!html.includes('--ink:#183135'), 'Legacy theme must not ship on the PoC route.');
     for (const extension of ['js', 'css'])
       assert.equal((await read(`/dashboard-assets/worker-poc.${extension}`)).status, 404);
-    for (const route of ['/home', '/projects', '/projects/p?issue=27', '/workers', '/executions/e?offset=50', '/settings/c?node=server'])
-      assert.equal(await (await read(route)).text(), html);
+    for (const route of ['/', '/home', '/projects', '/projects/p?issue=27', '/workers', '/workers/w?project=p', '/executions', '/executions/e?offset=50', '/settings', '/settings/c?node=server']) {
+      const response = await read(route);
+      assert.equal(response.status, 200, `Deep link ${route}`);
+      assert.equal(await response.text(), html);
+      assert.equal(await (await read(route)).text(), html, `Reload ${route}`);
+    }
+    for (const [historical, canonical] of [
+      ['/workers/fixture-worker/poc?project=p', '/workers/fixture-worker?project=p'],
+      ['/dashboard-preview', '/home'],
+      ['/dashboard-preview/settings/c?node=server', '/settings/c?node=server']
+    ]) {
+      const response = await fetch(origin + historical, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), canonical);
+    }
     const preview = await read('/dashboard-preview/workers/fixture-worker?step=preparation&project=fixture-project');
     assert.equal(preview.status, 200);
     const previewHtml = await preview.text();
@@ -55,7 +68,7 @@ const { once } = require('node:events');
       assert.equal(response.status, 200);
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(path.join(expected, 'preview', asset.path)), `Stale preview asset ${asset.path}`);
     }
-    for (const resource of ['/dashboard-preview/unknown', '/dashboard-preview/home/extra', '/dashboard-preview/api/v1/workers', '/dashboard-preview/health', '/dashboard-assets/preview/assets/unknown.js'])
+    for (const resource of ['/unknown', '/home/extra', '/projects/p/extra', '/workers/w/extra', '/executions/e/extra', '/settings/c/extra', '/api/unknown', '/dashboard-assets/dashboard-session.js', '/dashboard-preview/unknown', '/dashboard-preview/home/extra', '/dashboard-preview/api/v1/workers', '/dashboard-preview/health', '/dashboard-assets/preview/assets/unknown.js'])
       assert.equal((await read(resource)).status, 404);
     const previewPost = await fetch(origin + '/dashboard-preview/workers/fixture-worker', { method: 'POST' });
     assert.equal(previewPost.status, 405);
@@ -63,7 +76,7 @@ const { once } = require('node:events');
     assert.equal(await (await read('/workers')).text(), previewHtml);
     assert.equal((await read('/dashboard-assets/unknown.js')).status, 404);
     assert.equal((await read('/api/v1/workers/fixture-worker/diagnostics')).status, 401);
-    console.log('Published artifact: current local JS/CSS, isolated React route, API authorization and no Node/npm runtime passed.');
+    console.log('Published artifact: current embedded assets, canonical deep links/reload, historical redirects, unknown-route rejection, API authorization and no Node/npm runtime passed.');
   } finally {
     child.kill('SIGTERM');
     await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 5000))]);

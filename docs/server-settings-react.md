@@ -53,7 +53,7 @@ present. No live provider or deployment campaign is needed for these fixtures.
 
 ```sh
 npm run check --prefix src/CodexServer/worker-poc
-node --test --test-isolation=none tests/dashboard/react-settings.test.cjs tests/dashboard/react-infrastructure.test.cjs tests/dashboard/server-credential-admin.test.cjs tests/dashboard/node-provisioning.test.cjs tests/dashboard/server-provisioning-admin.test.cjs tests/dashboard/worker-preparation.test.cjs tests/dashboard/home-overview.test.cjs
+node --test --test-isolation=none tests/dashboard/react-settings.test.cjs tests/dashboard/react-infrastructure.test.cjs tests/dashboard/home-overview.test.cjs
 NODE_PATH=/path/to/review/node_modules node tests/dashboard/settings-browser-review.cjs
 ```
 
