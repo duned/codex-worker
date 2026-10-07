@@ -168,6 +168,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             await git.VerifyCodexStateAsync(ct);
             if (repairs.Count > 0) repairs[^1] = repairs[^1] with { PassedAfterRepair = true };
             await TransitionAsync(execution, ExecutionState.Integrating, ct);
+            ObserveIntegration(execution, issue, implementationSummary, repairs);
             await _repositoryGate.WaitAsync(ct);
             GitIntegrationResult integration;
             try
@@ -203,6 +204,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 }
                 catch (GitIntegrationConflictException ex)
                 {
+                    if (ex is GitIntegrationArchiveException && history is not null &&
+                        await history.ReadExecutionAsync(execution.ExecutionId, ct) is { CompletionJson: not null })
+                        throw new WorkerInfrastructureException("Validated base integration succeeded; completed-branch archival is pending reconciliation.", ex);
                     var recovery = await git.PreserveIntegrationConflictAsync(ct);
                     var report = new IssueExecutionReport(implementationSummary, repairs, Failure: ex.Message,
                         FailureCategory: ex is PostRebaseValidationException ? "Post-rebase validation failed" : "Integration conflict", RecoveryBranch: recovery?.Branch,
@@ -260,6 +264,23 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         }
     }
 
+    private void ObserveIntegration(WorkerExecution execution, GitHubIssue issue, string? summary,
+        IReadOnlyList<ValidationRepairRecord> repairs)
+    {
+        if (history is null) return;
+        git.WithIntegrationObserver(async (integration, confirmed, token) =>
+        {
+            var report = new IssueExecutionReport(summary, repairs, Integration: integration, ExecutionId: execution.ExecutionId,
+                Duration: DateTimeOffset.UtcNow - execution.StartedAtUtc, AttemptNumber: execution.AttemptNumber,
+                RetryOfExecutionId: execution.RetryOfExecutionId, Resumed: execution.Resumed,
+                EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort);
+            report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray());
+            await SaveHistoryAsync(CreateEntry(execution, report, null, null) with { ValidationOutcome = "passed" }, token);
+            await history.SaveCompletionAsync(execution.ExecutionId,
+                new ExecutionCompletion(report, ExecutionCompletion.IssueIntent(issue), ExecutionCompletion.Policy(config), confirmed), false, token);
+        });
+    }
+
     private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, ICodexExecutor executionCodex, CancellationToken ct)
     {
         var execution = context.Execution;
@@ -296,6 +317,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (isAuthoritative is not null && !await isAuthoritative(execution, ct))
                 return new IssueProcessingResult(IssueOutcomeKind.Superseded,
                     new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} was superseded because the Issue is closed or a later attempt completed.", []));
+            ObserveIntegration(execution, issue, source.ImplementationSummary, repairs);
             var integration = await output.RunProgressAsync(TaskLabel(issue, "Integration recovery", execution), () =>
                 git.CommitAndIntegrateAsync(issue,
                     token => ValidateAfterRebaseAsync(context, repairs, token),
@@ -313,6 +335,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         }
         catch (GitIntegrationConflictException ex)
         {
+            if (ex is GitIntegrationArchiveException && history is not null &&
+                await history.ReadExecutionAsync(execution.ExecutionId, ct) is { CompletionJson: not null })
+                throw new WorkerInfrastructureException("Validated base integration succeeded; completed-branch archival is pending reconciliation.", ex);
             var recovery = await git.PreserveIntegrationConflictAsync(ct);
             if (history is not null && recovery is not null)
                 await history.UpdateIntegrationRecoverySnapshotAsync(source.ExecutionId, recovery.BaseCommit,

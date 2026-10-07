@@ -1911,6 +1911,181 @@ public sealed class WorkerV011Tests
         Assert.Null(h.Codex.InitialDirectory);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ValidatedIntegrationWithLostPushResponseResumesCompletionWithoutImplementation(bool remoteReceivedPush)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, telegramEnabled: true);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = remoteReceivedPush;
+        h.Git.IntegrationException = new WorkerInfrastructureException("Push response uncertain");
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        var pending = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("passed", pending.ValidationOutcome);
+        Assert.Equal("main", pending.IntegrationBranch);
+        Assert.Equal("0123456789abcdef0123456789abcdef01234567", pending.CommitSha);
+        Assert.False(ExecutionCompletion.Read(pending).RemoteConfirmed);
+        Assert.DoesNotContain("working->blocked", h.GitHub.Labels);
+        Assert.Empty(h.GitHub.Comments);
+        if (!remoteReceivedPush)
+        {
+            var missing = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.ResumeCompletionAsync(pending, CancellationToken.None));
+            Assert.Contains("missing the exact", missing.Message, StringComparison.Ordinal);
+            Assert.Empty(h.GitHub.Comments);
+            // Operator retries only the exact push. Reconciliation never publishes the base.
+            h.Git.RemoteContainsIntegration = true;
+        }
+        var restarted = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram, history: history);
+        await restarted.ResumeCompletionAsync(pending, CancellationToken.None);
+        var completed = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Completed", completed.State);
+        Assert.True(ExecutionCompletion.Read(completed).Finished);
+        Assert.True(h.GitHub.Closed);
+        Assert.Single(h.GitHub.Comments);
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA COMPLETADA", StringComparison.Ordinal));
+        await restarted.ResumeCompletionAsync(completed, CancellationToken.None);
+        Assert.Single(h.GitHub.Comments);
+        Assert.Single(h.Codex.Issues);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal(1, h.Git.Started);
+    }
+
+    [Theory]
+    [InlineData("label-before")]
+    [InlineData("label-after")]
+    [InlineData("comment-before")]
+    [InlineData("comment-after")]
+    [InlineData("close-before")]
+    [InlineData("close-after")]
+    [InlineData("cleanup-before")]
+    [InlineData("cleanup-after")]
+    public async Task CompletionRestartsDeduplicateEachDurableSuccessEffect(string failurePhase)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, telegramEnabled: true);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.GitHub.CompletionFailurePhase = failurePhase;
+        h.Git.CompletionFailurePhase = failurePhase;
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        h.GitHub.CompletionFailurePhase = null;
+        h.Git.CompletionFailurePhase = null;
+        var pending = Assert.Single(await history.ReadAllAsync());
+        // Recreate the coordinator with retained external effects and durable history.
+        var restarted = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram, history: history);
+        await restarted.ResumeCompletionAsync(pending, CancellationToken.None);
+        var completed = Assert.Single(await history.ReadAllAsync());
+        await restarted.ResumeCompletionAsync(completed, CancellationToken.None);
+        Assert.Equal("Completed", completed.State);
+        Assert.True(h.GitHub.Closed);
+        Assert.Single(h.GitHub.Comments);
+        Assert.Single(h.GitHub.Labels, label => label == "working->done");
+        Assert.Equal(1, h.GitHub.CloseCalls);
+        Assert.True(ExecutionCompletion.Read(completed).NotificationAttempted);
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA COMPLETADA", StringComparison.Ordinal));
+        Assert.Single(h.Codex.Issues);
+        Assert.Equal(1, h.Git.Integrations);
+    }
+
+    [Fact]
+    public async Task ConfirmedBaseWithPendingArchiveRemainsInCompletionLifecycle()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.Git.IntegrationFailure = new GitIntegrationArchiveException("Archive response uncertain",
+            new WorkerInfrastructureException("Original archive failure"));
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        var pending = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("InfrastructureFailure", pending.State);
+        Assert.True(ExecutionCompletion.Read(pending).RemoteConfirmed);
+        Assert.DoesNotContain(h.GitHub.Labels, label => label.Contains("codex-integration-conflict", StringComparison.Ordinal));
+        Assert.Empty(h.GitHub.Comments);
+        await h.Worker.ResumeCompletionAsync(pending, CancellationToken.None);
+        Assert.True(h.GitHub.Closed);
+        Assert.Single(h.Codex.Issues);
+        Assert.Equal(1, h.Git.Integrations);
+    }
+
+    [Fact]
+    public async Task PendingIntegrationRecoveryCompletionRetainsClaimUntilSuccessAndNeverReportsAnotherRecoveryRejection()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var source = PreservedConflict();
+        await history.CreateAsync(source);
+        using var h = new Harness(history: history);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.Git.IntegrationException = new WorkerInfrastructureException("Lost push response");
+        h.GitHub.ReturnConflictIssue = true;
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        var entries = await history.ReadAllAsync();
+        var pending = entries.Single(entry => entry.ExecutionId != source.ExecutionId);
+        Assert.Equal(pending.ExecutionId, entries.Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
+        var commentCount = h.GitHub.Comments.Count;
+        var restarted = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram, history: history);
+        await restarted.ReconcileIntegrationRecoveryAsync(CancellationToken.None);
+        Assert.Equal(commentCount, h.GitHub.Comments.Count);
+        await restarted.ResumeCompletionAsync(pending, CancellationToken.None);
+        var reconciled = await history.ReadExecutionAsync(source.ExecutionId);
+        Assert.NotNull(reconciled);
+        Assert.Null(reconciled.IntegrationRecoveryClaim);
+        Assert.Equal("integration-recovered", reconciled.RecoveryState);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(1, h.Git.Integrations);
+    }
+
+    [Theory]
+    [InlineData("body")]
+    [InlineData("ready")]
+    [InlineData("blocked")]
+    [InlineData("closed")]
+    [InlineData("new-attempt")]
+    [InlineData("managed")]
+    [InlineData("corrupt")]
+    [InlineData("missing")]
+    [InlineData("validation")]
+    public async Task CompletionFailsClosedOnConflictingIntentOwnershipOrProvenance(string conflict)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.Git.IntegrationException = new WorkerInfrastructureException("Lost push response");
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        var pending = Assert.Single(await history.ReadAllAsync());
+        switch (conflict)
+        {
+            case "body": h.GitHub.Issue = h.GitHub.Issue with { Body = "Operator changed intent" }; break;
+            case "ready": h.GitHub.CompletionLabels = ["ready"]; break;
+            case "blocked": h.GitHub.CompletionLabels = ["blocked"]; break;
+            case "closed": h.GitHub.Closed = true; break;
+            case "new-attempt": await history.CreateAsync(pending with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2 }); break;
+            case "managed": pending = pending with { ServerExecutionId = "original-managed-execution" }; break;
+            case "corrupt": pending = pending with { CompletionJson = "{" }; break;
+            case "missing": pending = pending with { CompletionJson = null }; break;
+            case "validation": pending = pending with { ValidationOutcome = null }; break;
+        }
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.ResumeCompletionAsync(pending, CancellationToken.None));
+        Assert.Empty(h.GitHub.Comments);
+        Assert.DoesNotContain("working->done", h.GitHub.Labels);
+        Assert.Single(h.Codex.Issues);
+    }
+
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
         "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
@@ -1928,6 +2103,7 @@ public sealed class WorkerV011Tests
         public FakeCodex Codex { get; }
         public FakeValidation Validation { get; } = new();
         public Worker Worker { get; }
+        public TelegramNotifier Telegram => _telegram;
         public StringWriter Output { get; } = new();
         public StringWriter ErrorOutput { get; } = new();
         public List<string> OperationalMessages { get; } = [];
@@ -2002,6 +2178,25 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeGitHub(List<string> events, CancellationTokenSource cancellation) : IGitHubClient
     {
+        public bool CompletionMode { get; set; }
+        public bool Closed { get; set; }
+        public int CloseCalls { get; private set; }
+        public IReadOnlyList<string> CompletionLabels { get; set; } = ["working"];
+        public string? CompletionFailurePhase { get; set; }
+        private void FailCompletion(string phase)
+        {
+            if (CompletionFailurePhase == phase)
+                throw new GitHubOperationException(phase, Issue.Number, true, GitHubFailureKind.TransientProvider,
+                    GitHubRemoteState.Uncertain, "Simulated lost reporting response");
+        }
+        public Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct) =>
+            Task.FromResult(new GitHubIssueState(!Closed, CompletionLabels));
+        public async Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true)
+        {
+            FailCompletion("comment-before");
+            if (!Comments.Contains(comment)) await CommentAsync(issueNumber, comment, ct);
+            FailCompletion("comment-after");
+        }
         public string CommentContext { get; set; } = "";
         public Exception? CommentFetchFailure { get; set; }
         public int CommentFetches { get; private set; }
@@ -2074,7 +2269,13 @@ public sealed class WorkerV011Tests
 
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
         {
+            if (CompletionMode && add == "done") FailCompletion("label-before");
             Labels.Add($"{remove}->{add}");
+            if (CompletionMode)
+            {
+                CompletionLabels = CompletionLabels.Where(label => label != remove).Append(add).ToArray();
+                if (add == "done") FailCompletion("label-after");
+            }
             if (InterruptionReportingFailure is not null && remove == "working" && add == "blocked")
                 return Task.FromException(InterruptionReportingFailure);
             if (ResultReportingFailure is not null && remove == "working" && add == "done")
@@ -2090,11 +2291,31 @@ public sealed class WorkerV011Tests
         { RemovedLabels.Add(label); return Task.CompletedTask; }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)
         { Comments.Add(comment); return CommentAction?.Invoke() ?? Task.CompletedTask; }
-        public Task CloseAsync(int issueNumber, CancellationToken ct) => Task.CompletedTask;
+        public Task CloseAsync(int issueNumber, CancellationToken ct)
+        {
+            if (CompletionMode) FailCompletion("close-before");
+            Closed = true;
+            CloseCalls++;
+            if (CompletionMode) FailCompletion("close-after");
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeGit : IGitRepository
     {
+        public bool CompletionMode { get; set; }
+        public bool RemoteContainsIntegration { get; set; }
+        public string? CompletionFailurePhase { get; set; }
+        private Func<GitIntegrationResult, bool, CancellationToken, Task>? _integrationObserver;
+        public IGitRepository WithIntegrationObserver(Func<GitIntegrationResult, bool, CancellationToken, Task> observer)
+        { _integrationObserver = observer; return this; }
+        public Task<bool> VerifyRemoteIntegrationAsync(ExecutionHistoryEntry entry, CancellationToken ct) => Task.FromResult(RemoteContainsIntegration);
+        public Task FinishIntegratedExecutionAsync(ExecutionHistoryEntry entry, CancellationToken ct)
+        {
+            if (CompletionFailurePhase is "cleanup-before" or "cleanup-after")
+                throw new WorkerInfrastructureException("Cleanup interrupted");
+            return Task.CompletedTask;
+        }
         public string ExecutionDirectory { get; } = Path.Combine(Path.GetTempPath(), "execution-worktree");
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
@@ -2147,8 +2368,18 @@ public sealed class WorkerV011Tests
             if (IntegrationAction is not null) await IntegrationAction();
             Integrations++;
             BeforeIntegration?.Invoke();
+            var prepared = new GitIntegrationResult(true,
+                "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
+                "0123456789abcdef0123456789abcdef01234567", "main", "completed/17",
+                RecoveryStarted > 0 ? LastRetryOf?.ExecutionId : LastExecutionId,
+                RecoveryStarted > 0 ? LastRetryOf?.AttemptNumber : LastAttemptNumber);
+            if (CompletionMode && _integrationObserver is not null)
+                await _integrationObserver(prepared, false, ct);
             if (IntegrationException is not null) throw IntegrationException;
+            if (CompletionMode && _integrationObserver is not null)
+                await _integrationObserver(prepared, true, ct);
             if (IntegrationFailure is not null) throw IntegrationFailure;
+            if (CompletionMode) return prepared;
             return new GitIntegrationResult(true,
             "Committed as `0123456789ab`. Merged into `main`. Preserved on origin as `completed/17`.",
             "0123456789abcdef0123456789abcdef01234567", "main", "completed/17");

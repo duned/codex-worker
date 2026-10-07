@@ -9,7 +9,7 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
     public string Summary => Report.ToMarkdown(Kind);
 }
 
-public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
+public sealed partial class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
     SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
     WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null)
@@ -522,6 +522,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
             if (retryOf?.RecoveryState == "codex-interrupted" && history is not null)
                 await history.UpdateRecoveryAsync(retryOf.ExecutionId, result.Kind == IssueOutcomeKind.Succeeded ? "codex-recovered" : "codex-recovery-finished", ct);
             var reportedResult = result with { Report = report };
+            if (result.Kind == IssueOutcomeKind.Succeeded && history is not null &&
+                await history.ReadExecutionAsync(execution.ExecutionId, ct) is { CompletionJson: not null } pending)
+                await history.SaveCompletionAsync(execution.ExecutionId,
+                    ExecutionCompletion.Read(pending) with { Report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray()) }, false, ct);
             try
             {
                 await ReportResultAsync(issue, reportedResult, ct);
@@ -568,6 +572,10 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
                 ex is CodexExecutionInfrastructureException codexError ? $"{codexError.Category}. Execution preserved; waiting for Codex readiness." : ex.Message, ex);
             if (ex is GitHubOperationException githubFailure)
                 throw githubFailure.ForExecution(execution.ExecutionId);
+            if (ex is WorkerInfrastructureException && history is not null &&
+                await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None) is { CompletionJson: not null })
+                throw new CompletionReconciliationRequiredException(execution.Project, execution.ExecutionId, issue.Number,
+                    $"Integration completion is pending for execution {execution.ExecutionId}; verify the exact commit on the authoritative remote base before resuming reporting.", ex);
             throw;
         }
         finally
@@ -616,6 +624,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         if (execution.IsTerminal && execution.State is not (ExecutionState.InfrastructureFailure or ExecutionState.Cancelled))
         {
             _operationalLog($"Execution {execution.ExecutionId} · outcome {execution.State} remains authoritative; secondary reporting failed with {safeReason} · no further GitHub mutation will be attempted.");
+            return;
+        }
+        if (history is not null && await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None)
+            is { CompletionJson: not null })
+        {
+            await history.UpdateRecoveryAsync(execution.ExecutionId, GitHubOperationException.ReconciliationRequiredState, CancellationToken.None);
+            _operationalLog($"Execution {execution.ExecutionId} · remote push outcome uncertain or completion reporting pending · verify the exact integration commit on the authoritative remote base; do not replay Codex.");
             return;
         }
         try
@@ -903,6 +918,12 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
         switch (result.Kind)
         {
             case IssueOutcomeKind.Succeeded:
+                if (history is not null && result.Report.ExecutionId is { } successId &&
+                    await history.ReadExecutionAsync(successId, ct) is { CompletionJson: not null } pending)
+                {
+                    await ReportSuccessAsync(issue, ExecutionCompletion.Read(pending).Report, ExecutionCompletion.Read(pending), ct);
+                    break;
+                }
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);

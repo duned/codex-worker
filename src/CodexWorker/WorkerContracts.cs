@@ -21,6 +21,7 @@ public interface IGitHubClient
         FindOldestReadyAsync(label, cancellationToken);
     Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
         throw new WorkerInfrastructureException("This GitHub client cannot load a specifically assigned Issue.");
+    Task<GitHubIssue?> GetCompletionIssueAsync(int issueNumber, CancellationToken ct) => GetIssueAsync(issueNumber, ct);
     Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
         IReadOnlyList<string>? secretValues = null);
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
@@ -28,6 +29,10 @@ public interface IGitHubClient
     Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;
     Task CommentAsync(int issueNumber, string comment, CancellationToken ct);
     Task CloseAsync(int issueNumber, CancellationToken ct);
+    Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This GitHub client cannot verify completion state.");
+    Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true) =>
+        throw new WorkerInfrastructureException("This GitHub client cannot deduplicate completion reports.");
 }
 
 public interface IGitHubLabelClient
@@ -44,6 +49,10 @@ public interface IGitRepository : IDisposable
     void IDisposable.Dispose() { }
 
     string ExecutionDirectory { get; }
+    IGitRepository WithIntegrationObserver(Func<GitIntegrationResult, bool, CancellationToken, Task> observer) => this;
+    Task<bool> VerifyRemoteIntegrationAsync(ExecutionHistoryEntry entry, CancellationToken ct) => Task.FromResult(false);
+    Task FinishIntegratedExecutionAsync(ExecutionHistoryEntry entry, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This Git repository cannot verify completion cleanup.");
     /// <summary>Creates repository execution state owned by one execution; integration still targets the shared repository checkout.</summary>
     IGitRepository CreateExecutionRepository() => this;
     Task InitializeAsync(CancellationToken ct);

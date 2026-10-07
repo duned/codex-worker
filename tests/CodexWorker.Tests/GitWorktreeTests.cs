@@ -12,6 +12,108 @@ namespace CodexWorker.Tests;
 public sealed class GitWorktreeTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterruptedIntegrationProvesExactRemoteCommitAndResumesOwnedCleanup(bool pushReachedRemote)
+    {
+        if (OperatingSystem.IsWindows()) return; // Deterministic local receive hook uses POSIX shell.
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var settings = new GitSettings();
+        var id = Guid.NewGuid();
+        GitIntegrationResult? prepared = null;
+        var confirmed = false;
+        var hook = Path.GetFullPath(Path.Combine(fixture.Checkout, "../origin.git/hooks/pre-receive"));
+        if (!pushReachedRemote)
+        {
+            await File.WriteAllTextAsync(hook, "#!/bin/sh\nexit 1\n");
+            File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        using (var integrating = fixture.CreateRepository(settings))
+        {
+            await integrating.InitializeAsync(CancellationToken.None);
+            await integrating.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+            await File.WriteAllTextAsync(Path.Combine(integrating.ExecutionDirectory, "implemented.txt"), "validated source");
+            integrating.WithIntegrationObserver((result, pushed, _) =>
+            {
+                prepared = result;
+                confirmed = pushed;
+                if (pushed) throw new WorkerInfrastructureException("Lost push response after remote accepted commit");
+                return Task.CompletedTask;
+            });
+            await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => integrating.CommitAndIntegrateAsync(fixture.Issue,
+                _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        }
+        var result = Assert.IsType<GitIntegrationResult>(prepared);
+        Assert.Equal(pushReachedRemote, confirmed);
+        Assert.Equal(40, result.CommitSha?.Length);
+        var report = new IssueExecutionReport("Validated implementation", [], Integration: result, ExecutionId: id);
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            GitRepository.FeatureBranchName(settings, fixture.Issue), "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+            "InfrastructureFailure", 1, report.ImplementationSummary, "passed", 0, [], result.CommitSha, "main", result.CompletedBranch,
+            "uncertain push", CompletionJson: JsonSerializer.Serialize(new ExecutionCompletion(report, "intent", "policy")));
+        using var restarted = fixture.CreateRepository(settings);
+        Assert.Equal(pushReachedRemote, await restarted.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
+        if (!pushReachedRemote)
+        {
+            Assert.True(Directory.Exists(restarted.RecoveryWorkspacePath(entry)));
+            File.Delete(hook);
+            await fixture.Git("push", "origin", "main"); // Operator retries only the exact original base push.
+        }
+        Assert.True(await restarted.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
+        // Independently advancing base HEAD still contains the exact validated ancestor.
+        await fixture.AddAndPushAsync("later.txt", "later change");
+        Assert.NotEqual(entry.CommitSha, await fixture.Git("rev-parse", "origin/main"));
+        Assert.True(await restarted.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
+        await restarted.FinishIntegratedExecutionAsync(entry, CancellationToken.None);
+        await restarted.FinishIntegratedExecutionAsync(entry, CancellationToken.None);
+        Assert.False(Directory.Exists(restarted.RecoveryWorkspacePath(entry)));
+        Assert.Equal(entry.CommitSha, await fixture.Git("rev-parse", $"refs/heads/{result.CompletedBranch}"));
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("malformed")]
+    [InlineData("base")]
+    [InlineData("repository")]
+    public async Task RemoteCompletionProofRejectsInvalidProvenance(string invalid)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings());
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, fixture.Issue.Title,
+            "feature/17-example-task", "main", DateTimeOffset.UtcNow, null, "InfrastructureFailure", null, "validated", "passed",
+            0, [], await fixture.Git("rev-parse", "HEAD"), "main", null, "push failed");
+        entry = invalid switch
+        {
+            "missing" => entry with { CommitSha = null },
+            "malformed" => entry with { CommitSha = "--all" },
+            "base" => entry with { IntegrationBranch = "different-base" },
+            _ => entry with { Repository = "different/repo" }
+        };
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task IndependentlyAdvancedRemoteWithoutExpectedCommitDoesNotAuthorizeCompletion()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { PushCompletedBranch = false });
+        await git.InitializeAsync(CancellationToken.None);
+        await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "implemented.txt"), "validated feature");
+        await fixture.GitAt(workspace, "add", "implemented.txt");
+        await fixture.GitAt(workspace, "commit", "-m", "preserved local implementation");
+        var expected = await fixture.GitAt(workspace, "rev-parse", "HEAD");
+        await fixture.AddAndPushAsync("independent.txt", "independent base change");
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, fixture.Issue.Title,
+            GitRepository.FeatureBranchName(new GitSettings(), fixture.Issue), "main", DateTimeOffset.UtcNow, null,
+            "InfrastructureFailure", null, "validated", "passed", 0, [], expected, "main", null, "uncertain push");
+        Assert.False(await git.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
+        Assert.True(File.Exists(Path.Combine(workspace, "implemented.txt")));
+        Assert.Equal(expected, await fixture.GitAt(workspace, "rev-parse", "HEAD"));
+    }
+
+    [Theory]
     [InlineData("execution")]
     [InlineData("issue")]
     [InlineData("base")]
@@ -55,6 +157,7 @@ public sealed class GitWorktreeTests
         {
             Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
             Git = new() { AutoMerge = true },
+            GitHub = new() { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done", BlockedLabel = "blocked", FailedLabel = "failed" },
             Validation = new() { Commands = ["authoritative-check"] }
         };
         using var git = fixture.CreateRepository(config.Git);
@@ -1595,7 +1698,7 @@ public sealed class GitWorktreeTests
         {
             Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
             Git = new GitSettings { AutoMerge = true },
-            GitHub = new GitHubSettings { ReadyLabel = "ready" },
+            GitHub = new GitHubSettings { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done", BlockedLabel = "blocked", FailedLabel = "failed" },
             Codex = new CodexSettings { InstructionsFile = "unused", Model = "configured-model", ReasoningEffort = "high" },
             Validation = new ValidationSettings { Commands = ["verify status contract"], MaxFixAttempts = 2 }
         };
@@ -2030,6 +2133,12 @@ public sealed class GitWorktreeTests
             }
             return Task.FromResult<GitHubIssue?>(label == "ready" ? template with { Number = ++_number } : null);
         }
+        public Task<GitHubIssue?> GetCompletionIssueAsync(int issueNumber, CancellationToken ct) =>
+            Task.FromResult<GitHubIssue?>(template with { Number = issueNumber });
+        public Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct) =>
+            Task.FromResult(new GitHubIssueState(true, Labels.Where(item => item.Issue == issueNumber).TakeLast(1).Select(item => item.Label).ToArray()));
+        public Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true) =>
+            Comments.Any(item => item.Issue == issueNumber && item.Body == comment) ? Task.CompletedTask : CommentAsync(issueNumber, comment, ct);
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)
         { Labels.Add((issueNumber, add)); return Task.CompletedTask; }
         public Task CommentAsync(int issueNumber, string comment, CancellationToken ct)

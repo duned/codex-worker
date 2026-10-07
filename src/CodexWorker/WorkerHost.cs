@@ -423,6 +423,15 @@ public sealed class WorkerHost
                     {
                         PauseProjectForGitHubFailure(runtimeReadModel, project.Configuration.Project.Name, githubFailure);
                     }
+                    catch (CompletionReconciliationRequiredException ex)
+                    {
+                        var reason = $"Completion reconciliation required for Issue #{ex.IssueNumber}, execution {ex.ExecutionId}. " +
+                            LimitCompletionDiagnostic(ex.Message, project.Configuration);
+                        runtimeReadModel.Registry.MarkUnavailable(ex.Project, reason);
+                        runtimeReadModel.Events.Publish("project.github-reconciliation-required", reason, ex.Project);
+                        _output.Warning(reason);
+                        _operationalLog($"Scheduler · {ex.Project} · {reason} · only this project is paused; do not replay Codex.");
+                    }
                     catch (CodexExecutionInfrastructureException ex)
                     {
                         // The runner already durably preserved this execution. Keep siblings and
@@ -1035,8 +1044,23 @@ public sealed class WorkerHost
                 var entries = await history.ReadAllAsync(ct);
                 foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                              item.Repository == project.Configuration.Project.Repository &&
-                             item.RecoveryState == GitHubOperationException.ReconciliationRequiredState))
+                             (item.RecoveryState == GitHubOperationException.ReconciliationRequiredState || item.CompletionJson is not null ||
+                              item.ValidationOutcome == "passed" && item.RecoveryState is "uncertain" or "github-reconciled")))
                 {
+                    if (entry.CompletionJson is not null || entry.ValidationOutcome == "passed")
+                    {
+                        try { await project.Worker.ResumeCompletionAsync(entry, ct); }
+                        catch (WorkerInfrastructureException ex)
+                        {
+                            var reason = $"Completion reconciliation required for Issue #{entry.IssueNumber}, execution {entry.ExecutionId}: " +
+                                LimitCompletionDiagnostic(ex.Message, project.Configuration);
+                            runtime.Registry.MarkUnavailable(project.Configuration.Project.Name, reason);
+                            runtime.Events.Publish("project.github-reconciliation-required", reason, project.Configuration.Project.Name);
+                            _output.Warning(reason);
+                            _operationalLog($"Scheduler · {project.Configuration.Project.Name} · execution {entry.ExecutionId} · completion stopped because remote proof or reporting state is ambiguous · project scheduling paused. {reason}");
+                        }
+                        continue;
+                    }
                     GitHubIssueState remote;
                     try
                     {
@@ -1118,6 +1142,12 @@ public sealed class WorkerHost
             }
             finally { project.RepositoryGate.Release(); }
         }
+    }
+
+    private static string LimitCompletionDiagnostic(string message, WorkerConfiguration config)
+    {
+        var safe = FailureDiagnosticRedactor.Redact(message, config.Environment.Variables.Values.ToArray());
+        return safe.Length <= 1200 ? safe : safe[..1180] + " … [truncated]";
     }
 
     private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,

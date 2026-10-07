@@ -4,6 +4,85 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubOperationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SuccessCommentUsesExecutionMarkerToDeduplicateLostMutationResponse(bool loseResponse)
+    {
+        var id = Guid.NewGuid();
+        var comments = new List<string>();
+        var writes = 0;
+        var client = new GitHubClient("owner/repo", (arguments, _) =>
+        {
+            var args = arguments.ToArray();
+            if (args[0] == "api")
+            {
+                Assert.Contains("--paginate", args);
+                Assert.Contains("--slurp", args);
+                return Task.FromResult(new ProcessResult(0, System.Text.Json.JsonSerializer.Serialize(comments), ""));
+            }
+            writes++;
+            comments.Add(args[Array.IndexOf(args, "--body") + 1]);
+            return Task.FromResult(loseResponse && writes == 1
+                ? new ProcessResult(1, "", "HTTP 500 Internal Server Error") : new ProcessResult(0, "", ""));
+        });
+        if (loseResponse)
+            await Assert.ThrowsAsync<GitHubOperationException>(() => client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None));
+        else
+            await client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None);
+        await client.EnsureSuccessCommentAsync(17, id, "Success report", CancellationToken.None);
+        Assert.Single(comments);
+        Assert.Contains($"<!-- codex-worker-success:{id:D} -->", comments[0], StringComparison.Ordinal);
+        Assert.Equal(1, writes);
+    }
+
+    [Theory]
+    [InlineData("changed")]
+    [InlineData("duplicate")]
+    [InlineData("invalid-json")]
+    public async Task AmbiguousSuccessCommentProofDoesNotAppendReport(string conflict)
+    {
+        var id = Guid.NewGuid();
+        var body = $"Report\n\n<!-- codex-worker-success:{id:D} -->";
+        var calls = 0;
+        var client = new GitHubClient("owner/repo", (_, _) =>
+        {
+            calls++;
+            var output = conflict switch
+            {
+                "changed" => System.Text.Json.JsonSerializer.Serialize(new[] { "operator edited " + body.Replace("Report", "Changed", StringComparison.Ordinal) }),
+                "duplicate" => System.Text.Json.JsonSerializer.Serialize(new[] { body, body }),
+                _ => "invalid-json"
+            };
+            return Task.FromResult(new ProcessResult(0, output, ""));
+        });
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => client.EnsureSuccessCommentAsync(17, id, "Report", CancellationToken.None));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task RemovedConfirmedSuccessReportRequiresInspectionRatherThanRecreation()
+    {
+        var calls = 0;
+        var client = new GitHubClient("owner/repo", (_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new ProcessResult(0, "[]", ""));
+        });
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => client.EnsureSuccessCommentAsync(17, Guid.NewGuid(),
+            "Report", CancellationToken.None, allowCreate: false));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task CompletionCanInspectClosedIssueWithoutMakingItEligibleForAssignedExecution()
+    {
+        var client = new GitHubClient("owner/repo", (_, _) => Task.FromResult(new ProcessResult(0,
+            "{\"number\":17,\"title\":\"Task\",\"body\":\"Intent\",\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"CLOSED\"}", "")));
+        Assert.NotNull(await client.GetCompletionIssueAsync(17, CancellationToken.None));
+        await Assert.ThrowsAsync<GitHubOperationException>(() => client.GetIssueAsync(17, CancellationToken.None));
+    }
+
     [Fact]
     public async Task TransientGraphQlMutationIsClassifiedUncertainAndNeverReplayed()
     {

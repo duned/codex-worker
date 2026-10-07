@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace CodexWorker;
 
 public sealed record GitIntegrationResult(bool HasChanges, string Summary, string? CommitSha = null,
-    string? IntegrationBranch = null, string? CompletedBranch = null);
+    string? IntegrationBranch = null, string? CompletedBranch = null, Guid? ResourceExecutionId = null, int? ResourceAttemptNumber = null);
 public sealed record GitRecoveryInfo(string Branch, string BaseCommit, string StatusSummary, string? IntegrationBase = null);
 public sealed record IntegrationRepairContext(ValidationFailure Failure, string BaseBranch, string OriginalBaseCommit,
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
@@ -27,9 +27,18 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     private string? _completedBranch;
     private string? _startingCommit;
     private Guid? _executionId;
+    private Guid? _resourceExecutionId;
+    private int _resourceAttemptNumber;
     private FileStream? _workerLock;
     private bool _implementationAlreadyCommitted;
     private bool _forcePostRebaseValidation;
+
+    private Func<GitIntegrationResult, bool, CancellationToken, Task>? _integrationObserver;
+    public IGitRepository WithIntegrationObserver(Func<GitIntegrationResult, bool, CancellationToken, Task> observer)
+    {
+        _integrationObserver = observer;
+        return this;
+    }
 
     public void Dispose() => _workerLock?.Dispose();
     public string ExecutionDirectory => _executionDirectory ?? directory;
@@ -192,6 +201,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             await GitAsync(["pull", "--ff-only", "origin", $"refs/heads/{settings.BaseBranch}"], ct);
             _startingCommit = (await GitAsync(["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
             _executionId = executionId;
+            _resourceExecutionId = executionId;
+            _resourceAttemptNumber = attemptNumber;
             _featureBranch = attemptNumber <= 1 ? FeatureBranchName(settings, issue) : $"{FeatureBranchName(settings, issue)}-retry-{attemptNumber}";
             _completedBranch = await SelectCompletedBranchAsync(issue, attemptNumber, executionId, ct);
             var root = Path.GetFullPath(worktreeRoot);
@@ -307,6 +318,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         await ValidateRecoveryWorkspaceAsync(path, owner, ct);
         _executionDirectory = path;
         _executionId = owner.ExecutionId;
+        _resourceExecutionId = source.ExecutionId;
+        _resourceAttemptNumber = source.AttemptNumber;
         _featureBranch = owner.FeatureBranch;
         _startingCommit = owner.RecoveryBaseCommit;
         _completedBranch = await SelectCompletedBranchAsync(new GitHubIssue(owner.IssueNumber, owner.IssueTitle,
@@ -336,6 +349,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 source.AttemptNumber, source.ExecutionId, ct, source.RecoveryBaseCommit);
             _startingCommit = source.RecoveryBaseCommit;
             _executionId = source.CodexRecovery?.WorkspaceExecutionId ?? source.ExecutionId;
+            _resourceExecutionId = source.ExecutionId;
+            _resourceAttemptNumber = source.AttemptNumber;
             _implementationAlreadyCommitted = true;
             _forcePostRebaseValidation = true;
         }
@@ -693,8 +708,14 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                         throw new GitIntegrationConflictException($"The integration base kept advancing for Issue #{issue.Number}; bounded reconciliation stopped and the implementation was preserved.");
                 }
                 commit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+                var prepared = new GitIntegrationResult(true,
+                    $"Committed as `{commit[..12]}`. Merged into `{settings.BaseBranch}`.", commit, settings.BaseBranch,
+                    settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
+                    _resourceExecutionId, _resourceAttemptNumber);
+                if (_integrationObserver is not null) await _integrationObserver(prepared, false, ct);
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await GitAsync(["push", "origin", $"refs/heads/{settings.BaseBranch}:refs/heads/{settings.BaseBranch}"], ct);
+                if (_integrationObserver is not null) await _integrationObserver(prepared, true, ct);
                 if (settings.PushCompletedBranch)
                 {
                     try
@@ -747,7 +768,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             var completedBranch = settings.AutoMerge && settings.PushCompletedBranch ? _completedBranch :
                 settings.AutoMerge && settings.DeleteLocalFeatureBranch ? null : _featureBranch;
             return new GitIntegrationResult(true, summary, commit, settings.AutoMerge ? settings.BaseBranch : null,
-                completedBranch);
+                completedBranch, _resourceExecutionId, _resourceAttemptNumber);
         }
         catch (GitIntegrationConflictException) { throw; }
         catch (WorkerInfrastructureException) { throw; }

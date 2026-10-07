@@ -104,7 +104,7 @@ public sealed partial class GitRepository
         if (entry.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
             return Result("keep", "codex-interruption-recovery", "Codex interruption resources are retained for continuation or inspection; automatic cleanup is not authorized.");
         if (entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
-            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned"))
+            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
         {
@@ -176,5 +176,5 @@ public sealed partial class GitRepository
     private Task<ProcessResult> InspectionGitAtAsync(string path, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null) =>
         GitAtAsync(path, args, ct, allowExitCodes, readOnly: true);
 
-    private static bool IsCommitId(string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
+    internal static bool IsCommitId(string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
 }

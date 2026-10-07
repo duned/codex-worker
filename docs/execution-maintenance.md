@@ -58,3 +58,40 @@ Local shell suites cover history/detail/lineage, inspection, cleanup selection, 
 A development Worker status read during implementation reported `running`, one active execution and no drain request. Subsequent project and bounded recovery dry-run requests could not connect to the loopback API. No real resources were classified or removed, and no manual-review inventory was established. The real dry-run/apply campaign remains deployment validation: run this procedure outside the Worker execution after deploying the changes, record one bounded cleanup's results, and retain every review/keep case. Draining or mutating the live development repository from this task would conflict with the task's Worker-owned Git lifecycle and active execution.
 
 .NET self-validation was unavailable: parallel MSBuild could not bind its named pipe in the sandbox, single-process build lacked restored assets, and single-process restore could not reach NuGet or find the required packages locally. The Worker's separately configured validation remains authoritative.
+
+## Interrupted integration completion
+
+The Worker saves a validated integration handoff before updating the local base and
+pushing it. The handoff includes the full commit ID, base branch, execution identity,
+Issue intent and completion policy, followed by separate remote/reporting checkpoints.
+A push failure preserves this handoff and pauses the affected project. It does not
+start another implementation attempt or replace the working label with a task-failure
+label.
+
+At reconciliation, the Worker fetches the configured authoritative base and requires
+that the exact saved commit is in its ancestry. Remote HEAD may have advanced beyond
+that commit. A missing commit, changed history, missing/corrupt provenance, changed
+Issue title/body, conflicting lifecycle labels, reopened Issue or another execution
+requires manual inspection. An Issue becoming ineligible for replay is not proof of
+success. The Worker never retries a base push automatically: verify the original
+mutation and, if appropriate, retry only that exact push before restarting. Retained
+managed execution metadata is not a current Server lease; completion without proof
+of original managed ownership requires manual reconciliation.
+
+Once proven, reconciliation uses the normal success reporter to finish the done
+label, success comment, Issue close, notification and owned resource cleanup. It
+rechecks Issue intent/state before reporting mutations and uses an execution marker
+in the success comment to recognize a lost response. A confirmed report that was
+removed or altered requires inspection rather than recreation. Repeated restarts
+inspect the existing durable effects and skip completed steps. No Codex invocation,
+new claim or new implementation attempt is involved.
+
+Telegram does not support delivery lookup or idempotency keys. Its success attempt
+is recorded **before** sending, so a restart cannot duplicate that attempt; interruption
+between recording and delivery can omit the notification. Existing nonfatal Telegram
+failure behavior is retained. Cleanup verifies execution/worktree/branch ownership
+and the exact remote commit again. If configured, a pending completed-branch archive
+may publish only the proven commit to its saved Worker-owned archive name; an archive
+with another commit is a conflict. No reconciliation operation force-pushes or resets
+the base. History retains the original failure diagnostics and recovery lineage while
+recording completed reconciliation.

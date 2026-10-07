@@ -41,12 +41,13 @@ public sealed record ExecutionHistoryEntry(
     Guid? IntegrationRecoveryClaim = null,
     string? OriginalIssueBody = null,
     bool ModelSelectedByCli = false,
-    CodexInterruptionRecovery? CodexRecovery = null);
+    CodexInterruptionRecovery? CodexRecovery = null,
+    string? CompletionJson = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 11;
+    private const int CurrentSchemaVersion = 12;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -76,10 +77,10 @@ public sealed class ExecutionHistoryStore : IDisposable
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
                 repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
                 recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc,
-                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json)
+                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
                 $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus,
-                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery)
+                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery,$completion)
             """;
         Bind(command, entry);
         try { await command.ExecuteNonQueryAsync(ct); }
@@ -268,6 +269,29 @@ public sealed class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update integration recovery snapshot", ex); }
     }
 
+    // Completion checkpoints deliberately survive terminal infrastructure/reporting outcomes.
+    internal async Task SaveCompletionAsync(Guid executionId, ExecutionCompletion completion, bool finished, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE executions SET completion_json=$completion,
+                commit_sha=$sha, integration_branch=$branch,
+                recovery_state=CASE WHEN $finished THEN 'completion-reconciled' ELSE recovery_state END,
+                state=CASE WHEN $finished THEN 'Completed' ELSE state END,
+                completed_at_utc=CASE WHEN $finished THEN COALESCE(completed_at_utc,$now) ELSE completed_at_utc END
+            WHERE execution_id=$id
+            """;
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$completion", JsonSerializer.Serialize(completion));
+        Add(command, "$sha", completion.Report.Integration?.CommitSha);
+        Add(command, "$branch", completion.Report.Integration?.IntegrationBranch);
+        command.Parameters.AddWithValue("$finished", finished);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        if (await command.ExecuteNonQueryAsync(ct) != 1)
+            throw new WorkerInfrastructureException($"Completion history is missing for execution {executionId}.");
+    }
+
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default) =>
         ReadAsync(" ORDER BY started_at_utc", null, null, ct);
 
@@ -286,7 +310,7 @@ public sealed class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json FROM executions" + suffix;
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json FROM executions" + suffix;
         if (parameter is not null) command.Parameters.AddWithValue(parameter, value ?? DBNull.Value);
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -302,7 +326,7 @@ public sealed class ExecutionHistoryStore : IDisposable
                 reader.IsDBNull(22) ? null : Guid.Parse(reader.GetString(22)), reader.GetInt32(23), reader.GetBoolean(24), NullableDate(reader, 25),
                 NullableString(reader, 26), NullableString(reader, 27), reader.IsDBNull(28) ? null : reader.GetInt64(28),
                 NullableString(reader, 29), NullableString(reader, 30), NullableString(reader, 31),
-                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36))));
+                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36)), NullableString(reader, 37)));
         }
         return entries;
     }
@@ -424,6 +448,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 migration.CommandText = "ALTER TABLE executions ADD COLUMN codex_recovery_json TEXT NULL; PRAGMA user_version = 11;";
                 migration.ExecuteNonQuery();
             }
+            if (schemaVersion < 12)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN completion_json TEXT NULL; PRAGMA user_version = 12;";
+                migration.ExecuteNonQuery();
+            }
             transaction.Commit();
         }
         catch (WorkerInfrastructureException) { throw; }
@@ -454,6 +485,7 @@ public sealed class ExecutionHistoryStore : IDisposable
         Add(command, "$validation", entry.ValidationOutcome);
         command.Parameters.AddWithValue("$repairCount", entry.RepairCount);
         command.Parameters.AddWithValue("$repairs", JsonSerializer.Serialize(entry.Repairs));
+        Add(command, "$completion", entry.CompletionJson);
         Add(command, "$sha", entry.CommitSha);
         Add(command, "$integration", entry.IntegrationBranch);
         Add(command, "$completedBranch", entry.CompletedBranch);

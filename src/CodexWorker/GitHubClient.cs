@@ -67,7 +67,13 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
-    public async Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken)
+    public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken cancellationToken) =>
+        ReadIssueAsync(issueNumber, requireOpen: true, cancellationToken);
+
+    public Task<GitHubIssue?> GetCompletionIssueAsync(int issueNumber, CancellationToken ct) =>
+        ReadIssueAsync(issueNumber, requireOpen: false, ct);
+
+    private async Task<GitHubIssue?> ReadIssueAsync(int issueNumber, bool requireOpen, CancellationToken cancellationToken)
     {
         if (issueNumber <= 0) throw new WorkerInfrastructureException("Assigned GitHub Issue number must be positive.");
         var result = await RunGhAsync(["issue", "view", issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -76,14 +82,16 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         {
             using var document = JsonDocument.Parse(result.StandardOutput);
             var issue = document.RootElement;
-            if (!string.Equals(issue.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
+            if (issue.GetProperty("number").GetInt32() != issueNumber)
+                throw new InvalidDataException("Issue response identity differs from the requested Issue.");
+            if (requireOpen && !string.Equals(issue.GetProperty("state").GetString(), "OPEN", StringComparison.OrdinalIgnoreCase))
                 throw new GitHubOperationException("issue view", issueNumber, false, GitHubFailureKind.DeterministicRequest,
                     GitHubRemoteState.NotApplicable, $"Assigned Issue #{issueNumber} in '{repository}' is not open.");
             return new GitHubIssue(issue.GetProperty("number").GetInt32(), issue.GetProperty("title").GetString() ?? "",
                 issue.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "", issue.GetProperty("createdAt").GetDateTimeOffset());
         }
         catch (WorkerInfrastructureException) { throw; }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or InvalidDataException)
         {
             throw ReadFailure("issue view", issueNumber,
                 $"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
@@ -368,6 +376,33 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     public Task CommentAsync(int issueNumber, string comment, CancellationToken ct) =>
         RunGhAsync(["issue", "comment", issueNumber.ToString(), "--repo", repository, "--body", origin.Format(comment)], ct);
+
+    public async Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true)
+    {
+        var marker = $"<!-- codex-worker-success:{executionId:D} -->";
+        var body = comment + "\n\n" + marker;
+        // Scan every page, with process output bounds enforced by the existing runner. A read
+        // failure is uncertainty, never permission to append another durable report.
+        var result = await RunGhAsync(["api", $"repos/{repository}/issues/{issueNumber}/comments?per_page=100",
+            "--paginate", "--slurp", "--jq", $"[.[][] | select(.body | contains(\"{marker}\")) | .body]"], ct,
+            allowGracefulCancellation: true);
+        try
+        {
+            var matches = JsonSerializer.Deserialize<string[]>(result.StandardOutput)
+                ?? throw new JsonException();
+            if (matches.Length == 1 && matches[0] is { } match &&
+                CodexProvisioning.GeneratedMessageOrigin.IsGenerated(match) && match.Contains(body, StringComparison.Ordinal)) return;
+            if (matches.Length != 0)
+                throw new WorkerInfrastructureException("Success report marker is duplicated or its content changed; manual reconciliation is required.");
+        }
+        catch (JsonException)
+        {
+            throw new WorkerInfrastructureException("Success report presence could not be verified; manual reconciliation is required.");
+        }
+        if (!allowCreate)
+            throw new WorkerInfrastructureException("Previously confirmed success report is missing; manual reconciliation is required.");
+        await CommentAsync(issueNumber, body, ct);
+    }
 
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
         RunGhAsync(["issue", "close", issueNumber.ToString(), "--repo", repository], ct);

@@ -23,6 +23,9 @@ internal sealed class IntegrationRecoveryCoordinator(WorkerConfiguration config,
         {
             var claimId = source.IntegrationRecoveryClaim ?? throw new InvalidOperationException("Recovery claim is missing.");
             var attempt = entries.SingleOrDefault(entry => entry.ExecutionId == claimId);
+            // A validated integration handoff owns post-integration completion. Do not mutate
+            // its Issue or reclassify its preserved resources as another recovery attempt.
+            if (attempt?.CompletionJson is not null) continue;
             if (attempt?.State == "Completed" && source.RecoveryState == "integration-recovered")
             {
                 await history.FinishIntegrationRecoveryAsync(source.ExecutionId, claimId, null, ct);
