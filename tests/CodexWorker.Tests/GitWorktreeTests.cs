@@ -11,6 +11,136 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class GitWorktreeTests
 {
+    [Theory]
+    [InlineData("execution")]
+    [InlineData("issue")]
+    [InlineData("base")]
+    [InlineData("repository")]
+    [InlineData("starting-commit")]
+    public async Task LegacyInspectionRejectsConflictingOwnershipWithoutMutatingWorkspace(string conflict)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings());
+        await git.InitializeAsync(CancellationToken.None);
+        var source = LegacyCodexSessionTests.Source() with { IssueTitle = fixture.Issue.Title };
+        await git.StartIssueAsync(source.ExecutionId, fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "valuable.txt"), "retain this work");
+        var info = Assert.IsType<GitRecoveryInfo>(await git.InspectExecutionWorkspaceAsync(CancellationToken.None));
+        source = source with { FeatureBranch = info.Branch };
+        source = conflict switch
+        {
+            "execution" => source with { ExecutionId = Guid.NewGuid() },
+            "issue" => source with { IssueNumber = 99 },
+            "base" => source with { BaseBranch = "other-base" },
+            "repository" => source with { Repository = "other/repo" },
+            _ => source with { RecoveryBaseCommit = new string('b', 40) }
+        };
+        if (conflict is "issue" or "starting-commit")
+            await Assert.ThrowsAsync<IssuePreparationRejectedException>(() => git.InspectLegacyCodexWorkspaceAsync(source, CancellationToken.None));
+        else Assert.Null(await git.InspectLegacyCodexWorkspaceAsync(source, CancellationToken.None));
+        Assert.Equal("retain this work", await File.ReadAllTextAsync(Path.Combine(workspace, "valuable.txt")));
+        Assert.Equal(info.BaseCommit, await fixture.GitAt(workspace, "rev-parse", "HEAD"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyReconstructionPreservesDirtyDeltaAndResumesOnceWithAuthoritativeValidation(bool advanceMain)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        await fixture.AddAndPushAsync("deleted.txt", "removed by the preserved implementation");
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../legacy-history.db"));
+        var config = new WorkerConfiguration
+        {
+            Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = new() { AutoMerge = true },
+            Validation = new() { Commands = ["authoritative-check"] }
+        };
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var source = LegacyCodexSessionTests.Source() with
+        {
+            IssueNumber = fixture.Issue.Number, IssueTitle = fixture.Issue.Title, OriginalIssueBody = fixture.Issue.Body
+        };
+        await git.StartIssueAsync(source.ExecutionId, fixture.Issue, CancellationToken.None);
+        var workspace = git.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "base.txt"), "already completed tracked work");
+        await File.WriteAllTextAsync(Path.Combine(workspace, "added.txt"), "already completed untracked work");
+        File.Delete(Path.Combine(workspace, "deleted.txt"));
+        var info = Assert.IsType<GitRecoveryInfo>(await git.InspectExecutionWorkspaceAsync(CancellationToken.None));
+        source = source with { FeatureBranch = info.Branch };
+        await history.CreateAsync(source);
+        if (advanceMain) await fixture.AdvanceBaseAsync();
+        var home = Path.Combine(fixture.Checkout, "../session-fixture");
+        var sessionDirectory = Path.Combine(home, "sessions", "2026", "01", "02");
+        Directory.CreateDirectory(sessionDirectory);
+        var session = Guid.NewGuid();
+        await File.WriteAllTextAsync(Path.Combine(sessionDirectory, "rollout-root.jsonl"),
+            LegacyCodexSessionTests.Header(session, workspace, source.FeatureBranch, info.BaseCommit, source.StartedAtUtc.AddMinutes(1)));
+        using var gate = new SemaphoreSlim(1, 1);
+        using var logs = new StringWriter();
+        var console = new WorkerConsole(logs, false);
+        var clock = new FixedRecoveryClock((source.CompletedAtUtc ?? throw new InvalidOperationException("Fixture completion missing")).AddHours(1));
+        var coordinator = new CodexRecoveryCoordinator(config, git, history, gate, console, clock,
+            sessions: new LegacyCodexSessionStore(home));
+        await coordinator.ReconcileAsync(CancellationToken.None);
+        await coordinator.ReconcileAsync(CancellationToken.None);
+        var reconstructed = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("codex-interrupted", reconstructed.RecoveryState);
+        Assert.Equal(session.ToString(), reconstructed.CodexRecovery?.SessionId);
+        Assert.Equal(info.BaseCommit, reconstructed.RecoveryBaseCommit);
+        Assert.Equal(0, reconstructed.CodexRecovery?.ResumeCount);
+        Assert.Equal(source.CompletedAtUtc, reconstructed.CompletedAtUtc);
+        Assert.Equal(1, logs.ToString().Split("Legacy interruption reconstructed", StringSplitOptions.None).Length - 1);
+        git.Dispose(); // Simulate the old Worker exiting and releasing checkout ownership.
+        using var restartedGit = fixture.CreateRepository(config.Git);
+        await restartedGit.InitializeAsync(CancellationToken.None);
+        using var telegram = new TelegramNotifier(false, console);
+        var codex = new AlreadyCompleteCodex(workspace, session.ToString());
+        var validation = new CountingLegacyValidation();
+        var readyClock = new FixedRecoveryClock(clock.GetUtcNow().AddMinutes(6));
+        var worker = new Worker(config, new ConcurrentGitHub(fixture.Issue), restartedGit, codex, validation,
+            telegram, console, history, timeProvider: readyClock);
+        var result = await worker.ProcessOneAsync(CancellationToken.None);
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        Assert.True(validation.Calls > 0);
+        Assert.Equal("already completed tracked work", await fixture.Git("show", "main:base.txt"));
+        Assert.Equal("already completed untracked work", await fixture.Git("show", "main:added.txt"));
+        Assert.DoesNotContain("deleted.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"), StringComparison.Ordinal);
+        if (advanceMain) Assert.Equal("independent base change", await fixture.Git("show", "main:base-advanced.txt"));
+        Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
+    private sealed class CountingLegacyValidation : IValidationRunner
+    {
+        public int Calls { get; private set; }
+        public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+        {
+            Assert.Contains("authoritative-check", commands);
+            Calls++;
+            return Task.FromResult(ValidationResult.Success);
+        }
+    }
+
+    private sealed class AlreadyCompleteCodex(string workspace, string session) : ICodexExecutor
+    {
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
+            throw new InvalidOperationException("Continuation must retain its source.");
+        public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct)
+        {
+            Assert.Equal(workspace, projectDirectory);
+            Assert.True(resume);
+            Assert.Equal(session, retryOf?.CodexRecovery?.SessionId);
+            return Task.FromResult(new CodexOutcome("success", "Existing work was already complete", [], false, null));
+        }
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
+            throw new InvalidOperationException("No repair expected.");
+    }
+
     [Fact]
     public async Task RestartReconcilesIncompleteImplementationWithoutDiscardingChangesOrResettingBudget()
     {

@@ -51,6 +51,8 @@ public interface IGitRepository : IDisposable
     Task StartIssueAsync(Guid executionId, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resume, int attemptNumber, CancellationToken ct) => StartIssueAsync(executionId, issue, ct);
     Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         Task.FromResult<string?>("This Git repository cannot verify interrupted implementation ownership.");
+    Task<LegacyWorkspaceEvidence?> InspectLegacyCodexWorkspaceAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        Task.FromResult<LegacyWorkspaceEvidence?>(null);
     Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository cannot safely resume interrupted implementation.");
     Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct) => Task.FromResult<GitRecoveryInfo?>(null);

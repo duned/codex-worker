@@ -4,6 +4,44 @@ namespace CodexWorker.Tests;
 
 public sealed class ExecutionHistoryStoreTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LegacyReconstructionIsAtomicSurvivesRestartAndRejectsNewerOwnership(bool competing)
+    {
+        using var database = new TemporaryDatabase();
+        var source = LegacyCodexSessionTests.Source();
+        var candidate = source with
+        {
+            RecoveryBaseCommit = new string('a', 40), RecoveryState = "codex-interrupted",
+            CodexRecovery = new(source.ExecutionId, source.AttemptNumber, 0, "fingerprint", Guid.NewGuid().ToString())
+        };
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(source);
+            if (competing) await store.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2, State = "Implementing", CompletedAtUtc = null });
+            Assert.Equal(!competing, await store.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None));
+        }
+        using var restarted = new ExecutionHistoryStore(database.Path);
+        var persisted = (await restarted.ReadAllAsync()).Single(row => row.ExecutionId == source.ExecutionId);
+        Assert.Equal(source.State, persisted.State);
+        Assert.Equal(source.CompletedAtUtc, persisted.CompletedAtUtc);
+        Assert.Equal(competing ? "uncertain" : "codex-interrupted", persisted.RecoveryState);
+        Assert.Equal(competing ? null : candidate.CodexRecovery, persisted.CodexRecovery);
+        Assert.False(await restarted.TryReconstructCodexRecoveryAsync(candidate, CancellationToken.None));
+        if (competing) return;
+        var attempt = source with
+        {
+            ExecutionId = Guid.NewGuid(), AttemptNumber = 2, RetryOfExecutionId = source.ExecutionId,
+            CompletedAtUtc = null, State = "Created", CodexRecovery = candidate.CodexRecovery with { ResumeCount = 1 }
+        };
+        Assert.True(await restarted.TryClaimCodexRecoveryAsync(persisted, attempt, CancellationToken.None));
+        Assert.False(await restarted.TryClaimCodexRecoveryAsync(persisted, attempt with { ExecutionId = Guid.NewGuid() }, CancellationToken.None));
+        using var nextRestart = new ExecutionHistoryStore(database.Path);
+        Assert.Equal("codex-resuming", (await nextRestart.ReadExecutionAsync(source.ExecutionId))?.RecoveryState);
+        Assert.Equal(attempt.CodexRecovery, (await nextRestart.ReadExecutionAsync(attempt.ExecutionId))?.CodexRecovery);
+    }
+
     [Fact]
     public async Task CodexRecoveryClaimAndConsumedBudgetSurviveRestartAndCannotBeDoubleClaimed()
     {

@@ -107,7 +107,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 {(resumed ? "Useful files from the previous attempt are present in this workspace. Inspect them critically; do not assume they are correct. Complete the full original Issue." : "Ignore implementation state from the previous attempt. Start from this attempt's current authoritative base branch and complete the full original Issue.")}
                 """;
         if (retryOf?.RecoveryState == "codex-interrupted")
-            prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. The Worker owns all Git lifecycle operations.\n";
+            prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. Prior implementation and self-checks may already be complete; finish only what remains and return the structured outcome. The Worker will run authoritative validation and owns all Git lifecycle operations.\n";
         return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : null);
     }
 

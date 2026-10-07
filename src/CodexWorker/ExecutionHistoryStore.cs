@@ -150,6 +150,31 @@ public sealed class ExecutionHistoryStore : IDisposable
         return true;
     }
 
+    /// <summary>Publishes verified legacy metadata once without changing the original outcome or lineage.</summary>
+    internal async Task<bool> TryReconstructCodexRecoveryAsync(ExecutionHistoryEntry reconstructed, CancellationToken ct)
+    {
+        if (reconstructed.CodexRecovery is not { ResumeCount: 0 } snapshot ||
+            snapshot.WorkspaceExecutionId != reconstructed.ExecutionId ||
+            snapshot.WorkspaceAttemptNumber != reconstructed.AttemptNumber ||
+            reconstructed.OriginalIssueBody is null || reconstructed.RecoveryBaseCommit is null || snapshot.SessionId is null)
+            return false;
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE executions SET codex_recovery_json=$codexRecovery, recovery_base_commit=$recoveryBase,
+                recovery_state='codex-interrupted'
+            WHERE execution_id=$id AND codex_recovery_json IS NULL AND recovery_state='uncertain'
+                AND state IN ('InfrastructureFailure','Cancelled') AND completed_at_utc IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM executions other WHERE other.project=executions.project
+                    AND other.repository=executions.repository AND other.issue_number=executions.issue_number
+                    AND other.execution_id!=executions.execution_id
+                    AND (other.completed_at_utc IS NULL OR other.attempt_number>executions.attempt_number OR other.state='Completed'))
+            """;
+        Bind(command, reconstructed);
+        try { return await command.ExecuteNonQueryAsync(ct) == 1; }
+        catch (SqliteException ex) { throw PersistenceFailure("reconstruct Codex recovery", ex); }
+    }
+
     /// <summary>Consumes one resume durably and prevents duplicate ownership across restart.</summary>
     public async Task<bool> TryClaimCodexRecoveryAsync(ExecutionHistoryEntry source, ExecutionHistoryEntry attempt, CancellationToken ct)
     {

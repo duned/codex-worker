@@ -255,6 +255,29 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             $"{status.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length} changed path(s); implementation workspace preserved.");
     }
 
+    public async Task<LegacyWorkspaceEvidence?> InspectLegacyCodexWorkspaceAsync(ExecutionHistoryEntry source, CancellationToken ct)
+    {
+        if (source.ExecutionId == Guid.Empty || source.AttemptNumber < 1 || source.Repository != repository ||
+            source.BaseBranch != settings.BaseBranch) return null;
+        var path = RecoveryWorkspacePath(source);
+        if (!Directory.Exists(path)) return null;
+        await EnsureOriginAsync(ct);
+        var commonDirectory = (await GitAsync(["rev-parse", "--git-common-dir"], ct)).StandardOutput.Trim();
+        var workspaceCommonDirectory = (await GitAtAsync(path, ["rev-parse", "--git-common-dir"], ct)).StandardOutput.Trim();
+        if (!PathEquals(Path.GetFullPath(commonDirectory, directory), Path.GetFullPath(workspaceCommonDirectory, path)))
+            throw new IssuePreparationRejectedException("execution/worktree repository identity conflicts with preserved execution");
+        var head = (await GitAtAsync(path, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+        if (source.RecoveryBaseCommit is not null && source.RecoveryBaseCommit != head)
+            throw new IssuePreparationRejectedException("branch/base metadata conflicts with preserved execution");
+        // Reuse the normal ownership checks, including registration in this checkout,
+        // Issue branch convention, unfinished operations, and dirty index safety.
+        await ValidateRecoveryWorkspaceAsync(path, source with { RecoveryBaseCommit = head }, ct);
+        // An advanced main is fine; a feature-only commit cannot be manufactured as
+        // the original Worker starting commit merely because a session mentions it.
+        await GitAsync(["merge-base", "--is-ancestor", head, settings.BaseBranch], ct);
+        return new(path, head);
+    }
+
     public async Task<string?> ValidateCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
     {
         try
