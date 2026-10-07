@@ -1933,9 +1933,14 @@ public sealed class WorkerV011Tests
         Assert.Empty(h.GitHub.Comments);
         if (!remoteReceivedPush)
         {
+            // Terminal Issue state must not bypass proof for a modern completion.
+            h.GitHub.Closed = true;
+            h.GitHub.CompletionLabels = ["done"];
             var missing = await Assert.ThrowsAsync<WorkerInfrastructureException>(() => h.Worker.ResumeCompletionAsync(pending, CancellationToken.None));
             Assert.Contains("missing the exact", missing.Message, StringComparison.Ordinal);
             Assert.Empty(h.GitHub.Comments);
+            h.GitHub.Closed = false;
+            h.GitHub.CompletionLabels = ["working"];
             // Operator retries only the exact push. Reconciliation never publishes the base.
             h.Git.RemoteContainsIntegration = true;
         }
@@ -2086,6 +2091,93 @@ public sealed class WorkerV011Tests
         Assert.Single(h.Codex.Issues);
     }
 
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("corrupt")]
+    [InlineData("inconsistent")]
+    public async Task TerminalLegacyCompletionLeavesSchedulingAvailableAcrossRestarts(string provenance)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, telegramEnabled: true);
+        h.GitHub.Closed = true;
+        h.GitHub.CompletionLabels = ["DONE", "unrelated-label"];
+        for (var i = 0; i < 3; i++)
+            await history.CreateAsync(PreservedConflict() with
+            {
+                IssueNumber = 100 + i, State = "InfrastructureFailure",
+                RecoveryState = GitHubOperationException.ReconciliationRequiredState,
+                CompletionJson = provenance == "missing" ? null : provenance == "corrupt" ? "{" : "{}"
+            });
+        var entries = await history.ReadAllAsync();
+        for (var restart = 0; restart < 2; restart++)
+        {
+            var config = h.Worker.Configuration;
+            var global = new GlobalWorkerConfiguration();
+            var runtime = new WorkerRuntimeReadModel(global, [("project.yml", config)], history);
+            var host = new WorkerHost(global, [("project.yml", config)]);
+            var worker = new Worker(config, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram,
+                history: history, operationalLog: h.OperationalMessages.Add);
+            foreach (var entry in entries)
+                await host.ReconcileCompletionAsync(worker, entry, runtime, CancellationToken.None);
+            Assert.Equal(ProjectLifecycleState.Enabled, runtime.Registry.Get(config.Project.Name)?.State);
+            Assert.True(runtime.Registry.TryReserve(config.Project.Name, config));
+            runtime.Registry.Release(config.Project.Name);
+        }
+        Assert.Equal(6, h.OperationalMessages.Count(message => message.Contains("legacy completion record acknowledged", StringComparison.Ordinal)));
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(entries),
+            System.Text.Json.JsonSerializer.Serialize(await history.ReadAllAsync()));
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(0, h.Git.Started);
+        Assert.Equal(0, h.Git.Integrations);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Empty(h.GitHub.Comments);
+        Assert.Equal(0, h.GitHub.CloseCalls);
+        Assert.Empty(h.TelegramMessages);
+        // Discovery and claiming of a different ready Issue remain available.
+        h.GitHub.Closed = false;
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Single(h.Codex.Issues);
+    }
+
+    [Theory]
+    [InlineData(true, "working")]
+    [InlineData(true, "done")]
+    [InlineData(false, "")]
+    [InlineData(false, "failed")]
+    [InlineData(false, "done,ready")]
+    [InlineData(false, "done,working")]
+    [InlineData(false, "done,blocked")]
+    [InlineData(false, "done,failed")]
+    [InlineData(false, "done,codex-integration-conflict")]
+    [InlineData(false, "done,codex-integration-recovery")]
+    [InlineData(false, "unverifiable")]
+    public async Task AmbiguousLegacyCompletionStillPausesProject(bool open, string labels)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var entry = PreservedConflict() with { State = "InfrastructureFailure",
+            RecoveryState = GitHubOperationException.ReconciliationRequiredState };
+        await history.CreateAsync(entry);
+        h.GitHub.Closed = !open;
+        h.GitHub.CompletionLabels = labels.Split(',');
+        if (labels == "unverifiable") h.GitHub.StateReadFailure = new WorkerInfrastructureException("Issue read unavailable");
+        var config = h.Worker.Configuration;
+        var global = new GlobalWorkerConfiguration();
+        var runtime = new WorkerRuntimeReadModel(global, [("project.yml", config)], history);
+        var host = new WorkerHost(global, [("project.yml", config)]);
+        await host.ReconcileCompletionAsync(h.Worker, entry, runtime, CancellationToken.None);
+        Assert.Equal(ProjectLifecycleState.Unavailable, runtime.Registry.Get(config.Project.Name)?.State);
+        Assert.False(runtime.Registry.TryReserve(config.Project.Name, config));
+        Assert.Empty(h.Codex.Issues);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Empty(h.GitHub.Comments);
+        Assert.Equal(0, h.GitHub.CloseCalls);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(entry),
+            System.Text.Json.JsonSerializer.Serialize(await history.ReadExecutionAsync(entry.ExecutionId)));
+    }
+
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
         "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
@@ -2189,8 +2281,10 @@ public sealed class WorkerV011Tests
                 throw new GitHubOperationException(phase, Issue.Number, true, GitHubFailureKind.TransientProvider,
                     GitHubRemoteState.Uncertain, "Simulated lost reporting response");
         }
+        public Exception? StateReadFailure { get; set; }
         public Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct) =>
-            Task.FromResult(new GitHubIssueState(!Closed, CompletionLabels));
+            StateReadFailure is null ? Task.FromResult(new GitHubIssueState(!Closed, CompletionLabels))
+                : Task.FromException<GitHubIssueState>(StateReadFailure);
         public async Task EnsureSuccessCommentAsync(int issueNumber, Guid executionId, string comment, CancellationToken ct, bool allowCreate = true)
         {
             FailCompletion("comment-before");

@@ -66,7 +66,23 @@ public sealed partial class Worker
     internal async Task ResumeCompletionAsync(ExecutionHistoryEntry entry, CancellationToken ct)
     {
         if (history is null) throw new WorkerInfrastructureException("Completion history is unavailable.");
-        var completion = ExecutionCompletion.Read(entry);
+        if (entry.Project != config.Project.Name || entry.Repository != config.Project.Repository)
+            throw new WorkerInfrastructureException("Completion execution belongs to another project or repository.");
+        ExecutionCompletion completion;
+        try { completion = ExecutionCompletion.Read(entry); }
+        catch (WorkerInfrastructureException)
+        {
+            // Old records cannot authorize completion effects. A terminal Issue can only
+            // acknowledge them for scheduling; retain history and all recovery resources.
+            var remote = await github.ReadIssueStateAsync(entry.IssueNumber, ct);
+            bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+            if (remote.IsOpen || !Has(config.GitHub.DoneLabel) || Has(config.GitHub.ReadyLabel) ||
+                Has(config.GitHub.WorkingLabel) || Has(config.GitHub.FailedLabel) || Has(config.GitHub.BlockedLabel) ||
+                Has(config.GitHub.IntegrationConflictLabel) || Has(config.GitHub.IntegrationRecoveryLabel))
+                throw;
+            _operationalLog($"Execution {entry.ExecutionId} · Issue #{entry.IssueNumber} · legacy completion record acknowledged because authoritative Issue state is closed with the configured done label · no completion effects replayed.");
+            return;
+        }
         if (completion.Finished)
         {
             if (entry.State != "Completed") await history.SaveCompletionAsync(entry.ExecutionId, completion, true, ct);
