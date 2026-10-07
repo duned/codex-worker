@@ -26,6 +26,7 @@ public sealed class WorkerServiceAdministrationContextTests
     [InlineData("provision", "logout", "github-cli")]
     [InlineData("provision", "status", null)]
     [InlineData("capabilities", "refresh", null)]
+    [InlineData("executions", "list", null)]
     [InlineData("credential", "check", "codex-cli")]
     public void AuthenticationMutationsAndObservationsUseOneProtectedServiceContext(string command, string action, string? capability)
     {

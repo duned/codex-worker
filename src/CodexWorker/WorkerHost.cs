@@ -1048,6 +1048,11 @@ public sealed class WorkerHost
         }
     }
 
+    internal static bool NeedsCompletionReconciliation(ExecutionHistoryEntry entry) =>
+        entry.RecoveryState != "operator-acknowledged" &&
+        (entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState || entry.CompletionJson is not null ||
+         entry.ValidationOutcome == "passed" && entry.RecoveryState is "uncertain" or "github-reconciled");
+
     private async Task ReconcileRecoveryAsync(IReadOnlyList<ProjectRuntime> runtimes, ExecutionHistoryStore history,
         WorkerRuntimeReadModel runtime, CancellationToken ct)
     {
@@ -1059,8 +1064,7 @@ public sealed class WorkerHost
                 var entries = await history.ReadAllAsync(ct);
                 foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                              item.Repository == project.Configuration.Project.Repository &&
-                             (item.RecoveryState == GitHubOperationException.ReconciliationRequiredState || item.CompletionJson is not null ||
-                              item.ValidationOutcome == "passed" && item.RecoveryState is "uncertain" or "github-reconciled")))
+                             NeedsCompletionReconciliation(item)))
                 {
                     if (entry.CompletionJson is not null || entry.ValidationOutcome == "passed")
                     {

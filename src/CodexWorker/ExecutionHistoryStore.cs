@@ -47,7 +47,7 @@ public sealed record ExecutionHistoryEntry(
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 12;
+    private const int CurrentSchemaVersion = 13;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -339,6 +339,49 @@ public sealed class ExecutionHistoryStore : IDisposable
             ("Completed" or "Blocked" or "Failed" or "InfrastructureFailure" or "Cancelled")).ToArray();
     }
 
+    public async Task<string?> ReadAcknowledgementAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT acknowledged_at_utc || ' · ' || proof || ' · prompt pruned=' || pruned FROM execution_acknowledgements WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$id", id.ToString());
+        return await command.ExecuteScalarAsync(ct) as string;
+    }
+
+    // Caller holds the checkout lock. Retain outcome, lineage, commit and completion provenance forever.
+    internal async Task AcknowledgeAsync(ExecutionHistoryEntry entry, string proof, bool prune, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE executions SET recovery_state='operator-acknowledged',
+                original_issue_body=CASE WHEN $prune THEN NULL ELSE original_issue_body END
+            WHERE execution_id=$id AND completed_at_utc IS NOT NULL
+                AND state IN ('Completed','Failed','Blocked','InfrastructureFailure','Cancelled','IntegrationConflict')
+                AND NOT EXISTS (SELECT 1 FROM executions other WHERE other.execution_id!=executions.execution_id
+                    AND other.repository=executions.repository AND other.issue_number=executions.issue_number
+                    AND other.completed_at_utc IS NULL)
+                AND server_execution_id IS NULL AND assignment_id IS NULL AND ownership_generation IS NULL
+                AND integration_recovery_claim IS NULL
+                AND (NOT $prune OR (codex_recovery_json IS NULL AND recovery_base_commit IS NULL AND recovery_status IS NULL));
+            """;
+        command.Parameters.AddWithValue("$id", entry.ExecutionId.ToString());
+        command.Parameters.AddWithValue("$prune", prune);
+        if (await command.ExecuteNonQueryAsync(ct) != 1)
+            throw new WorkerInfrastructureException("Execution ownership changed; acknowledgment rejected.");
+        command.CommandText = """
+            INSERT INTO execution_acknowledgements(execution_id,acknowledged_at_utc,proof,pruned)
+            VALUES ($id,$now,$proof,$prune)
+            ON CONFLICT(execution_id) DO UPDATE SET pruned=MAX(pruned,excluded.pruned);
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$proof", proof);
+        await command.ExecuteNonQueryAsync(ct);
+        await transaction.CommitAsync(ct);
+    }
+
     public void Dispose() { }
 
     private void Initialize()
@@ -453,6 +496,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "ALTER TABLE executions ADD COLUMN completion_json TEXT NULL; PRAGMA user_version = 12;";
+                migration.ExecuteNonQuery();
+            }
+            if (schemaVersion < 13)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE execution_acknowledgements (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), acknowledged_at_utc TEXT NOT NULL, proof TEXT NOT NULL, pruned INTEGER NOT NULL DEFAULT 0); PRAGMA user_version = 13;";
                 migration.ExecuteNonQuery();
             }
             transaction.Commit();

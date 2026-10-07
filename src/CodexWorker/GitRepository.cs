@@ -973,7 +973,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     private async Task<string> GetCurrentBranchAsync(CancellationToken ct) =>
         (await GitAsync(["branch", "--show-current"], ct)).StandardOutput.Trim();
 
-    private async Task AcquireWorkerLockAsync(CancellationToken ct)
+    internal async Task AcquireWorkerLockAsync(CancellationToken ct)
     {
         if (_workerLock is not null) return;
         var gitDir = (await GitAsync(["rev-parse", "--absolute-git-dir"], ct)).StandardOutput.Trim();

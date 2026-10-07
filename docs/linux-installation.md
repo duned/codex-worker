@@ -156,6 +156,9 @@ Worker-to-Server operations require HTTPS outside loopback and never follow redi
 
 ### Local administration CLI
 
+For retained execution history, dry-run acknowledgment and conservative prompt pruning, see
+[Resolve retained execution records](execution-record-administration.md).
+
 The installed executable reads `/etc/codex-worker/worker.yml` by default. Administration commands accept `--config <path>` to inspect or operate on another Worker configuration. Help is available without contacting the Server:
 
 ```sh

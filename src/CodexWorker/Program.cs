@@ -87,6 +87,8 @@ public static class Program
                 FailureDiagnosticRedactor.Redact(ex.Message));
             return ProcessExitCodes.StartupFailure;
         }
+        if (commandLine.Command == "executions")
+            return await ExecutionAdministrationCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "register")
         {
             using var standardInput = registrationInput is null && commandLine.Arguments.Contains("--token-stdin", StringComparer.Ordinal)

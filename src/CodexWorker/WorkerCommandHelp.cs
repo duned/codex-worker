@@ -30,6 +30,9 @@ public static class WorkerCommandHelp
         var configOption = "[--config <path>]";
         switch (command)
         {
+            case "executions":
+                writer.WriteLine(ExecutionAdministrationCli.Help);
+                break;
             case "run":
                 writer.WriteLine($"Usage: codex-worker run {configOption}");
                 writer.WriteLine("Start normal Worker execution.");
@@ -106,7 +109,7 @@ public static class WorkerCommandHelp
                 break;
             default:
                 writer.WriteLine("Usage: codex-worker [command] [options]");
-                writer.WriteLine("Commands: run, status, diagnostics, config, capabilities, provision, credential, register, update");
+                writer.WriteLine("Commands: run, executions, status, diagnostics, config, capabilities, provision, credential, register, update");
                 writer.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 writer.WriteLine("Lifecycle: run starts foreground execution; Ctrl+C/SIGTERM requests graceful shutdown.");
                 writer.WriteLine("Installed service: sudo systemctl <start|stop|restart> codex-worker; the existing cw restart (rs) helper verifies restart.");

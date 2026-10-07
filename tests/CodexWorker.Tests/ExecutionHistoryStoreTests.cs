@@ -5,6 +5,146 @@ namespace CodexWorker.Tests;
 public sealed class ExecutionHistoryStoreTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ManualCompletionRequiresVerifiedValidatedIntegration(bool verified)
+    {
+        var config = new WorkerConfiguration();
+        config.GitHub = new GitHubSettings { DoneLabel = "done", ReadyLabel = "ready", WorkingLabel = "working", FailedLabel = "failed", BlockedLabel = "blocked" };
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "InfrastructureFailure", CompletedAtUtc = DateTimeOffset.UtcNow,
+            ValidationOutcome = "passed", CommitSha = new string('a', 40), IntegrationBranch = "main"
+        };
+        var remote = new GitHubIssueState(false, ["done"]);
+        var calls = 0;
+        Task<bool> Verify(ExecutionHistoryEntry candidate, CancellationToken ct)
+        {
+            Assert.Equal(entry, candidate);
+            Assert.Equal(CancellationToken.None, ct);
+            calls++;
+            return Task.FromResult(verified);
+        }
+        if (verified)
+            Assert.Contains(entry.CommitSha, await ExecutionAdministrationCli.VerifyResolutionAsync(entry, config, remote, Verify, CancellationToken.None));
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(() => ExecutionAdministrationCli.VerifyResolutionAsync(entry, config, remote, Verify, CancellationToken.None));
+        Assert.Equal(1, calls);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ExecutionAdministrationCli.VerifyResolutionAsync(
+            entry with { CommitSha = null, ValidationOutcome = null }, config, remote, Verify, CancellationToken.None));
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecutionListingShowsLegacyAndModernTerminalRecordsWithoutPrivateEvidence(bool modern)
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "Completed", CompletedAtUtc = DateTimeOffset.UtcNow,
+            RecoveryState = "uncertain", CompletionJson = modern ? "private-completion-content" : null,
+            OriginalIssueBody = "private-prompt", FailureReason = "/private/path"
+        };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(entry);
+        using var writer = new StringWriter();
+        var result = await ExecutionAdministrationCli.RunAsync(new("executions", null, ["show", entry.ExecutionId.ToString()]),
+            new WorkerConsole(), CancellationToken.None, writer, database.Path);
+        Assert.Equal(ProcessExitCodes.Success, result);
+        Assert.Contains(entry.ExecutionId.ToString(), writer.ToString());
+        Assert.Contains("Completed", writer.ToString());
+        Assert.Contains("uncertain", writer.ToString());
+        Assert.DoesNotContain("private", writer.ToString());
+    }
+
+    [Fact]
+    public async Task OperatorCheckoutLockRejectsConcurrentWorkerOrAdministration()
+    {
+        using var database = new TemporaryDatabase();
+        var directory = System.IO.Path.GetDirectoryName(database.Path) ?? throw new InvalidOperationException();
+        Directory.CreateDirectory(directory);
+        var runner = new ProcessRunner();
+        var initialized = await runner.RunAsync("git", ["init", "--initial-branch=main"], directory,
+            TimeSpan.FromSeconds(10), CancellationToken.None);
+        Assert.Equal(0, initialized.ExitCode);
+        using var worker = new GitRepository(runner, directory, "owner/repo", new GitSettings(), new WorkerSettings());
+        using var administrator = new GitRepository(runner, directory, "owner/repo", new GitSettings(), new WorkerSettings());
+        await worker.AcquireWorkerLockAsync(CancellationToken.None);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => administrator.AcquireWorkerLockAsync(CancellationToken.None));
+        worker.Dispose();
+        await administrator.AcquireWorkerLockAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task OperatorAcknowledgmentRetainsProvenanceAndAuditAcrossRestart()
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "Completed", CompletedAtUtc = DateTimeOffset.UtcNow,
+            CommitSha = new string('a', 40), ValidationOutcome = "passed",
+            OriginalIssueBody = "retained prompt", RecoveryState = "uncertain"
+        };
+        string? audit;
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            await store.AcknowledgeAsync(entry, "verified remote integration", false, CancellationToken.None);
+            audit = await store.ReadAcknowledgementAsync(entry.ExecutionId);
+            await store.AcknowledgeAsync(entry, "second call", false, CancellationToken.None);
+            Assert.Equal(audit, await store.ReadAcknowledgementAsync(entry.ExecutionId));
+        }
+        using var restarted = new ExecutionHistoryStore(database.Path);
+        var acknowledged = Assert.Single(await restarted.ReadAllAsync());
+        Assert.Equal("operator-acknowledged", acknowledged.RecoveryState);
+        Assert.False(WorkerHost.NeedsCompletionReconciliation(acknowledged));
+        Assert.True(WorkerHost.NeedsCompletionReconciliation(entry));
+        Assert.Equal(entry.CommitSha, acknowledged.CommitSha);
+        Assert.Equal(entry.State, acknowledged.State);
+        Assert.Equal(entry.OriginalIssueBody, acknowledged.OriginalIssueBody);
+        Assert.Equal(audit, await restarted.ReadAcknowledgementAsync(entry.ExecutionId));
+        await restarted.AcknowledgeAsync(acknowledged, "third call", true, CancellationToken.None);
+        Assert.Null((await restarted.ReadExecutionAsync(entry.ExecutionId))?.OriginalIssueBody);
+        Assert.Contains("verified remote integration", await restarted.ReadAcknowledgementAsync(entry.ExecutionId));
+    }
+
+    [Theory]
+    [InlineData("active")]
+    [InlineData("managed")]
+    [InlineData("claim")]
+    [InlineData("session")]
+    public async Task OperatorAcknowledgmentRejectsUnsafePruning(string kind)
+    {
+        using var database = new TemporaryDatabase();
+        using var store = new ExecutionHistoryStore(database.Path);
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            State = "Completed", CompletedAtUtc = kind == "active" ? null : DateTimeOffset.UtcNow,
+            ServerExecutionId = kind == "managed" ? "server-id" : null,
+            IntegrationRecoveryClaim = kind == "claim" ? Guid.NewGuid() : null,
+            CodexRecovery = kind == "session" ? new(Guid.NewGuid(), 1, 0, "fingerprint", "session") : null
+        };
+        await store.CreateAsync(entry);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => store.AcknowledgeAsync(entry, "proof", true, CancellationToken.None));
+        Assert.Null(await store.ReadAcknowledgementAsync(entry.ExecutionId));
+        Assert.Equal(entry.RecoveryState, (await store.ReadExecutionAsync(entry.ExecutionId))?.RecoveryState);
+    }
+
+    [Fact]
+    public void OperatorProofRequiresClosedDoneAndNoConflictingLabels()
+    {
+        var labels = new GitHubSettings { DoneLabel = "done", ReadyLabel = "ready", WorkingLabel = "working", FailedLabel = "failed", BlockedLabel = "blocked" };
+        Assert.True(ExecutionAdministrationCli.IsResolved(new(false, [labels.DoneLabel]), labels));
+        Assert.False(ExecutionAdministrationCli.IsResolved(new(true, [labels.DoneLabel]), labels));
+        Assert.False(ExecutionAdministrationCli.IsResolved(new(false, []), labels));
+        Assert.False(ExecutionAdministrationCli.IsResolved(new(false, [labels.DoneLabel, labels.WorkingLabel]), labels));
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { State = "Completed", CompletedAtUtc = DateTimeOffset.UtcNow };
+        Assert.Null(ExecutionAdministrationCli.Ineligible(entry, [entry]));
+        Assert.NotNull(ExecutionAdministrationCli.Ineligible(entry, [entry, entry with { ExecutionId = Guid.NewGuid(), CompletedAtUtc = null }]));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task LegacyReconstructionIsAtomicSurvivesRestartAndRejectsNewerOwnership(bool competing)
@@ -56,7 +196,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN completion_json; PRAGMA user_version = 11;";
+            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; PRAGMA user_version = 11;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -153,7 +293,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
+            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -174,7 +314,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
+            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -199,7 +339,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
+            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -352,7 +492,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(12L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(13L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);
