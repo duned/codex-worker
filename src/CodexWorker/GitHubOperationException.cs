@@ -6,7 +6,8 @@ public enum GitHubFailureKind
     AuthenticationOrAuthorization,
     DeterministicRequest,
     Cancellation,
-    Unknown
+    Unknown,
+    LocalInvocation
 }
 
 public enum GitHubRemoteState

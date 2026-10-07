@@ -4,6 +4,45 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubOperationTests
 {
+    [Fact]
+    public void SuccessCommentReadUsesSupportedPaginatedArguments()
+    {
+        Assert.Equal(new[] { "api", "repos/owner/repo/issues/17/comments?per_page=100",
+            "--paginate", "--jq", "[.[] | select(.body | contains(\"marker\")) | .body]" },
+            GitHubClient.SuccessCommentReadArguments("owner/repo", 17, "marker"));
+    }
+
+    [Fact]
+    public async Task LocalUsageFailureDoesNotRetryOrCreateComment()
+    {
+        var calls = 0;
+        var client = new GitHubClient("owner/repo", (_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new ProcessResult(1, "", "unknown flag: --slurp\nUsage: gh api <endpoint> [flags]\nHTTP 500"));
+        }, retry: new GitHubRetryPolicy((_, _) => Task.CompletedTask));
+        var failure = await Assert.ThrowsAsync<GitHubOperationException>(() =>
+            client.EnsureSuccessCommentAsync(17, Guid.NewGuid(), "Report", CancellationToken.None));
+        Assert.Equal(GitHubFailureKind.LocalInvocation, failure.FailureKind);
+        Assert.Equal(GitHubRemoteState.NotApplicable, failure.RemoteState);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task CommentProofFindsMarkerOnLaterPage()
+    {
+        var id = Guid.NewGuid();
+        var calls = 0;
+        var client = new GitHubClient("owner/repo", (_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new ProcessResult(0, "[]\n" + System.Text.Json.JsonSerializer.Serialize(
+                new[] { "<!-- codex-generated:v1 component=worker -->\nReport\n\n<!-- codex-worker-success:" + id.ToString("D") + " -->" }), ""));
+        });
+        await client.EnsureSuccessCommentAsync(17, id, "Report", CancellationToken.None);
+        Assert.Equal(1, calls);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -18,7 +57,7 @@ public sealed class GitHubOperationTests
             if (args[0] == "api")
             {
                 Assert.Contains("--paginate", args);
-                Assert.Contains("--slurp", args);
+                Assert.DoesNotContain("--slurp", args);
                 return Task.FromResult(new ProcessResult(0, System.Text.Json.JsonSerializer.Serialize(comments), ""));
             }
             writes++;

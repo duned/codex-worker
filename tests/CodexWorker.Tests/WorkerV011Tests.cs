@@ -2000,6 +2000,35 @@ public sealed class WorkerV011Tests
     }
 
     [Fact]
+    public async Task ManuallyClosedPublishedCompletionAcknowledgesSuccessWithoutGitHubEffects()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.GitHub.CompletionFailurePhase = "comment-before";
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        h.GitHub.CompletionFailurePhase = null;
+        await h.GitHub.CloseAsync(1, CancellationToken.None);
+        var closeCalls = h.GitHub.CloseCalls;
+        var pending = Assert.Single(await history.ReadAllAsync());
+        var restarted = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram, history: history);
+        await restarted.ResumeCompletionAsync(pending, CancellationToken.None);
+        var completed = Assert.Single(await history.ReadAllAsync());
+        await restarted.ResumeCompletionAsync(completed, CancellationToken.None);
+        Assert.Equal("Completed", completed.State);
+        Assert.True(ExecutionCompletion.Read(completed).Finished);
+        Assert.True(ExecutionCompletion.Read(completed).TerminalIssueAcknowledged);
+        Assert.Empty(h.GitHub.Comments);
+        Assert.Equal(closeCalls, h.GitHub.CloseCalls);
+        Assert.Single(h.GitHub.Labels, label => label == "working->done");
+        Assert.Single(h.Codex.Issues);
+        Assert.Equal(1, h.Git.Integrations);
+    }
+
+    [Fact]
     public async Task ConfirmedBaseWithPendingArchiveRemainsInCompletionLifecycle()
     {
         using var database = new TempHistoryDatabase();

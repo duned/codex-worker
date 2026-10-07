@@ -7,7 +7,8 @@ namespace CodexWorker;
 /// <summary>Validated integration handoff and individually durable completion checkpoints.</summary>
 internal sealed record ExecutionCompletion(IssueExecutionReport Report, string IssueFingerprint, string PolicyFingerprint,
     bool RemoteConfirmed = false, bool LabelsReported = false, bool CommentReported = false,
-    bool IssueClosed = false, bool NotificationAttempted = false, bool CleanupCompleted = false, bool Finished = false)
+    bool IssueClosed = false, bool NotificationAttempted = false, bool CleanupCompleted = false, bool Finished = false,
+    bool TerminalIssueAcknowledged = false)
 {
     internal static string Fingerprint(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
     internal static string IssueIntent(GitHubIssue issue) => Fingerprint(JsonSerializer.Serialize(new { issue.Title, issue.Body }));
@@ -39,6 +40,7 @@ internal sealed record ExecutionCompletion(IssueExecutionReport Report, string I
                 report.Integration.IntegrationBranch != entry.BaseBranch || report.Integration.ResourceExecutionId is null ||
                 report.Integration.ResourceExecutionId == Guid.Empty || report.Integration.ResourceAttemptNumber is not > 0 ||
                 string.IsNullOrWhiteSpace(completion.IssueFingerprint) || string.IsNullOrWhiteSpace(completion.PolicyFingerprint) ||
+                completion.TerminalIssueAcknowledged && (!completion.RemoteConfirmed || !completion.IssueClosed) ||
                 completion.CommentReported && !completion.LabelsReported || completion.IssueClosed && !completion.CommentReported ||
                 completion.NotificationAttempted && !completion.IssueClosed || completion.CleanupCompleted && !completion.NotificationAttempted ||
                 completion.Finished && (!completion.CleanupCompleted || !completion.RemoteConfirmed))
@@ -154,10 +156,10 @@ public sealed partial class Worker
             var state = await github.ReadIssueStateAsync(issue.Number, ct);
             bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
             if (Has(config.GitHub.ReadyLabel) || Has(config.GitHub.FailedLabel) || Has(config.GitHub.BlockedLabel) ||
-                Has(config.GitHub.IntegrationConflictLabel) ||
+                Has(config.GitHub.IntegrationConflictLabel) || Has(config.GitHub.IntegrationRecoveryLabel) ||
                 Has(config.GitHub.WorkingLabel) == Has(config.GitHub.DoneLabel) ||
                 completion.LabelsReported && !Has(config.GitHub.DoneLabel) ||
-                completion.IssueClosed && state.IsOpen || !state.IsOpen && (!Has(config.GitHub.DoneLabel) || !completion.CommentReported))
+                completion.IssueClosed && state.IsOpen || !state.IsOpen && !Has(config.GitHub.DoneLabel))
                 throw new WorkerInfrastructureException("Issue state conflicts with pending success reporting; manual reconciliation is required.");
             return state;
         }
@@ -168,14 +170,26 @@ public sealed partial class Worker
         completion = completion with { LabelsReported = true };
         await SaveAsync();
         await ReadStateAsync();
-        // Always inspect the marker: a lost comment response must not append a second report.
-        await github.EnsureSuccessCommentAsync(issue.Number, executionId,
-            IssueFormatting.ReportHeading(issue) + report.ToMarkdown(IssueOutcomeKind.Succeeded), ct, allowCreate: !completion.CommentReported);
-        completion = completion with { CommentReported = true };
-        await SaveAsync();
-        state = await ReadStateAsync();
-        if (state.IsOpen) await github.CloseAsync(issue.Number, ct);
-        completion = completion with { IssueClosed = true };
+        // An operator may have completed the published execution without a historical
+        // comment. Preserve the validated handoff and acknowledge terminal remote state.
+        if (state.IsOpen)
+        {
+            // Always inspect the marker: a lost comment response must not append a second report.
+            await github.EnsureSuccessCommentAsync(issue.Number, executionId,
+                IssueFormatting.ReportHeading(issue) + report.ToMarkdown(IssueOutcomeKind.Succeeded), ct, allowCreate: !completion.CommentReported);
+            completion = completion with { CommentReported = true };
+            await SaveAsync();
+            state = await ReadStateAsync();
+            if (state.IsOpen) await github.CloseAsync(issue.Number, ct);
+        }
+        else
+        {
+            completion = completion with { TerminalIssueAcknowledged = true };
+            _operationalLog($"Execution {executionId} · authoritative Issue already closed with the configured done label · completion acknowledged without replaying GitHub effects.");
+        }
+        // Reporting checkpoints are satisfied by terminal acknowledgment; the explicit
+        // acknowledgment records that a historical comment may never have been sent.
+        completion = completion with { CommentReported = true, IssueClosed = true };
         await SaveAsync();
         if (!completion.NotificationAttempted)
         {

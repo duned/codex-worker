@@ -239,7 +239,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         {
             throw new WorkerInfrastructureException($"GitHub Issue Dependencies API unavailable for '{repository}' Issue #{issueNumber}: {ex.Message}", ex);
         }
-        try { return JsonDocument.Parse(ParseDependencyPages(result.StandardOutput)); }
+        try { return JsonDocument.Parse(ParseApiPages(result.StandardOutput)); }
         catch (JsonException ex)
         {
             throw ReadFailure("Issue dependency API", issueNumber,
@@ -250,7 +250,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
     internal static string[] DependencyApiArguments(string repository, int issueNumber) =>
         ["api", "--paginate", $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by"];
 
-    private static string ParseDependencyPages(string output)
+    private static string ParseApiPages(string output)
     {
         // gh api --paginate writes each response page as a separate top-level
         // JSON value. --slurp is unnecessary and is not supported by all deployed
@@ -263,7 +263,7 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
             using var page = JsonDocument.ParseValue(ref reader);
             pages.Add(page.RootElement.Clone());
         }
-        if (pages.Count == 0) throw new JsonException("GitHub dependency API returned no JSON pages.");
+        if (pages.Count == 0) throw new JsonException("GitHub API returned no JSON pages.");
         return JsonSerializer.Serialize(pages);
     }
 
@@ -385,13 +385,11 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         var body = comment + "\n\n" + marker;
         // Scan every page, with process output bounds enforced by the existing runner. A read
         // failure is uncertainty, never permission to append another durable report.
-        var result = await RunGhAsync(["api", $"repos/{repository}/issues/{issueNumber}/comments?per_page=100",
-            "--paginate", "--slurp", "--jq", $"[.[][] | select(.body | contains(\"{marker}\")) | .body]"], ct,
+        var result = await RunGhAsync(SuccessCommentReadArguments(repository, issueNumber, marker), ct,
             allowGracefulCancellation: true);
         try
         {
-            var matches = JsonSerializer.Deserialize<string[]>(result.StandardOutput)
-                ?? throw new JsonException();
+            var matches = ReadCommentPages(result.StandardOutput);
             if (matches.Length == 1 && matches[0] is { } match &&
                 CodexProvisioning.GeneratedMessageOrigin.IsGenerated(match) && match.Contains(body, StringComparison.Ordinal)) return;
             if (matches.Length != 0)
@@ -410,14 +408,24 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }, ex => ex is GitHubOperationException { FailureKind: GitHubFailureKind.TransientProvider }, ct,
             async token =>
             {
-                var proof = await RunGhAsync(["api", $"repos/{repository}/issues/{issueNumber}/comments?per_page=100",
-                    "--paginate", "--slurp", "--jq", $"[.[][] | select(.body | contains(\"{marker}\")) | .body]"], token,
+                var proof = await RunGhAsync(SuccessCommentReadArguments(repository, issueNumber, marker), token,
                     allowGracefulCancellation: true);
-                var matches = JsonSerializer.Deserialize<string[]>(proof.StandardOutput);
+                var matches = ReadCommentPages(proof.StandardOutput);
                 if (matches is { Length: 0 }) return false;
                 if (matches is { Length: 1 } && matches[0] == origin.Format(body)) return true;
                 throw new WorkerInfrastructureException("Success report proof changed or is ambiguous; reconciliation is required.");
             }, true);
+    }
+
+    internal static string[] SuccessCommentReadArguments(string repository, int issueNumber, string marker) =>
+        ["api", $"repos/{repository}/issues/{issueNumber}/comments?per_page=100",
+            "--paginate", "--jq", $"[.[] | select(.body | contains(\"{marker}\")) | .body]"];
+
+    private static string[] ReadCommentPages(string output)
+    {
+        using var pages = JsonDocument.Parse(ParseApiPages(output));
+        return pages.RootElement.EnumerateArray().SelectMany(page =>
+            JsonSerializer.Deserialize<string[]>(page.GetRawText()) ?? throw new JsonException()).ToArray();
     }
 
     public Task CloseAsync(int issueNumber, CancellationToken ct) =>
@@ -561,6 +569,9 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
 
     internal static GitHubFailureKind ClassifyFailure(string detail)
     {
+        if (System.Text.RegularExpressions.Regex.IsMatch(detail,
+                @"(?i)unknown flag|unknown shorthand flag|requires an argument|Usage:\s+gh|HTTP request header in key:value format"))
+            return GitHubFailureKind.LocalInvocation;
         if (System.Text.RegularExpressions.Regex.IsMatch(detail,
                 @"(?i)rate limit|secondary rate limit|abuse detection|\b429\b|\b(500|502|503|504)\b|internal server error|internal provider error|something went wrong|temporarily unavailable|timed? out|connection reset|connection timed out|temporary failure in name resolution|unexpected EOF|try again later"))
             return GitHubFailureKind.TransientProvider;
