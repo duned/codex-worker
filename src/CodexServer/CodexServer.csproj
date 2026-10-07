@@ -25,12 +25,8 @@
           Outputs="worker-poc/node_modules/.package-lock.json">
     <Exec WorkingDirectory="worker-poc" Command="npm ci --no-audit --no-fund" />
   </Target>
-  <Target Name="BuildWorkerPoc" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreWorkerPoc"
-          Inputs="worker-poc/package-lock.json;worker-poc/build.mjs;worker-poc/UNTITLED-UI-LICENSE;@(WorkerPocSource)"
-          Outputs="$(IntermediateOutputPath)worker-poc/poc.js;$(IntermediateOutputPath)worker-poc/poc.css">
+  <!-- Always regenerate: timestamp-only inputs miss deleted source and stale copied bundles. -->
+  <Target Name="BuildWorkerPoc" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreWorkerPoc">
     <Exec WorkingDirectory="worker-poc" Command="node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'worker-poc'))&quot;" />
   </Target>
-  <ItemGroup>
-    <WorkerPocSource Include="worker-poc/src/**/*" />
-  </ItemGroup>
 </Project>

@@ -1,251 +1,185 @@
-# Isolated Worker detail React proof of concept
+# Isolated Worker detail React and Untitled UI proof of concept
 
-Open `/workers/{workerId}/poc` directly (using the same registered ID as
-`/workers/{workerId}`). Reload restores the existing administration cookie and
-CSRF session. The existing Worker detail and every other route retain their
-ordinary dashboard assets. The PoC links back to the existing Worker preparation and administration page
-and presents scheduling and Worker API-token controls through the existing
-management contracts; no scheduling or readiness rules are introduced.
+Open `/workers/{workerId}/poc` with a registered Worker ID. Only this route uses
+this React application; ordinary dashboard routes retain their existing assets
+and implementation. React owns the entire visible screen: product sidebar,
+responsive navigation, session presentation, Worker heading, summary, current
+execution, recent execution table/list, capabilities and secondary control rail.
+The legacy dashboard theme is removed from the PoC response. Existing DOM targets
+for the shared request owner remain in a hidden, accessibility-hidden container;
+they do not surround the React view or contribute visible UI.
 
-The Server renders its existing dashboard shell and login, inserting a React
-mount and two same-origin asset references only for this explicit route.
-`dashboard-navigation.js` recognizes the isolated route and ordinary links leave
-it by full navigation, loading the ordinary dashboard again. The existing
-session, pending-read generation, overview reads and single Worker SSE owner
-supply snapshots to the React view, including the shared project, node, command
-and bounded execution observations. The route also reads the existing Worker
-diagnostics endpoint through the same authenticated, cancellable request owner. No additional fetch, token storage, polling,
-SSE subscription or frontend router is created. Logout and unavailable Worker
-observations clear the projection. React escapes displayed resource text.
+## Components and styling
 
-## Build and package
+This uses the official [manual installation](https://www.untitledui.com/react/docs/installation)
+and [source-component model](https://www.untitledui.com/react/docs/introduction),
+with public MIT source from
+[revision 4702dc0](https://github.com/untitleduico/react/tree/4702dc0ea8d140c3491a85670c7b4fab47b722da).
+The source inventory and adaptations are documented in
+`src/CodexServer/worker-poc/src/untitled/README.md`; the license is retained in
+`worker-poc/UNTITLED-UI-LICENSE` and embedded in the production JavaScript.
+No paid component, private registry, CLI account or hosted runtime is needed.
 
-Build machines require Node.js 22 or newer and npm alongside the .NET 10 SDK.
-From the repository root:
+The shell uses `SidebarNavigationSimple`, `MobileNavigationHeader`, `NavList` and
+`NavItemBase`. Mobile navigation uses React Aria's modal dialog, focus containment,
+Escape dismissal and focus restoration. `Button`, `Input`, `Badge`, `FeaturedIcon`,
+`TableCard` and `Table` provide the main visible patterns, including session UI.
+The demo identity is replaced by Codex Server, and demo search/account content is
+omitted. Workers is selected; Home, Projects, Executions and Settings are ordinary
+links that leave the isolated application by full navigation.
+
+Pinned dependencies include React/React DOM 19.3.0, React Aria Components 1.21.1,
+Untitled UI icons 0.0.23, Tailwind 4.3.3, its PostCSS plugin, PostCSS 8.5.29,
+Tailwind Merge 3.7.0, React Aria Tailwind variants 2.2.0 and animation utilities
+1.0.7. esbuild 0.25.12 bundles production JavaScript. The upstream theme provides
+spacing, type, colors, surfaces, focus and utility tokens; custom CSS is limited
+to composition. The font stack uses local system fallbacks, with no font download.
+The unused upstream prose typography plugin is omitted.
+
+## Authoritative data, session and actions
+
+The existing dashboard integration owns the administration cookie/session, CSRF,
+bounded cancellable reads, periodic refresh and single Worker SSE subscription.
+It sends snapshots and callbacks to React; React performs no fetch, polling,
+stream subscription or token storage. Sign-in clears the form before passing the
+transient token to the existing owner. Session presentation receives no CSRF token
+or management credential. Logout clears observations and closes the responsive
+navigation. Obsolete route/session generations cannot publish late private data.
+React escapes resource text; Issue links are canonical HTTPS GitHub Issue URLs
+for the reported number, with no credentials, query or fragment.
+
+Connection, lifecycle, execution prerequisites, scheduling policy and observation
+freshness remain distinct textual observations. Colors indicate their reported
+states and do not authorize work. Slots use this Worker's active executions and
+maximum capacity (registered capacity is the fallback), with available capacity
+and active Server assignments reported separately.
+
+Current execution has stronger emphasis than history, showing project, linked
+Issue identity, elapsed time and the reported current stage. Recent history shows
+project/Issue links, terminal outcome and available duration/time. Capabilities
+show detected installation/version, health, authentication, configuration, update,
+detection time, operation and pending/latest typed-command evidence. Available
+typed actions are informational; provisioning mutations remain in administration.
+Raw failure details and process output are not displayed.
+
+The control rail uses small secondary Untitled UI buttons and reflows below the
+main content on narrow screens. Activation, drain, deactivation and Worker API-token
+revocation preserve existing native confirmations and Server revalidation.
+Scheduling controls affect new assignments; existing assignments and leases remain.
+Token revocation denies Worker API calls and can let leases expire into recovery;
+it does not revoke credential delivery, node login or provider credentials.
+
+While pending, mutations are disabled. Uncertain/rejected responses require
+**Refresh authoritative state** before controls unlock; periodic observations alone
+cannot unlock them. Failed registry refresh retains the lock. No action is replayed
+automatically. Existing control-owner tests retain all these semantics.
+
+## Honest API limits
+
+No backend contract is expanded. `WorkReference` lacks Issue titles, and the view
+says so. It also lacks stage history or completed/upcoming evidence; only the
+reported current stage is shown, with an explicit limitation. No step completion,
+remaining sequence or percentage is inferred from a stage name.
+
+Executions are filtered by assigned Worker from the shared latest 50 Server
+requests, with up to 10 terminal outcomes. Older history or even active details
+can fall outside that bounded view. Reported active work with absent execution
+detail is called out. Missing/invalid timestamps do not produce invented durations.
+Failed, stale, unavailable and deleted observations have explicit text states.
+
+## Build, publish and packaging
+
+Build/release machines require .NET 10, Node.js 22+ and npm. npm must reach the
+public registry or have the complete locked package cache; NuGet has its usual
+restore prerequisites. No tooling or network install is needed on installed nodes.
 
 ```sh
 npm ci --prefix src/CodexServer/worker-poc --no-audit --no-fund
 npm run build --prefix src/CodexServer/worker-poc
-dotnet build src/CodexServer/CodexServer.csproj
-dotnet publish src/CodexServer/CodexServer.csproj -c Release -o /tmp/codex-server-poc
+dotnet build src/CodexServer/CodexServer.csproj -m:1
+dotnet publish src/CodexServer/CodexServer.csproj -c Release -r linux-x64 --self-contained true -o /tmp/poc-publish
 node --test --test-isolation=none tests/dashboard/*.test.cjs
-dotnet test tests/CodexWorker.Tests/CodexWorker.Tests.csproj --filter FullyQualifiedName~ServerStartsAndExposesStatusHealthAndVersion
 ```
 
-Server build/publish automatically runs lockfile-based `npm ci` when its inputs
-change, then bundles production React and CSS with esbuild into the configuration's
-intermediate output directory. Standalone `npm run build` writes `obj/worker-poc`
-for frontend inspection; the Server uses its own configuration-specific outputs.
-The JavaScript and CSS are embedded resources in the Server assembly, including
-single-file/self-contained release packaging. The existing release scripts need
-no extra asset-copy stage. Installed nodes need neither npm nor a frontend server
-nor a CDN. Generated bundles and node_modules are not committed. Dependency
-updates require reviewing the lockfile and rebuilding; no runtime downloads occur.
+MSBuild restores the lockfile when its inputs change and regenerates JavaScript
+and compiled Tailwind CSS on every normal Debug/Release build and publish. Always
+regenerating avoids timestamp-only stale-asset detection, including deleted source
+files. Outputs use configuration-specific intermediate directories and the same
+two embedded assembly resources and asset URLs as before. Frontend source and
+node_modules are excluded from publish. Installed artifacts serve local assets;
+there is no CDN, separate frontend process or runtime Node/npm dependency.
 
-The only Untitled UI component is an adapted MIT-licensed `Badge`, pinned to
-[upstream source revision 4702dc0](https://github.com/untitleduico/react/blob/4702dc0ea8d140c3491a85670c7b4fab47b722da/components/base/badges/badges.tsx).
-It keeps the medium colored pill variant and four palettes, replacing Tailwind
-utilities with CSS scoped below `#worker-poc`. This avoids Tailwind preflight or
-theme changes to the existing shell. The upstream license is retained in
-`worker-poc/UNTITLED-UI-LICENSE` and included in the JavaScript bundle, alongside
-React's retained legal notices. No paid components or Untitled UI CLI are needed.
-The [upstream installation model](https://www.untitledui.com/react/docs/installation)
-uses source components rather than an all-components runtime package.
+Both `packaging/release-linux-x64.sh` and the `packaging/release.sh` orchestrator
+reuse `dotnet publish`; embedding needs no separate copy stage. Packaging/version
+policy is unchanged. Local disposable archives used for validation are not a
+published release and do not change the source version.
 
-## Route, session and deployment boundaries
+The real artifact regression compares **every served asset byte** with a fresh
+reference build, so missing or stale embedded output fails. It also checks the
+route, legacy-theme isolation, ordinary-route isolation, unknown assets and
+protected API authorization. It starts the published Server with Node/npm absent
+from PATH. It accepts a publish directory or an extracted Linux Server archive:
 
-Only GET on `/workers/{workerId}/poc` and the two fixed
-`/dashboard-assets/worker-poc.js` and `.css` paths is added. Unknown asset names,
-extra path segments, API/protocol/health failures and unsupported methods never
-fall back to dashboard HTML. Asset URLs serve public code without private data;
-protected data remains behind the existing authorized APIs.
+```sh
+(cd src/CodexServer/worker-poc && node build.mjs /tmp/poc-fresh-assets)
+node tests/dashboard/worker-poc-artifact-review.cjs /tmp/poc-publish /tmp/poc-fresh-assets
+# For local packaging validation, extract the Server tarball into /tmp/poc-extracted,
+# then pass /tmp/poc-extracted instead of /tmp/poc-publish above.
+bash tests/release-tests.sh
+```
 
-The checked-in nginx recipe defaults all paths outside its method-specific Worker
-protocol allowlist to management-network-only access. Both this UI route and its
-assets therefore remain VPN-only without broadening the allowlist. HTTPS origin,
-cookie, CSRF and management authorization behavior are unchanged. The repository
-currently sets no CSP in the Server or nginx recipe; deployments with their own
-CSP need same-origin script/style sources in addition to whatever policy already
-permits the existing inline dashboard. No eval, external fonts or external asset
-origins are required.
+The existing stubbed release suite covers orchestration without external services;
+the artifact regression covers actual published resources. Normal .NET endpoint
+coverage checks asset content types, route isolation and method/path rejection.
+Deployments retain the existing management-network/VPN policy and API authorization.
+No proxy allowlist or CSP is relaxed. Assets require only same-origin script/style
+sources, plus whatever the existing inline request owner requires.
 
-The .NET endpoint regression checks embedded asset responses, deep navigation,
-normal-route asset isolation, missing routes and rejected methods. The Node/VM
-harness checks existing session restoration, one stream, read-only Worker
-diagnostics, shared snapshot delivery, registry control evidence, logout clearing and ordinary-page exit. Focused model and React rendering tests use JSON-shaped Server fixtures to
-cover Worker filtering, stage/outcome/timing presentation, empty/stale/failed
-reads, escaping and safe Issue links. Install the locked frontend dependencies
-before running the dashboard suite. These tests do not establish browser
-layout/accessibility. For parent integration review,
-use a disposable packaged Server behind the existing HTTPS/VPN proxy: sign in,
-open the PoC, reload, check online/stale/deleted observations, sign out, and follow
-its existing-detail link. Review keyboard focus, narrow viewport and long IDs;
-verify the network panel requests only local assets and the existing API/stream.
-No live provider actions, production deployment, release or version change is
-part of this work.
+## Deterministic browser acceptance
 
-## Informational projection and contract gaps
-
-The PoC displays the friendly name above the secondary ID, connection availability,
-Worker lifecycle, node execution prerequisites, scheduling policy and capability
-observation freshness separately. Slot usage is the selected Worker's reported
-active executions / maximum capacity (registered capacity is the fallback), with
-available capacity and active Server assignments stated separately. No Server-wide
-capacity or client-derived admission rule is used. Readiness evidence comes from
-Worker diagnostics; node tool authentication is displayed independently.
-
-Current executions and recent terminal outcomes are filtered by `assignedWorkerId`
-from the shared latest 50 Server execution requests. At most 10 terminal outcomes
-are shown. The existing API has no Worker filter, so older history and even active
-work may fall outside this window. The screen states that limit and explicitly
-calls out reported active work whose detail is absent. It is not a complete Worker
-execution-history store. Execution links open the existing details page.
-
-`WorkReference` has type, ID and URL but no Issue title. The screen states that the
-title is unavailable and links the Issue number using a validated canonical GitHub
-Issue URL, falling back to the central project's owner/repository identity. Deleted
-or unavailable projects retain their execution project ID; missing link evidence
-remains plain text. URLs must be HTTPS GitHub Issue paths for the same number, with
-no credentials, query or fragment. No live GitHub enrichment is requested.
-
-Only `currentStage` is displayed; the contract has no stage sequence or per-stage
-completion evidence, so no completed/upcoming steps or progress percentage are
-invented. Elapsed time uses `startedAtUtc` and the refresh time, and terminal duration
-uses the reported duration or start/completion timestamps. Missing/invalid timing
-is unavailable. Failed and cancelled outcomes retain their reported state and
-recovery classification without inventing an outcome from diagnostics.
-
-Capability cards show installation/version, health, authentication/configuration
-(including not-applicable), update and detection evidence, observed operations,
-registered available typed actions and pending/latest command status. Capability actions remain informational text; provisioning mutations stay in
-existing administration. Diagnostic codes
-and command IDs live in secondary disclosures; raw failure detail and process
-output are not displayed. Stable React component keys preserve focused links and
-expanded diagnostic disclosures across polling and stream updates. A failed read
-clears its projection, and session teardown clears all snapshots.
-
-For visual review, use the deterministic fixtures in
-`tests/dashboard/worker-poc-fixtures.cjs` at desktop and 375px widths, with a long
-Worker ID/name, stale observations, a pending/failed capability operation, and
-unavailable reads. Check wrapping, text status, keyboard link/disclosure focus,
-scroll stability after refresh and correct Issue navigation. The scoped layout
-switches status, execution and capability grids to one column below 700px.
-
-Local fixture review used Chromium with the existing shell CSS at 1280px and
-375px. Both layouts and a long-name/stale/unavailable variant had no horizontal
-overflow. Issue hrefs, focused links, open diagnostic disclosures and scroll
-position survived snapshot updates. This fixture review does not establish a
-live provider or deployed-session integration campaign.
-
-## Scheduling and Worker API authentication control rail
-
-The right-side rail uses restrained secondary buttons and reflows below the
-information panels on narrow screens. It shows the registry scheduling policy,
-drain progress and Worker API-token status. Activate scheduling uses the existing
-Server diagnostics `canActivate` and blocking reasons; the Server validates again
-at mutation time. Drain and Deactivate affect new assignments and retain existing
-assignments and leases. Already-applied policies and absent/revoked API tokens
-have explicit unavailable reasons. Missing readiness diagnostics block activation
-without combining readiness with the independent drain or token controls.
-
-All mutations use the existing administration session, CSRF request owner and
-native confirmation pattern. API-token revocation denies Worker API calls and may
-cause active leases to expire into recovery. It does not revoke credential delivery,
-node login or provider credentials; there is no second revocation action in this
-rail. React receives state and action callbacks, and owns no requests or timers.
-
-While a request is pending all mutations are disabled. After rejection, conflict,
-timeout or another uncertain response, periodic refresh can display current state
-but cannot unlock the controls. Use **Refresh authoritative state**, inspect the
-registry policy/token and current activation evidence, then deliberately confirm
-any further action. No mutation is automatically replayed. Failed registry reads
-retain the lock. Successful mutations refresh registry/diagnostics and the shared
-Worker overview. Session teardown and obsolete read generations prevent late
-responses from publishing data. Errors use bounded static guidance rather than
-raw response bodies or credential material.
-
-Deterministic control-owner tests cover each contract, confirmation cancellation,
-blocked activation, already-applied policy, absent tokens, unauthorized state,
-pending duplicate submission, stale activation rejection, lost-response refresh,
-failed refresh and late navigation/logout responses. Rendering tests cover state,
-unavailable reasons and accessible description associations. These checks do not
-replace a deployed browser review of layout, focus and the native confirmation.
-
-## Parent integration review and evaluation
-
-The integrated route retains the existing navigation shell while the React view
-owns its friendly-name heading and secondary Worker ID. The generic shell title
-and selected-ID text, plus the generic registration guidance, are hidden only on
-the PoC. Query parameters such as
-`?step=preparation` cannot expose the ordinary node administration panel alongside
-the PoC. The top summary labels the heartbeat lifecycle separately from execution
-prerequisites: a `running` lifecycle does not by itself mean a task is executing.
-Reported update/restart failures, capability regression and incompatible
-configuration receive red textual badges; transitional lifecycle states are amber,
-and missing observations remain gray. No admission policy is derived from colors.
-
-Final review found two material contract limits: Issue titles are unavailable in
-execution references, and stage history/completed/upcoming evidence is absent.
-The view therefore displays the linked Issue number with an explicit missing-title
-message and emphasizes only the reported current stage. Validation can repeat
-after rebase or recovery, so a stage name cannot safely imply prior stages completed
-or a fixed remaining sequence. These are documented limitations against the visual
-reference, not evidence of a complete history/progress API. Adding such evidence
-would require separately scoped contract work. Worker capacity, readiness,
-provisioning actions and token effects match the existing contracts; administration
-still validates on the Server and uncertain responses require explicit refresh.
-
-The optional browser harness renders the delivered shell and production bundle
-against the shared deterministic fixtures, without a live provider or credentials:
+The browser harness uses the production bundle, delivered HTML and Server-shaped
+fixtures, without live providers or credentials. Install Playwright/Chromium and
+its OS libraries separately in the review environment; these are not build or
+runtime dependencies of the Server.
 
 ```sh
 npm run build --prefix src/CodexServer/worker-poc
-# Make an independently installed Playwright available via NODE_PATH and install
-# its Chromium browser/dependencies in the review environment.
-node tests/dashboard/worker-poc-browser-review.cjs /tmp/codex-worker-poc-review
+NODE_PATH=/path/to/review/node_modules node tests/dashboard/worker-poc-browser-review.cjs /tmp/codex-worker-poc-review
 ```
 
-It checks desktop (1280px) and narrow (375px) layout, the administration rail,
-direct navigation/reload, canonical Issue links, focus/disclosure retention,
-long names, stale/unavailable observations, logout and exit to the ordinary route.
-Representative fixture screenshots are retained below. These contain fixture data
-only; API authorization/deep-route packaging is covered by the .NET tests, while
-deployed HTTPS/VPN session behavior remains a separate integration campaign.
+It exercises desktop (1280px) and mobile (375px) screen composition, overflow,
+selected navigation, responsive control rail, modal keyboard dismissal/focus,
+canonical Issue links, focus/disclosure retention on snapshots, direct reload,
+long-name/stale data, failed reads, empty/deleted observations, logout and exit to
+the ordinary dashboard. Fixtures and rendering/model tests preserve independent
+status/capacity evidence, safe URLs, unavailable timing and mutation descriptions.
+These checks do not replace deployed HTTPS/VPN session or real-node acceptance.
+No production publication or operator-machine change is part of this issue.
 
-- [Desktop Worker detail](images/worker-detail-poc/worker-detail-1280.png)
-- [Narrow Worker detail](images/worker-detail-poc/worker-detail-375.png)
+## Local review evidence for this change
 
-Local integration validation passed the 124-test dashboard suite, production
-frontend bundling, and `dotnet test CodexWorker.sln -m:1` (1,513 Worker/Server
-tests and 269 toolbox tests). The final shell-guidance adjustment passed the
-28-test navigation/model subset and the browser harness; screenshots reflect that
-adjustment. The default sandbox blocked npm network restore and MSBuild process
-pipes; package restore, .NET validation and Chromium review succeeded with the
-available validation escalation. No live provider or deployed HTTPS campaign was
-run. These are local checks, not the Worker's separately configured authoritative
-validation gate.
+The production bundle was reviewed in Chromium at 1280px and 375px using the
+Server-shaped fixtures. The full sidebar/name/status/current-work hierarchy,
+responsive recent history, capability surfaces and control rail were inspected.
+The harness passed overflow, current navigation, keyboard drawer focus restoration,
+snapshot focus/disclosure retention, canonical current/recent Issue links,
+pending/failed capability operations, stale/long-name observations, failed reads,
+empty/deleted state, logout, React sign-in and ordinary-route exit. Screenshots:
 
-Embedding this island required two generated assembly resources, an MSBuild
-lockfile restore/bundle step and a snapshot/callback bridge into the existing
-request/session owner. The production bundle is approximately 237 KB of JavaScript
-and 3.5 KB of CSS before transfer compression. The installed Server has no Node or
-CDN dependency, but **every Server build now needs Node/npm and the locked packages**,
-even when operators use only the ordinary dashboard. Offline builders must provide
-the npm cache as well as NuGet packages. Publish includes the assets through the
-assembly resources rather than a second deployment artifact.
+- [Desktop screen](images/worker-detail-poc/worker-detail-1280.png)
+- [Mobile screen](images/worker-detail-poc/worker-detail-375.png)
 
-Maintenance costs include React/esbuild dependency and lockfile updates, the
-adapted Untitled UI Badge source/license, scoped CSS, and tests for the JavaScript
-snapshot boundary alongside existing dashboard tests. This is a small Untitled UI
-evaluation: it does not establish the cost of its full component system, Tailwind,
-paid components or a dashboard migration. React preserves focused elements and
-disclosures without bespoke DOM restoration in this view; the shared request owner
-avoids duplicate authentication, streams and scheduling state. The callback bridge
-and separately maintained presentation model are additional seams to keep aligned
-with Server contracts.
+Local checks passed the 125-test dashboard suite, normal Server build with zero
+warnings/errors, all 1,513 Worker/Server and 269 toolbox .NET tests, the focused
+Server route/asset regression and release-script regression suite. Self-contained
+Linux publish and disposable Linux archive generation were exercised. The artifact
+check passed against published/extracted Server output and rejected the earlier
+stale bundle against a fresh reference. Dependency installation reported zero
+known advisories after omitting the unused prose plugin.
 
-Continue evaluating this one route if the name/status/current-work hierarchy and
-React's update behavior justify those build and maintenance costs. First resolve
-the title/stage evidence requirements as explicit product decisions, and measure
-operator usability and packaged deployment behavior. This review does not select
-React or Untitled UI as the dashboard architecture or authorize other migrations.
+Initial sandbox checks lacked restored .NET assets, network restore and browser
+process permissions/libraries/fonts. Validation completed with approved process
+access and browser dependencies extracted only under `/tmp`; no machine packages
+were installed. No live provider or deployed HTTPS/VPN campaign was performed.
+These are Codex local checks; the Worker's separately configured validation remains
+the authoritative gate before commit/integration.

@@ -8,7 +8,7 @@ const frontendRequire=createRequire(path.join(frontend,'package.json'));
 const {buildSync}=frontendRequire('esbuild');
 const {renderToStaticMarkup}=frontendRequire('react-dom/server');
 const {createElement}=frontendRequire('react');
-const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',external:['react','react/jsx-runtime']}).outputFiles[0].text;
+const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
 vm.runInNewContext(output,{module:moduleResult,exports:moduleResult.exports,require:frontendRequire,URL});
 const {WorkerDetail}=moduleResult.exports;
@@ -52,7 +52,7 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
 test('Control rail separates token revocation, explains unavailable actions and associates descriptions',()=>{
  const html=render({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}}});
  for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','aria-describedby="poc-token-effect poc-action-revoke-api"','Refresh authoritative state'])assert.ok(html.includes(text),text);
- assert.match(html,/<button[^>]*disabled=""[^>]*>Activate scheduling/);
- assert.match(html,/<button(?![^>]*disabled)[^>]*>Deactivate/);
+ assert.match(html,/<button[^>]*disabled=""[^>]*>[\s\S]*?Activate scheduling/);
+ assert.match(html,/<button(?![^>]* disabled="")[^>]*>[\s\S]*?Deactivate/);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });

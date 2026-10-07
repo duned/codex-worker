@@ -977,10 +977,14 @@ public static class ServerApplication
             ?? throw new InvalidOperationException("The Server dashboard resource is missing.");
         using var reader = new StreamReader(stream);
         var html = reader.ReadToEnd();
-        html = html.Replace("<!-- worker-poc -->", workerPoc
-            ? "<div id=\"worker-poc\"></div>" : "", StringComparison.Ordinal);
+        html = html.Replace("<!-- worker-poc -->", "", StringComparison.Ordinal);
         if (workerPoc)
         {
+            var styleStart = html.IndexOf("<style>", StringComparison.Ordinal);
+            var styleEnd = html.IndexOf("</style>", styleStart, StringComparison.Ordinal);
+            html = html.Remove(styleStart, styleEnd + "</style>".Length - styleStart);
+            html = html.Replace("<body>", "<body><div id=\"worker-poc\"></div><div hidden aria-hidden=\"true\" id=\"poc-legacy-owner\">", StringComparison.Ordinal);
+            html = html.Replace("<!-- dashboard-scripts -->", "</div><!-- dashboard-scripts -->", StringComparison.Ordinal);
             html = html.Replace("</head>", "<link rel=\"stylesheet\" href=\"/dashboard-assets/worker-poc.css\"></head>", StringComparison.Ordinal);
             html = html.Replace("<!-- dashboard-scripts -->", "<script src=\"/dashboard-assets/worker-poc.js\"></script><!-- dashboard-scripts -->", StringComparison.Ordinal);
         }

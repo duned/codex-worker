@@ -1,4 +1,8 @@
 // Administration requests share a generation so logout cannot publish late responses.
+function publishPocSession(){
+ window.codexWorkerPoc?.session?.({authenticated,pending:$('unlock').disabled,message:$('session-message').textContent,
+  onSignIn:token=>{ $('token').value=token; return signIn(); },onRestore:restoreSession,onSignOut:logout});
+}
 let csrfToken='',sessionGeneration=0,sessionTimer=null,pendingLogoutCsrf='';
 const administrationRequests=new Set();
 function signOut(message='Sign in to administer this Server.'){
@@ -7,7 +11,7 @@ function signOut(message='Sign in to administer this Server.'){
  $('unlock').disabled=false;$('administration-login').hidden=false;$('administration-content').hidden=true;$('logout').hidden=true;
  $('session-expiration').textContent='';$('session-message').textContent=message;$('live').textContent='Live · signed out';
  for(const dialog of document.querySelectorAll('dialog')){if(dialog.open)dialog.close()}
- $('credential-secret').value='';clearOnboardingAuthorization();resetResources();navigation.stop();
+ $('credential-secret').value='';clearOnboardingAuthorization();resetResources();navigation.stop();publishPocSession();
 }
 // Only pending GETs are shared; completed data is never cached or treated as authority.
 const dashboardReads=new Map();
@@ -74,20 +78,20 @@ function startSession(session){
  $('administration-login').hidden=true;$('administration-content').hidden=false;$('logout').hidden=false;
  $('session-expiration').textContent='Session expires '+new Date(session.expiresAtUtc).toLocaleString();
  const generation=sessionGeneration;clearTimeout(sessionTimer);sessionTimer=setTimeout(()=>{if(generation===sessionGeneration)signOut('Your session expired. Sign in again.')},Math.max(0,Date.parse(session.expiresAtUtc)-Date.now()));
- navigation.start();startDashboardPolling();streamWorkers();
+ navigation.start();startDashboardPolling();streamWorkers();publishPocSession();
 }
-async function restoreSession(){signOut('Checking administration session…');const generation=sessionGeneration;try{const session=await api('/api/v1/administration/session',{},true);if(generation===sessionGeneration)startSession(session)}catch(e){if(authenticated||e.message==='Administration session ended.')return;if(e.administrationFailure)$('session-message').textContent=e.message;else if(e.name!=='AbortError'&&e.message!=='Administration sign in required.')$('session-message').textContent='Server connection unavailable. Choose Check session to try again.'}}
+async function restoreSession(){signOut('Checking administration session…');const generation=sessionGeneration;try{const session=await api('/api/v1/administration/session',{},true);if(generation===sessionGeneration)startSession(session)}catch(e){if(authenticated||e.message==='Administration session ended.')return;if(e.administrationFailure)$('session-message').textContent=e.message;else if(e.name!=='AbortError'&&e.message!=='Administration sign in required.')$('session-message').textContent='Server connection unavailable. Choose Check session to try again.'}finally{publishPocSession()}}
 async function signIn(){
- const token=$('token').value;$('token').value='';signOut('Signing in…');$('unlock').disabled=true;const generation=sessionGeneration;
+ const token=$('token').value;$('token').value='';signOut('Signing in…');$('unlock').disabled=true;publishPocSession();const generation=sessionGeneration;
  try{const session=await api('/api/v1/administration/session',{method:'POST',headers:{Authorization:'Bearer '+token}},true);if(generation===sessionGeneration)startSession(session)}
  catch(e){if(e.name!=='AbortError'&&e.message!=='Administration session ended.')$('session-message').textContent=e.administrationFailure?e.message:'Server connection unavailable. Try signing in again.'}
- finally{if(generation===sessionGeneration)$('unlock').disabled=false}
+ finally{if(generation===sessionGeneration){$('unlock').disabled=false;publishPocSession()}}
 }
 async function logout(){
  pendingLogoutCsrf=csrfToken||pendingLogoutCsrf;signOut();const generation=sessionGeneration,controller=new AbortController();administrationRequests.add(controller);
  try{const response=await fetch('/api/v1/administration/session',{method:'DELETE',headers:{'X-Codex-CSRF':pendingLogoutCsrf},credentials:'same-origin',cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(10000)])});if(!response.ok&&response.status!==401)throw Error();if(generation===sessionGeneration)pendingLogoutCsrf=''}
  catch{if(generation!==sessionGeneration)return;$('session-message').textContent='Sign out could not be confirmed by the Server. Retry sign out.';$('logout').hidden=false}
- finally{administrationRequests.delete(controller)}
+ finally{administrationRequests.delete(controller);publishPocSession()}
 }
 
 // A single bounded polling owner per session. Rendering never creates timers.

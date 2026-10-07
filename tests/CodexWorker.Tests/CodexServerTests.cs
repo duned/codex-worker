@@ -1435,6 +1435,8 @@ public sealed class CodexServerTests
             var poc = await pocResponse.Content.ReadAsStringAsync();
             Assert.Contains("Administration sign in", poc);
             Assert.Contains("id=\"worker-poc\"", poc);
+            Assert.Contains("<div hidden aria-hidden=\"true\" id=\"poc-legacy-owner\">", poc);
+            Assert.DoesNotContain("--ink:#183135", poc);
             Assert.Contains("src=\"/dashboard-assets/worker-poc.js\"", poc);
             Assert.Contains("href=\"/dashboard-assets/worker-poc.css\"", poc);
             Assert.Contains("/api/v1/events/stream", poc);

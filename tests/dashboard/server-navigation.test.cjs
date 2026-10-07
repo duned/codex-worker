@@ -6,7 +6,7 @@ const {readDashboard}=require('./server-dashboard-source.cjs');
 const flush=async()=>{for(let i=0;i<100;i++)await Promise.resolve()};
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}};
 function setup(path='/home'){
- const poc=path.split('?')[0].endsWith('/poc'),pocRenders=[],pocUpdates=[],assignments=[];
+ const poc=path.split('?')[0].endsWith('/poc'),pocRenders=[],pocUpdates=[],pocSessions=[],assignments=[];
  const html=readDashboard({workerPoc:poc}),elements=new Map(),listeners=new Map(),timers=new Map(),calls=[];
  let timerId=0;
  class Element{
@@ -40,7 +40,7 @@ function setup(path='/home'){
  const origin='https://server.example',entries=[],scrolls=[];let entry=-1;
  const window={location:{origin},scrollX:0,scrollY:0,scrollTo(x,y){this.scrollX=x;this.scrollY=y;scrolls.push([x,y])},addEventListener(name,handler){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(handler)}};
  window.location.assign=value=>assignments.push(value);
- if(poc)window.codexWorkerPoc={render:(data,loading=false)=>pocRenders.push({data,loading}),update:data=>pocUpdates.push(data),clear:()=>pocUpdates.push({cleared:true})};
+ if(poc)window.codexWorkerPoc={session:data=>pocSessions.push(data),render:(data,loading=false)=>pocRenders.push({data,loading}),update:data=>pocUpdates.push(data),clear:()=>pocUpdates.push({cleared:true})};
  function location(value){const url=new URL(value,origin);Object.assign(window.location,{pathname:url.pathname,search:url.search,hash:url.hash})}
  window.history={state:null,pushState(state,title,value){entries.splice(++entry);entries.push({state,path:value});this.state=state;location(value)},replaceState(state,title,value){const path=value||window.location.pathname+window.location.search;entries[entry]={state,path};this.state=state;location(path)}};
  window.history.pushState({},'',path);
@@ -80,7 +80,7 @@ function setup(path='/home'){
  });
  vm.runInContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
  const emit=async(name,event={})=>{for(const handler of listeners.get(name)||[])handler(event);await flush()};
- return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,pocRenders,pocUpdates,assignments,
+ return {$,document:context.document,data,worker,project,node,server,github,calls,listeners,timers,held,pocRenders,pocUpdates,pocSessions,assignments,
   async route(path){window.history.pushState({},'',path);await emit('popstate')},
   window,scrolls,documentListeners,async back(){entry--;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},async forward(){entry++;window.history.state=entries[entry].state;location(entries[entry].path);await emit('popstate')},
   async poll(){const entry=[...timers.entries()].find(([,timer])=>timer.delay===5000);assert.ok(entry);timers.delete(entry[0]);await entry[1].fn();await flush()},
@@ -374,4 +374,20 @@ test('PoC mutations share session CSRF and uncertain responses require explicit 
  await s.poll();await control().onAction('Draining');assert.equal(writes().length,1);
  await control().onRefresh();assert.equal(control().needsRefresh,false);assert.equal(writes().length,1);
  await s.$('logout').onclick();await s.emit('pagehide');
+});
+
+
+test('PoC React session callbacks use the existing login/logout owner and never publish credentials',async()=>{
+ const s=setup('/workers/worker-a/poc');await s.flush();
+ assert.equal(s.pocSessions.at(-1).authenticated,true);
+ await s.pocSessions.at(-1).onSignOut();await s.flush();
+ assert.equal(s.pocSessions.at(-1).authenticated,false);
+ await s.pocSessions.at(-1).onSignIn('fixture-management-token');await s.flush();
+ assert.equal(s.pocSessions.at(-1).authenticated,true);
+ const login=s.calls.filter(call=>call.path==='/api/v1/administration/session'&&call.options.method==='POST');
+ assert.equal(login.length,1);
+ assert.equal(login[0].options.headers.get('Authorization'),'Bearer fixture-management-token');
+ assert.equal(s.$('token').value,'');
+ assert.ok(s.pocSessions.every(session=>!JSON.stringify(session).includes('fixture-management-token')&&!('csrfToken' in session)));
+ await s.emit('pagehide');
 });

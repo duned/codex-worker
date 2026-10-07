@@ -36,4 +36,5 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  for(const state of ['update-failed','restart-failed','capability-regression','configuration-incompatible'])assert.equal(statusColor(state),'error');
  for(const state of ['starting','drain-requested','updating','restarting','reconnecting','not-synchronized'])assert.equal(statusColor(state),'warning');
  assert.equal(statusColor('active'),'success');
+ for(const state of ['offline','disconnected'])assert.equal(statusColor(state),'error');
 });

@@ -4,8 +4,8 @@ const root=path.join(__dirname,'../../src/CodexServer');
 function readDashboard({workerPoc=false}={}){
  let admin=fs.readFileSync(path.join(root,'dashboard-admin.js'),'utf8');
  for(const module of ['session','nodes','stream','executions','issues','onboarding','projects'])admin=admin.replace('/* dashboard-'+module+' */',fs.readFileSync(path.join(root,'dashboard-'+module+'.js'),'utf8'));
- let html=fs.readFileSync(path.join(root,'dashboard.html'),'utf8').replace('<!-- worker-poc -->',workerPoc?'<div id="worker-poc"></div>':'');
- if(workerPoc)html=html.replace('</head>','<link rel="stylesheet" href="/dashboard-assets/worker-poc.css"></head>').replace('<!-- dashboard-scripts -->','<script src="/dashboard-assets/worker-poc.js"></script><!-- dashboard-scripts -->');
+ let html=fs.readFileSync(path.join(root,'dashboard.html'),'utf8').replace('<!-- worker-poc -->','');
+ if(workerPoc)html=html.replace(/<style>[\s\S]*?<\/style>/,'').replace('<body>','<body><div id="worker-poc"></div><div hidden aria-hidden="true" id="poc-legacy-owner">').replace('<!-- dashboard-scripts -->','</div><!-- dashboard-scripts -->').replace('</head>','<link rel="stylesheet" href="/dashboard-assets/worker-poc.css"></head>').replace('<!-- dashboard-scripts -->','<script src="/dashboard-assets/worker-poc.js"></script><!-- dashboard-scripts -->');
  return html.replace('<!-- dashboard-scripts -->','<script>'+fs.readFileSync(path.join(root,'dashboard-navigation.js'),'utf8')+admin+'</script>');
 }
 const navigationStub={preservePresentation(element,render){render()},updateRows(element,markup){element.innerHTML=markup},observe(){},capture:()=>0,isCurrent:()=>true,start(){},stop(){},current:()=>({view:'home',id:'',params:new URLSearchParams()}),navigate(){}};

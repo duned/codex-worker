@@ -157,3 +157,20 @@ credentials were used. Review these screens with deterministic local data:
 Capture reviewable screenshots of login, Home, lists/details and assistant steps
 at approximately 1280px and 360px, plus 200% zoom. Exclude tokens, device codes,
 authorization values, cookies and provider secrets from screenshots and traces.
+
+
+## Isolated Worker detail Untitled UI evaluation
+
+`/workers/{workerId}/poc` now owns its complete visible shell in React: the public
+Untitled UI sidebar/mobile dialog, heading/status/capacity hierarchy, current work,
+recent execution table, capability surfaces and secondary control rail. Ordinary
+routes retain their existing implementation. Tailwind tokens and React Aria source
+components are bundled into the existing two embedded assets. The shared session,
+request and SSE owners remain authoritative; React receives snapshots/callbacks.
+
+See [PoC acceptance and packaged behavior](server-worker-detail-poc.md) for source
+provenance, pinned build dependencies, browser fixtures and the real artifact
+regression. Build machines need Node/npm; installed machines do not. Issue titles
+and stage history remain explicit API limits, and history remains a bounded latest
+50-request projection. No contract, scheduling rule, credential permission, product
+version or ordinary dashboard theme is changed by this evaluation.

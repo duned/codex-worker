@@ -1,24 +1,29 @@
-import { Badge } from './badge.jsx';
+import { Badge } from './untitled/components/base/badges/badges';
+import { Button } from './untitled/components/base/buttons/button';
+import { Table, TableCard } from './untitled/components/application/table/table';
+import { FeaturedIcon } from './untitled/components/foundations/featured-icon/featured-icon';
+import { Activity, Terminal } from '@untitledui/icons';
+
 import { duration, issueLink, statusColor, terminalStates, timestamp, workerExecutions } from './model.js';
 
-function Status({ value }) { return <Badge color={statusColor(value)}>{value ?? 'Unknown'}</Badge>; }
-function Fact({ label, children }) { return <div className="poc-fact"><dt>{label}</dt><dd>{children}</dd></div>; }
+function Status({ value }) { return <Badge className="inline-flex max-w-full whitespace-normal align-middle" type="pill-color" size="sm" color={statusColor(value)}>{value ?? 'Unknown'}</Badge>; }
+function Fact({ label, children }) { return <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{label}</dt><dd className="text-sm text-secondary">{children}</dd></div>; }
 function Execution({ item, projects, now, active }) {
   const project = projects?.find(project => project.id === item.projectId);
   const work = item.workReference;
   const url = issueLink(work, project?.repository);
   const identity = work?.type === 'github-issue' ? `Issue #${work.id}` : `${work?.type ?? 'Work'} ${work?.id ?? 'Unknown'}`;
-  return <article className={active ? 'poc-execution poc-current' : 'poc-execution'}>
-    <div><p className="poc-project">{project?.name ?? item.projectId}</p>
-      <h4>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{identity}</a> : identity}</h4>
-      <p className="poc-muted">{work?.type === 'github-issue' && 'Issue title unavailable · '}{!url && work?.type === 'github-issue' && 'Issue link unavailable · '}<a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p>
+  return <TableCard.Root className="poc-current"><div className="poc-execution p-5">
+    <div><p className="poc-project mb-1 text-sm font-medium text-tertiary">{project?.name ?? item.projectId}</p>
+      <h4 className="text-lg font-semibold text-primary">{url ? <a href={url} target="_blank" rel="noopener noreferrer">{identity}</a> : identity}</h4>
+      <p className="poc-muted text-sm text-tertiary">{work?.type === 'github-issue' && 'Issue title unavailable · '}{!url && work?.type === 'github-issue' && 'Issue link unavailable · '}<a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p>
     </div>
-    <div><Status value={item.state} />{active && <p>Current stage: <strong>{item.currentStage || 'Not reported'}</strong></p>}
-      <p className="poc-muted">{active ? 'Elapsed' : 'Duration'}: {duration(item, now)}</p>
-      <p className="poc-muted">{active ? item.startedAtUtc ? 'Started' : 'Assigned' : item.completedAtUtc ? 'Completed' : 'Requested'}: {timestamp(active ? item.startedAtUtc ?? item.assignedAtUtc : item.completedAtUtc ?? item.createdAtUtc)}</p>
+    <div className="space-y-2"><Status value={item.state} />{active && <p>Current stage: <strong className="text-brand-secondary">{item.currentStage || 'Not reported'}</strong></p>}
+      <p className="poc-muted text-sm text-tertiary">{active ? 'Elapsed' : 'Duration'}: {duration(item, now)}</p>
+      <p className="poc-muted text-sm text-tertiary">{active ? item.startedAtUtc ? 'Started' : 'Assigned' : item.completedAtUtc ? 'Completed' : 'Requested'}: {timestamp(active ? item.startedAtUtc ?? item.assignedAtUtc : item.completedAtUtc ?? item.createdAtUtc)}</p>
       {item.recoveryState && <p>Recovery: {item.recoveryState}</p>}
     </div>
-  </article>;
+  <p className="col-span-full text-xs text-tertiary">Only the reported current stage is available; stage history is not provided.</p></div></TableCard.Root>;
 }
 function Capability({ capability, commands }) {
   const { definition, state, availableActions } = capability;
@@ -26,8 +31,7 @@ function Capability({ capability, commands }) {
     .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc));
   const pending = matching?.filter(command => ['Pending', 'Running'].includes(command.status)) ?? [];
   const latest = matching?.[0];
-  return <article className="poc-capability">
-    <h4>{definition.displayName}</h4>
+  return <TableCard.Root className="poc-capability"><TableCard.Header title={definition.displayName} contentTrailing={<FeaturedIcon icon={Terminal} color="gray" theme="modern" size="sm" />} /><div className="p-4">
     <dl className="poc-facts">
       <Fact label="Installation"><Status value={state.installation} /> · {state.detectedVersion || 'Version unknown'}</Fact>
       <Fact label="Health"><Status value={state.health} /></Fact>
@@ -39,10 +43,10 @@ function Capability({ capability, commands }) {
     </dl>
     {pending.map(command => <p key={command.id}><Status value={command.status} /> {command.request.action}</p>)}
     {!pending.length && latest && <p>Latest command: <Status value={latest.status} /> {latest.request.action}</p>}
-    {commands === null && <p className="poc-muted">Command history unavailable.</p>}
+    {commands === null && <p className="poc-muted text-sm text-tertiary">Command history unavailable.</p>}
     <p>Available typed actions: {availableActions?.length ? availableActions.join(', ') : 'None reported'}</p>
-    <details><summary>Diagnostic context</summary><p>{state.diagnosticCode || 'No diagnostic code reported'}{state.operation?.diagnosticCode && ' · ' + state.operation.diagnosticCode}</p>{latest && <p>Command {latest.id} · {latest.diagnostic}</p>}</details>
-  </article>;
+    <details className="mt-4 text-sm text-tertiary"><summary>Diagnostic context</summary><p>{state.diagnosticCode || 'No diagnostic code reported'}{state.operation?.diagnosticCode && ' · ' + state.operation.diagnosticCode}</p>{latest && <p>Command {latest.id} · {latest.diagnostic}</p>}</details>
+  </div></TableCard.Root>;
 }
 function ControlRail({ administration }) {
   const worker = administration?.worker;
@@ -50,20 +54,20 @@ function ControlRail({ administration }) {
     { key: 'Enabled', label: 'Activate scheduling' }, { key: 'Draining', label: 'Drain worker' },
     { key: 'Disabled', label: 'Deactivate' }, { key: 'revoke-api', label: 'Revoke Worker API token' }
   ].map(action => ({ ...action, reason: 'Current administration evidence unavailable. Refresh to recover it.' }));
-  return <aside className="poc-control-rail" aria-labelledby="poc-controls-title">
-    <h3 id="poc-controls-title">Worker controls</h3>
+  return <aside className="poc-control-rail" aria-label="Worker controls"><TableCard.Root>
+    <TableCard.Header title="Worker controls" /><div className="p-4">
     <dl className="poc-facts">
       <Fact label="Scheduling policy"><Status value={worker?.schedulingPolicy ?? 'Unavailable'} />{worker?.schedulingPolicy === 'Draining' && <p>{worker.activeAssignments === 0 ? 'Drained; scheduling is paused.' : `Draining; ${worker.activeAssignments} active assignment(s) keep their leases.`}</p>}</Fact>
       <Fact label="Worker API token"><Status value={worker?.authenticationCredentialStatus ?? 'Unavailable'} />{worker?.authenticationCredentialRevokedAtUtc && <p>Revoked: {timestamp(worker.authenticationCredentialRevokedAtUtc)}</p>}</Fact>
     </dl>
-    <p id="poc-policy-effect">Scheduling controls affect new assignments. Existing assignments and leases are not cancelled. Activation requires current Server readiness evidence and validation.</p>
-    <p id="poc-token-effect">Revoking Worker API authentication denies calls using its token; active leases may expire into recovery. It does not revoke credential-delivery authorization, node login or provider credentials.</p>
+    <details className="my-4 text-xs text-tertiary"><summary className="font-medium">Control effects</summary><p id="poc-policy-effect" className="mt-2">Scheduling controls affect new assignments. Existing assignments and leases are not cancelled. Activation requires current Server readiness evidence and validation.</p>
+    <p id="poc-token-effect">Revoking Worker API authentication denies calls using its token; active leases may expire into recovery. It does not revoke credential-delivery authorization, node login or provider credentials.</p></details>
     <div className="poc-controls">{actions.map(action => <div key={action.key}>
-      <button type="button" className="poc-secondary" disabled={!!action.reason || !administration?.onAction} aria-describedby={`${action.key === 'revoke-api' ? 'poc-token-effect' : 'poc-policy-effect'} poc-action-${action.key}`} onClick={() => administration?.onAction(action.key)}>{action.label}</button>
-      <p id={'poc-action-' + action.key} className="poc-muted">{action.reason || 'Confirmation required.'}</p>
+      <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`${action.key === 'revoke-api' ? 'poc-token-effect' : 'poc-policy-effect'} poc-action-${action.key}`} onPress={() => administration?.onAction(action.key)}>{action.label}</Button>
+      <p id={'poc-action-' + action.key} className="poc-muted text-sm text-tertiary">{action.reason || 'Confirmation required.'}</p>
     </div>)}</div>
     <p role="status" aria-live="polite">{administration?.message}</p>
-    <button type="button" className="poc-secondary" disabled={administration?.pending || !administration?.onRefresh} onClick={() => administration?.onRefresh()}>Refresh authoritative state</button>
+    <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>Refresh authoritative state</Button></div></TableCard.Root>
   </aside>;
 }
 export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, now = Date.now() }) {
@@ -73,26 +77,49 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const active = items.filter(item => ['Assigned', 'Running'].includes(item.state));
   const recent = items.filter(item => terminalStates.includes(item.state)).slice(0, 10);
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
-  return <section className="poc-card" aria-label="Worker detail proof of concept">
-    <header><p className="poc-eyebrow">Worker detail · proof of concept</p><h2>{worker?.displayName || 'Worker details'}</h2><p className="poc-muted poc-identity">ID {id}</p>
-      <a href={'/workers/' + encodeURIComponent(id)}>Open Worker detail and administration</a></header>
+  const recentRows = recent.map(item => {
+    const project = projects?.find(project => project.id === item.projectId);
+    const url = issueLink(item.workReference, project?.repository);
+    const identity = item.workReference?.type === 'github-issue' ? `Issue #${item.workReference.id}` : item.workReference?.id ?? 'Work';
+    return {
+      id: item.id,
+      reference: <><p className="font-medium text-primary">{project?.name ?? item.projectId}</p>{url ? <a className="text-brand-secondary font-semibold" href={url} target="_blank" rel="noopener noreferrer">{identity}</a> : identity}<p><a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p></>,
+      outcome: <><Status value={item.state} />{item.recoveryState && <p>Recovery: {item.recoveryState}</p>}</>,
+      timing: <><p>Duration: {duration(item, now)}</p><p>{item.completedAtUtc ? 'Completed' : 'Requested'}: {timestamp(item.completedAtUtc ?? item.createdAtUtc)}</p></>
+    };
+  });
+  return <section className="poc-card text-sm text-secondary" aria-label="Worker detail proof of concept">
+    <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
+      <div className="min-w-0"><p className="mb-2 text-sm font-medium text-tertiary">Workers / Detail preview</p><h1 className="text-display-sm font-semibold text-primary">{worker?.displayName || 'Worker details'}</h1><p className="poc-identity mt-2 text-sm text-tertiary">ID {id}</p></div>
+      <Button href={'/workers/' + encodeURIComponent(id)} color="secondary" size="sm">Open Worker detail and administration</Button>
+    </header>
     {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className="poc-layout"><div className="poc-main">
-      <dl className="poc-status-grid">
+      <TableCard.Root><div className="p-5"><dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
         <Fact label="Lifecycle / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
         <Fact label="Observation freshness"><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /><p>Last heartbeat: {timestamp(worker.lastHeartbeatAtUtc)}</p></Fact>
         <Fact label="Worker slots"><strong>{worker.activeExecutions ?? 'Unknown'} / {worker.maximumCapacity ?? worker.capacity ?? 'Unknown'} active</strong><p>{worker.availableCapacity ?? 'Unknown'} available · {worker.activeAssignments ?? 'Unknown'} active Server assignments</p></Fact>
       </dl>
-      <p className="poc-muted">Connectivity, execution prerequisites and scheduling policy are separate observations. Stale evidence does not establish current readiness.</p>
-      <section className="poc-section"><h3>Current execution{active.length > 1 ? 's' : ''}</h3>
+      <p className="poc-muted mt-4">Connectivity, execution prerequisites and scheduling policy are separate observations. Stale evidence does not establish current readiness.</p></div></TableCard.Root>
+      <section className="poc-section"><div className="mb-3 flex items-center gap-3"><FeaturedIcon icon={Activity} color="brand" theme="light" size="sm" /><h2 className="text-lg font-semibold text-primary">Current execution{active.length > 1 ? 's' : ''}</h2></div>
         {executions === null ? <p>Current execution data unavailable. Refresh to recover reported stages.</p> : active.length ? active.map(item => <Execution key={item.id} item={item} projects={projects} now={now} active />) : <p>No current execution in the latest 50 Server requests. {worker.activeAssignments > 0 || worker.activeExecutions > 0 ? 'The Worker reports active work; its execution detail is unavailable in this bounded view.' : 'No active work reported by this Worker.'}</p>}
       </section>
-      <section className="poc-section"><h3>Recent executions</h3><p className="poc-muted">Up to 10 outcomes for this Worker from the latest 50 Server requests. Older or unreported executions may be absent.</p>
-        {executions === null ? <p>Execution history unavailable. Refresh to try again.</p> : recent.length ? recent.map(item => <Execution key={item.id} item={item} projects={projects} now={now} />) : <p>No recent terminal executions for this Worker in this view.</p>}
-      </section>
-      <section className="poc-section"><h3>Capabilities and provisioning</h3><p>Provisioning readiness: <Status value={node?.provisioningReadiness ?? 'Unavailable'} /> · Latest operation: <Status value={diagnostics?.provisioningState ?? 'Unavailable'} /></p>
+      <TableCard.Root size="sm"><TableCard.Header title="Recent executions" description="Up to 10 outcomes for this Worker from the latest 50 Server requests. Older or unreported executions may be absent." />
+        {executions === null ? <p className="p-5">Execution history unavailable. Refresh to try again.</p> : recent.length ? <>
+          <div className="hidden sm:block"><Table aria-label="Recent executions" size="sm"><Table.Header>
+            <Table.Head id="work" isRowHeader label="Project / Issue" /><Table.Head id="outcome" label="Outcome" /><Table.Head id="time" label="Time" />
+          </Table.Header><Table.Body>{recentRows.map(row => <Table.Row key={row.id} id={row.id}>
+            <Table.Cell>{row.reference}</Table.Cell><Table.Cell>{row.outcome}</Table.Cell><Table.Cell>{row.timing}</Table.Cell>
+          </Table.Row>)}</Table.Body></Table></div>
+          <div className="divide-y divide-secondary sm:hidden">{recentRows.map(row => <article key={row.id} className="p-4">
+            <div className="flex items-start justify-between gap-3"><div>{row.reference}</div><div>{row.outcome}</div></div>
+            <div className="mt-3 text-sm text-tertiary">{row.timing}</div>
+          </article>)}</div>
+        </> : <p className="p-5">No recent terminal executions for this Worker in this view.</p>}
+      </TableCard.Root>
+      <section className="poc-section"><h2 className="mb-3 text-lg font-semibold text-primary">Capabilities and provisioning</h2><p>Provisioning readiness: <Status value={node?.provisioningReadiness ?? 'Unavailable'} /> · Latest operation: <Status value={diagnostics?.provisioningState ?? 'Unavailable'} /></p>
         {diagnostics ? <><p>Reported readiness evidence: Codex preflight {diagnostics.aiAgentReady ? 'present' : 'absent'} · GitHub access {diagnostics.gitHubReady ? 'present' : 'absent'} · Git access {diagnostics.gitReady ? 'present' : 'absent'}</p><p>Configuration synchronization: <Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{diagnostics.latestProvisioningOperation.action} · {diagnostics.latestProvisioningOperation.status}</p>}</> : <p>Worker readiness diagnostics unavailable.</p>}
-        {node ? node.capabilities?.length ? <div className="poc-capabilities">{node.capabilities.map(capability => <Capability key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>No capabilities reported.</p> : <p>Capability observations unavailable. Refresh provisioning state.</p>}
+        {node ? node.capabilities?.length ? <div className="poc-capabilities mt-4">{node.capabilities.map(capability => <Capability key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>No capabilities reported.</p> : <p>Capability observations unavailable. Refresh provisioning state.</p>}
       </section>
     </div><ControlRail administration={administration} /></div>}
   </section>;
