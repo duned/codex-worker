@@ -70,7 +70,7 @@ function ControlRail({ administration }) {
     <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>Refresh authoritative state</Button></div></TableCard.Root>
   </aside>;
 }
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, now = Date.now() }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, now = Date.now() }) {
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
   const items = workerExecutions(executions, id);
@@ -91,9 +91,9 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   return <section className="poc-card text-sm text-secondary" aria-label="Worker detail proof of concept">
     <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0"><p className="mb-2 text-sm font-medium text-tertiary">Workers / Detail preview</p><h1 className="text-display-sm font-semibold text-primary">{worker?.displayName || 'Worker details'}</h1><p className="poc-identity mt-2 text-sm text-tertiary">ID {id}</p></div>
-      <Button href={'/workers/' + encodeURIComponent(id)} color="secondary" size="sm">Open Worker detail and administration</Button>
+      <Button href={administrationHref ?? '/workers/' + encodeURIComponent(id)} color="secondary" size="sm">Open Worker detail and administration</Button>
     </header>
-    {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className="poc-layout"><div className="poc-main">
+    {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className={readOnly ? "poc-layout poc-read-only" : "poc-layout"}><div className="poc-main">
       <TableCard.Root><div className="p-5"><dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
         <Fact label="Lifecycle / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
@@ -121,6 +121,6 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
         {diagnostics ? <><p>Reported readiness evidence: Codex preflight {diagnostics.aiAgentReady ? 'present' : 'absent'} · GitHub access {diagnostics.gitHubReady ? 'present' : 'absent'} · Git access {diagnostics.gitReady ? 'present' : 'absent'}</p><p>Configuration synchronization: <Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{diagnostics.latestProvisioningOperation.action} · {diagnostics.latestProvisioningOperation.status}</p>}</> : <p>Worker readiness diagnostics unavailable.</p>}
         {node ? node.capabilities?.length ? <div className="poc-capabilities mt-4">{node.capabilities.map(capability => <Capability key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>No capabilities reported.</p> : <p>Capability observations unavailable. Refresh provisioning state.</p>}
       </section>
-    </div><ControlRail administration={administration} /></div>}
+    </div>{!readOnly && <ControlRail administration={administration} />}</div>}
   </section>;
 }

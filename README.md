@@ -336,6 +336,8 @@ The Server execution request ID and assignment ID are stored on the Worker's nor
 
 Lease expiry marks the historical attempt failed and never transfers that attempt to a new owner. If expiry is known to have occurred before integration, the Server creates a separate queued attempt linked through `retryOfExecutionId`; it requires a fresh Worker workspace because the previous Worker's local state is unavailable. If integration may have started, or the reported stage is unknown or claiming, the attempt becomes `LeaseExpiredUncertain` and remains for operator reconciliation. Expiry is therefore not itself proof that retrying is safe. The Server preserves the prior attempt and its last known Worker, stage, and lease details across restart. A lost final report acknowledgement can be retried idempotently; a duplicate report cannot override a later generation. Failed execution recoverability is reported as structured state; its physical workspace remains on the Worker.
 
+The production React dashboard foundation and same-origin Vite development workflow are documented in [Server dashboard React migration](docs/server-dashboard-react.md). Legacy routes remain the default during migration.
+
 ```sh
 dotnet restore CodexWorker.sln
 dotnet build CodexWorker.sln

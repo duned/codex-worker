@@ -56,3 +56,11 @@ test('Control rail separates token revocation, explains unavailable actions and 
  assert.match(html,/<button(?![^>]* disabled="")[^>]*>[\s\S]*?Deactivate/);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
+test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
+ const html=render({readOnly:true});
+ assert.ok(html.includes('Build Worker North'));
+ assert.ok(html.includes('Current execution'));
+ assert.ok(!html.includes('Worker controls'));
+ assert.ok(!html.includes('Activate scheduling'));
+ assert.ok(!html.includes('Revoke Worker API token'));
+});

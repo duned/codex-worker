@@ -10,6 +10,7 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-skip { position: fixed; left: 16px; top: -100px; z-index: 100; }
 .poc-skip:focus { top: 16px; background: var(--color-bg-primary); padding: 12px; }
 .poc-layout { display: grid; grid-template-columns: minmax(0, 1fr) 272px; gap: 24px; align-items: start; }
+.poc-layout.poc-read-only { grid-template-columns: minmax(0, 1fr); }
 .poc-main { min-width: 0; display: grid; gap: 24px; }
 .poc-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .poc-execution { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }

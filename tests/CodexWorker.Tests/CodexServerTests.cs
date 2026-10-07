@@ -1430,6 +1430,30 @@ public sealed class CodexServerTests
                 Assert.Contains($"href=\"/{view}\"", dashboard);
             Assert.DoesNotContain("src=\"/dashboard-assets/worker-poc.js\"", dashboard);
             Assert.DoesNotContain("href=\"/dashboard-assets/worker-poc.css\"", dashboard);
+            foreach (var path in new[] { "/dashboard-preview", "/dashboard-preview/home",
+                "/dashboard-preview/projects/a?issue=27&label=review", "/dashboard-preview/workers/worker-a?step=preparation&project=a",
+                "/dashboard-preview/executions/request-a?offset=50", "/dashboard-preview/settings/credential-a" })
+            {
+                using var previewResponse = await client.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
+                var preview = await previewResponse.Content.ReadAsStringAsync();
+                Assert.Contains("class=\"dark-mode\"", preview);
+                Assert.Contains("id=\"worker-poc\"", preview);
+                Assert.DoesNotContain("poc-legacy-owner", preview);
+                foreach (System.Text.RegularExpressions.Match asset in System.Text.RegularExpressions.Regex.Matches(
+                    preview, "(?:src|href)=\"(/dashboard-assets/preview/[^\"]+)\""))
+                {
+                    var assetPath = asset.Groups[1].Value;
+                    using var assetResponse = await client.GetAsync(assetPath);
+                    Assert.Equal(HttpStatusCode.OK, assetResponse.StatusCode);
+                    Assert.NotEmpty(await assetResponse.Content.ReadAsByteArrayAsync());
+                    using var assetPost = await client.PostAsync(assetPath, null);
+                    Assert.Equal(HttpStatusCode.MethodNotAllowed, assetPost.StatusCode);
+                }
+                using var previewPost = await client.PostAsync(path, null);
+                Assert.Equal(HttpStatusCode.MethodNotAllowed, previewPost.StatusCode);
+            }
+            Assert.DoesNotContain("/dashboard-assets/preview/", dashboard);
             using var pocResponse = await client.GetAsync("/workers/worker-a/poc");
             Assert.Equal(HttpStatusCode.OK, pocResponse.StatusCode);
             var poc = await pocResponse.Content.ReadAsStringAsync();
@@ -1462,6 +1486,8 @@ public sealed class CodexServerTests
             }
             foreach (var path in new[] { "/unsupported", "/api/unknown", "/api/v1/workers/worker-a/unknown",
                 "/health/unknown", "/projects/a/unsupported", "/home/unsupported",
+                "/dashboard-preview/unknown", "/dashboard-preview/home/a", "/dashboard-preview/projects/a/unknown",
+                "/dashboard-preview/api/v1/workers", "/dashboard-preview/health", "/dashboard-assets/preview/assets/unknown.js",
                 "/workers/worker-a/poc/unknown", "/workers/worker-a/other", "/dashboard-assets/unknown.js" })
             {
                 using var unknown = await client.GetAsync(path);

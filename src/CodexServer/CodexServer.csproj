@@ -27,6 +27,19 @@
   </Target>
   <!-- Always regenerate: timestamp-only inputs miss deleted source and stale copied bundles. -->
   <Target Name="BuildWorkerPoc" BeforeTargets="PrepareForBuild" DependsOnTargets="RestoreWorkerPoc">
-    <Exec WorkingDirectory="worker-poc" Command="node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'worker-poc'))&quot;" />
+    <Exec WorkingDirectory="worker-poc" Command="npm run typecheck &amp;&amp; npm run lint &amp;&amp; node build.mjs &quot;$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'worker-poc'))&quot;" />
+  </Target>
+  <Target Name="EmbedDashboardPreview" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildWorkerPoc">
+    <ItemGroup>
+      <_DashboardPreviewAsset Include="$(IntermediateOutputPath)worker-poc/preview/**/*" Exclude="$(IntermediateOutputPath)worker-poc/preview/.vite/**/*" />
+      <_DashboardPreviewAsset Update="@(_DashboardPreviewAsset)">
+        <LogicalName>CodexServer.dashboard-preview/$([System.String]::Copy('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
+      </_DashboardPreviewAsset>
+      <EmbeddedResource Include="@(_DashboardPreviewAsset)" />
+    </ItemGroup>
+  </Target>
+  <!-- A no-build publish cannot prove that the assembly contains current frontend inputs. -->
+  <Target Name="RequireCurrentDashboardPublish" BeforeTargets="BuildWorkerPoc;PrepareForPublish" Condition="'$(NoBuild)' == 'true'">
+    <Error Text="Server publish requires a build to regenerate and verify embedded dashboard assets; omit --no-build." />
   </Target>
 </Project>

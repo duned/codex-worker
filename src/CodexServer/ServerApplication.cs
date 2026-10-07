@@ -45,6 +45,8 @@ public static class ServerApplication
         NodeCapabilityDiscovery? capabilityDiscovery = null, IServerGitHubReadService? githubReadService = null,
         IServerGitHubIssueWriteService? githubIssueWriteService = null)
     {
+        // Verify product assets before opening persistent services.
+        var preview = new EmbeddedDashboardAssets();
         var builder = CreateBuilder(args);
         var configuration = new ServerConfiguration();
         builder.Configuration.GetSection("Server").Bind(configuration);
@@ -417,6 +419,15 @@ public static class ServerApplication
         {
             app.MapGet(path, () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
         }
+        // Temporary migration entry. Canonical/legacy routes remain unchanged until cutover.
+        foreach (var path in new[] { "/dashboard-preview", "/dashboard-preview/home",
+            "/dashboard-preview/projects", "/dashboard-preview/projects/{resourceId}",
+            "/dashboard-preview/workers", "/dashboard-preview/workers/{resourceId}",
+            "/dashboard-preview/executions", "/dashboard-preview/executions/{resourceId}",
+            "/dashboard-preview/settings", "/dashboard-preview/settings/{resourceId}" })
+            app.MapGet(path, () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
+        foreach (var (path, bytes) in preview.Assets)
+            app.MapGet("/dashboard-assets/preview/" + path, () => Results.Bytes(bytes, EmbeddedDashboardAssets.ContentType(path)));
         app.MapGet("/workers/{resourceId}/poc", () => Results.Content(ReadDashboard(workerPoc: true), "text/html; charset=utf-8"));
         // Fixed embedded assets only; no filesystem/static-file or HTML fallback.
         app.MapGet("/dashboard-assets/worker-poc.js", () => Results.Content(ReadWorkerPocAsset("js"), "text/javascript; charset=utf-8"));

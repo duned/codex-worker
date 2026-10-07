@@ -7,7 +7,10 @@ All displayed operational facts and mutations use existing Server APIs. There ar
 no simulated actions, completion flags or new scheduling rules. An explicitly
 isolated [React/Untitled UI Worker detail PoC](server-worker-detail-poc.md) is
 available at `/workers/{id}/poc`; ordinary routes retain the existing frontend.
-The local Worker dashboard and standalone ownership mode are unchanged.
+The local Worker dashboard and standalone ownership mode are unchanged. The
+[single production React package foundation](server-dashboard-react.md) is now
+isolated under `/dashboard-preview`; canonical routes remain legacy-owned until
+the final cutover. Its route/action/API inventory tracks the remaining migration.
 
 ## Presentation and assistants
 

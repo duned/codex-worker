@@ -46,7 +46,22 @@ const { once } = require('node:events');
       assert.equal(response.status, 200);
       assert.ok(await response.text() === fs.readFileSync(path.join(expected, `poc.${extension}`), 'utf8'), `Missing or stale embedded ${extension}`);
     }
+    const preview = await read('/dashboard-preview/workers/fixture-worker?step=preparation&project=fixture-project');
+    assert.equal(preview.status, 200);
+    const previewHtml = await preview.text();
+    assert.equal(previewHtml, fs.readFileSync(path.join(expected, 'preview/index.html'), 'utf8'), 'Stale preview shell.');
+    const manifest = JSON.parse(fs.readFileSync(path.join(expected, 'preview/assets.json'), 'utf8'));
+    for (const asset of manifest) {
+      const response = await read('/dashboard-assets/preview/' + asset.path);
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), fs.readFileSync(path.join(expected, 'preview', asset.path)), `Stale preview asset ${asset.path}`);
+    }
+    for (const resource of ['/dashboard-preview/unknown', '/dashboard-preview/home/extra', '/dashboard-preview/api/v1/workers', '/dashboard-preview/health', '/dashboard-assets/preview/assets/unknown.js'])
+      assert.equal((await read(resource)).status, 404);
+    const previewPost = await fetch(origin + '/dashboard-preview/workers/fixture-worker', { method: 'POST' });
+    assert.equal(previewPost.status, 405);
     assert.ok(!(await (await read('/workers')).text()).includes('/dashboard-assets/worker-poc.'));
+    assert.ok(!(await (await read('/workers')).text()).includes('/dashboard-assets/preview/'));
     assert.equal((await read('/dashboard-assets/unknown.js')).status, 404);
     assert.equal((await read('/api/v1/workers/fixture-worker/diagnostics')).status, 401);
     console.log('Published artifact: current local JS/CSS, isolated React route, API authorization and no Node/npm runtime passed.');

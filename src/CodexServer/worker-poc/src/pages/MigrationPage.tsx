@@ -1,0 +1,12 @@
+import { useLocation } from 'react-router-dom';
+import { canonicalPath, type Section } from '../app/routes';
+import { Button } from '../untitled/components/base/buttons/button';
+import { TableCard } from '../untitled/components/application/table/table';
+export function MigrationPage({ section }: { section: Section }) {
+  const location = useLocation();
+  const title = section.charAt(0).toUpperCase() + section.slice(1);
+  return <TableCard.Root><TableCard.Header title={title} description="Dashboard migration preview" /><div className="space-y-4 p-6">
+    <p>This screen is being migrated. Use the current dashboard for authoritative observations and administration.</p>
+    <Button href={canonicalPath(location.pathname, location.search)} color="secondary">Open {title.toLowerCase()} in current dashboard</Button>
+  </div></TableCard.Root>;
+}

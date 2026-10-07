@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext", "moduleResolution": "Bundler", "jsx": "react-jsx",
+    "strict": true, "noEmit": true, "allowJs": true, "checkJs": false,
+    "skipLibCheck": true, "esModuleInterop": true,
+    "baseUrl": ".", "paths": { "@/*": ["src/untitled/*"] }
+  },
+  "include": ["src/app", "src/pages", "src/features", "src/shared", "vite.config.ts"]
+}

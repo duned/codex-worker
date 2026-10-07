@@ -1,5 +1,9 @@
 # Isolated Worker detail React and Untitled UI proof of concept
 
+The package has been promoted into the [production dashboard foundation](server-dashboard-react.md).
+The historical PoC entry remains during migration; Vite/TypeScript/Router now
+also serve the explicit `/dashboard-preview` entry from this same package.
+
 Open `/workers/{workerId}/poc` with a registered Worker ID. Only this route uses
 this React application; ordinary dashboard routes retain their existing assets
 and implementation. React owns the entire visible screen: product sidebar,
