@@ -297,97 +297,12 @@ test('observation rendering preserves expanded disclosures and summary focus',as
  await s.emit('pagehide');
 });
 
-test('isolated Worker PoC restores the existing session and consumes shared snapshots and read-only diagnostics',async()=>{
- const s=setup('/workers/worker-a/poc');await s.flush();
- assert.equal(s.$('view-workers').hidden,false);
- assert.equal(s.$('worker-poc').hidden,false);
- assert.equal(s.$('worker-detail-panel').hidden,true);
- assert.equal(s.$('worker-admin-panel').hidden,true);
- assert.equal(s.$('view-title').hidden,true);
- assert.equal(s.$('view-context').hidden,true);
- assert.equal(s.$('worker-registration-guidance').hidden,true);
- assert.equal(s.calls.filter(c=>c.path==='/api/v1/administration/session').length,1);
- assert.equal(s.calls.filter(c=>c.path==='/api/v1/events/stream').length,1);
- await s.workersEvent([s.worker]);
- assert.equal(s.pocRenders.at(-1).data[0].workerId,'worker-a');
- await s.poll();
- assert.ok(s.calls.some(c=>c.path==='/api/v1/workers/worker-a/diagnostics'));
- assert.ok(s.calls.some(c=>c.path==='/api/v1/workers/worker-a'));
- assert.ok(!s.calls.some(c=>c.path.endsWith('/credential-access')));
- assert.ok(s.pocUpdates.some(update=>Array.isArray(update.executions)));
- assert.ok(s.pocUpdates.some(update=>update.diagnostics));
- assert.ok(s.pocUpdates.some(update=>Array.isArray(update.nodes)));
- assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
- await s.$('logout').onclick();await s.flush();
- assert.equal(s.$('administration-content').hidden,true);
- assert.equal(s.pocRenders.at(-1).data,null);
- assert.equal([...s.timers.values()].filter(t=>t.delay===5000).length,0);
- await s.emit('pagehide');
-});
-
-test('PoC query context cannot expose the ordinary node administration panel',async()=>{
- const s=setup('/workers/worker-a/poc?step=preparation');await s.flush();
- assert.equal(s.$('worker-poc').hidden,false);
- assert.equal(s.$('node-context').hidden,true);
- await s.emit('pagehide');
-});
-
-test('PoC failed reads clear individual projections and late diagnostics cannot repopulate logout',async()=>{
- const s=setup('/workers/worker-a/poc');await s.flush();s.configured();await s.workersEvent([s.worker]);
- const diagnosticsPath='/api/v1/workers/worker-a/diagnostics',executionsPath='/api/v1/executions?limit=50&offset=0';
- s.held.set(diagnosticsPath,{promise:Promise.resolve({ok:false,status:500})});
- s.held.set(executionsPath,{promise:Promise.resolve({ok:false,status:500})});
- s.rejectNodes();await s.poll();
- assert.ok(s.pocUpdates.some(update=>update.diagnostics===null));
- assert.ok(s.pocUpdates.some(update=>update.executions===null));
- assert.ok(s.pocUpdates.some(update=>update.nodes===null&&update.nodeCommands===null));
- const late=deferred();s.held.set(diagnosticsPath,late);
- const polling=s.poll();await s.flush();await s.$('logout').onclick();await s.flush();
- const updates=s.pocUpdates.length;
- late.resolve({ok:true,status:200,json:async()=>({workerId:'worker-a'})});await polling;
- assert.equal(s.pocUpdates.length,updates);
- assert.ok(s.pocUpdates.some(update=>update.cleared));
- await s.emit('pagehide');
-});
-
-test('PoC exit restores the ordinary page by same-origin navigation and normal pages have no PoC assets',async()=>{
- const s=setup('/workers/worker-a/poc');await s.flush();
- let prevented=false;
- s.documentListeners.get('click')({target:{closest:()=>({href:'https://server.example/workers/worker-a',hasAttribute:()=>false})},button:0,preventDefault(){prevented=true}});
- assert.equal(prevented,true);assert.deepEqual(s.assignments,['/workers/worker-a']);
+// Session/snapshot/action regressions moved to React infrastructure fixtures and
+// the production-bundle PoC review when the legacy owner was removed.
+test('PoC shell has no legacy request owner and ordinary routes retain their own entry',()=>{
+ const poc=readDashboard({workerPoc:true});
+ assert.match(poc,/id="worker-poc"/);
+ assert.match(poc,/src="\/dashboard-assets\/worker-poc.js"/);
+ assert.doesNotMatch(poc,/poc-legacy-owner|codexWorkerPoc|administration-content|dashboard-session|<style>/);
  assert.doesNotMatch(readDashboard(),/src="\/dashboard-assets\/worker-poc|href="\/dashboard-assets\/worker-poc|id="worker-poc"/);
- await s.emit('pagehide');
-});
-
-test('PoC mutations share session CSRF and uncertain responses require explicit refresh without replay',async()=>{
- const s=setup('/workers/worker-a/poc');await s.flush();s.configured();await s.workersEvent([s.worker]);await s.poll();
- const control=()=>s.pocUpdates.filter(update=>update.administration).at(-1).administration;
- const path='/api/v1/workers/worker-a/scheduling-policy';
- s.held.set(path,{promise:Promise.resolve({ok:false,status:500})});
- await control().onAction('Draining');
- const writes=()=>s.calls.filter(call=>call.path===path&&call.options.method==='PUT');
- assert.equal(writes().length,1);
- assert.equal(writes()[0].options.headers.get('X-Codex-CSRF'),'test-csrf');
- assert.equal(writes()[0].options.credentials,'same-origin');
- assert.equal(JSON.parse(writes()[0].options.body).policy,'Draining');
- assert.equal(control().needsRefresh,true);
- await s.poll();await control().onAction('Draining');assert.equal(writes().length,1);
- await control().onRefresh();assert.equal(control().needsRefresh,false);assert.equal(writes().length,1);
- await s.$('logout').onclick();await s.emit('pagehide');
-});
-
-
-test('PoC React session callbacks use the existing login/logout owner and never publish credentials',async()=>{
- const s=setup('/workers/worker-a/poc');await s.flush();
- assert.equal(s.pocSessions.at(-1).authenticated,true);
- await s.pocSessions.at(-1).onSignOut();await s.flush();
- assert.equal(s.pocSessions.at(-1).authenticated,false);
- await s.pocSessions.at(-1).onSignIn('fixture-management-token');await s.flush();
- assert.equal(s.pocSessions.at(-1).authenticated,true);
- const login=s.calls.filter(call=>call.path==='/api/v1/administration/session'&&call.options.method==='POST');
- assert.equal(login.length,1);
- assert.equal(login[0].options.headers.get('Authorization'),'Bearer fixture-management-token');
- assert.equal(s.$('token').value,'');
- assert.ok(s.pocSessions.every(session=>!JSON.stringify(session).includes('fixture-management-token')&&!('csrfToken' in session)));
- await s.emit('pagehide');
 });

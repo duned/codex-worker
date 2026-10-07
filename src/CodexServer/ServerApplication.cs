@@ -991,13 +991,10 @@ public static class ServerApplication
         html = html.Replace("<!-- worker-poc -->", "", StringComparison.Ordinal);
         if (workerPoc)
         {
-            var styleStart = html.IndexOf("<style>", StringComparison.Ordinal);
-            var styleEnd = html.IndexOf("</style>", styleStart, StringComparison.Ordinal);
-            html = html.Remove(styleStart, styleEnd + "</style>".Length - styleStart);
-            html = html.Replace("<body>", "<body><div id=\"worker-poc\"></div><div hidden aria-hidden=\"true\" id=\"poc-legacy-owner\">", StringComparison.Ordinal);
-            html = html.Replace("<!-- dashboard-scripts -->", "</div><!-- dashboard-scripts -->", StringComparison.Ordinal);
-            html = html.Replace("</head>", "<link rel=\"stylesheet\" href=\"/dashboard-assets/worker-poc.css\"></head>", StringComparison.Ordinal);
-            html = html.Replace("<!-- dashboard-scripts -->", "<script src=\"/dashboard-assets/worker-poc.js\"></script><!-- dashboard-scripts -->", StringComparison.Ordinal);
+            return "<!DOCTYPE html><html lang=\"en\" class=\"dark-mode\"><head><meta charset=\"utf-8\">"
+                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Codex Server · Worker</title>"
+                + "<link rel=\"stylesheet\" href=\"/dashboard-assets/worker-poc.css\"></head>"
+                + "<body><div id=\"worker-poc\"></div><script src=\"/dashboard-assets/worker-poc.js\"></script></body></html>";
         }
         var scripts = new StringBuilder();
         foreach (var name in new[] { "dashboard-navigation.js", "dashboard-admin.js" })

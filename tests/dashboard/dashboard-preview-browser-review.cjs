@@ -15,6 +15,9 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     await page.clock.setFixedTime(props.now);
     const errors = [], mutations = [];
     let signedIn = true, workers = props.observations, failWorkers = false;
+    let streamReads = 0;
+    // Return a closed stream; reconnect/fallback ownership is fixture-tested.
+
     let blockedRead = null;
     const readStarted = new Promise(resolve => { blockedRead = { started: resolve, release: null, enabled: false }; });
     page.on('pageerror', error => { errors.push(error.message); });
@@ -35,8 +38,9 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
         return route.fulfill({ status: signedIn ? 200 : 401, json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       }
       assert.equal(request.method(), 'GET', 'Preview never exposes resource mutations.');
+      if (endpoint === '/api/v1/events/stream') { streamReads++; return route.fulfill({ status: 503, body: '' }); }
       const fixtures = {
-        '/api/v1/workers': workers, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects,
+        '/api/v1/nodes/worker-a/commands': props.nodeCommands, '/api/v1/workers': workers, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects,
         '/api/v1/executions': props.executions, '/api/v1/workers/worker-a/diagnostics': props.diagnostics
       };
       if (endpoint === '/api/v1/workers' && blockedRead.enabled) {
@@ -92,6 +96,8 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     assert.equal(await page.getByRole('heading', { name: 'Build Worker North' }).count(), 0);
     assert.deepEqual(mutations, [{ path: '/api/v1/administration/session', method: 'DELETE', csrf: 'fixture-csrf' }]);
     assert.deepEqual(errors, []);
+    assert.ok(streamReads > 0, 'React owns its live subscription.');
+    assert.equal(await page.evaluate(() => !!window.codexWorkerPoc || !!document.getElementById('poc-legacy-owner')), false);
     console.log('Preview browser review passed: desktop/mobile, direct query context, reload/back, theme, failed/deleted resources, logout and no resource mutations.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

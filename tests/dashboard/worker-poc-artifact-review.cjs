@@ -38,7 +38,8 @@ const { once } = require('node:events');
     assert.ok(ready, 'Published Server did not start within 30 seconds.');
     const route = await read('/workers/fixture-worker/poc');
     assert.equal(route.status, 200); const html = await route.text();
-    assert.ok(html.includes('id="worker-poc"') && html.includes('id="poc-legacy-owner"'));
+    assert.ok(html.includes('id="worker-poc"') && !html.includes('id="poc-legacy-owner"'));
+    assert.ok(!html.includes('dashboard-session') && !html.includes('codexWorkerPoc'));
     assert.ok(!html.includes('--ink:#183135'), 'Legacy theme must not ship on the PoC route.');
     for (const extension of ['js', 'css']) {
       assert.ok(html.includes(`/dashboard-assets/worker-poc.${extension}`));

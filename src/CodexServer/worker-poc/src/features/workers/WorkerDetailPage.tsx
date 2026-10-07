@@ -1,21 +1,27 @@
 import { useParams, useLocation } from 'react-router-dom';
 import { WorkerDetail } from '../../detail.jsx';
 import { useApiRead } from '../../shared/api/session';
-import type { WorkerObservation, ProjectSummary, ExecutionSummary, NodeSummary, WorkerDiagnostics } from '../../shared/api/contracts';
+import { commands, workers, nodes as validateNodes, projects as validateProjects, executions as validateExecutions, diagnostics as validateDiagnostics } from '../../shared/api/validation';
+import { useSession } from '../../shared/api/session';
+import type { AdministrationPresentation } from './WorkerPocPage';
 import { canonicalPath } from '../../app/routes';
-export function WorkerDetailPage() {
-  const { resourceId } = useParams();
+export function WorkerDetailPage({ workerId, administration }: { workerId?: string; administration?: AdministrationPresentation } = {}) {
+  const params = useParams();
+  const resourceId = workerId ?? params.resourceId;
+  const session = useSession();
   const location = useLocation();
   if (!resourceId) throw new Error('Worker route ID missing.');
-  const observations = useApiRead<WorkerObservation[]>('/api/v1/workers');
-  const nodes = useApiRead<NodeSummary[]>('/api/v1/nodes');
-  const projects = useApiRead<ProjectSummary[]>('/api/v1/projects');
-  const executions = useApiRead<ExecutionSummary[]>('/api/v1/executions?limit=50');
-  const diagnostics = useApiRead<WorkerDiagnostics>(`/api/v1/workers/${encodeURIComponent(resourceId)}/diagnostics`);
+  const observations = useApiRead('/api/v1/workers', workers);
+  const nodes = useApiRead('/api/v1/nodes', validateNodes);
+  const projects = useApiRead('/api/v1/projects', validateProjects);
+  const executions = useApiRead('/api/v1/executions?limit=50&offset=0', validateExecutions);
+  const diagnostics = useApiRead(`/api/v1/workers/${encodeURIComponent(resourceId)}/diagnostics`, validateDiagnostics);
+  const nodeCommands = useApiRead(`/api/v1/nodes/${encodeURIComponent(resourceId)}/commands`, commands);
   return <div className="space-y-6">
+    <p role="status">{session.live}</p>
     {observations.error && <p role="alert">{observations.error}</p>}
-    <WorkerDetail administrationHref={canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
+    <WorkerDetail administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}
-      nodeCommands={null} loading={!observations.data && !observations.error} now={Date.now()} readOnly />
+      nodeCommands={nodeCommands.data ?? null} loading={!observations.data && !observations.error} now={Date.now()} administration={administration} readOnly={!administration} />
   </div>;
 }

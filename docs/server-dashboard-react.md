@@ -42,17 +42,11 @@ source. The retained PoC `detail.jsx` and `model.js` are reused presentation mod
 further migration should type them alongside their feature work, rather than copy
 them. The compatibility entry `shell.jsx` re-exports the shared TypeScript shell.
 
-The preview restores the existing administration cookie, holds CSRF only in
-memory, clears transient sign-in input, expires sessions, aborts reads on session
-replacement/logout/unmount and discards obsolete route reads. It makes bounded
-read requests on entry, with no polling/SSE or automatic resource mutations yet.
-Reload retrieves current observations; this preview does not claim live updates.
-Resource errors/deletion do not select another ID. Session logout can be explicitly
-retried after a lost response using transient CSRF. Later mutations must preserve
-Server authorization, consent, revision/lease checks and uncertain-response
-reconciliation; they must use managed React Aria dialogs, never native dialogs.
-Existing legacy mutation behavior remains under its existing owner during migration.
-No API contract, scheduling/readiness rule or standalone Worker UI changes here.
+The preview and retained PoC share React-owned administration sessions, validated
+TanStack Query reads, a single Worker SSE stream/fallback refresh owner and Zustand
+theme preferences. See the shared infrastructure contract below. Read-only screens
+present observations; administration actions remain available through explicit links
+to the current dashboard. No backend or standalone Worker API changes are included.
 
 ## Development and validation
 
@@ -140,3 +134,65 @@ restrictions were resolved with permitted tooling access and browser libraries
 and fonts extracted under `/tmp`; no machine packages were installed. Live HTTPS,
 provider actions and real nodes were not exercised. Worker-configured validation
 remains a separate authoritative gate.
+
+## Shared React API, session, live updates and preferences (24.12.2)
+
+Both `/dashboard-preview` and `/workers/{id}/poc` now use the same React-owned
+infrastructure. The PoC response contains only the React mount and local assets;
+it loads no legacy scripts, hidden DOM targets or `window.codexWorkerPoc` bridge.
+Its approved presentation and public Untitled UI source are reused. The PoC
+preserves its scheduling/API-token control rail through React Aria managed
+confirmation dialogs. Preview remains read-only; both entries show bounded node
+command evidence. The current-dashboard link retains full administration. Ordinary
+dashboard routes retain their existing implementation until their feature migration.
+
+`shared/api/client.ts` is the only HTTP transport: native fetch, same-origin
+cookies, no-store, local API paths, bounded request timeout, composed cancellation,
+in-memory CSRF for writes, fixed safe errors and session origin/Host diagnostics.
+Response validators consume unknown JSON and check the existing narrow Server
+projections. New endpoints must supply their own validators; do not use unchecked
+casts in screen components or introduce another client.
+
+`DashboardRuntime` owns each root/tab's session generation, private QueryClient,
+expiration timer, cancellation, mutation fences and live owner. `SessionProvider`
+restores the cookie once, subscribes React to that owner and handles pagehide and
+persisted pageshow. Replacement/logout/rejected authorization/expiry cancels
+requests and stream readers, clears private query and mutation caches, and unmounts
+private forms/drafts. Login input is reset before submission; no authentication
+state, CSRF, token or Server observation enters persistent storage. A lost logout
+response retains only transient CSRF for explicit retry. No login request retries.
+
+Use `useApiRead(path, validator)` for queries. Generation/path query keys isolate
+sessions and deduplicate concurrent observers; unused reads consume Query's abort
+signal. Retries, focus/reconnect refetch and per-query polling are explicitly off.
+One sequential five-second owner refetches active observers, without cancelling or
+duplicating existing reads. Workers use one cancellable fetch SSE reader, with a
+1 MiB event bound, three-second reconnect, fixed unavailable/processing diagnostics,
+and runtime validation. New streams wait for the cancelled reader to release.
+While connected, SSE replaces Worker data and cancels older Worker GETs; fallback
+refresh covers disconnected streams. No component may open its own stream/timer.
+
+Use `useApiMutation` for later feature migrations. It never retries a write and
+requires a fresh uncached authoritative check before submission; the Server remains
+the final authority for authorization, revision, lease, readiness and local consent.
+Callers use `runtime.read` for those checks, not Query cache or refetch status.
+A submitted write with a rejected/lost/malformed response locks its resource. Cache
+updates, SSE, polling and navigation cannot release that fence. Only explicit
+`reconcile` with successful fresh Server evidence releases it; callers must verify
+that evidence establishes the operation outcome. Failed reconciliation preserves
+the lock. No mutation occurs on render, rehydration, navigation or refresh.
+
+`shared/preferences.ts` is the Zustand persist owner. Version 1 allowlists only
+`theme`; writes and rehydration discard other fields. Missing, corrupt or disabled
+storage falls back to dark and still permits changing this visit's theme. Resource
+IDs, filters, pagination, preparation steps and project context remain in the URL.
+Server snapshots, secrets, device codes, credentials, authorization, completion
+flags and drafts must never be added to preferences.
+
+Focused deterministic fixtures in `react-infrastructure.test.cjs` cover session
+races, cache isolation, read cancellation/deduplication, authorization rejection,
+stream release/replacement, poll suspension, response-loss locks, authoritative
+checks, explicit reconciliation, safe diagnostics and preference reload/storage
+failure. Browser review covers the built shared preview at desktop/mobile widths.
+Live HTTPS/provider/node acceptance remains a deployment check, and Worker-run
+validation remains the authoritative gate.

@@ -1,0 +1,23 @@
+import { create } from 'zustand';
+import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
+interface Preferences { theme: 'dark' | 'light'; setTheme(theme: 'dark' | 'light'): void }
+const browserStorage: StateStorage = {
+  getItem: key => { try { return localStorage.getItem(key); } catch { return null; } },
+  setItem: (key, value) => { try { localStorage.setItem(key, value); } catch { /* Visit preference still works. */ } },
+  removeItem: key => { try { localStorage.removeItem(key); } catch { /* Storage unavailable. */ } }
+};
+export function createPreferences(storage: StateStorage = browserStorage) {
+  // Allowlist on both write and rehydration, including untrusted/corrupt storage.
+  const safe: StateStorage = {
+    getItem: key => { try { return storage.getItem(key); } catch { return null; } },
+    setItem: (key, value) => { try { return storage.setItem(key, value); } catch { return; } },
+    removeItem: key => { try { return storage.removeItem(key); } catch { return; } }
+  };
+  return create<Preferences>()(persist(set => ({ theme: 'dark', setTheme: theme => set({ theme }) }), {
+    name: 'codex-dashboard-preferences', version: 1, storage: createJSONStorage(() => safe),
+    migrate: () => ({ theme: 'dark' as const }),
+    partialize: state => ({ theme: state.theme }),
+    merge: (persisted, current) => ({ ...current, theme: persisted && typeof persisted === 'object' && 'theme' in persisted && persisted.theme === 'light' ? 'light' : 'dark' })
+  }));
+}
+export const usePreferences = createPreferences();

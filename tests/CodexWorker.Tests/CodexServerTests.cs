@@ -1457,15 +1457,15 @@ public sealed class CodexServerTests
             using var pocResponse = await client.GetAsync("/workers/worker-a/poc");
             Assert.Equal(HttpStatusCode.OK, pocResponse.StatusCode);
             var poc = await pocResponse.Content.ReadAsStringAsync();
-            Assert.Contains("Administration sign in", poc);
+            Assert.DoesNotContain("administration-login", poc);
             Assert.Contains("id=\"worker-poc\"", poc);
-            Assert.Contains("<div hidden aria-hidden=\"true\" id=\"poc-legacy-owner\">", poc);
+            Assert.DoesNotContain("poc-legacy-owner", poc);
             Assert.DoesNotContain("--ink:#183135", poc);
             Assert.Contains("src=\"/dashboard-assets/worker-poc.js\"", poc);
             Assert.Contains("href=\"/dashboard-assets/worker-poc.css\"", poc);
-            Assert.Contains("/api/v1/events/stream", poc);
+            Assert.DoesNotContain("dashboard-scripts", poc);
             foreach (var (asset, mediaType, content) in new[] {
-                ("js", "text/javascript", "codexWorkerPoc"), ("css", "text/css", "#worker-poc") })
+                ("js", "text/javascript", "/api/v1/events/stream"), ("css", "text/css", "#worker-poc") })
             {
                 using var response = await client.GetAsync($"/dashboard-assets/worker-poc.{asset}");
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);

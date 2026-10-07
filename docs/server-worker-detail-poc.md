@@ -9,9 +9,9 @@ this React application; ordinary dashboard routes retain their existing assets
 and implementation. React owns the entire visible screen: product sidebar,
 responsive navigation, session presentation, Worker heading, summary, current
 execution, recent execution table/list, capabilities and secondary control rail.
-The legacy dashboard theme is removed from the PoC response. Existing DOM targets
-for the shared request owner remain in a hidden, accessibility-hidden container;
-they do not surround the React view or contribute visible UI.
+The legacy dashboard theme is removed from the PoC response. The route now uses the shared React session, query and live-update infrastructure
+without a hidden legacy DOM/request bridge. See
+[shared React infrastructure](server-dashboard-react.md#shared-react-api-session-live-updates-and-preferences-24122).
 
 ## Components and styling
 
@@ -42,15 +42,11 @@ The unused upstream prose typography plugin is omitted.
 
 ## Authoritative data, session and actions
 
-The existing dashboard integration owns the administration cookie/session, CSRF,
-bounded cancellable reads, periodic refresh and single Worker SSE subscription.
-It sends snapshots and callbacks to React; React performs no fetch, polling,
-stream subscription or token storage. Sign-in clears the form before passing the
-transient token to the existing owner. Session presentation receives no CSRF token
-or management credential. Logout clears observations and closes the responsive
-navigation. Obsolete route/session generations cannot publish late private data.
-React escapes resource text; Issue links are canonical HTTPS GitHub Issue URLs
-for the reported number, with no credentials, query or fragment.
+React owns session restoration, CSRF, cancellable validated queries and the single
+Worker SSE/fallback refresh owner. Sign-in clears the form before submitting the
+transient token. Logout clears observations and private caches; obsolete session
+generations cannot publish late private data. Theme persistence allowlists only
+light/dark. React escapes resource text; Issue links remain canonical HTTPS URLs.
 
 Connection, lifecycle, execution prerequisites, scheduling policy and observation
 freshness remain distinct textual observations. Colors indicate their reported
@@ -66,17 +62,15 @@ detection time, operation and pending/latest typed-command evidence. Available
 typed actions are informational; provisioning mutations remain in administration.
 Raw failure details and process output are not displayed.
 
-The control rail uses small secondary Untitled UI buttons and reflows below the
-main content on narrow screens. Activation, drain, deactivation and Worker API-token
-revocation preserve existing native confirmations and Server revalidation.
-Scheduling controls affect new assignments; existing assignments and leases remain.
-Token revocation denies Worker API calls and can let leases expire into recovery;
-it does not revoke credential delivery, node login or provider credentials.
-
-While pending, mutations are disabled. Uncertain/rejected responses require
-**Refresh authoritative state** before controls unlock; periodic observations alone
-cannot unlock them. Failed registry refresh retains the lock. No action is replayed
-automatically. Existing control-owner tests retain all these semantics.
+The control rail preserves activation, drain, deactivation and API-token revocation.
+React Aria confirmation dialogs provide focus containment, Escape dismissal and
+focus restoration, using the shared theme and Untitled UI buttons. A fresh uncached
+registry/readiness check precedes every submission; Server validation still governs
+all effects. Pending writes resist double submission. Rejected, lost or malformed
+responses retain the resource lock across polling and navigation until explicit
+**Refresh authoritative state** succeeds. No write is automatically retried.
+Scheduling and authentication effects remain governed by the existing Server
+contracts; full administration remains linked from the retained route.
 
 ## Honest API limits
 

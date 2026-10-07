@@ -25,3 +25,13 @@ export interface WorkerDiagnostics {
   aiAgentReady: boolean; gitHubReady: boolean; gitReady: boolean;
   configurationSynchronization: string; provisioningState: string;
 }
+export interface WorkerAdministration extends WorkerObservation {
+  authenticationCredentialStatus?: string; authenticationCredentialRevokedAtUtc?: string;
+}
+export interface WorkerReadiness extends WorkerDiagnostics {
+  canActivate?: boolean; activationBlockingReasons?: string[];
+}
+export interface NodeCommandSummary {
+  id: string; createdAtUtc: string; status: string;
+  request: { nodeId: string; capabilityId: string; action: string };
+}
