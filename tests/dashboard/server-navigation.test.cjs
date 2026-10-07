@@ -118,7 +118,7 @@ test('resource context hydrates on session restore, and credential metadata has 
  const s=setup('/projects/project-a?issue=7');s.configured();await s.flush();
  assert.match(s.$('project-detail').innerHTML,/Project A/);assert.match(s.$('project-detail').innerHTML,/Worker A/);assert.match(s.$('github-issue-detail').innerHTML,/Issue/);
  await s.route('/settings/credential-a');assert.equal(s.$('credential-details-dialog').open,true);assert.match(s.$('credential-details').innerHTML,/credential-a/);
- await s.route('/workers/worker-a');assert.equal(s.$('credential-details-dialog').open,false);assert.match(s.$('worker-detail').innerHTML,/Worker A/);assert.match(s.$('worker-admin').innerHTML,/Drain/);
+ await s.route('/workers/worker-a');assert.equal(s.assignments.at(-1),'/workers/worker-a');
  await s.emit('pagehide');
 });
 
@@ -133,7 +133,7 @@ test('a delayed detail response or failure cannot overwrite a new resource conte
 test('selected Server and Worker provisioning stays contextual and navigation rejects malformed resource paths',async()=>{
  const s=setup();s.configured();await s.flush();
  await s.route('/settings?node=server');assert.equal(s.$('node-select').value,'server');assert.equal(s.$('worker-authentication-guidance').hidden,true);assert.equal(s.$('github-connection-panel').scrolled,undefined);assert.match(s.$('node-select').innerHTML,/Server/);assert.doesNotMatch(s.$('node-select').innerHTML,/Worker A/);
- await s.route('/workers/worker-a');assert.equal(s.$('node-select').value,'worker-a');assert.equal(s.$('worker-authentication-guidance').hidden,false);assert.doesNotMatch(s.$('node-select').innerHTML,/>Server/);
+ await s.route('/workers/worker-a');assert.equal(s.assignments.at(-1),'/workers/worker-a');
  await s.route('/workers/%invalid');assert.equal(s.$('view-title').textContent,'Home');
  await s.emit('pagehide');
 });
@@ -186,11 +186,11 @@ test('route cancellation ignores stale shared inventory and command completions 
  const s=setup();await s.flush();s.configured();
  const inventory=deferred(),commands=deferred();s.held.set('/api/v1/nodes',inventory);s.held.set('/api/v1/provisioning/commands',commands);
  await s.route('/settings?node=server');const obsolete=s.calls.filter(c=>s.held.has(c.path)).slice(-2);
- s.held.clear();await s.route('/workers/worker-a');
+ s.held.clear();await s.route('/settings?node=server&refresh=1');
  assert.ok(obsolete.every(c=>c.options.signal.aborted));
  const markup=s.$('node-detail').innerHTML;
  inventory.resolve({ok:true,status:200,json:async()=>[{...s.server,displayName:'obsolete secret'}]});commands.resolve({ok:true,status:200,json:async()=>[]});await s.flush();
- assert.equal(s.$('node-detail').innerHTML,markup);assert.match(markup,/Worker A/);assert.doesNotMatch(s.$('provisioning').innerHTML,/obsolete/);
+ assert.equal(s.$('node-detail').innerHTML,markup);assert.match(markup,/Server/);assert.doesNotMatch(s.$('provisioning').innerHTML,/obsolete/);
  await s.emit('pagehide');
 });
 
@@ -255,7 +255,7 @@ test('Worker-first onboarding remains resumable without a project or scheduling 
  assert.match(s.$('home-next').innerHTML,/Create a project/);
  assert.match(s.$('home-next').innerHTML,/scheduling Disabled/);
  await s.route('/workers/worker-a?step=project');
- assert.match(s.$('worker-detail').innerHTML,/No central project exists/);
+ assert.equal(s.assignments.at(-1),'/workers/worker-a?step=project');
  assert.ok(s.calls.every(c=>!c.options.method||c.options.method==='GET'));
  await s.emit('pagehide');
 });
@@ -264,26 +264,29 @@ test('Worker-first onboarding remains resumable without a project or scheduling 
  const s=setup('/executions?state=Completed&offset=50');await s.flush();
  s.window.scrollY=480;await s.emit('scroll');
  let prevented=false;
- const link={href:'https://server.example/workers/worker-a?step=project',hasAttribute:()=>false};
+ const link={href:'https://server.example/projects/project-a?issue=7',hasAttribute:()=>false};
  s.documentListeners.get('click')({target:{closest:()=>link},button:0,preventDefault(){prevented=true}});await s.flush();
- assert.equal(prevented,true);assert.equal(s.window.location.pathname,'/workers/worker-a');assert.equal(s.window.location.hash,'');assert.equal(s.window.scrollY,0);
+ assert.equal(prevented,true);assert.equal(s.window.location.pathname,'/projects/project-a');assert.equal(s.window.location.hash,'');assert.equal(s.window.scrollY,0);
  s.window.scrollY=320;await s.emit('scroll');await s.poll();assert.equal(s.window.scrollY,320);
  await s.back();assert.equal(s.window.scrollY,480);assert.equal(s.$('execution-state-filter').value,'Completed');
- await s.forward();assert.equal(s.window.scrollY,320);assert.equal(s.window.location.search,'?step=project');
+ await s.forward();assert.equal(s.window.scrollY,320);assert.equal(s.window.location.search,'?issue=7');
  await s.emit('pagehide');
  });
- test('legacy bookmarks normalize once and same-resource step changes preserve scroll and open operations',async()=>{
+ test('legacy Worker bookmarks and resource clicks load the canonical React route without legacy reads',async()=>{
  const s=setup('/#/workers/worker-a?project=project-a&step=preparation');await s.flush();
  assert.equal(s.window.location.pathname,'/workers/worker-a');assert.equal(s.window.location.hash,'');
- s.window.scrollY=230;await s.emit('scroll');s.$('project-dialog').open=true;
+ assert.ok(s.assignments.includes('/workers/worker-a?project=project-a&step=preparation'));
+ assert.ok(!s.calls.some(call=>call.path==='/api/v1/workers/worker-a'));
+ const t=setup('/home');await t.flush();const count=t.calls.length;
  const link={href:'https://server.example/workers/worker-a?project=project-a&step=activation',hasAttribute:()=>false};
- s.documentListeners.get('click')({target:{closest:()=>link},button:0,preventDefault(){}});await s.flush();
- assert.equal(s.window.scrollY,230);assert.equal(s.$('project-dialog').open,true);assert.equal(s.$('worker-admin-panel').hidden,false);
- await s.emit('pagehide');
+ t.documentListeners.get('click')({target:{closest:()=>link},button:0,preventDefault(){}});await t.flush();
+ assert.equal(t.assignments.at(-1),'/workers/worker-a?project=project-a&step=activation');
+ assert.equal(t.window.location.pathname,'/home');assert.equal(t.calls.length,count);
+ await s.emit('pagehide');await t.emit('pagehide');
  });
 
 test('observation rendering preserves expanded disclosures and summary focus',async()=>{
- const s=setup('/workers/worker-a');await s.flush();
+ const s=setup('/projects/project-a');await s.flush();
  // Exercise the actual router primitive with deterministic layout effects.
  const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../../src/CodexServer/dashboard-navigation.js'),'utf8');
  const details={open:true},summary={dataset:{},id:'',getAttribute:()=>null,focus(options){this.focusOptions=options}};
@@ -299,10 +302,8 @@ test('observation rendering preserves expanded disclosures and summary focus',as
 
 // Session/snapshot/action regressions moved to React infrastructure fixtures and
 // the production-bundle PoC review when the legacy owner was removed.
-test('PoC shell has no legacy request owner and ordinary routes retain their own entry',()=>{
- const poc=readDashboard({workerPoc:true});
- assert.match(poc,/id="worker-poc"/);
- assert.match(poc,/src="\/dashboard-assets\/worker-poc.js"/);
- assert.doesNotMatch(poc,/poc-legacy-owner|codexWorkerPoc|administration-content|dashboard-session|<style>/);
- assert.doesNotMatch(readDashboard(),/src="\/dashboard-assets\/worker-poc|href="\/dashboard-assets\/worker-poc|id="worker-poc"/);
+test('retained dashboard has no Worker PoC request bridge or duplicated administration owner',()=>{
+ const html=readDashboard();
+ assert.doesNotMatch(html,/codexWorkerPoc|loadWorkerPoc|publishPocSession|workerPocAdministration/);
+ assert.doesNotMatch(html,/src="\/dashboard-assets\/worker-poc|href="\/dashboard-assets\/worker-poc|id="worker-poc"/);
 });

@@ -40,6 +40,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
       assert.equal(request.method(), 'GET', 'Read-only navigation never submits resource mutations.');
       if (endpoint === '/api/v1/events/stream') { streamReads++; return route.fulfill({ status: 503, body: '' }); }
       const fixtures = {
+        '/api/v1/workers/worker-a': { ...props.observations[0], authenticationCredentialStatus: 'active' }, '/api/v1/workers/worker-a/credential-access': { status: 'active' }, '/api/v1/provisioning': [],
         '/api/v1/nodes/worker-a/commands': props.nodeCommands, '/api/v1/workers': workers, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects,
         '/api/v1/executions': props.executions, '/api/v1/workers/worker-a/diagnostics': props.diagnostics
       };
@@ -55,10 +56,9 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
       await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
       assert.equal(new URL(page.url()).search, '?step=preparation&project=project-a');
       assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), true);
-      assert.equal(await page.getByRole('button', { name: 'Activate scheduling' }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: 'Activate scheduling' }).count(), 1);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No horizontal overflow at ${width}px.`);
-      const legacy = page.getByRole('link', { name: 'Open Worker detail and administration' });
-      assert.equal(await legacy.getAttribute('href'), '/workers/worker-a?step=preparation&project=project-a');
+      assert.equal(await page.getByRole('link', { name: 'Open Worker detail and administration' }).count(), 0);
       if (width === 375) {
         await page.getByRole('button', { name: 'Expand navigation menu' }).click();
         const drawer = page.getByRole('dialog', { name: 'Main navigation' });

@@ -1,10 +1,12 @@
 // Narrow projections of existing Server read contracts. Unused fields are deliberately omitted.
 export interface WorkerObservation {
+  authenticationCredentialStatus?: string; capabilities?: { type: string; name: string; scope?: string; version?: string }[]; workerVersion?: string;
   workerId: string; displayName?: string; availability: string; lifecycleState?: string;
   capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
   activeAssignments?: number; schedulingPolicy?: string; lastHeartbeatAtUtc?: string;
+  platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[];
 }
-export interface ProjectSummary { id: string; name: string; repository: string }
+export interface ProjectSummary { id: string; name: string; repository: string; revision?: number; enabled?: boolean; requirements?: { type: string; name: string; version?: string }[] }
 export interface ExecutionSummary {
   id: string; projectId: string; assignedWorkerId?: string; state: string; createdAtUtc: string;
   currentStage?: string; startedAtUtc?: string; assignedAtUtc?: string; completedAtUtc?: string;
@@ -25,10 +27,11 @@ export interface NodeSummary {
 }
 export interface WorkerDiagnostics {
   aiAgentReady: boolean; gitHubReady: boolean; gitReady: boolean;
-  configurationSynchronization: string; provisioningState: string;
+  configurationSynchronization: string; provisioningState: string; workerVersion?: string; capabilityObservationsCurrent?: boolean; projects?: WorkerProjectReadiness[]; reasons?: string[];
+  recentOperationalError?: string;
 }
 export interface WorkerAdministration extends WorkerObservation {
-  authenticationCredentialStatus?: string; authenticationCredentialRevokedAtUtc?: string;
+  authenticationCredentialRevokedAtUtc?: string;
 }
 export interface WorkerReadiness extends WorkerDiagnostics {
   canActivate?: boolean; activationBlockingReasons?: string[];
@@ -38,8 +41,21 @@ export interface NodeCommandSummary {
   startedAtUtc?: string; deadlineUtc?: string; completedAtUtc?: string;
   publicIdentity?: { publicKey: string; fingerprint: string };
   failureDetail?: { description: string };
+  loginInstructions?: { verificationUri: string; userCode: string };
   request: { nodeId: string; capabilityId: string; action: string };
 }
 
 export interface ServerGitHubConnection { commands: NodeCommandSummary[]; provisioningEnabled: boolean; elevationAllowed: boolean }
 export interface ServerStatus { state: string; version: string; startedAtUtc: string }
+
+export interface WorkerProjectReadiness {
+  projectId: string; projectName: string; isEligible: boolean; missingRequirements: string[];
+  workerReportedRevision?: number; materializationState?: string; diagnosticCode?: string; observationStatus: string;
+}
+export interface DeliveryAuthorization { status: string; revokedAtUtc?: string }
+export interface PairingRequest { contractVersion: 1; workerId: string; operation: 'enroll' | 'associate'; server: string }
+export interface PairingAuthorization { authorization: string; lifetimeSeconds: number }
+export interface ProvisioningPlanSummary {
+  id: string; workerId: string; createdAtUtc: string; state: string; currentActionId?: string;
+  actions: { type: string; name: string; version?: string }[];
+}

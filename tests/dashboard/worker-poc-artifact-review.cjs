@@ -42,7 +42,7 @@ const { once } = require('node:events');
     assert.ok(!html.includes('dashboard-session') && !html.includes('codexWorkerPoc'));
     assert.ok(!html.includes('--ink:#183135'), 'Legacy theme must not ship on the PoC route.');
     for (const extension of ['js', 'css']) {
-      assert.ok(html.includes(`/dashboard-assets/worker-poc.${extension}`));
+      assert.ok(html.includes('/dashboard-assets/preview/'));
       const response = await read(`/dashboard-assets/worker-poc.${extension}`);
       assert.equal(response.status, 200);
       assert.ok(await response.text() === fs.readFileSync(path.join(expected, `poc.${extension}`), 'utf8'), `Missing or stale embedded ${extension}`);
@@ -62,7 +62,7 @@ const { once } = require('node:events');
     const previewPost = await fetch(origin + '/dashboard-preview/workers/fixture-worker', { method: 'POST' });
     assert.equal(previewPost.status, 405);
     assert.ok(!(await (await read('/workers')).text()).includes('/dashboard-assets/worker-poc.'));
-    assert.ok(!(await (await read('/workers')).text()).includes('/dashboard-assets/preview/'));
+    assert.equal(await (await read('/workers')).text(), previewHtml);
     assert.equal((await read('/dashboard-assets/unknown.js')).status, 404);
     assert.equal((await read('/api/v1/workers/fixture-worker/diagnostics')).status, 401);
     console.log('Published artifact: current local JS/CSS, isolated React route, API authorization and no Node/npm runtime passed.');

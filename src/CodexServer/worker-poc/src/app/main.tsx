@@ -10,6 +10,8 @@ import { DashboardRoutes } from './Router';
 import { ErrorBoundary } from './ErrorBoundary';
 import { migrationBase, sections } from './routes';
 import '../poc.css';
+const canonicalWorkers = window.location.pathname === '/workers' || window.location.pathname.startsWith('/workers/');
+const base = canonicalWorkers ? '' : migrationBase;
 const icons = [HomeLine, Folder, Server01, Activity, Settings01];
 function Dashboard() {
   const session = useSession();
@@ -17,14 +19,15 @@ function Dashboard() {
   const location = useLocation();
   useEffect(() => { document.querySelector<HTMLElement>('#poc-content h1')?.focus({ preventScroll: true }); }, [location.pathname]);
   const active = location.pathname.split('/')[1] || 'home';
-  const items = sections.map((section, index) => ({ label: section.charAt(0).toUpperCase() + section.slice(1), href: `${migrationBase}/${section}`, icon: icons[index] }));
+  const items = sections.map((section, index) => ({ label: section.charAt(0).toUpperCase() + section.slice(1), href: `${base}/${section}`, icon: icons[index] }));
   return <RouterProvider navigate={href => {
-    if (href.startsWith(migrationBase + '/') || href === migrationBase) navigate(href.slice(migrationBase.length) || '/');
+    if (base && (href.startsWith(base + '/') || href === base)) navigate(href.slice(base.length) || '/');
+    else if (!base && (href === '/workers' || /^\/workers\/[^/]+(?:\?|$)/.test(href))) navigate(href);
     else window.location.assign(href);
-  }}><Application session={session} navigationItems={items} activeUrl={`${migrationBase}/${active}`} themeControl={<ThemeControl />}>
+  }}><Application session={session} navigationItems={items} activeUrl={`${base}/${active}`} themeControl={<ThemeControl />}>
     <DashboardRoutes />
   </Application></RouterProvider>;
 }
 const element = document.getElementById('worker-poc');
 if (!element) throw new Error('Dashboard mount missing.');
-createRoot(element).render(<ErrorBoundary><BrowserRouter basename={migrationBase}><SessionProvider><Dashboard /></SessionProvider></BrowserRouter></ErrorBoundary>);
+createRoot(element).render(<ErrorBoundary><BrowserRouter basename={base}><SessionProvider><Dashboard /></SessionProvider></BrowserRouter></ErrorBoundary>);

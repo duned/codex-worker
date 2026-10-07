@@ -11,17 +11,18 @@ Open `/dashboard-preview` or `/dashboard-preview/workers/{id}`. The preview has 
 TypeScript application/router boundary, app error boundary, typed session/read
 hooks and page/feature/shared layout. Dark mode is the default; the theme control
 persists only a light/dark preference. Worker detail reuses the fixture-tested PoC
-presentation through a typed boundary. Its control rail is omitted: administration
-uses the current dashboard. Home now renders the operational overview described below.
-Projects and Issue administration now use shared React flows; see the
-[project and Issue parity inventory](server-projects-react.md). Executions now use
-shared React list, detail and recovery controls; see the
-[execution and recovery parity inventory](server-executions-react.md). Remaining lists and
-Settings administration explicitly link to their current implementation
-with the selected resource and query intact.
-These views do not offer simulated observations or unfinished actions. Legacy `/home`,
-resource routes and `/workers/{id}/poc` remain usable; default-route cutover and PoC
-removal belong to 24.12.9.
+presentation through a typed boundary. Workers now includes the control rail, enrollment
+and preparation on preview and canonical routes; see the Worker parity inventory below.
+Home renders the operational overview described below. Projects and Issue administration
+use shared React flows; see the [project and Issue parity inventory](server-projects-react.md).
+Executions use shared React list, detail and recovery controls; see the
+[execution and recovery parity inventory](server-executions-react.md). Settings, credentials
+and Server preparation also have shared React parity; see the
+[Settings parity inventory](server-settings-react.md). These views use reported observations
+and existing Server actions. Legacy `/home` and non-Worker resource routes remain
+legacy-owned. `/workers` and `/workers/{id}` use this shared React application;
+`/workers/{id}/poc` redirects to canonical detail with its query intact. The remaining
+default-route cutover belongs to 24.12.9.
 
 ## Route and migration inventory
 
@@ -41,7 +42,7 @@ cannot receive the shell. The canonical map remains
 | `/settings`, `/settings/{credentialId}` | `node` | Credential metadata, nodes, Server GitHub connection, command history; credential create/replace/assign/revoke and typed provisioning |
 
 `src/app` owns mounting, routes and error handling; `src/pages` owns section pages;
-`src/features/workers` owns Worker presentation; `src/features/projects` owns
+`src/features/workers` owns Worker enrollment, preparation and administration; `src/features/projects` owns
 project configuration and GitHub Issue administration; `src/features/executions`
 owns execution browsing and evidence-based recovery; `src/shared`
 owns the shell, theme and typed API/session hooks. `src/untitled` remains upstream
@@ -49,7 +50,7 @@ source. The retained PoC `detail.jsx` and `model.js` are reused presentation mod
 further migration should type them alongside their feature work, rather than copy
 them. The compatibility entry `shell.jsx` re-exports the shared TypeScript shell.
 
-The preview and retained PoC share React-owned administration sessions, validated
+The preview and canonical Workers share React-owned administration sessions, validated
 TanStack Query reads, a single Worker SSE stream/fallback refresh owner and Zustand
 theme preferences. See the shared infrastructure contract below. Read-only screens
 present observations; administration actions remain available through explicit links
@@ -324,3 +325,54 @@ capabilities/history and credential administration. See the complete
 [Settings parity inventory](server-settings-react.md) for route/action/API coverage,
 transient input handling, authoritative recovery and deterministic review fixtures.
 Canonical cutover remains separate.
+
+## Worker parity inventory (24.12.6)
+
+Canonical `/workers` and `/workers/{id}` promote the accepted detail hierarchy and
+model without a second package, copied detail application or legacy DOM bridge.
+The historical asset entry imports the same application; the historical PoC URL
+redirects. Other canonical sections retain their current implementation until their
+cutover. Navigation within Workers retains the React session/query owner; leaving
+Workers opens the existing resource screen. Unknown paths/methods remain rejected.
+
+| Workflow / evidence | React surface and existing contract |
+| --- | --- |
+| Inventory and detail | Friendly name then secondary ID; independent connection, working state, prerequisites, freshness, this Worker's active/max slots and available capacity. Registry, nodes, diagnostics reads. |
+| Concurrent and recent work | All matching assigned/running requests from latest 50, reported current stage, linked project/Issue/execution; up to 10 actual terminal outcomes. Missing details, timing, titles, stage history and totals are never invented. |
+| New enrollment / safe association | Add Worker shared dialog, pinned public version GET, exact public pairing request and protected authorize POST. Existing-machine instructions retain drain/reconciliation, stopped service, identity/history retention and explicit node consent. |
+| Enrollment resume / acknowledgement | URL `enroll=1`; only a validated public request survives tab reload. Authorization is volatile, hidden by default and cleared at expiry/close. Resume/check progress observes registration, active API authentication and heartbeat before preparation; it never resubmits. |
+| Preparation | URL-addressable registration / preparation / project / activation, preserving `project`; reported version, config sync, service-account Codex/GitHub authentication and preflight. Scoped capabilities, project revision/freshness/requirements and materialization are separate. Missing checkouts stay lazy. |
+| Capability / provisioning | Shared `features/nodes` composition reuses accepted capability cards and typed node history; only advertised allowlisted actions, explicit elevation and repository input, node-local policy, public SSH identities and deadline-bounded device instructions. Same views can be reused in Settings. |
+| Pending / uncertain commands | Fresh uncached node/command checks before writes; response loss fences actions until explicit authoritative refresh. Retained pending/running commands survive navigation/reload. Queued cancellation and expired-running reconciliation use shared dialogs; reconciliation requires explicit verified quiescence. No automatic retry. |
+| Scheduling | Activate / Drain / Deactivate share confirmation dialogs and fresh registry/activation checks. Server validates current ownership/readiness. Existing assignments keep leases; preparation never schedules work. |
+| Revocation | Separate API-token and credential-delivery metadata, endpoints and confirmations. API revocation can expire leases into recovery; delivery revocation stops future delivery without removing delivered credentials or revoking provider-side authorization. |
+| Advanced evidence | Scoped Worker capabilities, platform/registration/active-project observations, diagnostic reasons and operational errors, freshness/version/config, typed command IDs/status/diagnostics and existing legacy plan history remain accessible in disclosures, with an execution recovery link. Process output and private authentication material are excluded. |
+| Session, presentation | Shared CSRF/session cancellation, query/SSE ownership, Untitled UI components/license/tokens, responsive shell, dark default and persistent light/dark preference. No native dialogs or mutations on render/navigation/refresh. |
+
+Focused fixture coverage is in `workers-migration.test.cjs`, existing Worker model /
+render / shared infrastructure tests, and `workers-browser-review.cjs`. The browser
+harness uses production assets and deterministic Server responses at 1280/375px,
+including concurrent slots, empty/history/stale/failed/unavailable states, keyboard
+confirmations, fresh activation rejection, separate delivery revocation, lost
+provisioning responses, reload, queued cancellation, device expiry, quiescence,
+public enrollment resume, theme and sign out. Run after the production build:
+
+```sh
+NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/workers-browser-review.cjs
+```
+
+No backend contract expansion, live provider/node campaign or standalone Worker
+dashboard migration is included. Worker-configured checks remain authoritative.
+
+Local migration validation: the dashboard suite passed (146 tests; obsolete
+legacy PoC controls tests were superseded by production browser/runtime coverage),
+and the final focused contract/render/runtime checks passed (32 tests), the solution built with zero warnings/errors, and 40 focused .NET
+route/enrollment/preparation/diagnostics/scheduling/revocation tests passed.
+Chromium fixture review passed at desktop/mobile widths; screenshots were inspected
+from `/tmp/workers-migration-review`. Initial sandbox npm/NuGet access and browser /
+VSTest process restrictions required approved dependency restore and local process
+access. The resumed review also verified the existing Home `prepare=1` enrollment
+entry and rejected unknown availability or invalid heartbeat as pairing
+acknowledgement. Chromium required the existing temporary font configuration;
+no node or provider was modified. These are local self-checks, not the
+Worker's authoritative configured validation.

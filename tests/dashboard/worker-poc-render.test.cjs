@@ -64,3 +64,11 @@ test('Migration preview reuses Worker presentation without unfinished administra
  assert.ok(!html.includes('Activate scheduling'));
  assert.ok(!html.includes('Revoke Worker API token'));
 });
+
+test('Canonical detail preserves multiple actual slots, linked concurrent stages and independent delivery revocation', () => {
+ const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28' } };
+ const html = render({ observations: [{ ...worker, activeExecutions: 2, availableCapacity: 0 }], executions: [current, second, completed], administration: { worker, delivery: { status: 'active' }, actions: [{ key: 'revoke-delivery', label: 'Revoke delivery authorization', reason: '' }], onAction: () => {}, onRefresh: () => {} } });
+ for (const text of ['2 / 2 active', 'Current executions', 'Validation', 'Codex', 'Issue #28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
+ assert.ok(!html.includes('Detail preview'));
+ assert.ok(!html.includes('Open Worker detail and administration'));
+});

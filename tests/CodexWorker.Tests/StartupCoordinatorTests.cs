@@ -199,4 +199,14 @@ public sealed class StartupCoordinatorTests
         _ => { events.Add($"initialize:{name}"); return Return(initializeError); });
 
     private static Task Return(Exception? exception) => exception is null ? Task.CompletedTask : Task.FromException(exception);
+
+    private sealed class TemporaryHistoryDatabase : IDisposable
+    {
+        private readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"codex-worker-startup-{Guid.NewGuid():N}");
+        public string Path => System.IO.Path.Combine(_directory, "history.db");
+        public void Dispose()
+        {
+            if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
+        }
+    }
 }

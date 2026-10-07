@@ -1,4 +1,12 @@
-# Isolated Worker detail React and Untitled UI proof of concept
+# Accepted Worker detail design and canonical promotion
+
+The accepted design is now canonical at `/workers` and `/workers/{id}`, including
+enrollment, preparation, provisioning and administration. `/workers/{id}/poc`
+redirects with its query context intact. See the complete
+[Worker parity inventory](server-dashboard-react.md#worker-parity-inventory-24126).
+The following PoC description and review evidence document the original accepted
+visual starting point; its isolation and administration links describe that earlier
+stage, not the current routes.
 
 The package has been promoted into the [production dashboard foundation](server-dashboard-react.md).
 The historical PoC entry remains during migration; Vite/TypeScript/Router now

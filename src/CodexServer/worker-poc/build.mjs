@@ -13,6 +13,7 @@ await build({
   bundle: true,
   minify: true,
   format: 'iife',
+  loader: { '.css': 'empty' }, // CSS is compiled once by PostCSS below.
   target: ['es2022'],
   jsx: 'automatic',
   alias: { '@': resolve('src/untitled') },

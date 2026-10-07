@@ -1430,7 +1430,7 @@ public sealed class CodexServerTests
                 Assert.Contains($"href=\"/{view}\"", dashboard);
             Assert.DoesNotContain("src=\"/dashboard-assets/worker-poc.js\"", dashboard);
             Assert.DoesNotContain("href=\"/dashboard-assets/worker-poc.css\"", dashboard);
-            foreach (var path in new[] { "/dashboard-preview", "/dashboard-preview/home",
+            foreach (var path in new[] { "/workers", "/workers/worker-a?step=preparation&project=a", "/dashboard-preview", "/dashboard-preview/home",
                 "/dashboard-preview/projects/a?issue=27&label=review", "/dashboard-preview/workers/worker-a?step=preparation&project=a",
                 "/dashboard-preview/executions/request-a?offset=50", "/dashboard-preview/settings/credential-a" })
             {
@@ -1463,8 +1463,8 @@ public sealed class CodexServerTests
             Assert.Contains("id=\"worker-poc\"", poc);
             Assert.DoesNotContain("poc-legacy-owner", poc);
             Assert.DoesNotContain("--ink:#183135", poc);
-            Assert.Contains("src=\"/dashboard-assets/worker-poc.js\"", poc);
-            Assert.Contains("href=\"/dashboard-assets/worker-poc.css\"", poc);
+            Assert.Contains("/dashboard-assets/preview/", poc);
+            Assert.DoesNotContain("/dashboard-assets/worker-poc.", poc);
             Assert.DoesNotContain("dashboard-scripts", poc);
             Assert.Contains("src=\"/dashboard-assets/preview/assets/theme.js\"", poc);
             Assert.True(poc.IndexOf("assets/theme.js", StringComparison.Ordinal) < poc.IndexOf("rel=\"stylesheet\"", StringComparison.Ordinal));
@@ -1482,10 +1482,16 @@ public sealed class CodexServerTests
                 using var post = await client.PostAsync($"/dashboard-assets/worker-poc.{asset}", null);
                 Assert.Equal(HttpStatusCode.MethodNotAllowed, post.StatusCode);
             }
+            using (var redirectClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri(url) })
+            {
+                using var redirect = await redirectClient.GetAsync("/workers/worker-a/poc?step=project&project=a");
+                Assert.Equal(HttpStatusCode.Redirect, redirect.StatusCode);
+                Assert.Equal("/workers/worker-a?step=project&project=a", redirect.Headers.Location?.OriginalString);
+            }
             using var pocPost = await client.PostAsync("/workers/worker-a/poc", null);
             Assert.Equal(HttpStatusCode.MethodNotAllowed, pocPost.StatusCode);
             foreach (var path in new[] { "/home", "/projects", "/projects/missing?label=review",
-                "/workers/worker-a?step=preparation", "/executions/request-a?offset=50", "/settings/credential-a" })
+                "/executions/request-a?offset=50", "/settings/credential-a" })
             {
                 using var deepLink = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.OK, deepLink.StatusCode);

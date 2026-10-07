@@ -13,8 +13,10 @@ function optional(item: Record<string, unknown>, strings: string[] = [], boolean
 }
 function validateWorker(value: unknown) {
   const item = fields(value, ['workerId', 'availability']);
-  optional(item, ['displayName', 'lifecycleState', 'schedulingPolicy', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc'], [],
+  optional(item, ['workerVersion', 'displayName', 'lifecycleState', 'schedulingPolicy', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc', 'platform', 'firstRegisteredAtUtc'], [],
     ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments']);
+  if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version']); }); }
+  if (item.activeProjects != null) stringList(item.activeProjects);
 }
 function fields(value: unknown, strings: string[], booleans: string[] = []) {
   const item = record(value);
@@ -28,7 +30,8 @@ function list<T>(validate: (value: unknown) => void): Validator<T[]> {
   };
 }
 export const workers = list<WorkerObservation>(value => { validateWorker(value); });
-export const projects = list<ProjectSummary>(value => { fields(value, ['id', 'name', 'repository']); });
+export const projects = list<ProjectSummary>(value => { const item = fields(value, ['id', 'name', 'repository']); optional(item, [], ['enabled'], ['revision']);
+  if (item.requirements != null) { if (!Array.isArray(item.requirements)) throw new Error('Invalid requirements.'); item.requirements.forEach(value => { optional(fields(value, ['type', 'name']), ['version']); }); } });
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
   optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary'], [], ['durationMilliseconds']);
@@ -50,7 +53,12 @@ export const nodes = list<NodeSummary>(value => {
 });
 export const diagnostics: Validator<WorkerDiagnostics> = value => {
   const item = fields(value, ['configurationSynchronization', 'provisioningState'], ['aiAgentReady', 'gitHubReady', 'gitReady']);
-  optional(item, [], ['canActivate']);
+  optional(item, ['workerVersion', 'recentOperationalError'], ['canActivate', 'capabilityObservationsCurrent']);
+  if (item.projects != null) {
+    if (!Array.isArray(item.projects)) throw new Error('Invalid project readiness.');
+    item.projects.forEach(value => { const project = fields(value, ['projectId', 'projectName', 'observationStatus'], ['isEligible']); optional(project, ['materializationState', 'diagnosticCode'], [], ['workerReportedRevision']); stringList(project.missingRequirements); });
+  }
+  if (item.reasons != null) stringList(item.reasons);
   if (item.activationBlockingReasons != null && (!Array.isArray(item.activationBlockingReasons) || item.activationBlockingReasons.some(value => typeof value !== 'string'))) throw new Error('Invalid reasons.');
   if (item.latestProvisioningOperation != null) optional(record(item.latestProvisioningOperation), ['action', 'status']);
   return value as WorkerDiagnostics;
@@ -64,11 +72,13 @@ export function sessionDocument(value: unknown) {
 export const worker: Validator<import('./contracts').WorkerAdministration> = value => {
   validateWorker(value); return value as import('./contracts').WorkerAdministration;
 };
-// Project only safe metadata: device instructions must never enter the query cache.
+// Server commands project safe metadata only; Worker commands retain validated
+// short-lived device instructions for their node-scoped preparation view.
 export const command: Validator<import('./contracts').NodeCommandSummary> = value => {
   const item = fields(value, ['id', 'createdAtUtc', 'status']);
   const request = fields(item.request, ['nodeId', 'capabilityId', 'action']);
   optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc']);
+  if (item.loginInstructions != null) fields(item.loginInstructions, ['verificationUri', 'userCode']);
   let failureDetail;
   if (item.failureDetail != null) {
     const failure = fields(item.failureDetail, ['description']);
@@ -80,6 +90,7 @@ export const command: Validator<import('./contracts').NodeCommandSummary> = valu
     const identity = fields(item.publicIdentity, ['publicKey', 'fingerprint']);
     publicIdentity = { publicKey: String(identity.publicKey), fingerprint: String(identity.fingerprint) };
   }
+  if (request.nodeId !== 'server') return value as import('./contracts').NodeCommandSummary;
   return { id: String(item.id), createdAtUtc: String(item.createdAtUtc), status: String(item.status),
     request: { nodeId: String(request.nodeId), capabilityId: String(request.capabilityId), action: String(request.action) },
     diagnostic: typeof item.diagnostic === 'string' ? item.diagnostic : undefined,
@@ -99,3 +110,19 @@ export const serverStatus: Validator<import('./contracts').ServerStatus> = value
   fields(value, ['state', 'version', 'startedAtUtc']);
   return value as import('./contracts').ServerStatus;
 };
+
+function stringList(value: unknown) { if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error('Invalid string list.'); }
+export const deliveryAuthorization: Validator<import('./contracts').DeliveryAuthorization> = value => {
+  optional(fields(value, ['status']), ['revokedAtUtc']); return value as import('./contracts').DeliveryAuthorization;
+};
+export const pairingAuthorization: Validator<import('./contracts').PairingAuthorization> = value => {
+  const item = fields(value, ['authorization']);
+  if (!item.authorization || typeof item.lifetimeSeconds !== 'number' || !Number.isInteger(item.lifetimeSeconds) || item.lifetimeSeconds < 1 || item.lifetimeSeconds > 900) throw new Error('Invalid authorization lifetime.');
+  return value as import('./contracts').PairingAuthorization;
+};
+export const version: Validator<{ version: string }> = value => { fields(value, ['version']); return value as { version: string }; };
+export const provisioningPlans = list<import('./contracts').ProvisioningPlanSummary>(value => {
+  const item = fields(value, ['id', 'workerId', 'createdAtUtc', 'state']); optional(item, ['currentActionId']);
+  if (!Array.isArray(item.actions)) throw new Error('Invalid plan actions.');
+  item.actions.forEach(value => { optional(fields(value, ['type', 'name']), ['version']); });
+});

@@ -114,10 +114,14 @@ test('Query deduplicates observers, cancels unused reads, and never retries reje
   } finally { s.runtime.dispose(); }
 });
 test('one stream validates snapshots, releases reader on page suspension and serializes replacements', async () => {
-  const s = setup(); let streamController, cancelled = 0;
+  const s = setup(); let streamController, cancelled = 0, unsubscribe;
   try {
     await s.runtime.session('GET'); await flush();
     assert.equal(s.streamRequests.length, 1);
+    // Observe the snapshot like a mounted Worker screen. An unobserved query
+    // intentionally has gcTime: 0 and can disappear before a setImmediate.
+    const observer = new QueryObserver(s.runtime.queries, { queryKey: queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers'), enabled: false });
+    unsubscribe = observer.subscribe(() => {});
     s.streamRequests[0].resolve(new Response(new ReadableStream({ start(controller) { streamController = controller; }, cancel() { cancelled++; } })));
     await flush();
     streamController.enqueue(new TextEncoder().encode('event: workers\ndata: [{"workerId":"worker-a","availability":"Available"}]\n\n'));
@@ -130,7 +134,7 @@ test('one stream validates snapshots, releases reader on page suspension and ser
     await s.runtime.session('GET'); await flush();
     assert.equal(s.streamRequests.length, 2);
     assert.equal(s.streamRequests[0].options.signal.aborted, true);
-  } finally { s.runtime.dispose(); }
+  } finally { unsubscribe?.(); s.runtime.dispose(); }
 });
 test('single fallback poll owner ends on suspension; disconnected streams do not cause overlapping reads', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -236,9 +240,16 @@ test('existing public Server status is a narrow local read exception, never a wr
   const signal = new AbortController().signal;
   await client.request('/api/status', { signal }, value => value);
   assert.deepEqual(calls, [{ path: '/api/status', method: 'GET' }]);
-  for (const path of ['/api/status?redirect=1', '/api/status#fragment', '/api/version', '//external.test/api/status']) {
+  for (const path of ['/api/status?redirect=1', '/api/status#fragment', '/api/version?redirect=1', '//external.test/api/status']) {
     await assert.rejects(client.response(path, { signal }), /Unsupported API path/);
   }
   await assert.rejects(client.response('/api/status', { signal, method: 'POST' }), /Unsupported API path/);
   assert.equal(calls.length, 1);
+});
+
+test('pinned enrollment release uses the existing public version GET without broadening public API writes', async () => {
+  const http = new HttpClient(async () => Response.json({ version: '0.15.0' }));
+  const signal = new AbortController().signal;
+  assert.deepEqual(await http.request('/api/version', { signal }, value => value), { version: '0.15.0' });
+  await assert.rejects(http.request('/api/version', { signal, method: 'POST' }, value => value), /Unsupported API path/);
 });

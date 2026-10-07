@@ -6,7 +6,6 @@ const navigation=createDashboardNavigation({document,window,onRoute:applyRoute,i
 async function applyRoute(route,previous){
  const reads=[],read=promise=>reads.push(promise),changed=!previous||previous.view!==route.view||previous.id!==route.id;
  cancelDashboardReads();
- if(route.poc){window.codexWorkerPoc?.render(null,true);read(loadWorkerPoc(route.id))}
  // Restart route observations after obsolete readers are cancelled. In-flight reads coalesce.
  read(loadProjects());read(loadNodes());read(loadOverview());
  $('github-provisioning-consent').checked=false;$('github-elevation-consent').checked=false;
@@ -69,17 +68,13 @@ async function loadProjectDiscoveryObservation(projectId){
  }catch(e){if(!navigation.isCurrent(context)||navigation.current().id!==projectId)return;target.textContent='Current queue observation is unavailable. Refresh project executions; discovery-cycle details are not exposed here. '+e.message}
 }
 function resetResources(){
- workerPocAdministration=null;++workerPocReadGeneration;
- window.codexWorkerPoc?.render(null);
  clearTimeout(githubChallengeTimer);githubChallengeTimer=null;
  $('project-result').hidden=true;
- window.codexWorkerPoc?.clear?.();
  workers=[];projects=[];nodes=[];nodeCommands=[];serverGitHub=null;nodeSnapshotValid=false;
  $('github-provisioning-consent').checked=false;$('github-elevation-consent').checked=false;
  for(const id of ['workers','projects','credentials','executions','provisioning','node-detail','github-connection'])$(id).innerHTML='<div class="empty">Waiting for current Server state…</div>';
 }
 function invalidateWorkers(){
- window.codexWorkerPoc?.render(null);
  navigation.observe('workers',null);
  document.querySelectorAll('[data-worker-policy="Enabled"]').forEach(button=>button.disabled=true);
  for(const id of ['worker-count','capacity-total','capacity-used'])$(id).textContent='—';
@@ -89,72 +84,7 @@ function invalidateWorkers(){
 }
 function executionFilterRoute(offset=0){navigation.navigate('executions','',{project:$('execution-project-filter').value,state:$('execution-state-filter').value,issue:$('execution-issue-filter').value,offset});}
 /* dashboard-session */
-function renderWorkers(data){window.codexWorkerPoc?.render(data);workerObservationGeneration++;workers=data;navigation.observe('workers',data);renderProjectContext();const online=data.filter(w=>w.availability==='online').length,stale=data.filter(w=>w.availability==='stale').length,offline=data.filter(w=>w.availability==='offline').length;const total=data.reduce((n,w)=>n+w.maximumCapacity,0),used=data.reduce((n,w)=>n+w.activeExecutions,0),free=data.reduce((n,w)=>n+w.availableCapacity,0);$('worker-count').textContent=data.length;$('worker-health').textContent=`${online} online · ${stale} stale · ${offline} offline`;$('capacity-total').textContent=total;$('capacity-used').textContent=used;$('capacity-free').textContent=`Available ${free}`;navigation.updateRows($('workers'),data.length?data.map(w=>`<button class="row" data-worker="${esc(w.workerId)}" style="width:100%;border-left:0;border-right:0;border-top:0;text-align:left;background:transparent;cursor:pointer"><span><span class="primary">${esc(w.displayName)}</span><span class="sub">${esc(w.workerId)} · v${esc(w.workerVersion)}</span><span class="sub">${w.activeExecutions}/${w.maximumCapacity} active · policy ${esc(w.schedulingPolicy.toLowerCase())} · last seen ${esc(new Date(w.lastSeenAtUtc).toLocaleString())}</span></span><span class="badge ${esc(w.availability)}">${esc(w.availability)}</span></button>`).join(''):'<div class="empty">No Workers have registered yet.</div>');document.querySelectorAll('[data-worker]').forEach(el=>el.addEventListener('click',()=>{navigation.navigate('workers',el.dataset.worker)}));}
-// The PoC shares the session, request and polling owner; React only presents callbacks.
-let workerPocAdministration=null,workerPocReadGeneration=0;
-const workerPocActions=[
- {key:'Enabled',label:'Activate scheduling'},
- {key:'Draining',label:'Drain worker'},
- {key:'Disabled',label:'Deactivate'},
- {key:'revoke-api',label:'Revoke Worker API token'}
-];
-function workerPocActionReason(state,key){
- if(state.pending)return 'An administration operation is pending. Wait for its response.';
- if(state.needsRefresh)return 'Refresh authoritative state before another action. The previous operation will not be resubmitted.';
- if(!state.worker)return 'Current registry state unavailable. Refresh to recover it.';
- if(key==='revoke-api')return state.worker.authenticationCredentialStatus==='active'?'':'No active Worker API token is registered.';
- if(state.worker.schedulingPolicy===key)return 'This scheduling policy is already applied.';
- if(key==='Enabled'&&state.diagnostics?.canActivate!==true)return 'Activation blocked: '+(state.diagnostics?.activationBlockingReasons?.length?state.diagnostics.activationBlockingReasons.join('; '):'Readiness evidence unavailable.');
- return '';
-}
-function publishWorkerPocAdministration(){
- const state=workerPocAdministration;
- if(!state)return;
- window.codexWorkerPoc?.update?.({administration:{
-  worker:state.worker,pending:state.pending,needsRefresh:state.needsRefresh,message:state.message,
-  actions:workerPocActions.map(action=>({...action,reason:workerPocActionReason(state,action.key)})),
-  onAction:key=>runWorkerPocAction(state.id,key),onRefresh:()=>loadWorkerPoc(state.id,true)
- }});
-}
-async function loadWorkerPoc(id,reconcile=false){
- const context=navigation.capture(),generation=++workerPocReadGeneration;
- if(!workerPocAdministration||workerPocAdministration.id!==id)workerPocAdministration={id,worker:null,diagnostics:null,pending:false,needsRefresh:false,message:''};
- const state=workerPocAdministration;
- try{
-  const [registry,readiness]=await Promise.allSettled([api('/api/v1/workers/'+encodeURIComponent(id)),api('/api/v1/workers/'+encodeURIComponent(id)+'/diagnostics')]);
-  if(generation!==workerPocReadGeneration||!navigation.isCurrent(context)||!authenticated)return;
-  if(registry.status!=='fulfilled')throw Error('Registry state unavailable.');
-  state.worker=registry.value;state.diagnostics=readiness.status==='fulfilled'?readiness.value:null;
-  if(reconcile&&!state.pending){state.needsRefresh=false;state.message='Authoritative state refreshed. Review the observed policy and token state before confirming any further action.'}
-  window.codexWorkerPoc?.update?.({diagnostics:state.diagnostics});publishWorkerPocAdministration();
- }catch{
-  if(generation!==workerPocReadGeneration||!navigation.isCurrent(context)||!authenticated)return;
-  state.worker=null;state.diagnostics=null;
-  state.message='Administration evidence unavailable. Check your session and connection, then refresh. No operation has been resubmitted.';
-  window.codexWorkerPoc?.update?.({diagnostics:null});publishWorkerPocAdministration();
- }
-}
-async function runWorkerPocAction(id,key){
- const state=workerPocAdministration,context=navigation.capture(),session=sessionGeneration;
- if(!authenticated||!state||state.id!==id||!workerPocActions.some(action=>action.key===key)||workerPocActionReason(state,key))return;
- const effect=key==='revoke-api'?'Revoke Worker API authentication? Calls using this token will be denied and active leases may expire into recovery. Credential-delivery authorization and provider credentials are unchanged.':`${workerPocActions.find(action=>action.key===key).label}? This affects new assignments only. Existing assignments and leases are not cancelled. Server validation still applies.`;
- if(!confirm(effect)||!navigation.isCurrent(context)||!authenticated)return;
- state.pending=true;state.message='Administration operation pending. Do not submit another action.';
- ++workerPocReadGeneration;publishWorkerPocAdministration();
- try{
-  const base='/api/v1/workers/'+encodeURIComponent(id);
-  await api(key==='revoke-api'?base+'/authentication/revoke':base+'/scheduling-policy',key==='revoke-api'?{method:'POST'}:{method:'PUT',body:JSON.stringify({policy:key})});
-  if(session!==sessionGeneration||!navigation.isCurrent(context)||!authenticated)return;
-  state.pending=false;state.needsRefresh=true;state.message='Operation accepted. Refreshing authoritative state…';
-  await loadWorkerPoc(id,true);
-  if(navigation.isCurrent(context)&&authenticated)await loadOverview();
- }catch(e){
-  if(session!==sessionGeneration||!navigation.isCurrent(context)||!authenticated)return;
-  state.pending=false;state.needsRefresh=true;state.worker=null;state.diagnostics=null;
-  state.message=e.httpStatus===409?'The Server rejected activation because current preparation evidence blocks it. Refresh authoritative state to see current readiness reasons before retrying.':e.httpStatus===404?'The Worker is unavailable or deleted. Refresh authoritative state or return to the Worker inventory.':'The operation was rejected or its result could not be confirmed. Check your session and connection, then refresh authoritative state and readiness evidence. Do not repeat the operation blindly.';
-  publishWorkerPocAdministration();
- }
-}
+function renderWorkers(data){workerObservationGeneration++;workers=data;navigation.observe('workers',data);renderProjectContext();const online=data.filter(w=>w.availability==='online').length,stale=data.filter(w=>w.availability==='stale').length,offline=data.filter(w=>w.availability==='offline').length;const total=data.reduce((n,w)=>n+w.maximumCapacity,0),used=data.reduce((n,w)=>n+w.activeExecutions,0),free=data.reduce((n,w)=>n+w.availableCapacity,0);$('worker-count').textContent=data.length;$('worker-health').textContent=`${online} online · ${stale} stale · ${offline} offline`;$('capacity-total').textContent=total;$('capacity-used').textContent=used;$('capacity-free').textContent=`Available ${free}`;navigation.updateRows($('workers'),data.length?data.map(w=>`<button class="row" data-worker="${esc(w.workerId)}" style="width:100%;border-left:0;border-right:0;border-top:0;text-align:left;background:transparent;cursor:pointer"><span><span class="primary">${esc(w.displayName)}</span><span class="sub">${esc(w.workerId)} · v${esc(w.workerVersion)}</span><span class="sub">${w.activeExecutions}/${w.maximumCapacity} active · policy ${esc(w.schedulingPolicy.toLowerCase())} · last seen ${esc(new Date(w.lastSeenAtUtc).toLocaleString())}</span></span><span class="badge ${esc(w.availability)}">${esc(w.availability)}</span></button>`).join(''):'<div class="empty">No Workers have registered yet.</div>');document.querySelectorAll('[data-worker]').forEach(el=>el.addEventListener('click',()=>{navigation.navigate('workers',el.dataset.worker)}));}
 function workerPreparation(w,d){
  const current=w.availability==='online'&&d.configurationSynchronization==='synchronized'&&d.capabilityObservationsCurrent;
  const evidence=ready=>current&&ready?'Worker-reported evidence':'Unavailable or unverified';
@@ -196,7 +126,7 @@ async function showCredential(id){const context=navigation.capture();try{const c
 function openCredentialDialog(id='',provider='',type=''){const replacing=!!id;$('credential-dialog-title').textContent=replacing?'Replace credential secret':'Add Server-managed credential';$('credential-id').value=id;$('credential-label-fields').hidden=replacing;$('credential-provider').value=provider;$('credential-type').value=type;$('credential-secret').value='';$('credential-form-error').hidden=true;$('credential-dialog').showModal()}
 async function assignCredential(id){const context=navigation.capture();const select=$('credential-worker-'+id);if(!select||!select.value){$('credential-message').textContent='Select a Worker before assigning this credential.';$('credential-message').hidden=false;return}try{await api('/api/v1/credentials/'+encodeURIComponent(id)+'/assignment',{method:'PUT',body:JSON.stringify({workerId:select.value})});if(!navigation.isCurrent(context))return;await loadCredentials()}catch(e){if(!navigation.isCurrent(context))return;$('credential-message').textContent=e.message;$('credential-message').hidden=false}}
 async function revokeCredential(id){const context=navigation.capture();if(!confirm('Revoke this Server credential? Future delivery will stop; provider-side authorization is unchanged.'))return;try{await api('/api/v1/credentials/'+encodeURIComponent(id)+'/revoke',{method:'POST'});if(!navigation.isCurrent(context))return;await loadCredentials()}catch(e){if(!navigation.isCurrent(context))return;$('credential-message').textContent=e.message;$('credential-message').hidden=false}}
-async function loadProjects(){const context=navigation.capture();if(!authenticated)return;const target=$('project-error');target.hidden=true;try{const firstLoad=projects.length===0;const items=await api('/api/v1/projects');if(!navigation.isCurrent(context))return;projects=items;window.codexWorkerPoc?.update?.({projects});navigation.observe('projects',projects);if(navigation.current().view==='projects'){populateGithubProjects();$('github-project').value=navigation.current().id||projects[0]?.id||'';renderProjectContext();if(firstLoad&&projects.some(p=>p.id===navigation.current().id)){if(navigation.current().params.get('issues')==='1')loadGithubIssues();if(navigation.current().params.get('issue'))showGithubIssue(Number(navigation.current().params.get('issue')))}}$('project-count').textContent=projects.length;navigation.updateRows($('projects'),projects.length?projects.map(p=>`<div class="row"><span><a class="primary" href="/projects/${encodeURIComponent(p.id)}">${esc(p.name)}</a><span class="sub"> ${p.enabled?'Enabled':'Disabled'}</span><span class="sub">${esc(p.repository)} · ${esc(p.defaultBranch)} · revision ${p.revision}</span><span class="sub">${esc(p.description||'No description')}</span></span><span class="project-actions"><button class="button" data-edit="${esc(p.id)}">Edit</button><button class="button" data-lifecycle="${esc(p.id)}" data-enabled="${p.enabled?'false':'true'}">${p.enabled?'Disable':'Enable'}</button><button class="button danger" data-delete="${esc(p.id)}">Delete</button></span></div>`).join(''):'<div class="empty">No central projects registered.</div>');document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editProject(b.dataset.edit));document.querySelectorAll('[data-lifecycle]').forEach(b=>b.onclick=()=>updateProjectLifecycle(b.dataset.lifecycle,b.dataset.enabled==='true'));document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteProject(b.dataset.delete))}catch(e){if(!navigation.isCurrent(context)||e.name==='AbortError'||e.message==='Administration session ended.')return;navigation.observe('projects',null);window.codexWorkerPoc?.update?.({projects:null});target.textContent=e.message;target.hidden=false;$('projects').innerHTML='<div class="empty">Central project configuration could not be loaded.</div>';$('project-count').textContent='—'}}
+async function loadProjects(){const context=navigation.capture();if(!authenticated)return;const target=$('project-error');target.hidden=true;try{const firstLoad=projects.length===0;const items=await api('/api/v1/projects');if(!navigation.isCurrent(context))return;projects=items;navigation.observe('projects',projects);if(navigation.current().view==='projects'){populateGithubProjects();$('github-project').value=navigation.current().id||projects[0]?.id||'';renderProjectContext();if(firstLoad&&projects.some(p=>p.id===navigation.current().id)){if(navigation.current().params.get('issues')==='1')loadGithubIssues();if(navigation.current().params.get('issue'))showGithubIssue(Number(navigation.current().params.get('issue')))}}$('project-count').textContent=projects.length;navigation.updateRows($('projects'),projects.length?projects.map(p=>`<div class="row"><span><a class="primary" href="/projects/${encodeURIComponent(p.id)}">${esc(p.name)}</a><span class="sub"> ${p.enabled?'Enabled':'Disabled'}</span><span class="sub">${esc(p.repository)} · ${esc(p.defaultBranch)} · revision ${p.revision}</span><span class="sub">${esc(p.description||'No description')}</span></span><span class="project-actions"><button class="button" data-edit="${esc(p.id)}">Edit</button><button class="button" data-lifecycle="${esc(p.id)}" data-enabled="${p.enabled?'false':'true'}">${p.enabled?'Disable':'Enable'}</button><button class="button danger" data-delete="${esc(p.id)}">Delete</button></span></div>`).join(''):'<div class="empty">No central projects registered.</div>');document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editProject(b.dataset.edit));document.querySelectorAll('[data-lifecycle]').forEach(b=>b.onclick=()=>updateProjectLifecycle(b.dataset.lifecycle,b.dataset.enabled==='true'));document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteProject(b.dataset.delete))}catch(e){if(!navigation.isCurrent(context)||e.name==='AbortError'||e.message==='Administration session ended.')return;navigation.observe('projects',null);target.textContent=e.message;target.hidden=false;$('projects').innerHTML='<div class="empty">Central project configuration could not be loaded.</div>';$('project-count').textContent='—'}}
 /* dashboard-executions */
 /* dashboard-issues */
 /* dashboard-onboarding */

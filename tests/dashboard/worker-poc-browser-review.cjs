@@ -1,9 +1,8 @@
-// Production PoC review with Server-shaped fixtures; no legacy request bridge.
+// Accepted design regression review on canonical Workers with Server-shaped fixtures; no legacy request bridge.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { readDashboard } = require('./server-dashboard-source.cjs');
 const { props } = require('./worker-poc-fixtures.cjs');
 const output = path.resolve(process.argv[2] || '/tmp/codex-worker-poc-review');
 const assets = path.resolve('src/CodexServer/obj/worker-poc');
@@ -33,9 +32,8 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
     const registry = () => ({ ...props.observations[0], schedulingPolicy: policy, authenticationCredentialStatus: 'active' });
     await page.route('https://worker.test/**', async route => {
       const request = route.request(), endpoint = new URL(request.url()).pathname;
-      if (endpoint === '/dashboard-assets/preview/assets/theme.js') return route.fulfill({ path: path.join(assets, 'preview/assets/theme.js'), contentType: 'text/javascript' });
-      if (endpoint.startsWith('/dashboard-assets/')) return route.fulfill({ path: path.join(assets, endpoint.endsWith('.js') ? 'poc.js' : 'poc.css'), contentType: endpoint.endsWith('.js') ? 'text/javascript' : 'text/css' });
-      if (endpoint === '/workers/worker-a/poc') return route.fulfill({ body: readDashboard({ workerPoc: true }), contentType: 'text/html' });
+      if (endpoint.startsWith('/dashboard-assets/preview/')) return route.fulfill({ path: path.join(assets, 'preview', endpoint.slice('/dashboard-assets/preview/'.length)), contentType: endpoint.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      if (endpoint === '/workers/worker-a') return route.fulfill({ path: path.join(assets, 'preview/index.html'), contentType: 'text/html' });
       if (endpoint === '/api/v1/administration/session') {
         if (request.method() === 'DELETE') { signedIn = false; return route.fulfill({ status: 204 }); }
         if (request.method() === 'POST') { assert.equal(request.headers().authorization, 'Bearer fixture-token'); signedIn = true; }
@@ -50,13 +48,13 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
         if (loseResponse) { writeStarted(); await new Promise(resolve => { releaseWrite = resolve; }); }
         return route.fulfill({ status: loseResponse ? 503 : 200, json: registry() });
       }
-      const fixtures = { '/api/v1/workers': empty ? [] : [registry()], '/api/v1/workers/worker-a': registry(),
+      const fixtures = { '/api/v1/workers/worker-a/credential-access': { status: 'active' }, '/api/v1/provisioning': [], '/api/v1/workers': empty ? [] : [registry()], '/api/v1/workers/worker-a': registry(),
         '/api/v1/workers/worker-a/diagnostics': { ...props.diagnostics, canActivate, activationBlockingReasons: canActivate ? [] : ['Current readiness unavailable'] },
         '/api/v1/nodes/worker-a/commands': commands, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects, '/api/v1/executions': empty ? [] : props.executions };
       assert.ok(Object.hasOwn(fixtures, endpoint), `Unexpected API: ${endpoint}`);
       return route.fulfill({ json: fixtures[endpoint] });
     });
-    const url = 'https://worker.test/workers/worker-a/poc?step=preparation&project=project-a';
+    const url = 'https://worker.test/workers/worker-a?step=preparation&project=project-a';
     for (const theme of ['dark', 'light']) for (const width of [1280, 375, 640]) {
       await page.setViewportSize({ width, height: 900 }); await page.goto(url);
       await page.evaluate(theme => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme } })), theme);
@@ -89,6 +87,7 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
     await page.evaluate(() => localStorage.removeItem('codex-dashboard-preferences')); await page.reload();
     await page.setViewportSize({ width: 1280, height: 900 });
     // Cache says activation is possible; the uncached current check refuses it.
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent === 'Activate scheduling' && !button.disabled));
     canActivate = false;
     await page.getByRole('button', { name: 'Activate scheduling' }).click();
     await page.getByRole('button', { name: 'Confirm', exact: true }).click();

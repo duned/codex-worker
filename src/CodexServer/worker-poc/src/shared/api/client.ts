@@ -14,7 +14,7 @@ export class HttpClient {
   constructor(private readonly fetcher: typeof fetch = globalThis.fetch.bind(globalThis)) {}
   async response(path: string, options: { method?: string; body?: unknown; token?: string; csrf?: string; signal: AbortSignal; stream?: boolean; session?: boolean }): Promise<Response> {
     // API paths are local and bounded; reject URL authority changes and fragments.
-    if (!(path.startsWith('/api/v1/') || path === '/api/status' && (options.method ?? 'GET') === 'GET') || /[\\#\r\n]/.test(path) || path.length > 2048) throw new ApiError('Unsupported API path.');
+    if (!(path.startsWith('/api/v1/') || ['/api/status', '/api/version'].includes(path) && (options.method ?? 'GET') === 'GET') || /[\\#\r\n]/.test(path) || path.length > 2048) throw new ApiError('Unsupported API path.');
     const headers = new Headers();
     if (options.token) headers.set('Authorization', `Bearer ${options.token}`);
     if (options.csrf) headers.set('X-Codex-CSRF', options.csrf);

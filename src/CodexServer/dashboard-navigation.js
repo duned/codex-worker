@@ -27,6 +27,9 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
  function render({navigation=false,restore=null}={}){
   const previous=route;
   generation++;route=current();const version=generation;
+  // Workers is React-owned, including old bookmarks and Back/Forward from
+  // the retained shell. Never render a second Worker application here.
+  if(route.view==='workers'){window.location.assign(window.location.pathname+window.location.search);return;}
   for(const view of document.querySelectorAll('[data-view]'))view.hidden=view.dataset.view!==route.view;
   for(const link of $('navigation').querySelectorAll('a')){
    if(link.getAttribute('href')==='/'+route.view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
@@ -62,7 +65,7 @@ function createDashboardNavigation({document,window,onRoute,isServerGitHubConnec
   if(!views.includes(view))return;
   const path=canonical(view,id,params);
   // Leaving the isolated page restores the ordinary shell without React assets.
-  if(current().poc){window.location.assign(path);return;}
+  if(view==='workers'||current().poc){window.location.assign(path);return;}
   if(window.location.pathname+window.location.search===path)return;
   saveScroll();window.history.pushState({},'',path);render({navigation:true});
  }
