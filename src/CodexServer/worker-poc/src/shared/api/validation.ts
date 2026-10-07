@@ -31,12 +31,13 @@ export const workers = list<WorkerObservation>(value => { validateWorker(value);
 export const projects = list<ProjectSummary>(value => { fields(value, ['id', 'name', 'repository']); });
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
-  optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState'], [], ['durationMilliseconds']);
+  optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'completionSummary'], [], ['durationMilliseconds']);
+  if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(value => typeof value !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) optional(fields(item.workReference, ['type', 'id']), ['url']);
 });
 export const nodes = list<NodeSummary>(value => {
   const item = fields(value, ['id', 'kind', 'connectivity', 'executionReadiness'], ['observationsStale']);
-  optional(item, ['provisioningReadiness']);
+  optional(item, ['provisioningReadiness', 'displayName', 'health']);
   if (!Array.isArray(item.capabilities)) throw new Error('Invalid capabilities.');
   for (const capability of item.capabilities) {
     const entry = record(capability);
@@ -67,3 +68,13 @@ export const commands = list<import('./contracts').NodeCommandSummary>(value => 
   const item = fields(value, ['id', 'createdAtUtc', 'status']);
   fields(item.request, ['nodeId', 'capabilityId', 'action']);
 });
+
+export const serverGitHubConnection: Validator<import('./contracts').ServerGitHubConnection> = value => {
+  const item = fields(value, [], ['provisioningEnabled', 'elevationAllowed']);
+  commands(item.commands);
+  return value as import('./contracts').ServerGitHubConnection;
+};
+export const serverStatus: Validator<import('./contracts').ServerStatus> = value => {
+  fields(value, ['state', 'version', 'startedAtUtc']);
+  return value as import('./contracts').ServerStatus;
+};

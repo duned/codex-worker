@@ -12,8 +12,8 @@ TypeScript application/router boundary, app error boundary, typed session/read
 hooks and page/feature/shared layout. Dark mode is the default; the theme control
 persists only a light/dark preference. Worker detail reuses the fixture-tested PoC
 presentation through a typed boundary. Its control rail is omitted: administration
-uses the current dashboard. Home, lists, Projects, Executions and Settings explicitly
-link to their current implementation with the selected resource and query intact.
+uses the current dashboard. Home now renders the operational overview described below.
+Lists, Projects, Executions and Settings administration explicitly link to their current implementation with the selected resource and query intact.
 They do not offer simulated observations or unfinished actions. Legacy `/home`,
 resource routes and `/workers/{id}/poc` remain usable; default-route cutover and PoC
 removal belong to 24.12.9.
@@ -261,3 +261,48 @@ permitted process access; locked npm restore required permitted network access.
 The optional .NET test attempt with `--no-restore` could not run because this
 checkout had no restored test assets (`NETSDK1004`). Worker-configured checks
 remain the authoritative gate.
+
+
+## Home operational overview and parity inventory (24.12.4)
+
+`/dashboard-preview/home` renders Home in the shared React application. Canonical
+`/home` retains the legacy entry until the planned 24.12.9 route cutover. Home uses
+shared typed reads, the existing live/poll owner, upstream Untitled UI surfaces,
+buttons and status badges. No backend or local standalone Worker change is included.
+
+| Existing Home behavior | React parity / resource context |
+| --- | --- |
+| Current work and activity | Assigned/Running requests lead the page; latest activity uses a separate unfiltered latest-50 request snapshot, showing up to five latest requests. Execution links retain exact IDs; assigned Workers and central project Issue context are linked. |
+| Pending, eligibility and recovery evidence | Needs attention shows reported pending/recovery/eligibility states, with retained reasons and summaries in native disclosures and links to the exact execution or project Issues. No new recovery action or retry is inferred. |
+| Connectivity, execution prerequisites and scheduling | Worker availability, current/stale/unavailable node readiness and reported scheduling policy remain separate. Links resume the exact Worker's preparation step; Server health and GitHub observations remain independent. |
+| Server GitHub setup | Home and the Settings connection summary consume `useServerReadiness` and the same `serverGitHubReadiness` projection. Current capability evidence and retained pending/running/failed authentication commands govern completion. Stale, disconnected and failed reads cannot complete it. Explicit links open existing Settings connection administration. |
+| Central project setup | Persisted central definitions complete project creation independently of enablement, GitHub or Worker setup. Projects administration remains an explicit link. |
+| Worker-first / project-first setup | Current connected authoritative ready Worker observations complete preparation independently of project creation. An existing Worker's exact preparation route is resumed; otherwise enrollment opens `/workers?prepare=1`. Preparation does not enable scheduling. |
+| Configured systems | Completed setup actions and system diagnostics/capacity stay in collapsed native disclosures. Incomplete actions remain independently available. No browser completion flags exist. |
+| Server status and capacity | Status/version, central definition and registered Worker counts remain available in diagnostics. Server-wide capacity is explicitly the aggregate of reported Worker slots, not a Server scheduling limit; per-Worker slots are separately linked. Missing values remain unavailable. |
+| Refresh | Explicit refresh only refetches the six read contracts. React retains disclosure nodes and focused controls during observations; no setup action starts on render, navigation, reload or refresh. |
+
+The existing APIs provide neither total execution history metrics nor a Server
+scheduling limit. A latest-50 snapshot may omit older active execution details;
+Home states this limit and links to the execution browser. No Issue title, progress
+percentage or complete history is fabricated. Authentication does not prove
+repository write permission, Worker execution preflight or scheduling authority.
+
+Focused model/validation fixtures: `tests/dashboard/home-overview.test.cjs`.
+Production-bundle desktop/mobile fixtures: `tests/dashboard/home-browser-review.cjs`,
+covering empty, active/configured, stale/unavailable, independent setup and recovery,
+shared Settings state, refresh focus/disclosures, exact links and absence of writes.
+Run it with the same optional Playwright environment as the other browser reviews.
+Worker-configured validation remains the authoritative gate.
+
+
+Local Home validation passed typecheck, lint and production compilation, plus
+42 focused Home/shared-infrastructure/legacy navigation regressions. Chromium
+review passed at 1280px and 375px for the Home fixture campaign and the existing
+preview navigation/session campaign; desktop/mobile screenshots were inspected.
+Refresh was checked with a changed reported stage while retaining disclosure focus
+and expansion. No resource mutations were submitted. Locked npm restoration needed
+permitted network access; Chromium used existing temporary libraries and permitted
+process access. The optional .NET Server test attempt with `--no-restore` could not
+run because this checkout lacks restored test assets (`NETSDK1004`). No live
+HTTPS/provider/node campaign or Worker-configured authoritative check is claimed.

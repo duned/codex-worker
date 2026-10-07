@@ -81,7 +81,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     await page.setViewportSize({ width: 1280, height: 1000 });
     await page.evaluate(() => { window.navigationFixture = 'retained'; });
     await page.getByRole('link', { name: 'Home', exact: true }).click();
-    await page.getByRole('link', { name: 'Open home in current dashboard' }).waitFor();
+    await page.getByRole('heading', { name: 'Current work', exact: true }).waitFor();
     assert.equal(new URL(page.url()).pathname, '/dashboard-preview/home');
     assert.equal(await page.evaluate(() => window.navigationFixture), 'retained', 'Router navigation must keep one session owner.');
     await page.goBack();

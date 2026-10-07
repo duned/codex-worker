@@ -8,7 +8,8 @@ export interface ProjectSummary { id: string; name: string; repository: string }
 export interface ExecutionSummary {
   id: string; projectId: string; assignedWorkerId?: string; state: string; createdAtUtc: string;
   currentStage?: string; startedAtUtc?: string; assignedAtUtc?: string; completedAtUtc?: string;
-  durationMilliseconds?: number; recoveryState?: string;
+  durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
+  managedEligibilityState?: string; managedEligibilityReasons?: string[]; completionSummary?: string;
   workReference?: { type: string; id: string; url?: string };
 }
 export interface Capability {
@@ -18,7 +19,7 @@ export interface Capability {
   availableActions: string[];
 }
 export interface NodeSummary {
-  id: string; kind: string; connectivity: string; executionReadiness: string;
+  id: string; kind: string; displayName?: string; health?: string; connectivity: string; executionReadiness: string;
   provisioningReadiness?: string; observationsStale: boolean; capabilities: Capability[];
 }
 export interface WorkerDiagnostics {
@@ -35,3 +36,6 @@ export interface NodeCommandSummary {
   id: string; createdAtUtc: string; status: string;
   request: { nodeId: string; capabilityId: string; action: string };
 }
+
+export interface ServerGitHubConnection { commands: NodeCommandSummary[]; provisioningEnabled: boolean; elevationAllowed: boolean }
+export interface ServerStatus { state: string; version: string; startedAtUtc: string }

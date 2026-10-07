@@ -229,3 +229,16 @@ test('unknown session diagnostics cannot select inherited object properties', as
   const http = new HttpClient(async () => new Response(null, { status: 403, headers: { 'X-Codex-Administration-Error': '__proto__' } }));
   await assert.rejects(http.request('/api/v1/administration/session', { signal: new AbortController().signal, session: true }, workers), /Access rejected without a Server diagnostic/);
 });
+
+test('existing public Server status is a narrow local read exception, never a write or arbitrary API path', async () => {
+  const calls = [];
+  const client = new HttpClient(async (path, options) => { calls.push({ path, method: options.method }); return Response.json({ state: 'running' }); });
+  const signal = new AbortController().signal;
+  await client.request('/api/status', { signal }, value => value);
+  assert.deepEqual(calls, [{ path: '/api/status', method: 'GET' }]);
+  for (const path of ['/api/status?redirect=1', '/api/status#fragment', '/api/version', '//external.test/api/status']) {
+    await assert.rejects(client.response(path, { signal }), /Unsupported API path/);
+  }
+  await assert.rejects(client.response('/api/status', { signal, method: 'POST' }), /Unsupported API path/);
+  assert.equal(calls.length, 1);
+});
