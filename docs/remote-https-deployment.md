@@ -541,3 +541,10 @@ resource deep link before/after sign in and test Back/Forward with filters and
 pagination. Outside the management subnet all UI paths must remain denied,
 while allowlisted method-specific Worker protocol routes still work. Unknown
 API paths must remain API/404 responses, never HTML.
+
+Canonical React dashboard assets use only the existing same-origin
+`/dashboard-assets/preview/` prefix, restricted to the management network like the
+shell. Keep API/protocol route policy unchanged. Historical `/dashboard-preview`
+and `/workers/{id}/poc` links redirect to canonical routes. Do not proxy the removed
+`/dashboard-assets/worker-poc.js` or `.css` as a separate frontend. Installed Server
+assemblies contain the complete Vite asset graph; deployments need no Node/npm/CDN.

@@ -414,28 +414,22 @@ public static class ServerApplication
         });
         // Explicit UI routes only: protocol, API and health failures never become HTML.
         foreach (var path in new[] { "/", "/home", "/projects", "/projects/{resourceId}",
-            "/executions", "/executions/{resourceId}",
+            "/workers", "/workers/{resourceId}", "/executions", "/executions/{resourceId}",
             "/settings", "/settings/{resourceId}" })
-        {
-            app.MapGet(path, () => Results.Content(ReadDashboard(), "text/html; charset=utf-8"));
-        }
-        // Workers promote the approved detail into the shared React application.
-        app.MapGet("/workers", () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
-        app.MapGet("/workers/{resourceId}", () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
-        // Other canonical sections remain legacy-owned during migration.
+            app.MapGet(path, () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
+        // Historical bookmarks resolve into the same canonical application.
         foreach (var path in new[] { "/dashboard-preview", "/dashboard-preview/home",
             "/dashboard-preview/projects", "/dashboard-preview/projects/{resourceId}",
             "/dashboard-preview/workers", "/dashboard-preview/workers/{resourceId}",
             "/dashboard-preview/executions", "/dashboard-preview/executions/{resourceId}",
             "/dashboard-preview/settings", "/dashboard-preview/settings/{resourceId}" })
-            app.MapGet(path, () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
+            app.MapGet(path, (HttpContext context) => Results.Redirect(
+                (context.Request.Path.Value is { } value && value.Length > "/dashboard-preview".Length
+                    ? value["/dashboard-preview".Length..] : "/home") + context.Request.QueryString));
         foreach (var (path, bytes) in preview.Assets)
             app.MapGet("/dashboard-assets/preview/" + path, () => Results.Bytes(bytes, EmbeddedDashboardAssets.ContentType(path)));
         app.MapGet("/workers/{resourceId}/poc", (string resourceId, HttpContext context) =>
             Results.Redirect($"/workers/{Uri.EscapeDataString(resourceId)}{context.Request.QueryString}"));
-        // Fixed embedded assets only; no filesystem/static-file or HTML fallback.
-        app.MapGet("/dashboard-assets/worker-poc.js", () => Results.Content(ReadWorkerPocAsset("js"), "text/javascript; charset=utf-8"));
-        app.MapGet("/dashboard-assets/worker-poc.css", () => Results.Content(ReadWorkerPocAsset("css"), "text/css; charset=utf-8"));
         app.MapGet("/health", async (IServerHealthService healthService, HttpContext context) =>
         {
             try
@@ -976,43 +970,6 @@ public static class ServerApplication
             catch (ExecutionRequestReconciliationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         return app;
-    }
-
-    private static string ReadWorkerPocAsset(string extension)
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.worker-poc.{extension}")
-            ?? throw new InvalidOperationException("A Server Worker PoC asset resource is missing.");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
-    }
-
-    private static string ReadDashboard()
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CodexServer.dashboard.html")
-            ?? throw new InvalidOperationException("The Server dashboard resource is missing.");
-        using var reader = new StreamReader(stream);
-        var html = reader.ReadToEnd();
-        html = html.Replace("<!-- worker-poc -->", "", StringComparison.Ordinal);
-        var scripts = new StringBuilder();
-        foreach (var name in new[] { "dashboard-navigation.js", "dashboard-admin.js" })
-        {
-            using var scriptStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.{name}")
-                ?? throw new InvalidOperationException("A Server dashboard script resource is missing.");
-            using var scriptReader = new StreamReader(scriptStream);
-            var source = scriptReader.ReadToEnd();
-            if (name == "dashboard-admin.js")
-            {
-                foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues", "onboarding", "projects" })
-                {
-                    using var moduleStream = Assembly.GetExecutingAssembly().GetManifestResourceStream($"CodexServer.dashboard-{module}.js")
-                        ?? throw new InvalidOperationException("A Server dashboard module resource is missing.");
-                    using var moduleReader = new StreamReader(moduleStream);
-                    source = source.Replace($"/* dashboard-{module} */", moduleReader.ReadToEnd(), StringComparison.Ordinal);
-                }
-            }
-            scripts.AppendLine(source);
-        }
-        return html.Replace("<!-- dashboard-scripts -->", $"<script>{scripts}</script>", StringComparison.Ordinal);
     }
 
     internal static async Task StreamWorkerUpdatesAsync(HttpContext context, IRegistryStore store,

@@ -41,12 +41,10 @@ const { once } = require('node:events');
     assert.ok(html.includes('id="worker-poc"') && !html.includes('id="poc-legacy-owner"'));
     assert.ok(!html.includes('dashboard-session') && !html.includes('codexWorkerPoc'));
     assert.ok(!html.includes('--ink:#183135'), 'Legacy theme must not ship on the PoC route.');
-    for (const extension of ['js', 'css']) {
-      assert.ok(html.includes('/dashboard-assets/preview/'));
-      const response = await read(`/dashboard-assets/worker-poc.${extension}`);
-      assert.equal(response.status, 200);
-      assert.ok(await response.text() === fs.readFileSync(path.join(expected, `poc.${extension}`), 'utf8'), `Missing or stale embedded ${extension}`);
-    }
+    for (const extension of ['js', 'css'])
+      assert.equal((await read(`/dashboard-assets/worker-poc.${extension}`)).status, 404);
+    for (const route of ['/home', '/projects', '/projects/p?issue=27', '/workers', '/executions/e?offset=50', '/settings/c?node=server'])
+      assert.equal(await (await read(route)).text(), html);
     const preview = await read('/dashboard-preview/workers/fixture-worker?step=preparation&project=fixture-project');
     assert.equal(preview.status, 200);
     const previewHtml = await preview.text();

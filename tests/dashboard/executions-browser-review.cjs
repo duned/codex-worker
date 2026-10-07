@@ -21,7 +21,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
     await page.route('https://dashboard.test/**', async route => {
       const req = route.request(), url = new URL(req.url()), endpoint = url.pathname;
       if (endpoint.startsWith('/dashboard-assets/preview/')) return route.fulfill({ path: path.join(assets, endpoint.slice('/dashboard-assets/preview/'.length)), contentType: endpoint.endsWith('.css') ? 'text/css' : 'text/javascript' });
-      if (endpoint.startsWith('/dashboard-preview')) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
       if (endpoint === '/api/v1/administration/session') return route.fulfill({ json: { csrfToken: 'fixture', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       if (endpoint === '/api/v1/events/stream') return route.fulfill({ status: 503 });
       if (req.method() !== 'GET') {
@@ -47,7 +47,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
     for (const width of [1280, 375]) {
       await page.setViewportSize({ width, height: 1000 });
       mode = 'normal';
-      await page.goto('https://dashboard.test/dashboard-preview/executions?project=project&state=Running&issue=7&offset=0');
+      await page.goto('https://dashboard.test/executions?project=project&state=Running&issue=7&offset=0');
       await page.getByText('Running · Validation', { exact: true }).waitFor({ timeout: 10000 }).catch(async error => { console.log(await page.locator('body').innerText()); throw error; });
       await page.getByText('Running · Integration', { exact: true }).waitFor();
       await page.getByText('Execution failed', { exact: true }).waitFor();
@@ -60,7 +60,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       assert.equal(new URL(page.url()).searchParams.get('offset'), '50');
       await page.getByRole('button', { name: 'Previous page' }).click();
       current = structuredClone(running);
-      await page.locator('a[href^="/dashboard-preview/executions/running?"]').click();
+      await page.locator('a[href^="/executions/running?"]').click();
       await page.getByText('Reported stage: Validation', { exact: true }).waitFor();
       await page.getByText('Advanced · assignment and lease evidence', { exact: true }).click();
       await page.getByText('Advanced · attempt lineage and recovery', { exact: true }).click();
@@ -80,11 +80,11 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       await page.getByRole('button', { name: 'Refresh executions' }).click();
       await page.getByText('Executions unavailable. Refresh to retrieve current data.').waitFor();
       mode = 'missing';
-      await page.goto('https://dashboard.test/dashboard-preview/executions/deleted?project=project&offset=50');
+      await page.goto('https://dashboard.test/executions/deleted?project=project&offset=50');
       await page.getByText('Execution unavailable or deleted. Refresh this exact resource; list context is retained.').waitFor();
       assert.ok((await page.getByRole('link', { name: 'Back to executions', exact: true }).getAttribute('href')).includes('offset=50'));
       mode = 'normal'; current = structuredClone(queued);
-      await page.goto('https://dashboard.test/dashboard-preview/executions/queued?project=project&issue=7');
+      await page.goto('https://dashboard.test/executions/queued?project=project&issue=7');
       await page.getByRole('button', { name: 'Cancel queued request', exact: true }).click();
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       const before = writes.length;
@@ -100,7 +100,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       assert.equal(writes.length, before + 1);
       // Fresh checks reject a request assigned while its cancellation dialog is open.
       current = structuredClone(queued);
-      await page.goto('https://dashboard.test/dashboard-preview/executions/queued');
+      await page.goto('https://dashboard.test/executions/queued');
       await page.getByRole('button', { name: 'Cancel queued request', exact: true }).click();
       current.state = 'Assigned';
       const beforeRejected = writes.length;
@@ -109,7 +109,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       assert.equal(writes.length, beforeRejected);
       await page.getByRole('button', { name: 'Cancel', exact: true }).click();
       mode = 'normal'; current = structuredClone(uncertain);
-      await page.goto('https://dashboard.test/dashboard-preview/executions/uncertain');
+      await page.goto('https://dashboard.test/executions/uncertain');
       await page.getByRole('button', { name: 'Reconcile uncertain integration', exact: true }).click();
       await page.getByLabel('Verified disposition').selectOption('Integrated');
       await page.getByLabel('Authoritative integration evidence').fill('Verified authoritative base branch includes commit');
@@ -132,12 +132,12 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(output, `recovery-${width}.png`), fullPage: true });
       current = structuredClone(uncertain);
-      await page.goto('https://dashboard.test/dashboard-preview/executions/uncertain?project=project&issue=7');
+      await page.goto('https://dashboard.test/executions/uncertain?project=project&issue=7');
       await page.getByRole('button', { name: 'Reconcile uncertain integration', exact: true }).click();
       await page.getByLabel('Authoritative integration evidence').fill('Verified commit absent from authoritative base branch');
       await page.getByRole('button', { name: 'Record verified disposition' }).click();
       await page.getByRole('link', { name: 'View queued recovery attempt' }).waitFor();
-      assert.equal(await page.getByRole('link', { name: 'View queued recovery attempt' }).getAttribute('href'), '/dashboard-preview/executions/retry?project=project&issue=7');
+      assert.equal(await page.getByRole('link', { name: 'View queued recovery attempt' }).getAttribute('href'), '/executions/retry?project=project&issue=7');
       assert.equal(writes.at(-1).body.disposition, 'NotIntegrated');
       assert.equal(writes.at(-1).body.integrationCommit, undefined);
     }

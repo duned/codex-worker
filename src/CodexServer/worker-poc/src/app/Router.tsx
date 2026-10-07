@@ -4,7 +4,6 @@ import { ViewState } from '../shared/Presentation';
 import { SettingsWorkspace } from '../features/settings/Workspace';
 import { ExecutionsPage } from '../features/executions/ExecutionsPage';
 import { HomePage } from '../features/home/HomePage';
-import { MigrationPage } from '../pages/MigrationPage';
 import { WorkerPocPage } from '../features/workers/WorkerPocPage';
 import { WorkersPage } from '../features/workers/WorkersPage';
 import { ProjectsPage } from '../features/projects/ProjectsPage';
@@ -25,8 +24,8 @@ export function DashboardRoutes() {
   const location = useLocation();
   return <SettingsWorkspace><ProjectsWorkspace><Routes>
     <Route path="/" element={<Navigate to={{ pathname: '/home', search: location.search }} replace />} />
-    {sections.map(section => <Route key={section} path={`/${section}`} element={section === 'home' ? <HomePage /> : section === 'workers' ? <WorkersPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : section === 'settings' ? <SettingsRoute /> : <MigrationPage section={section} />} />)}
-    {resourceSections.map(section => <Route key={section} path={`/${section}/:resourceId`} element={section === 'workers' ? <WorkerPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : section === 'settings' ? <SettingsRoute /> : <MigrationPage section={section} />} />)}
+    {sections.map(section => <Route key={section} path={`/${section}`} element={section === 'home' ? <HomePage /> : section === 'workers' ? <WorkersPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
+    {resourceSections.map(section => <Route key={section} path={`/${section}/:resourceId`} element={section === 'workers' ? <WorkerPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
     <Route path="*" element={<p role="alert">Unknown dashboard route.</p>} />
   </Routes></ProjectsWorkspace></SettingsWorkspace>;
 }

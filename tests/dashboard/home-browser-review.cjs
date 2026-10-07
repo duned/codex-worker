@@ -23,7 +23,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
         assert.ok(!relative.includes('..'));
         return route.fulfill({ path: path.join(assets, relative), contentType: relative.endsWith('.css') ? 'text/css' : 'text/javascript' });
       }
-      if (endpoint.startsWith('/dashboard-preview')) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
       if (request.method() !== 'GET') mutations.push(endpoint);
       if (endpoint === '/api/v1/administration/session') return route.fulfill({ json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       if (endpoint === '/api/v1/events/stream') return route.fulfill({ status: 503 });
@@ -42,7 +42,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
     for (const width of [1280, 375]) {
       await page.setViewportSize({ width, height: 1000 });
       for (scenario of ['empty', 'configured', 'stale', 'unavailable', 'project-first', 'worker-first', 'recovery']) {
-        await page.goto('https://dashboard.test/dashboard-preview/home');
+        await page.goto('https://dashboard.test/home');
         await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
         await page.getByRole('button', { name: 'Refresh system state' }).waitFor();
         await page.waitForFunction(() => !document.body.textContent.includes('Loading execution activity'));
@@ -79,7 +79,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
       }
     }
     scenario = 'stale';
-    await page.goto('https://dashboard.test/dashboard-preview/settings?node=server');
+    await page.goto('https://dashboard.test/settings?node=server');
     await page.getByText('Observations stale · check authentication').waitFor();
     await page.reload();
     await page.getByText('Observations stale · check authentication').waitFor();

@@ -1,3 +1,8 @@
+> Current routing: all canonical Server dashboard screens use the shared React app.
+> Preview URLs redirect to canonical routes; the separate PoC bundle and legacy
+> Server frontend are removed. See [final cutover evidence](server-dashboard-cutover.md).
+> Migration-stage descriptions and earlier validation below are historical evidence.
+
 # React execution and recovery parity (24.12.7)
 
 Executions now use the shared React application at `/dashboard-preview/executions`

@@ -26,7 +26,7 @@ const clone = value => structuredClone(value);
         const relative = endpoint.slice('/dashboard-assets/preview/'.length); assert.ok(!relative.includes('..'));
         return route.fulfill({ path: path.join(assets, relative), contentType: relative.endsWith('.css') ? 'text/css' : 'text/javascript' });
       }
-      if (endpoint.startsWith('/dashboard-preview')) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
       if (endpoint.endsWith('/session')) return route.fulfill({ json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       if (endpoint.endsWith('/stream')) return route.fulfill({ status: 503 });
       const body = request.postDataJSON();
@@ -75,7 +75,7 @@ const clone = value => structuredClone(value);
       }
       throw Error(`Unexpected fixture ${method} ${endpoint}`);
     });
-    const detail = 'https://dashboard.test/dashboard-preview/projects/project-a?issue=27&issueState=open&label=ready&issues=1&step=preparation';
+    const detail = 'https://dashboard.test/projects/project-a?issue=27&issueState=open&label=ready&issues=1&step=preparation';
     for (const width of [1280, 375]) {
       await page.setViewportSize({ width, height: 1000 }); await page.goto(detail);
       await page.getByRole('heading', { name: 'Sample project', exact: true }).waitFor();
@@ -134,7 +134,7 @@ const clone = value => structuredClone(value);
     await page.getByRole('button', { name: 'Check saved definition' }).click(); await page.getByText('Saved definition confirmed.').waitFor(); assert.deepEqual(projects[0].automaticDiscovery, { enabled: true, intervalSeconds: 600, pageSize: 10, deadlineSeconds: 30 });
     // URL Back/filter and transient form navigation, with no effects on refresh.
     const count = effects.length; await page.getByLabel('Filter by label').fill('blocked'); await page.getByRole('button', { name: 'Load Issues' }).click(); assert.equal(new URL(page.url()).searchParams.get('step'), 'preparation'); await page.goBack(); await page.getByRole('heading', { name: '#27 · Parser repaired' }).waitFor(); assert.equal(new URL(page.url()).search, new URL(detail).search); assert.equal(effects.length, count);
-    await page.goto('https://dashboard.test/dashboard-preview/projects'); await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
+    await page.goto('https://dashboard.test/projects'); await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Create project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Create project', exact: true }); await dialog.getByRole('button', { name: 'Discover repositories' }).click(); await dialog.getByLabel('Accessible repository').selectOption('owner/new'); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); assert.equal(await dialog.getByLabel('Project name').inputValue(), 'New project');
     await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await page.getByRole('link', { name: 'Home', exact: true }).click(); await page.getByRole('link', { name: 'Projects', exact: true }).click(); await page.getByRole('button', { name: 'Resume project draft' }).click(); dialog = page.getByRole('dialog', { name: 'Create project', exact: true }); assert.equal(await dialog.getByLabel('Project name').inputValue(), 'New project');
     await dialog.getByRole('button', { name: 'Verify and review' }).click(); await dialog.getByRole('button', { name: 'Save reviewed project' }).click(); await dialog.waitFor({ state: 'hidden' }); await page.getByRole('link', { name: /New project/ }).click(); await page.getByRole('heading', { name: 'New project', exact: true }).waitFor();

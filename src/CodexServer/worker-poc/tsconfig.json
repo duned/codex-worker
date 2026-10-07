@@ -6,5 +6,5 @@
     "skipLibCheck": true, "esModuleInterop": true,
     "baseUrl": ".", "paths": { "@/*": ["src/untitled/*"] }
   },
-  "include": ["src/app", "src/pages", "src/features", "src/shared", "vite.config.ts"]
+  "include": ["src/app", "src/features", "src/shared", "vite.config.ts"]
 }

@@ -23,7 +23,7 @@ export function ProjectsPage() {
   };
   const controls = (p: Project) => <div className="flex flex-wrap gap-2"><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => open(p)}>Edit project</Button><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p, enabled: !p.enabled })}>{p.enabled ? 'Disable' : 'Enable'}</Button><Button color="primary-destructive" isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p })}>Delete</Button></div>;
   return <>
-    <PageHeading title={resourceId ? selected?.name ?? 'Project' : 'Projects'} resourceId={resourceId} breadcrumbs={resourceId ? [{ label: 'Projects', href: `/dashboard-preview/projects${location.search}` }, { label: selected?.name ?? 'Project' }] : []} actions={!resourceId && <Button isDisabled={w.locked()} onPress={() => open()}>Create project</Button>} />
+    <PageHeading title={resourceId ? selected?.name ?? 'Project' : 'Projects'} resourceId={resourceId} breadcrumbs={resourceId ? [{ label: 'Projects', href: `/projects${location.search}` }, { label: selected?.name ?? 'Project' }] : []} actions={!resourceId && <Button isDisabled={w.locked()} onPress={() => open()}>Create project</Button>} />
     <div className="space-y-6">
       {w.message && <Notice>{w.message}</Notice>}
       {w.draft && !w.draft.open && <Button color="secondary" onPress={() => w.setDraft(d => d ? { ...d, open: true } : d)}>Resume project draft</Button>}

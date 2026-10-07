@@ -33,7 +33,7 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
     await page.route('https://worker.test/**', async route => {
       const request = route.request(), endpoint = new URL(request.url()).pathname;
       if (endpoint.startsWith('/dashboard-assets/preview/')) return route.fulfill({ path: path.join(assets, 'preview', endpoint.slice('/dashboard-assets/preview/'.length)), contentType: endpoint.endsWith('.js') ? 'text/javascript' : 'text/css' });
-      if (endpoint === '/workers/worker-a') return route.fulfill({ path: path.join(assets, 'preview/index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'preview/index.html'), contentType: 'text/html' });
       if (endpoint === '/api/v1/administration/session') {
         if (request.method() === 'DELETE') { signedIn = false; return route.fulfill({ status: 204 }); }
         if (request.method() === 'POST') { assert.equal(request.headers().authorization, 'Bearer fixture-token'); signedIn = true; }

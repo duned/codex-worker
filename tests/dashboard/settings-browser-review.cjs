@@ -23,7 +23,7 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
     await page.route('https://dashboard.test/**', async route => {
       const request = route.request(), endpoint = new URL(request.url()).pathname;
       if (endpoint.startsWith('/dashboard-assets/preview/')) return route.fulfill({ path: path.join(assets, endpoint.slice('/dashboard-assets/preview/'.length)), contentType: endpoint.endsWith('.css') ? 'text/css' : 'text/javascript' });
-      if (endpoint.startsWith('/dashboard-preview')) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
       if (endpoint === '/api/v1/administration/session') return route.fulfill(request.method() === 'DELETE' ? { status: 204 } : { json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       if (endpoint.endsWith('/stream')) return route.fulfill({ status: 503 });
       if (request.method() !== 'GET') {
@@ -56,7 +56,7 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
       return route.fulfill({ json: [] });
     });
     async function settings() {
-      await page.goto('https://dashboard.test/dashboard-preview/settings?node=server');
+      await page.goto('https://dashboard.test/settings?node=server');
       await page.getByRole('button', { name: 'Connect · prepare authentication', exact: true }).waitFor();
       await page.getByRole('link', { name: 'Show metadata', exact: true }).first().waitFor();
     }
@@ -87,7 +87,7 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
         await page.reload();
         await page.getByRole('dialog').getByText('credential:credential-a', { exact: true }).waitFor();
         await page.keyboard.press('Escape');
-        assert.equal(new URL(page.url()).pathname, '/dashboard-preview/settings');
+        assert.equal(new URL(page.url()).pathname, '/settings');
         // Secret fields are never populated during screenshot review.
         await page.getByRole('button', { name: 'Add credential', exact: true }).click();
         await page.getByRole('dialog').waitFor();

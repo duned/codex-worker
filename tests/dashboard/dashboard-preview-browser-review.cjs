@@ -30,7 +30,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
         assert.ok(!relative.includes('..'));
         return route.fulfill({ path: path.join(assets, relative), contentType: relative.endsWith('.css') ? 'text/css' : 'text/javascript' });
       }
-      if (endpoint.startsWith('/dashboard-preview')) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
+      if (/^\/(home|projects|workers|executions|settings)(?:\/|$)/.test(endpoint)) return route.fulfill({ path: path.join(assets, 'index.html'), contentType: 'text/html' });
       if (request.method() !== 'GET') mutations.push({ path: endpoint, method: request.method(), csrf: request.headers()['x-codex-csrf'] });
       if (endpoint === '/api/v1/administration/session') {
         if (request.method() === 'DELETE') { signedIn = false; return route.fulfill({ status: 204 }); }
@@ -49,7 +49,10 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
       }
       return route.fulfill({ status: failWorkers && endpoint === '/api/v1/workers' ? 503 : 200, json: fixtures[endpoint] ?? [] });
     });
-    const deepLink = 'https://dashboard.test/dashboard-preview/workers/worker-a?step=preparation&project=project-a';
+    const deepLink = 'https://dashboard.test/workers/worker-a?step=preparation&project=project-a';
+    await page.goto('https://dashboard.test/home#/workers/worker-a?step=preparation&project=project-a');
+    await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
+    assert.equal(page.url(), deepLink, 'Old hash bookmark becomes canonical with query context.');
     for (const width of [1280, 375]) {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto(deepLink);
@@ -82,7 +85,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     await page.evaluate(() => { window.navigationFixture = 'retained'; });
     await page.getByRole('link', { name: 'Home', exact: true }).click();
     await page.getByRole('heading', { name: 'Current work', exact: true }).waitFor();
-    assert.equal(new URL(page.url()).pathname, '/dashboard-preview/home');
+    assert.equal(new URL(page.url()).pathname, '/home');
     assert.equal(await page.evaluate(() => window.navigationFixture), 'retained', 'Router navigation must keep one session owner.');
     await page.goBack();
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
@@ -90,7 +93,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     await page.reload();
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
     assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), false);
-    await page.goto('https://dashboard.test/dashboard-preview/projects/project-a?issue=27&label=review');
+    await page.goto('https://dashboard.test/projects/project-a?issue=27&label=review');
     await page.getByRole('heading', { name: 'Sample project', exact: true }).waitFor();
     assert.equal(new URL(page.url()).search, '?issue=27&label=review');
     assert.equal(await page.getByRole('link', { name: 'Project-filtered executions' }).getAttribute('href'), '/executions?project=project-a');

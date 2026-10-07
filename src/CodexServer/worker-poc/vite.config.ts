@@ -10,12 +10,12 @@ export default defineConfig(({ command }) => ({
       order: 'post',
       handler: () => [{
         tag: 'script',
-        attrs: { src: `${command === 'serve' ? '/dashboard-preview/' : '/dashboard-assets/preview/'}assets/theme.js` },
+        attrs: { src: `${command === 'serve' ? '/' : '/dashboard-assets/preview/'}assets/theme.js` },
         injectTo: 'head-prepend'
       }]
     }
   }],
-  base: command === 'serve' ? '/dashboard-preview/' : '/dashboard-assets/preview/',
+  base: command === 'serve' ? '/' : '/dashboard-assets/preview/',
   esbuild: { jsx: 'automatic' },
   resolve: { alias: { '@': resolve(import.meta.dirname, 'src/untitled') } },
   css: { postcss: { plugins: [tailwindcss()] } },

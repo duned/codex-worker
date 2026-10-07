@@ -5,7 +5,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Reflection;
-using System.Diagnostics;
 using System.Text.Json;
 using CodexServer;
 using Microsoft.AspNetCore.Builder;
@@ -19,7 +18,7 @@ public sealed class ServerEventStreamTests
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(3);
 
     [Fact]
-    public async Task PopulatedWorkerEventsMatchHttpContractAndRenderAcrossUpdates()
+    public async Task PopulatedWorkerEventsMatchHttpContractAcrossUpdates()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"server-stream-contract-{Guid.NewGuid():N}");
         var previousToken = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
@@ -42,7 +41,6 @@ public sealed class ServerEventStreamTests
             using var handler = new SocketsHttpHandler { MaxResponseDrainSize = 0 };
             using var client = new HttpClient(handler) { BaseAddress = new Uri(Assert.Single(app.Urls)) };
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-management-token");
-            var frames = new List<string>();
             for (var update = 0; update < 2; update++)
             {
                 using var response = await client.GetAsync("/api/v1/events/stream", HttpCompletionOption.ResponseHeadersRead)
@@ -54,7 +52,6 @@ public sealed class ServerEventStreamTests
                 Assert.NotNull(data);
                 Assert.StartsWith("data: ", data);
                 Assert.Equal(string.Empty, await reader.ReadLineAsync().WaitAsync(Deadline));
-                frames.Add($"event: workers\n{data}\n\n");
                 using var streamed = JsonDocument.Parse(data[6..]);
                 using var http = JsonDocument.Parse(await client.GetStringAsync("/api/v1/workers"));
                 Assert.True(JsonElement.DeepEquals(http.RootElement, streamed.RootElement));
@@ -72,28 +69,6 @@ public sealed class ServerEventStreamTests
                     await store.HeartbeatWorkerAsync(new(2, workerId, "1.1", "running", 1, 4, capabilities, ["project-a"]));
             }
 
-            // Drive the real event parser and renderer with actual Server frames, on one tab/reader.
-            var start = new ProcessStartInfo("node")
-            {
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "tests", "dashboard", "server-stream-rendering.cjs"));
-            using var process = Process.Start(start) ?? throw new InvalidOperationException("Unable to start dashboard harness.");
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try
-            {
-                var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                var error = process.StandardError.ReadToEndAsync(timeout.Token);
-                await process.StandardInput.WriteAsync(JsonSerializer.Serialize(frames).AsMemory(), timeout.Token);
-                process.StandardInput.Close();
-                await process.WaitForExitAsync(timeout.Token);
-                Assert.True(process.ExitCode == 0, $"Dashboard harness failed: {await output}{await error}");
-            }
-            finally
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-            }
             await app.StopAsync().WaitAsync(Deadline);
         }
         finally

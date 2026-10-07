@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/app src/pages src/features src/shared vite.config.ts",
+    "lint": "eslint src/app src/features src/shared vite.config.ts",
     "build": "node build.mjs ../obj/worker-poc",
     "check": "npm run typecheck && npm run lint && npm run build"
   },

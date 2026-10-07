@@ -87,7 +87,7 @@ function ExecutionDetail({ id, search }: { id: string; search: string }) {
     finally { if (runtime.snapshot().generation === generation) setPending(false); }
   }
   const close = () => { select(undefined); setEvidence(''); setCommit(''); setDisposition('NotIntegrated'); };
-  return <><PageHeading title="Execution" resourceId={id} breadcrumbs={[{ label: 'Executions', href: `/dashboard-preview/executions${search}` }, { label: 'Execution' }]} actions={<Button color="secondary" isDisabled={pending} onPress={() => { void refresh(); }}>Refresh authoritative execution</Button>} />
+  return <><PageHeading title="Execution" resourceId={id} breadcrumbs={[{ label: 'Executions', href: `/executions${search}` }, { label: 'Execution' }]} actions={<Button color="secondary" isDisabled={pending} onPress={() => { void refresh(); }}>Refresh authoritative execution</Button>} />
     <Link className="text-sm text-brand-secondary" to={`/executions${search}`}>Back to executions</Link>
     <div className="mt-4 space-y-4">{message && <Notice>{message}</Notice>}{retryId && <Link className="text-sm text-brand-secondary" to={`/executions/${encodeURIComponent(retryId)}${search}`}>View queued recovery attempt</Link>}{locked && <Notice>Operation pending or uncertain. Actions are locked until explicit authoritative refresh succeeds.</Notice>}
       {!item ? <ViewState title={read.error ? 'Execution unavailable or deleted. Refresh this exact resource; list context is retained.' : 'Loading execution…'} error={!!read.error} /> : <>

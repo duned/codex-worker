@@ -255,12 +255,13 @@ Focused automated regressions require .NET 10 and Node.js on `PATH`:
 
 ```bash
 dotnet test tests/CodexWorker.Tests/CodexWorker.Tests.csproj --filter FullyQualifiedName~ServerEventStreamTests
-node --test --test-isolation=none tests/dashboard/server-stream-lifecycle.test.cjs
+node --test --test-isolation=none tests/dashboard/react-infrastructure.test.cjs
 ```
 
 The populated Worker regression compares actual Server SSE events with the HTTP
-Worker API, including nested capabilities, then feeds successive events into the
-dashboard's real event parser and renderer on one simulated tab/connection.
+Worker API, including nested capabilities. The React infrastructure regression
+separately feeds successive fixtures into the real event parser and session/stream
+owner on one simulated tab/connection.
 
 Before the restart check, hard reload one deployed HTTPS dashboard and connect
 once. Leave it idle for at least one minute with the browser console and Network

@@ -5,7 +5,7 @@ import { commands, workers, nodes as validateNodes, projects as validateProjects
 import { useSession } from '../../shared/api/session';
 import type { AdministrationPresentation } from './WorkerPocPage';
 import { Notice } from '../../shared/Presentation';
-import { canonicalPath, migrationBase } from '../../app/routes';
+import { canonicalPath } from '../../app/routes';
 import { WorkerAdvanced } from './WorkerAdvanced';
 import { WorkerPreparation } from './WorkerPreparation';
 import { NodeProvisioning } from '../nodes/NodeProvisioning';
@@ -26,7 +26,7 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
   return <div className="space-y-6">
     <Notice>{session.live}</Notice>
     {observations.error && <Notice error>{observations.error}</Notice>}
-    <WorkerDetail workersHref={workerId ? '/workers' : `${migrationBase}/workers`} administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
+    <WorkerDetail workersHref={workerId ? '/workers' : '/workers'} administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}
       preparation={administration && observation ? <WorkerPreparation worker={observation} diagnostics={diagnostics.data} projects={projects.data} node={nodes.data?.find(item => item.id === resourceId)} /> : undefined}
       provisioning={administration ? <NodeProvisioning key={resourceId} nodeId={resourceId} repository={projects.data?.find(item => item.id === projectId)?.repository} /> : undefined}

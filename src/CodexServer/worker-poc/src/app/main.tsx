@@ -8,10 +8,10 @@ import { ThemeControl } from '../shared/ThemeControl';
 import { SessionProvider, useSession } from '../shared/api/session';
 import { DashboardRoutes } from './Router';
 import { ErrorBoundary } from './ErrorBoundary';
-import { migrationBase, sections } from './routes';
+import { normalizeBookmark, sections } from './routes';
 import '../poc.css';
-const canonicalWorkers = window.location.pathname === '/workers' || window.location.pathname.startsWith('/workers/');
-const base = canonicalWorkers ? '' : migrationBase;
+const normalized = normalizeBookmark(window.location.pathname, window.location.search, window.location.hash);
+if (normalized) window.history.replaceState(window.history.state, '', normalized);
 const icons = [HomeLine, Folder, Server01, Activity, Settings01];
 function Dashboard() {
   const session = useSession();
@@ -19,15 +19,14 @@ function Dashboard() {
   const location = useLocation();
   useEffect(() => { document.querySelector<HTMLElement>('#poc-content h1')?.focus({ preventScroll: true }); }, [location.pathname]);
   const active = location.pathname.split('/')[1] || 'home';
-  const items = sections.map((section, index) => ({ label: section.charAt(0).toUpperCase() + section.slice(1), href: `${base}/${section}`, icon: icons[index] }));
+  const items = sections.map((section, index) => ({ label: section.charAt(0).toUpperCase() + section.slice(1), href: `/${section}`, icon: icons[index] }));
   return <RouterProvider navigate={href => {
-    if (base && (href.startsWith(base + '/') || href === base)) navigate(href.slice(base.length) || '/');
-    else if (!base && (href === '/workers' || /^\/workers\/[^/]+(?:\?|$)/.test(href))) navigate(href);
+    if (/^\/(home|projects|workers|executions|settings)(?:\/|\?|$)/.test(href)) navigate(href);
     else window.location.assign(href);
-  }}><Application session={session} navigationItems={items} activeUrl={`${base}/${active}`} themeControl={<ThemeControl />}>
+  }}><Application session={session} navigationItems={items} activeUrl={`/${active}`} themeControl={<ThemeControl />}>
     <DashboardRoutes />
   </Application></RouterProvider>;
 }
 const element = document.getElementById('worker-poc');
 if (!element) throw new Error('Dashboard mount missing.');
-createRoot(element).render(<ErrorBoundary><BrowserRouter basename={base}><SessionProvider><Dashboard /></SessionProvider></BrowserRouter></ErrorBoundary>);
+createRoot(element).render(<ErrorBoundary><BrowserRouter><SessionProvider><Dashboard /></SessionProvider></BrowserRouter></ErrorBoundary>);

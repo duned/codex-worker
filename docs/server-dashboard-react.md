@@ -1,3 +1,8 @@
+> Current routing: all canonical Server dashboard screens use the shared React app.
+> Preview URLs redirect to canonical routes; the separate PoC bundle and legacy
+> Server frontend are removed. See [final cutover evidence](server-dashboard-cutover.md).
+> Migration-stage descriptions and earlier validation below are historical evidence.
+
 # Production dashboard foundation (temporary migration entry)
 
 `src/CodexServer/worker-poc` is the single production frontend package. Its

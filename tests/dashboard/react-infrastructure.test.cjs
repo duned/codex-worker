@@ -6,8 +6,8 @@ const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const directory = mkdtempSync(join(tmpdir(), 'dashboard-infrastructure-'));
 const entry = resolve('src/CodexServer/worker-poc/src/shared');
-buildSync({ stdin: { contents: `export * from '${entry}/api/runtime'; export * from '${entry}/api/client'; export * from '${entry}/api/validation'; export * from '${entry}/preferences'; export { QueryObserver } from '@tanstack/react-query';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(directory, 'infrastructure.cjs') });
-const { DashboardRuntime, HttpClient, queryKeys, workers, createPreferences, QueryObserver } = require(join(directory, 'infrastructure.cjs'));
+buildSync({ stdin: { contents: `export * from '${entry}/api/runtime'; export * from '${entry}/api/client'; export * from '${entry}/api/validation'; export * from '${entry}/preferences'; export * from '${entry}/../app/routes'; export { QueryObserver } from '@tanstack/react-query';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(directory, 'infrastructure.cjs') });
+const { DashboardRuntime, HttpClient, queryKeys, workers, createPreferences, QueryObserver, normalizeBookmark } = require(join(directory, 'infrastructure.cjs'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -252,4 +252,12 @@ test('pinned enrollment release uses the existing public version GET without bro
   const signal = new AbortController().signal;
   assert.deepEqual(await http.request('/api/version', { signal }, value => value), { version: '0.15.0' });
   await assert.rejects(http.request('/api/version', { signal, method: 'POST' }, value => value), /Unsupported API path/);
+});
+
+test('canonical root and supported hash bookmarks normalize once without accepting foreign or unknown routes', () => {
+  assert.equal(normalizeBookmark('/', '?node=server', ''), '/home?node=server');
+  assert.equal(normalizeBookmark('/home', '', '#/projects/project-a?issue=27&label=review'), '/projects/project-a?issue=27&label=review');
+  assert.equal(normalizeBookmark('/workers/a', '?step=project', ''), null);
+  for (const hash of ['#/api/v1/workers', '#/home/a', '#/projects/a/extra', '#//evil.test/projects', '#/settings/a#extra', '#//[invalid'])
+    assert.equal(normalizeBookmark('/home', '', hash), null);
 });

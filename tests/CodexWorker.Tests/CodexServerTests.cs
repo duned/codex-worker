@@ -1423,14 +1423,12 @@ public sealed class CodexServerTests
             using var dashboardResponse = await client.GetAsync("/");
             Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
             Assert.Contains("Codex Server", await dashboardResponse.Content.ReadAsStringAsync());
-            Assert.Contains("/api/v1/events/stream", await dashboardResponse.Content.ReadAsStringAsync());
-            Assert.Contains("Worker details", await dashboardResponse.Content.ReadAsStringAsync());
             var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
-            foreach (var view in new[] { "home", "projects", "workers", "executions", "settings" })
-                Assert.Contains($"href=\"/{view}\"", dashboard);
-            Assert.DoesNotContain("src=\"/dashboard-assets/worker-poc.js\"", dashboard);
-            Assert.DoesNotContain("href=\"/dashboard-assets/worker-poc.css\"", dashboard);
-            foreach (var path in new[] { "/workers", "/workers/worker-a?step=preparation&project=a", "/dashboard-preview", "/dashboard-preview/home",
+            Assert.Contains("id=\"worker-poc\"", dashboard);
+            var resources = typeof(ServerApplication).Assembly.GetManifestResourceNames();
+            Assert.DoesNotContain("CodexServer.dashboard.html", resources);
+            Assert.DoesNotContain("CodexServer.worker-poc.js", resources);
+            foreach (var path in new[] { "/home", "/projects", "/projects/a?issue=27&label=review", "/executions", "/settings", "/workers", "/workers/worker-a?step=preparation&project=a", "/dashboard-preview", "/dashboard-preview/home",
                 "/dashboard-preview/projects/a?issue=27&label=review", "/dashboard-preview/workers/worker-a?step=preparation&project=a",
                 "/dashboard-preview/executions/request-a?offset=50", "/dashboard-preview/settings/credential-a" })
             {
@@ -1449,13 +1447,17 @@ public sealed class CodexServerTests
                     using var assetResponse = await client.GetAsync(assetPath);
                     Assert.Equal(HttpStatusCode.OK, assetResponse.StatusCode);
                     Assert.NotEmpty(await assetResponse.Content.ReadAsByteArrayAsync());
+                    if (assetPath.EndsWith(".js", StringComparison.Ordinal))
+                        Assert.Equal("text/javascript", assetResponse.Content.Headers.ContentType?.MediaType);
+                    else if (assetPath.EndsWith(".css", StringComparison.Ordinal))
+                        Assert.Equal("text/css", assetResponse.Content.Headers.ContentType?.MediaType);
                     using var assetPost = await client.PostAsync(assetPath, null);
                     Assert.Equal(HttpStatusCode.MethodNotAllowed, assetPost.StatusCode);
                 }
                 using var previewPost = await client.PostAsync(path, null);
                 Assert.Equal(HttpStatusCode.MethodNotAllowed, previewPost.StatusCode);
             }
-            Assert.DoesNotContain("/dashboard-assets/preview/", dashboard);
+            Assert.Contains("/dashboard-assets/preview/", dashboard);
             using var pocResponse = await client.GetAsync("/workers/worker-a/poc");
             Assert.Equal(HttpStatusCode.OK, pocResponse.StatusCode);
             var poc = await pocResponse.Content.ReadAsStringAsync();
@@ -1472,15 +1474,10 @@ public sealed class CodexServerTests
             Assert.Equal(HttpStatusCode.OK, themeResponse.StatusCode);
             Assert.Equal("text/javascript", themeResponse.Content.Headers.ContentType?.MediaType);
             Assert.Contains("codex-dashboard-preferences", await themeResponse.Content.ReadAsStringAsync());
-            foreach (var (asset, mediaType, content) in new[] {
-                ("js", "text/javascript", "/api/v1/events/stream"), ("css", "text/css", "#worker-poc") })
+            foreach (var asset in new[] { "js", "css" })
             {
-                using var response = await client.GetAsync($"/dashboard-assets/worker-poc.{asset}");
-                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                Assert.Equal(mediaType, response.Content.Headers.ContentType?.MediaType);
-                Assert.Contains(content, await response.Content.ReadAsStringAsync());
-                using var post = await client.PostAsync($"/dashboard-assets/worker-poc.{asset}", null);
-                Assert.Equal(HttpStatusCode.MethodNotAllowed, post.StatusCode);
+                using var obsolete = await client.GetAsync($"/dashboard-assets/worker-poc.{asset}");
+                Assert.Equal(HttpStatusCode.NotFound, obsolete.StatusCode);
             }
             using (var redirectClient = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri(url) })
             {
@@ -1496,7 +1493,7 @@ public sealed class CodexServerTests
                 using var deepLink = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.OK, deepLink.StatusCode);
                 Assert.Equal("text/html", deepLink.Content.Headers.ContentType?.MediaType);
-                Assert.Contains("Administration sign in", await deepLink.Content.ReadAsStringAsync());
+                Assert.Equal(dashboard, await deepLink.Content.ReadAsStringAsync());
             }
             foreach (var path in new[] { "/unsupported", "/api/unknown", "/api/v1/workers/worker-a/unknown",
                 "/health/unknown", "/projects/a/unsupported", "/home/unsupported",
@@ -1512,13 +1509,6 @@ public sealed class CodexServerTests
             Assert.DoesNotContain("<!-- dashboard-scripts -->", dashboard);
             foreach (var module in new[] { "session", "nodes", "stream", "executions", "issues" })
                 Assert.DoesNotContain($"/* dashboard-{module} */", dashboard);
-            Assert.Contains("Node provisioning", dashboard);
-            Assert.Contains("/api/v1/nodes", dashboard);
-            Assert.Contains("/api/v1/provisioning/commands", dashboard);
-            Assert.Contains("data-lifecycle", dashboard);
-            Assert.Contains("/lifecycle", dashboard);
-            Assert.Contains("active executions keep their lease and finish", dashboard, StringComparison.OrdinalIgnoreCase);
-
             using var statusResponse = await client.GetAsync("/api/status");
             Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
             using var status = JsonDocument.Parse(await statusResponse.Content.ReadAsStringAsync());
@@ -3040,7 +3030,12 @@ public sealed class CodexServerTests
             using var cancelled = await client.PostAsync($"/api/v1/executions/{executionId}/cancel", content: null);
             Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
             Assert.Equal("Cancelled", (await cancelled.Content.ReadFromJsonAsync<ExecutionRequest>())!.State);
-            Assert.Contains("Execution administration", await (await client.GetAsync("/")).Content.ReadAsStringAsync());
+            using var dashboardResponse = await client.GetAsync("/executions");
+            Assert.Equal(HttpStatusCode.OK, dashboardResponse.StatusCode);
+            Assert.Equal("text/html", dashboardResponse.Content.Headers.ContentType?.MediaType);
+            var dashboard = await dashboardResponse.Content.ReadAsStringAsync();
+            Assert.Contains("id=\"worker-poc\"", dashboard);
+            Assert.Contains("/dashboard-assets/preview/", dashboard);
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
