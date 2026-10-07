@@ -31,8 +31,8 @@ export const workers = list<WorkerObservation>(value => { validateWorker(value);
 export const projects = list<ProjectSummary>(value => { fields(value, ['id', 'name', 'repository']); });
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
-  optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'completionSummary'], [], ['durationMilliseconds']);
-  if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(value => typeof value !== 'string'))) throw new Error('Invalid eligibility reasons.');
+  optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary'], [], ['durationMilliseconds']);
+  if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) optional(fields(item.workReference, ['type', 'id']), ['url']);
 });
 export const nodes = list<NodeSummary>(value => {

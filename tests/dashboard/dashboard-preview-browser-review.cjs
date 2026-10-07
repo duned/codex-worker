@@ -37,7 +37,7 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
         if (request.method() === 'POST') signedIn = true;
         return route.fulfill({ status: signedIn ? 200 : 401, json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       }
-      assert.equal(request.method(), 'GET', 'Preview never exposes resource mutations.');
+      assert.equal(request.method(), 'GET', 'Read-only navigation never submits resource mutations.');
       if (endpoint === '/api/v1/events/stream') { streamReads++; return route.fulfill({ status: 503, body: '' }); }
       const fixtures = {
         '/api/v1/nodes/worker-a/commands': props.nodeCommands, '/api/v1/workers': workers, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects,
@@ -91,7 +91,9 @@ const output = path.resolve(process.argv[3] || '/tmp/dashboard-preview-review');
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
     assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), false);
     await page.goto('https://dashboard.test/dashboard-preview/projects/project-a?issue=27&label=review');
-    assert.equal(await page.getByRole('link', { name: 'Open projects in current dashboard' }).getAttribute('href'), '/projects/project-a?issue=27&label=review');
+    await page.getByRole('heading', { name: 'Sample project', exact: true }).waitFor();
+    assert.equal(new URL(page.url()).search, '?issue=27&label=review');
+    assert.equal(await page.getByRole('link', { name: 'Project-filtered executions' }).getAttribute('href'), '/executions?project=project-a');
     await page.goBack();
     await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
     failWorkers = true; await page.reload();

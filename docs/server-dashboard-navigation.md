@@ -12,7 +12,10 @@ The local Worker dashboard and standalone ownership mode are unchanged. The
 isolated under `/dashboard-preview`; canonical routes remain legacy-owned until
 the final cutover. Its route/action/API inventory tracks the remaining migration. Home now has React
 parity at `/dashboard-preview/home`; the [Home parity inventory](server-dashboard-react.md#home-operational-overview-and-parity-inventory-24124) records the overview,
-independent setup and retained administration links. Canonical cutover remains separate.
+independent setup and retained administration links. Projects and their
+configuration/Issue administration are also available in that shared preview; see
+the [React Projects and Issue parity inventory](server-projects-react.md).
+Canonical cutover remains separate.
 
 ## Presentation and assistants
 

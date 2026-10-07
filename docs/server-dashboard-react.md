@@ -13,7 +13,10 @@ hooks and page/feature/shared layout. Dark mode is the default; the theme contro
 persists only a light/dark preference. Worker detail reuses the fixture-tested PoC
 presentation through a typed boundary. Its control rail is omitted: administration
 uses the current dashboard. Home now renders the operational overview described below.
-Lists, Projects, Executions and Settings administration explicitly link to their current implementation with the selected resource and query intact.
+Projects and Issue administration now use shared React flows; see the
+[project and Issue parity inventory](server-projects-react.md). Remaining lists,
+Executions and Settings administration explicitly link to their current implementation
+with the selected resource and query intact.
 They do not offer simulated observations or unfinished actions. Legacy `/home`,
 resource routes and `/workers/{id}/poc` remain usable; default-route cutover and PoC
 removal belong to 24.12.9.
@@ -30,13 +33,14 @@ cannot receive the shell. The canonical map remains
 | Canonical route | Query context | Read APIs / later migration scope |
 | --- | --- | --- |
 | `/home` | none | Workers, projects, latest bounded executions, nodes, Server status; authoritative setup projections |
-| `/projects`, `/projects/{id}` | `issue`, `issueState`, `label`, `issues` | Projects, GitHub access/issues/discovery/relationships; revision-fenced create/edit/lifecycle/delete, Issue editing/eligibility/enqueue |
+| `/projects`, `/projects/{id}` | `issue`, `issueState`, `label`, `issues`, preparation context | Migrated in preview: projects, GitHub access/issues/relationships; verified revision-fenced create/edit/lifecycle/delete, Issue preview/editing/eligibility/enqueue. [Parity inventory](server-projects-react.md) |
 | `/workers`, `/workers/{id}` | `step`, `project` | Worker registry/diagnostics, nodes/commands, projects and latest 50 executions; enrollment, preparation, activation/drain/disable, API-token and delivery revocation |
 | `/executions`, `/executions/{id}` | `project`, `state`, `issue`, `offset` | Execution list/detail; queued cancellation and evidence-based uncertain integration reconciliation |
 | `/settings`, `/settings/{credentialId}` | `node` | Credential metadata, nodes, Server GitHub connection, command history; credential create/replace/assign/revoke and typed provisioning |
 
 `src/app` owns mounting, routes and error handling; `src/pages` owns section pages;
-`src/features/workers` owns the first read-only feature composition; `src/shared`
+`src/features/workers` owns Worker presentation; `src/features/projects` owns
+project configuration and GitHub Issue administration; `src/shared`
 owns the shell, theme and typed API/session hooks. `src/untitled` remains upstream
 source. The retained PoC `detail.jsx` and `model.js` are reused presentation modules;
 further migration should type them alongside their feature work, rather than copy
@@ -142,7 +146,9 @@ infrastructure. The PoC response contains only the React mount and local assets;
 it loads no legacy scripts, hidden DOM targets or `window.codexWorkerPoc` bridge.
 Its approved presentation and public Untitled UI source are reused. The PoC
 preserves its scheduling/API-token control rail through React Aria managed
-confirmation dialogs. Preview remains read-only; both entries show bounded node
+confirmation dialogs. Projects in preview now support explicit administration;
+other preview sections
+retain their current-dashboard links. Both entries show bounded node
 command evidence. The current-dashboard link retains full administration. Ordinary
 dashboard routes retain their existing implementation until their feature migration.
 
@@ -172,7 +178,8 @@ and runtime validation. New streams wait for the cancelled reader to release.
 While connected, SSE replaces Worker data and cancels older Worker GETs; fallback
 refresh covers disconnected streams. No component may open its own stream/timer.
 
-Use `useApiMutation` for later feature migrations. It never retries a write and
+Use `useApiMutation` or its shared `runtime.mutate` owner for feature mutations.
+It never retries a write and
 requires a fresh uncached authoritative check before submission; the Server remains
 the final authority for authorization, revision, lease, readiness and local consent.
 Callers use `runtime.read` for those checks, not Query cache or refetch status.

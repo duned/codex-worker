@@ -72,6 +72,19 @@ export class DashboardRuntime {
   private rejectSession(error: unknown, generation: number) {
     if (this.current(generation) && error instanceof ApiError && [401, 403].includes(error.status ?? 0)) this.reset('Your session expired or was rejected. Sign in again.');
   }
+  // Existing Server-only verification/preview endpoints have no durable effects.
+  // Force previewOnly here so this path cannot accidentally submit an Issue write.
+  async preview<T>(path: string, method: 'POST' | 'PUT' | 'PATCH', body: Record<string, unknown>, signal: AbortSignal, validate: Validator<T>): Promise<T> {
+    const verify = path === '/api/v1/projects/verify' && method === 'POST';
+    if (!verify && !/^\/api\/v1\/projects\/[^/]+\/github\/issues(?:\/\d+(?:\/labels\/configured|\/dependencies\/blocked-by)?)?$/.test(path)) throw new ApiError('Unsupported preview path.');
+    if (!this.state.authenticated) throw new ApiError('Administration sign in required.');
+    const generation = this.state.generation;
+    try {
+      const value = await this.http.request(path, { method, body: verify ? body : { ...body, previewOnly: true }, csrf: this.csrf, signal: AbortSignal.any([signal, this.controller.signal]) }, validate);
+      if (!this.current(generation)) throw cancelled();
+      return value;
+    } catch (error) { this.rejectSession(error, generation); throw error; }
+  }
   locked(resource: string) { return this.fences.has(resource); }
   async mutate<T>(resource: string, path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body: unknown, validate: Validator<T>, authoritativeCheck: (signal: AbortSignal) => Promise<void>) {
     if (!this.state.authenticated || this.locked(resource)) throw new ApiError('Refresh authoritative state before retrying.');
