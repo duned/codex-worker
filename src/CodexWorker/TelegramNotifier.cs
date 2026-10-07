@@ -59,7 +59,7 @@ public sealed class TelegramNotifier : IDisposable
         SendTaskAsync(project, repository, issue, "▶", "TAREA INICIADA", null, ct);
 
     public Task StartingAsync(string project, string repository, GitHubIssue issue, WorkerExecution execution,
-        CancellationToken ct)
+        CancellationToken ct, bool recovered = false)
     {
         var action = execution.Resumed ? "TAREA REANUDADA" : "REINTENTO INICIADO";
         var mode = execution.Resumed ? "resume" : "restart";
@@ -68,7 +68,7 @@ public sealed class TelegramNotifier : IDisposable
         var profile = execution.CodexProfile is { } settings
             ? $"\nCodex · {settings.EffectiveModel ?? "unknown (CLI model unavailable)"} · {settings.Effort}" : "";
         return SendTaskAsync(project, repository, issue, "▶",
-            execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action,
+            recovered ? "TAREA RECUPERADA" : execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action,
             $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}{profile}", ct);
     }
 

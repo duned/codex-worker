@@ -21,7 +21,7 @@ public sealed class WorkerV011Tests
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
-        using var h = new Harness(history: history);
+        using var h = new Harness(history: history, telegramEnabled: true);
         h.GitHub.CancelWhenEmpty = false;
         var id = Guid.NewGuid();
         var snapshot = new CodexInterruptionRecovery(missing == "owner" ? Guid.NewGuid() : id, 1, 0,
@@ -34,19 +34,24 @@ public sealed class WorkerV011Tests
         Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
         Assert.Empty(h.Codex.Issues);
         Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Empty(h.TelegramMessages);
         var preserved = Assert.Single(await history.ReadAllAsync());
         Assert.Equal(id, preserved.ExecutionId);
         Assert.Equal("codex-recovery-inspection-required", preserved.RecoveryState);
         Assert.Contains(reason, h.Output.ToString(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task InterruptedCodexRecoveryPreservesIntentProfileAndBudgetWithoutReadyRelabel()
+    [Theory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InterruptedCodexRecoveryRestoresStartVisibilityAndPreservesLineage(bool? telegramFailure)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         var clock = new RecoveryClock();
-        using var h = new Harness(history: history, timeProvider: clock);
+        using var h = new Harness(history: history, timeProvider: clock, telegramEnabled: true);
         h.Git.Snapshot = new("feature/example-task-17", "base-sha", "1 changed path; preserved");
         h.Codex.CliModel = "original-model";
         h.Codex.InitialException = new CodexExecutionInfrastructureException("Codex usage limit", "usage limit reached") { Recoverable = true };
@@ -59,9 +64,13 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Cleanups);
         Assert.DoesNotContain("working->blocked", h.GitHub.Labels);
         Assert.Contains("automatically", Assert.Single(h.GitHub.Comments), StringComparison.Ordinal);
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA INICIADA", StringComparison.Ordinal));
         h.GitHub.CancelWhenEmpty = false;
         Assert.Null(await h.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("TAREA RECUPERADA", StringComparison.Ordinal));
+        Assert.Single(h.GitHub.Labels, label => label == "ready->working");
         clock.Advance(TimeSpan.FromMinutes(5));
+        h.TelegramFailure = telegramFailure;
         h.Codex.InitialException = null;
         h.GitHub.Issue = h.GitHub.Issue with { Body = "Changed issue intent" };
         var resume = await h.Worker.ClaimNextAsync(CancellationToken.None);
@@ -75,6 +84,18 @@ public sealed class WorkerV011Tests
         Assert.Equal(original.ExecutionId, completed.RetryOfExecutionId);
         Assert.Equal(original.ExecutionId, completed.CodexRecovery?.WorkspaceExecutionId);
         Assert.Equal(1, completed.CodexRecovery?.ResumeCount);
+        Assert.Equal(2, h.GitHub.Labels.Count(label => label == "ready->working"));
+        Assert.Contains("working->done", h.GitHub.Labels);
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA RECUPERADA", StringComparison.Ordinal));
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA COMPLETADA", StringComparison.Ordinal));
+        if (telegramFailure is not null) Assert.Contains("Telegram notification failed", h.Output.ToString());
+
+        using var restarted = new Harness(history: history, timeProvider: clock, telegramEnabled: true);
+        restarted.GitHub.CancelWhenEmpty = false;
+        restarted.GitHub.ReturnIssueOnFirstQuery = false;
+        Assert.Null(await restarted.Worker.ClaimNextAsync(CancellationToken.None));
+        Assert.Empty(restarted.TelegramMessages);
+        Assert.Empty(restarted.GitHub.Labels);
     }
 
     private sealed class RecoveryClock : TimeProvider

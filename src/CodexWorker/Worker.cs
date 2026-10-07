@@ -496,6 +496,13 @@ public sealed class Worker(WorkerConfiguration config, IGitHubClient github, IGi
     {
         try
         {
+            if (retryOf?.RecoveryState == "codex-interrupted" && !integrationRecovery)
+            {
+                // The durable recovery claim has already consumed this source attempt. Discovery
+                // and reconciliation never enter this flow or repeat its start notification.
+                await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
+                await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct, recovered: true);
+            }
             var timer = Stopwatch.StartNew();
             var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery), ct);
             timer.Stop();
