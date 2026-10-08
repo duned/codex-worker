@@ -27,7 +27,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
       if (request.method() !== 'GET') mutations.push(endpoint);
       if (endpoint === '/api/v1/administration/session') return route.fulfill({ json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       if (endpoint === '/api/v1/events/stream') return route.fulfill({ status: 503 });
-      if (scenario === 'unavailable' && ['/api/v1/nodes', '/api/v1/nodes/server/github-connection'].includes(endpoint)) return route.fulfill({ status: 503 });
+      if (scenario === 'unavailable' && ['/api/v1/nodes', '/api/v1/executions'].includes(endpoint)) return route.fulfill({ status: 503 });
       const empty = scenario === 'empty';
       const fixtures = {
         '/api/status': { state: 'running', version: 'fixture', startedAtUtc: '2026-01-01T00:00:00Z' },
@@ -46,45 +46,31 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
         await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
         await page.getByRole('button', { name: 'Refresh system state' }).waitFor();
         await page.waitForFunction(() => !document.body.textContent.includes('Loading execution activity'));
-        const setup = page.getByText('Completed setup actions', { exact: true });
         if (scenario === 'configured') {
-          await page.getByText('No blockers reported in the available observations.', { exact: true }).waitFor();
-          assert.equal(await page.getByRole('link', { name: 'Connect Server GitHub' }).count(), 0);
-          await setup.click();
-          const diagnostics = page.getByText('System diagnostics and capacity', { exact: true });
-          await diagnostics.click();
-          await page.getByText('Server: running · version fixture', { exact: true }).waitFor();
-          await diagnostics.focus();
+          await page.getByText('Current executions · 1 active', { exact: true }).waitFor();
+          await page.getByText('Stage: Validation', { exact: false }).waitFor();
           stage = 'Integration';
-          const refreshed = page.waitForResponse(response => response.url().includes('/api/v1/executions'));
-          await page.getByRole('button', { name: 'Refresh system state' }).evaluate(element => element.click());
-          await refreshed;
-          await page.getByText('Running · Integration', { exact: true }).first().waitFor();
-          await page.waitForFunction(() => document.querySelectorAll('details[open]').length >= 2);
-          assert.equal(await diagnostics.evaluate(element => element === document.activeElement && element.parentElement.open), true);
-          assert.equal(await setup.evaluate(element => element.parentElement.open), true);
+          await page.getByRole('button', { name: 'Refresh system state' }).click();
+          await page.getByText('Stage: Integration', { exact: false }).waitFor();
+          stage = 'Validation';
         }
-        if (scenario === 'stale') await page.getByText('Observations stale · check authentication').first().waitFor();
-        if (scenario === 'unavailable') await page.getByText('Connection observations unavailable').first().waitFor();
-        if (scenario === 'empty') await page.getByRole('link', { name: 'Add Worker' }).waitFor();
-        if (scenario === 'project-first') await page.getByRole('link', { name: 'Add Worker' }).waitFor();
-        if (scenario === 'worker-first') await page.getByRole('link', { name: 'Create project' }).waitFor();
+        if (scenario === 'stale') await page.getByText('Readiness stale', { exact: true }).waitFor();
+        if (scenario === 'unavailable') await page.getByRole('alert').first().waitFor();
+        if (scenario === 'empty') await page.getByText('No Workers registered. Add a Worker to get started.').waitFor();
         if (scenario === 'recovery') {
-          // Exact resource evidence is preserved independently of its friendly label.
           assert.ok(await page.locator('a[href="/executions/recover"]').count() > 0);
-          await page.getByText('Recovery: IntegrationUncertain').first().waitFor();
+          await page.getByLabel('Status', { exact: true }).selectOption('Completed');
+          await page.getByText('No completed executions match this status.').waitFor();
+          await page.getByText('Current executions · 1 active', { exact: true }).waitFor();
+          await page.getByLabel('Status', { exact: true }).selectOption('Failed');
+          await page.getByText('Execution failed', { exact: true }).waitFor();
         }
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No overflow: ${width}/${scenario}`);
         await page.screenshot({ path: path.join(output, `${scenario}-${width}.png`), fullPage: true });
       }
     }
-    scenario = 'stale';
-    await page.goto('https://dashboard.test/settings?node=server');
-    await page.getByText('Observations stale · check authentication').waitFor();
-    await page.reload();
-    await page.getByText('Observations stale · check authentication').waitFor();
     assert.deepEqual(mutations, []);
     assert.deepEqual(errors, []);
-    console.log('Home browser review passed: desktop/mobile, empty/active/stale/unavailable, independent setup, recovery, refresh disclosure/focus, shared Settings projection, no mutations.');
+    console.log('Home browser review passed: desktop/mobile, empty/active/stale/unavailable, status filtering, recovery, refresh, no mutations.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

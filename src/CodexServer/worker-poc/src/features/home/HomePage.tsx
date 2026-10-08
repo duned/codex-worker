@@ -1,66 +1,73 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useApiRead } from '../../shared/api/session';
-import { workers, projects, executions, serverStatus } from '../../shared/api/validation';
+import { workers, projects, executions } from '../../shared/api/validation';
 import { useServerReadiness } from '../server/useServerReadiness';
-import { preparedWorker } from '../server/readiness';
-import { aggregateCapacity, executionNeedsAttention, workerAttention } from './model';
-import { AdvancedDisclosure, PageHeading, ResourceIdentity, StatusBadge } from '../../shared/Presentation';
+import { completedExecutions, completedStatuses, recentProjects, repositoryLink, sectionMessage } from './model';
+import { PageHeading, Notice, StatusBadge } from '../../shared/Presentation';
+import { ExternalLink } from '../../shared/Actions';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { TableCard } from '../../untitled/components/application/table/table';
+import { issueLink, timestamp, duration, statusColor } from '../../model';
+import { presentation } from '../executions/model';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 
 export function HomePage() {
   const registry = useApiRead('/api/v1/workers', workers);
   const catalog = useApiRead('/api/v1/projects', projects);
   const activity = useApiRead('/api/v1/executions?limit=50&offset=0', executions);
-  const status = useApiRead('/api/status', serverStatus);
   const readiness = useServerReadiness();
-  const prepared = preparedWorker(readiness.inventory.data);
-  const resume = readiness.inventory.data?.find(node => node.kind === 'worker');
-  const milestones = [
-    { id: 'github', action: readiness.github.complete ? 'Inspect connection' : 'Connect Server GitHub', title: 'Connect Server GitHub', complete: readiness.github.complete, known: !!readiness.inventory.data && !!readiness.connection.data, detail: readiness.github.detail, href: '/settings?node=server' },
-    { id: 'project', action: catalog.data?.length ? 'Manage projects' : 'Create project', title: 'Create a project', complete: !!catalog.data?.length, known: !!catalog.data, detail: catalog.data ? `${catalog.data.length} central project definitions` : 'Central definitions unavailable', href: '/projects' },
-    { id: 'worker', action: prepared ? 'Inspect prepared Worker' : resume ? 'Resume Worker preparation' : 'Add Worker', title: 'Prepare a Worker', complete: !!prepared, known: !!readiness.inventory.data, detail: prepared ? `${prepared.displayName ?? 'Worker'} has current execution prerequisites` : 'Enroll or resume tools, authentication and configuration', href: prepared || resume ? `/workers/${encodeURIComponent((prepared ?? resume)?.id ?? '')}?step=preparation` : '/workers?prepare=1' }
-  ];
-  const renderMilestone = (item: typeof milestones[number]) => <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-secondary py-4 last:border-0">
-    <div className="min-w-0"><h3 className="font-medium text-primary">{item.title}</h3><p className="text-sm text-tertiary">{item.detail}</p></div>
-    <div className="flex flex-wrap items-center gap-3"><StatusBadge tone={item.complete ? 'success' : item.known ? 'warning' : 'gray'}>{item.complete ? 'Complete' : item.known ? 'Needs attention' : 'Unavailable'}</StatusBadge><Button href={item.href} color="secondary" size="sm">{item.action}</Button></div>
-  </div>;
-  const renderExecution = (item: ExecutionSummary) => <div key={item.id} className="space-y-2 border-b border-secondary py-4 last:border-0">
-    <div className="flex flex-wrap items-center justify-between gap-3"><Button href={`/executions/${encodeURIComponent(item.id)}`} color="link-color">{catalog.data?.find(project => project.id === item.projectId)?.name ?? 'Project'} · {item.workReference ? `${item.workReference.type} ${item.workReference.id}` : 'Execution'}</Button><StatusBadge tone={item.recoveryState || item.state === 'Failed' ? 'error' : item.state === 'Completed' ? 'success' : 'gray'}>{item.state}{item.currentStage ? ` · ${item.currentStage}` : ''}</StatusBadge></div>
-    {item.assignedWorkerId && <a className="text-sm text-secondary underline" href={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{registry.data?.find(worker => worker.workerId === item.assignedWorkerId)?.displayName ?? 'Assigned Worker'}</a>}
-    {executionNeedsAttention(item) && <p className="text-sm text-warning-primary">{item.recoveryState ? `Recovery: ${item.recoveryState}` : item.pendingReason ? 'Pending work' : 'Eligibility blocked'}</p>}
-    <AdvancedDisclosure title="Execution diagnostics"><ResourceIdentity name="Execution" id={item.id} /><ResourceIdentity name="Project" id={item.projectId} />{item.assignedWorkerId && <ResourceIdentity name="Assigned Worker" id={item.assignedWorkerId} />}{item.pendingReason && <p>Pending: {item.pendingReason}</p>}{item.recoveryReason && <p>Recovery: {item.recoveryReason}</p>}{item.completionSummary && <p>{item.completionSummary}</p>}{item.managedEligibilityReasons?.map(reason => <p key={reason}>{reason}</p>)}<a href={`/projects/${encodeURIComponent(item.projectId)}?issues=1`}>Inspect project Issues and eligibility</a></AdvancedDisclosure>
-  </div>;
+  const [filter, setFilter] = useState('All');
   const current = activity.data?.filter(item => ['Assigned', 'Running'].includes(item.state)) ?? [];
-  const attention = activity.data?.filter(executionNeedsAttention) ?? [];
+  const completed = completedExecutions(activity.data ?? [], filter);
+  const linkClass = 'text-brand-secondary underline break-words';
+  function issue(item: ExecutionSummary) {
+    const project = catalog.data?.find(project => project.id === item.projectId);
+    const href = issueLink(item.workReference, project?.repository);
+    const label = item.workReference ? `${item.workReference.type === 'github-issue' ? 'Issue #' : `${item.workReference.type} `}${item.workReference.id}` : 'Issue unavailable';
+    return <span>{href ? <ExternalLink href={href}>{label}</ExternalLink> : label}<span className="text-tertiary"> · Title unavailable</span></span>;
+  }
+  function executionRow(item: ExecutionSummary, active = false) {
+    const state = presentation(item);
+    return <li key={item.id} className="space-y-2 border-b border-secondary py-4 last:border-0">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0 break-words">{issue(item)}</div><StatusBadge tone={state.tone}>{state.text}</StatusBadge></div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm"><Link className={linkClass} to={`/projects/${encodeURIComponent(item.projectId)}`}>{catalog.data?.find(p => p.id === item.projectId)?.name ?? 'Project name unavailable'}</Link>
+        {item.assignedWorkerId ? <Link className={linkClass} to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{registry.data?.find(w => w.workerId === item.assignedWorkerId)?.displayName ?? 'Worker name unavailable'}</Link> : <span>Worker unassigned</span>}
+        <Link className={linkClass} to={`/executions/${encodeURIComponent(item.id)}`}>Execution details</Link></div>
+      {active ? <p className="text-sm text-tertiary">Stage: {item.currentStage ?? 'Unavailable'} · Elapsed: {duration(item, Date.now())}</p> : <><p className="line-clamp-2 break-words text-sm">{item.completionSummary || 'Summary not reported'}</p><p className="text-sm text-tertiary">Completed: {timestamp(item.completedAtUtc)}</p></>}
+    </li>;
+  }
+  function readState(read: { data?: unknown[]; loading: boolean; error?: string; stale: boolean; updatedAt: number }, empty: string) {
+    const message = sectionMessage(read.data, read.loading, read.error, empty);
+    return <>{message && <Notice error={!!read.error}>{message}</Notice>}{read.data && read.stale && <p className="mb-3 text-xs text-tertiary">Snapshot may be stale · updated {timestamp(new Date(read.updatedAt).toISOString())}</p>}</>;
+  }
   async function refresh() {
-    await Promise.all([registry.refetch(), catalog.refetch(), activity.refetch(), status.refetch(), readiness.inventory.refetch(), readiness.connection.refetch()]);
+    await Promise.all([registry.refetch(), catalog.refetch(), activity.refetch(), readiness.inventory.refetch()]);
   }
   return <div className="space-y-6 text-secondary">
     <PageHeading title="Home" actions={<Button color="secondary" onPress={() => { void refresh(); }}>Refresh system state</Button>} />
-    <TableCard.Root><TableCard.Header title="Current work" description="Reported activity in the latest 50 execution requests. Older active details may be outside this snapshot." /><div className="px-5 pb-5">{!activity.data ? <p>{activity.loading ? 'Loading execution activity…' : 'Execution activity unavailable'}</p> : current.length ? current.map(renderExecution) : <p>No active work in this bounded snapshot.</p>}<Button href="/executions" color="link-color">Review queue and outcomes</Button></div></TableCard.Root>
-    <TableCard.Root><TableCard.Header title="Needs attention" /><div className="px-5 pb-5 space-y-4">
-      {!readiness.github.complete && <div><StatusBadge tone={readiness.github.tone}>{readiness.github.detail}</StatusBadge> <Button href="/settings?node=server" color="link-color">Inspect Server GitHub connection</Button></div>}
-      {!registry.data && <p>Worker connectivity unavailable</p>}
-      {registry.data?.map(worker => {
-        const reasons = workerAttention(worker, readiness.inventory.data);
-        return reasons.length ? <div key={worker.workerId}><Button href={`/workers/${encodeURIComponent(worker.workerId)}?step=preparation`} color="link-color">{worker.displayName ?? 'Worker'}</Button><StatusBadge tone={worker.availability === 'offline' ? 'error' : 'warning'}>{reasons.join(' · ')}</StatusBadge></div> : null;
-      })}
-      {readiness.node?.health && readiness.node.health !== 'healthy' && <p>Server health: {readiness.node.health} · <a className="underline" href="/settings?node=server">Inspect Server diagnostics</a>.</p>}
-      {attention.map(renderExecution)}
-      {registry.data && activity.data && readiness.inventory.data && readiness.node?.health !== 'unhealthy' && readiness.github.complete && !registry.data.some(worker => workerAttention(worker, readiness.inventory.data).length) && !attention.length && <p>No blockers reported in the available observations.</p>}
+    <div className="grid items-start gap-6 xl:grid-cols-2">
+      <TableCard.Root><TableCard.Header title="Workers" /><div className="space-y-4 p-5 pt-0">{readState(registry, 'No Workers registered. Add a Worker to get started.')}
+        <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{registry.data?.map(worker => {
+          const node = readiness.inventory.data?.find(n => n.kind === 'worker' && n.id === worker.workerId);
+          return <div key={worker.workerId} className="min-w-0 space-y-2 rounded-xl border border-secondary p-3"><Link className={`${linkClass} font-medium`} to={`/workers/${encodeURIComponent(worker.workerId)}`}>{worker.displayName ?? 'Worker name unavailable'}</Link>
+            <p><StatusBadge tone={statusColor(worker.availability)}>{worker.availability}</StatusBadge></p>
+            <p className="text-sm">{worker.activeExecutions ?? 'Unknown'} / {worker.maximumCapacity ?? worker.capacity ?? 'Unknown'} slots occupied</p>
+            <p className="text-xs text-tertiary">{worker.lifecycleState ?? 'Lifecycle unavailable'} · Scheduling {worker.schedulingPolicy ?? 'unavailable'}</p>
+            <p className="text-xs text-tertiary">{!node ? 'Readiness unavailable' : node.observationsStale ? 'Readiness stale' : `Prerequisites: ${node.executionReadiness}`}</p>
+          </div>;
+        })}</div>{readiness.inventory.error && <Notice error>Readiness unavailable. Refresh system state to retry.</Notice>}<Button href="/workers" color="link-color">All Workers</Button></div></TableCard.Root>
+      <TableCard.Root><TableCard.Header title="Projects" description="Latest five by recorded activity in the latest 50 execution requests." /><div className="p-5 pt-0">{readState(catalog, 'No projects registered. Create a project to get started.')}{readState(activity, 'No execution activity recorded in this snapshot.')}
+        <ul>{recentProjects(catalog.data ?? [], activity.data ?? []).map(({ project, latest }) => <li key={project.id} className="space-y-2 border-b border-secondary py-4 last:border-0">
+          <div className="flex flex-wrap items-center justify-between gap-2"><Link className={`${linkClass} font-medium`} to={`/projects/${encodeURIComponent(project.id)}`}>{project.name}</Link><StatusBadge tone={project.enabled === true ? 'success' : 'gray'}>{project.enabled == null ? 'Status unavailable' : project.enabled ? 'Enabled' : 'Disabled'}</StatusBadge></div>
+          <p className="break-words text-sm">{repositoryLink(project.repository) ? <ExternalLink href={repositoryLink(project.repository)}>{project.repository}</ExternalLink> : 'Repository link unavailable'}</p>
+          {!activity.data ? <p className="text-sm text-tertiary">Execution activity unavailable</p> : latest ? <div className="space-y-1 text-sm"><p>{issue(latest)}</p><Link className={linkClass} to={`/executions/${encodeURIComponent(latest.id)}`}>{latest.state} · {timestamp(latest.completedAtUtc ?? latest.startedAtUtc ?? latest.assignedAtUtc ?? latest.createdAtUtc)}</Link></div> : <p className="text-sm text-tertiary">No recorded execution activity in this snapshot</p>}
+        </li>)}</ul><Button href="/projects" color="link-color">All Projects</Button></div></TableCard.Root>
+    </div>
+    <TableCard.Root><TableCard.Header title={`Current executions${activity.data ? ` · ${current.length} active` : ''}`} description="Assigned and running requests in the latest 50 requests; older active work may be outside this snapshot." /><div className="px-5 pb-5">{readState(activity, 'No execution requests yet.')}{activity.data && !current.length && <p>No active executions in this snapshot.</p>}<ul>{current.map(item => executionRow(item, true))}</ul><Button href="/executions" color="link-color">All executions</Button></div></TableCard.Root>
+    <TableCard.Root><TableCard.Header title="Recent completed executions" description="Terminal outcomes in the latest 50 requests." /><div className="space-y-4 px-5 pb-5">
+      <label className="block text-sm">Status<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...completedStatuses].map(state => <option key={state}>{state}</option>)}</select></label>
+      {readState(activity, 'No execution requests yet.')}{activity.data && !completed.length && <p>{completedExecutions(activity.data).length ? 'No completed executions match this status.' : 'No completed executions in this snapshot.'}</p>}<ul>{completed.map(item => executionRow(item))}</ul>
     </div></TableCard.Root>
-    <TableCard.Root><TableCard.Header title="Resumable setup" description="Start with a project or a Worker. Preparation does not enable scheduling or grant repository access." /><div className="px-5 pb-5">
-      {milestones.filter(item => !item.complete).map(renderMilestone)}
-      <AdvancedDisclosure title="Completed setup actions">{milestones.filter(item => item.complete).map(renderMilestone)}{!milestones.some(item => item.complete) && <p>No completed actions reported.</p>}</AdvancedDisclosure>
-    </div></TableCard.Root>
-    <TableCard.Root><TableCard.Header title="Latest activity" description="A bounded snapshot, not total execution history." /><div className="px-5 pb-5">{activity.data ? activity.data.slice(0, 5).map(renderExecution) : <p>Execution activity unavailable</p>}{activity.data?.length === 0 && <p>No execution requests yet.</p>}</div></TableCard.Root>
-    <AdvancedDisclosure title="System diagnostics and capacity">
-      <p>Server: {status.data?.state ?? 'unavailable'} · version {status.data?.version ?? 'unavailable'}</p>
-      <p>Server-wide aggregate Worker slots: {aggregateCapacity(registry.data, 'maximumCapacity')} · in use {aggregateCapacity(registry.data, 'activeExecutions')} · reported available {aggregateCapacity(registry.data, 'availableCapacity')}. This is not a Server scheduling limit.</p>
-      <p>{catalog.data?.length ?? 'Unavailable'} central project definitions · {registry.data?.length ?? 'Unavailable'} registered Workers · {activity.data?.length ?? 'Unavailable'} requests in the latest bounded snapshot. Total history metrics are not supplied by these APIs.</p>
-      {registry.data?.map(worker => <p key={worker.workerId}><a className="underline" href={`/workers/${encodeURIComponent(worker.workerId)}`}>{worker.displayName ?? 'Worker'}</a>: {worker.activeExecutions ?? 'Unavailable'} / {worker.maximumCapacity ?? worker.capacity ?? 'Unavailable'} slots · available {worker.availableCapacity ?? 'Unavailable'}</p>)}
-      {[registry, catalog, activity, status, readiness.inventory, readiness.connection].map((read, index) => read.error && <p key={index}>{read.error}</p>)}
-    </AdvancedDisclosure>
   </div>;
 }

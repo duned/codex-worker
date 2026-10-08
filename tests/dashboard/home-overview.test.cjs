@@ -50,3 +50,33 @@ test('recovery, pending work and eligibility remain distinct actionable evidence
   assert.throws(() => executions([{ ...current, managedEligibilityReasons: [{}] }]));
   assert.throws(() => serverGitHubConnection({ ...connection, provisioningEnabled: 'true' }));
 });
+
+const { recentProjects, completedExecutions, sectionMessage, repositoryLink } = require(join(directory, 'model.cjs'));
+test('projects follow latest recorded activity, limit to five, and preserve catalog order without activity', () => {
+  const catalog = Array.from({ length: 7 }, (_, i) => ({ id: String(i), name: `Project ${i}`, repository: 'owner/repo' }));
+  const activity = [
+    { ...current, projectId: '3', completedAtUtc: '2026-02-03T00:00:00Z' },
+    { ...current, projectId: '2', startedAtUtc: '2026-02-02T00:00:00Z' },
+    { ...current, projectId: '3', createdAtUtc: '2025-01-01T00:00:00Z' }
+  ];
+  assert.deepEqual(recentProjects(catalog, activity).map(x => x.project.id), ['3', '2', '0', '1', '4']);
+  assert.equal(recentProjects(catalog, activity)[0].latest, activity[0]);
+  assert.deepEqual(recentProjects(catalog, []).map(x => x.project.id), ['0', '1', '2', '3', '4']);
+  assert.deepEqual(recentProjects([], activity), []);
+});
+test('completed filters include each terminal state and exclude active requests', () => {
+  const activity = ['Running', 'Assigned', 'Queued', 'Completed', 'Failed', 'Cancelled'].map(state => ({ ...current, state }));
+  assert.deepEqual(completedExecutions(activity).map(x => x.state), ['Completed', 'Failed', 'Cancelled']);
+  for (const state of ['Completed', 'Failed', 'Cancelled']) assert.deepEqual(completedExecutions(activity, state).map(x => x.state), [state]);
+  assert.deepEqual(completedExecutions([], 'Failed'), []);
+  assert.equal(activity.length, 6);
+});
+test('section states distinguish loading, empty and failed reads, and repository links remain canonical', () => {
+  assert.equal(sectionMessage(undefined, true, undefined, 'Empty'), 'Loading…');
+  assert.equal(sectionMessage([], false, undefined, 'Empty'), 'Empty');
+  assert.match(sectionMessage(undefined, false, 'Failure', 'Empty'), /Retry/);
+  assert.match(sectionMessage([current], false, 'Failure', 'Empty'), /unavailable/);
+  assert.equal(sectionMessage([current], false, undefined, 'Empty'), undefined);
+  assert.equal(repositoryLink('owner/repo'), 'https://github.com/owner/repo');
+  for (const value of ['../repo', 'https://example.com', 'owner/repo?token=x']) assert.equal(repositoryLink(value), undefined);
+});
