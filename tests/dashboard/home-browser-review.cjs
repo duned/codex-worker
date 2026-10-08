@@ -47,7 +47,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
         await page.getByRole('button', { name: 'Refresh system state' }).waitFor();
         await page.waitForFunction(() => !document.body.textContent.includes('Loading execution activity'));
         if (scenario === 'configured') {
-          await page.getByText('Current executions · 1 active', { exact: true }).waitFor();
+          await page.getByText('Current work · 1 active', { exact: true }).waitFor();
           await page.getByText('Stage: Validation', { exact: false }).waitFor();
           stage = 'Integration';
           await page.getByRole('button', { name: 'Refresh system state' }).click();
@@ -61,7 +61,7 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
           assert.ok(await page.locator('a[href="/executions/recover"]').count() > 0);
           await page.getByLabel('Status', { exact: true }).selectOption('Completed');
           await page.getByText('No completed executions match this status.').waitFor();
-          await page.getByText('Current executions · 1 active', { exact: true }).waitFor();
+          await page.getByText('Current work · 1 active', { exact: true }).waitFor();
           await page.getByLabel('Status', { exact: true }).selectOption('Failed');
           await page.getByText('Execution failed', { exact: true }).waitFor();
         }

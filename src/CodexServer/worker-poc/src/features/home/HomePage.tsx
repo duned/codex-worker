@@ -21,6 +21,15 @@ export function HomePage() {
   const [filter, setFilter] = useState('All');
   const current = activity.data?.filter(item => ['Assigned', 'Running'].includes(item.state)) ?? [];
   const completed = completedExecutions(activity.data ?? [], filter);
+  const today = new Date().toISOString().slice(0, 10);
+  const completedToday = activity.data?.filter(item => item.completedAtUtc?.slice(0, 10) === today) ?? [];
+  const running = activity.data?.filter(item => item.state === 'Running') ?? [];
+  const metrics = [
+    { label: t('home.activeWorkers'), value: registry.data?.filter(worker => worker.availability === 'online').length, detail: registry.data ? `${registry.data.length} ${t('home.totalWorkers')}` : undefined },
+    { label: t('home.projects'), value: catalog.data?.length, detail: undefined },
+    { label: t('home.runningExecutions'), value: activity.data ? running.length : undefined, detail: t('home.latest50Requests') },
+    { label: t('home.completedToday'), value: activity.data ? completedToday.length : undefined, detail: activity.data ? t('home.latest50Requests') : undefined }
+  ];
   const linkClass = 'text-brand-secondary hover:underline break-words';
   function issue(item: ExecutionSummary) {
     const project = catalog.data?.find(project => project.id === item.projectId);
@@ -46,11 +55,17 @@ export function HomePage() {
   }
   return <div className="space-y-5 text-secondary">
     <PageHeading title={t("home.home")} actions={<Button color="secondary" onPress={() => { void refresh(); }}>{t("home.refreshSystemState")}</Button>} />
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{metrics.map(metric => <section key={metric.label} className="rounded-xl border border-secondary bg-primary p-4" aria-label={metric.label}><p className="text-sm text-tertiary">{metric.label}</p><p className="mt-2 text-3xl font-semibold text-primary">{metric.value ?? t('home.unavailable')}</p>{metric.detail && <p className="mt-1 text-xs text-tertiary">{metric.detail}</p>}</section>)}</div>
     <div className="grid items-start gap-5 xl:grid-cols-[0.9fr_1.1fr]">
       <section className="rounded-xl border border-secondary bg-primary p-4" aria-labelledby="home-workers"><div className="mb-3 flex items-center justify-between"><h2 id="home-workers" className="text-lg font-semibold text-primary">{t("home.workers")}</h2><Button href="/workers" color="link-color">{t("home.allWorkers")}</Button></div><div className="space-y-3">{readState(registry, t("home.noWorkersRegisteredAddAWorkerToGetStarted"))}
-        <div className="grid gap-2 sm:grid-cols-2">{registry.data?.map(worker => <Link key={worker.workerId} className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-secondary px-3 py-2 hover:bg-secondary" to={`/workers/${encodeURIComponent(worker.workerId)}`}>
-          <span className="min-w-0"><span className="block truncate font-medium text-primary">{worker.displayName ?? t("home.workerNameUnavailable")}</span><span className="text-xs text-tertiary">{t("home.slotsOccupied")}: {worker.activeExecutions ?? t("home.unknown")} / {worker.maximumCapacity ?? worker.capacity ?? t("home.unknown")}</span></span><StatusBadge tone={statusColor(worker.availability)}>{localizeText(worker.availability)}</StatusBadge>
-        </Link>)}</div>{readiness.inventory.error && <Notice error>{t("home.readinessUnavailableRefreshSystemStateToRetry")}</Notice>}</div></section>
+        <div className="grid gap-2 sm:grid-cols-2">{registry.data?.map(worker => {
+          const capacity = worker.maximumCapacity ?? worker.capacity;
+          const occupied = worker.activeExecutions;
+          const usage = capacity != null && capacity > 0 && occupied != null ? Math.min(100, Math.max(0, occupied / capacity * 100)) : undefined;
+          return <Link key={worker.workerId} className="min-w-0 rounded-lg border border-secondary px-3 py-2 hover:bg-secondary" to={`/workers/${encodeURIComponent(worker.workerId)}`}>
+          <span className="flex min-w-0 items-center justify-between gap-2"><span className="truncate font-medium text-primary">{worker.displayName ?? t("home.workerNameUnavailable")}</span><StatusBadge tone={statusColor(worker.availability)}>{localizeText(worker.availability)}</StatusBadge></span><span className="mt-2 block text-xs text-tertiary">{t("home.slotsOccupied")}: {occupied ?? t("home.unknown")} / {capacity ?? t("home.unknown")}</span><span className="mt-2 block h-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true"><span className="block h-full rounded-full bg-brand-solid" style={{ width: `${usage ?? 0}%` }} /></span>
+        </Link>;
+        })}</div>{readiness.inventory.error && <Notice error>{t("home.readinessUnavailableRefreshSystemStateToRetry")}</Notice>}</div></section>
       <section className="rounded-xl border border-secondary bg-primary p-4" aria-labelledby="home-projects"><div className="mb-3 flex items-center justify-between"><h2 id="home-projects" className="text-lg font-semibold text-primary">{t("home.projects")}</h2><Button href="/projects" color="link-color">{t("home.allProjects")}</Button></div><p className="mb-2 text-xs text-tertiary">{t("home.latestFiveByRecordedActivityInTheLatest50ExecutionRequests")}</p><div>{readState(catalog, t("home.noProjectsRegisteredCreateAProjectToGetStarted"))}
         <ul className="divide-y divide-secondary">{recentProjects(catalog.data ?? [], activity.data ?? []).map(({ project, latest }) => {
           const repoHref = repositoryLink(project.repository);
