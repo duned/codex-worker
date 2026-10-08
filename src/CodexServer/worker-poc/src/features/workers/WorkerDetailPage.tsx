@@ -1,3 +1,4 @@
+import { useLanguage } from '../../shared/i18n';
 import { useParams, useLocation } from 'react-router-dom';
 import { WorkerDetail } from '../../detail.jsx';
 import { useApiRead } from '../../shared/api/session';
@@ -9,6 +10,7 @@ import { WorkerAdvanced } from './WorkerAdvanced';
 import { WorkerPreparation } from './WorkerPreparation';
 import { NodeProvisioning } from '../nodes/NodeProvisioning';
 export function WorkerDetailPage({ workerId, administration }: { workerId?: string; administration?: AdministrationPresentation } = {}) {
+  useLanguage();
   const params = useParams();
   const resourceId = workerId ?? params.resourceId;
   const location = useLocation();

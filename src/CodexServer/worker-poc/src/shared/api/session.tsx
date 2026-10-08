@@ -1,9 +1,11 @@
+import { useLanguage } from '../i18n';
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { QueryClientProvider, useMutation, useQuery } from '@tanstack/react-query';
 import { DashboardRuntime, queryKeys } from './runtime';
 import type { Validator } from './client';
 const SessionContext = createContext<DashboardRuntime | null>(null);
 export function SessionProvider({ children }: { children: ReactNode }) {
+  useLanguage();
   const [runtime] = useState(() => new DashboardRuntime());
   useEffect(() => {
     void runtime.session('GET');

@@ -156,14 +156,14 @@ test('safe client diagnostics and response validation never expose response bodi
   const invalid = new HttpClient(async () => Response.json([{ workerId: {} }]));
   await assert.rejects(invalid.request('/api/v1/workers', { signal: new AbortController().signal }, workers), /Invalid Server data/);
 });
-test('preferences reload only versioned theme; corrupt/unavailable storage keeps a usable dark default', () => {
+test('preferences reload only versioned theme and language; corrupt/unavailable storage keeps a usable dark default', () => {
   let saved = null;
   const storage = { getItem: () => saved, setItem: (_key, value) => { saved = value; }, removeItem: () => {} };
   const first = createPreferences(storage); first.getState().setTheme('light');
-  assert.deepEqual(JSON.parse(saved), { state: { theme: 'light' }, version: 1 });
+  assert.deepEqual(JSON.parse(saved), { state: { theme: 'light', language: 'en' }, version: 1 });
   assert.equal(createPreferences(storage).getState().theme, 'light');
   saved = JSON.stringify({ state: { theme: 'light', csrf: 'private', project: 'secret' }, version: 1 });
-  assert.deepEqual(Object.keys(createPreferences(storage).getState()).sort(), ['setTheme', 'theme']);
+  assert.deepEqual(Object.keys(createPreferences(storage).getState()).sort(), ['language', 'setLanguage', 'setTheme', 'theme']);
   saved = JSON.stringify({ state: { theme: 'light' }, version: 99 }); assert.equal(createPreferences(storage).getState().theme, 'dark');
   saved = JSON.stringify({ state: { theme: 'light' } }); assert.equal(createPreferences(storage).getState().theme, 'dark');
   saved = '{corrupt'; assert.equal(createPreferences(storage).getState().theme, 'dark');

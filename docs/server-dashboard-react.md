@@ -322,3 +322,31 @@ entry and rejected unknown availability or invalid heartbeat as pairing
 acknowledgement. Chromium required the existing temporary font configuration;
 no node or provider was modified. These are local self-checks, not the
 Worker's authoritative configured validation.
+
+## Dashboard languages
+
+The shared shell and form dialogs offer English and Spanish without changing the
+route, session owner or transient drafts. English is the initial default. The
+existing version-1 `codex-dashboard-preferences` store allowlists only theme and
+language (`en` / `es`); older theme-only preferences remain valid. Corrupt or
+unavailable storage keeps a usable visit preference. No credentials, API data or
+form contents enter this store.
+
+`shared/i18n.ts` uses the existing Zustand subscription rather than adding a
+localization dependency. Feature/shared keys live in `shared/locales/en.ts` and
+`es.ts`; TypeScript requires matching Spanish keys. Use `t` for dashboard copy,
+parameterized resources for messages with values, and `statusLabel` for API values.
+`localizeText` re-presents retained dashboard messages and static action labels in
+the current language, preserving unknown external text. Known status labels never
+change filter values, mutation payloads or readiness rules. Unknown future values
+remain readable and React-escaped. Dates keep the existing local-browser timezone
+and `dd/MM/yyyy, HH:mm:ss` formatter used by the Server sidebar in both languages.
+Shared inputs supply localized validation and password-control labels; navigation
+labels are passed to the retained Untitled UI components.
+
+Validation includes catalog key/parameter parity, preferences, rendered shell and
+Worker evidence, retained messages, unknown statuses and timestamp stability in
+`tests/dashboard/localization.test.cjs`. After building, the optional
+`tests/dashboard/localization-browser-review.cjs` Playwright fixture exercises real
+routes, project/credential drafts and dialogs, reload, status filter API values,
+error/empty states and mobile navigation. It submits no resource writes.

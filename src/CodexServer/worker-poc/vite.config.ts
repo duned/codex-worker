@@ -31,7 +31,9 @@ export default defineConfig(({ command }) => ({
       output: {
         banner: '/*!\n' + readFileSync(resolve(import.meta.dirname, 'UNTITLED-UI-LICENSE'), 'utf8') + '\n*/',
         manualChunks(id) {
+          if (id.includes('/src/shared/locales/')) return 'translations';
           if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'react';
+          if (/node_modules\/(react-aria-components|@react-aria|@react-stately|react-stately|@react-types)\//.test(id)) return 'accessible-ui';
         }
       }
     }

@@ -1,3 +1,4 @@
+import { t, useLanguage } from '../shared/i18n';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { lazy, Suspense } from 'react';
 import { ViewState } from '../shared/Presentation';
@@ -11,9 +12,11 @@ import { ProjectsWorkspace } from '../features/projects/Workspace';
 import { sections, resourceSections } from './routes';
 
 const SettingsPage = lazy(() => import('../features/settings/SettingsPage').then(module => ({ default: module.SettingsPage })));
-function SettingsRoute() { return <Suspense fallback={<ViewState title="Loading Settings…" />}><SettingsPage /></Suspense>; }
+function SettingsRoute() {
+  useLanguage(); return <Suspense fallback={<ViewState title={t("shared.loadingSettings")} />}><SettingsPage /></Suspense>; }
 
 function WorkerPage() {
+  useLanguage();
   const { resourceId } = useParams();
   if (!resourceId) throw new Error('Worker route ID missing.');
   return <WorkerPocPage key={resourceId} id={resourceId} />;
@@ -21,11 +24,12 @@ function WorkerPage() {
 // Route boundary: browser context is the source of resource/filter identity.
 // It never selects a different resource when a read fails or submits a mutation.
 export function DashboardRoutes() {
+  useLanguage();
   const location = useLocation();
   return <SettingsWorkspace><ProjectsWorkspace><Routes>
     <Route path="/" element={<Navigate to={{ pathname: '/home', search: location.search }} replace />} />
     {sections.map(section => <Route key={section} path={`/${section}`} element={section === 'home' ? <HomePage /> : section === 'workers' ? <WorkersPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
     {resourceSections.map(section => <Route key={section} path={`/${section}/:resourceId`} element={section === 'workers' ? <WorkerPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
-    <Route path="*" element={<p role="alert">Unknown dashboard route.</p>} />
+    <Route path="*" element={<p role="alert">{t("shared.unknownDashboardRoute")}</p>} />
   </Routes></ProjectsWorkspace></SettingsWorkspace>;
 }

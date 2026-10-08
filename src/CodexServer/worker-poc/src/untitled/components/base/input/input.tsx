@@ -2,8 +2,8 @@
 
 import { type ComponentType, type HTMLAttributes, type ReactNode, type Ref, createContext, useContext, useState } from "react";
 import { Eye, EyeOff, HelpCircle, InfoCircle } from "@untitledui/icons";
-import type { InputProps as AriaInputProps, TextFieldProps as AriaTextFieldProps } from "react-aria-components";
-import { Button as AriaButton, Group as AriaGroup, Input as AriaInput, TextField as AriaTextField } from "react-aria-components";
+import type { InputProps as AriaInputProps, TextFieldProps as AriaTextFieldProps, ValidationResult } from "react-aria-components";
+import { FieldError, Button as AriaButton, Group as AriaGroup, Input as AriaInput, TextField as AriaTextField } from "react-aria-components";
 import { HintText } from "@/components/base/input/hint-text";
 import { Label } from "@/components/base/input/label";
 import { Tooltip, TooltipTrigger } from "@/components/base/tooltip/tooltip";
@@ -12,6 +12,7 @@ import { cx, sortCx } from "@/utils/cx";
 export interface InputBaseProps extends Omit<AriaInputProps, "size"> {
     /** Tooltip message on hover. */
     tooltip?: string;
+    passwordVisibilityLabel?: string;
     /** Whether the input is invalid. */
     isInvalid?: boolean;
     /** Whether the input is disabled. */
@@ -56,6 +57,7 @@ export const InputBase = ({
     tooltipClassName,
     inputClassName,
     iconClassName,
+    passwordVisibilityLabel = "Toggle password visibility",
     type = "text",
     ...inputProps
 }: InputBaseProps) => {
@@ -169,7 +171,7 @@ export const InputBase = ({
             {/* Password visibility toggle */}
             {type === "password" && (
                 <AriaButton
-                    aria-label="Toggle password visibility"
+                    aria-label={passwordVisibilityLabel}
                     onClick={() => setIsPasswordVisible(!isPasswordVisible)}
                     className={cx(
                         "absolute flex cursor-pointer items-center justify-center text-fg-quaternary transition duration-100 ease-linear hover:text-fg-quaternary_hover focus:text-fg-quaternary_hover focus:outline-hidden",
@@ -241,6 +243,7 @@ export interface InputProps
             | "inputClassName"
             | "iconClassName"
             | "tooltipClassName"
+            | "passwordVisibilityLabel"
         > {
     /** Label text for the input */
     label?: string;
@@ -248,6 +251,7 @@ export interface InputProps
     hint?: ReactNode;
     /** Whether to hide required indicator from label */
     hideRequiredIndicator?: boolean;
+    errorMessage?: (validation: ValidationResult) => ReactNode;
 }
 
 export const Input = ({
@@ -258,6 +262,7 @@ export const Input = ({
     hint,
     shortcut,
     hideRequiredIndicator,
+    errorMessage,
     className,
     ref,
     groupRef,
@@ -266,6 +271,7 @@ export const Input = ({
     inputClassName,
     wrapperClassName,
     tooltipClassName,
+    passwordVisibilityLabel = "Toggle password visibility",
     type = "text",
     ...props
 }: InputProps) => {
@@ -292,11 +298,13 @@ export const Input = ({
                             wrapperClassName,
                             tooltipClassName,
                             tooltip,
+                            passwordVisibilityLabel,
                             type,
                         }}
                     />
 
                     {hint && <HintText isInvalid={isInvalid}>{hint}</HintText>}
+                    {errorMessage && <FieldError className="text-sm text-error-primary">{errorMessage}</FieldError>}
                 </>
             )}
         </TextField>

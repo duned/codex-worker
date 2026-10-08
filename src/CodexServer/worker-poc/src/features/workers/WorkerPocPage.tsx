@@ -1,3 +1,4 @@
+import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { useMutation } from '@tanstack/react-query';
 import { queryKeys } from '../../shared/api/runtime';
 import { useState } from 'react';
@@ -8,16 +9,16 @@ import { worker, diagnostics, deliveryAuthorization } from '../../shared/api/val
 import type { WorkerAdministration, WorkerReadiness, DeliveryAuthorization } from '../../shared/api/contracts';
 import { ApiError } from '../../shared/api/client';
 const actions = [
-  { key: 'Enabled', label: 'Activate scheduling' }, { key: 'Draining', label: 'Drain worker' },
-  { key: 'Disabled', label: 'Deactivate' }, { key: 'revoke-api', label: 'Revoke Worker API token' },
-  { key: 'revoke-delivery', label: 'Revoke delivery authorization' }
+  { key: 'Enabled', label: t("workers.activateScheduling") }, { key: 'Draining', label: t("workers.drainWorker") },
+  { key: 'Disabled', label: t("workers.deactivate") }, { key: 'revoke-api', label: t("workers.revokeWorkerAPIToken") },
+  { key: 'revoke-delivery', label: t("workers.revokeDeliveryAuthorization") }
 ];
 function reason(key: string, registry?: WorkerAdministration, readiness?: WorkerReadiness, delivery?: DeliveryAuthorization) {
-  if (!registry) return 'Current registry state unavailable. Refresh to recover it.';
-  if (key === 'revoke-delivery') return delivery?.status === 'active' ? '' : 'No active credential-delivery authorization is reported.';
-  if (key === 'revoke-api') return registry.authenticationCredentialStatus === 'active' ? '' : 'No active Worker API token is registered.';
-  if (registry.schedulingPolicy === key) return 'This scheduling policy is already applied.';
-  if (key === 'Enabled' && readiness?.canActivate !== true) return `Activation blocked: ${readiness?.activationBlockingReasons?.join('; ') || 'Readiness evidence unavailable.'}`;
+  if (!registry) return t("workers.currentRegistryStateUnavailableRefreshToRecoverIt");
+  if (key === 'revoke-delivery') return delivery?.status === 'active' ? '' : t("workers.noActiveCredentialDeliveryAuthorizationIsReported");
+  if (key === 'revoke-api') return registry.authenticationCredentialStatus === 'active' ? '' : t("workers.noActiveWorkerAPITokenIsRegistered");
+  if (registry.schedulingPolicy === key) return t("workers.thisSchedulingPolicyIsAlreadyApplied");
+  if (key === 'Enabled' && readiness?.canActivate !== true) return t('workers.activationBlocked', { reasons: readiness?.activationBlockingReasons?.map(localizeText).join('; ') || t("workers.readinessEvidenceUnavailable") });
   return '';
 }
 export interface AdministrationPresentation {
@@ -26,6 +27,7 @@ export interface AdministrationPresentation {
   onAction(key: string): void; onRefresh(): void;
 }
 export function WorkerPocPage({ id }: { id: string }) {
+  useLanguage();
   const runtime = useRuntime(), session = useSession();
   const base = `/api/v1/workers/${encodeURIComponent(id)}`, resource = base;
   const registry = useApiRead(base, worker), readiness = useApiRead(`${base}/diagnostics`, diagnostics);
@@ -46,9 +48,9 @@ export function WorkerPocPage({ id }: { id: string }) {
         runtime.queries.setQueryData(queryKeys.read(generation, base), value);
       });
       await readiness.refetch();
-      if (runtime.snapshot().generation === generation) setMessage('Authoritative state refreshed. Review current policy, token and readiness before another action.');
+      if (runtime.snapshot().generation === generation) setMessage(t("workers.authoritativeStateRefreshedReviewCurrentPolicyTokenAndReadinessBeforeAnotherAction"));
     } catch {
-      if (runtime.snapshot().generation === generation) setMessage('Authoritative state unavailable. The operation has not been resubmitted.');
+      if (runtime.snapshot().generation === generation) setMessage(t("workers.authoritativeStateUnavailableTheOperationHasNotBeenResubmitted"));
     } finally { if (runtime.snapshot().generation === generation) setPending(false); }
   };
   const operation = useMutation({ retry: false, mutationFn: async (key: string) => {
@@ -66,30 +68,30 @@ export function WorkerPocPage({ id }: { id: string }) {
   const submit = async () => {
     const key = selected, generation = session.generation;
     if (!key || pending || locked) return;
-    setPending(true); setMessage('Administration operation pending. Do not submit another action.');
+    setPending(true); setMessage(t("workers.administrationOperationPendingDoNotSubmitAnotherAction"));
     try {
       await operation.mutateAsync(key);
-      if (runtime.snapshot().generation === generation) setMessage('Operation accepted. Current Server observations are refreshing.');
+      if (runtime.snapshot().generation === generation) setMessage(t("workers.operationAcceptedCurrentServerObservationsAreRefreshing"));
     } catch (error) {
-      if (runtime.snapshot().generation === generation) setMessage(error instanceof ApiError ? error.message : 'Operation result unavailable. Refresh authoritative state before retrying.');
+      if (runtime.snapshot().generation === generation) setMessage(error instanceof ApiError ? error.message : t("workers.operationResultUnavailableRefreshAuthoritativeStateBeforeRetrying"));
     } finally { if (runtime.snapshot().generation === generation) setPending(false); }
   };
   const administration: AdministrationPresentation = {
     worker: registry.data, delivery: delivery.data, pending, needsRefresh: locked, message,
-    actions: actions.map(action => ({ ...action, reason: pending ? 'An administration operation is pending.' : locked
-      ? 'Refresh authoritative state before another action. The previous operation will not be resubmitted.' : reason(action.key, registry.data, readiness.data, delivery.data) })),
+    actions: actions.map(action => ({ ...action, reason: pending ? t("workers.anAdministrationOperationIsPending") : locked
+      ? t("workers.refreshAuthoritativeStateBeforeAnotherActionThePreviousOperationWillNotBe") : reason(action.key, registry.data, readiness.data, delivery.data) })),
     onAction: key => { if (actions.some(action => action.key === key) && !pending && !locked && !reason(key, registry.data, readiness.data, delivery.data)) setSelected(key); },
     onRefresh: () => { void refresh(); }
   };
   return <><WorkerDetailPage workerId={id} administration={administration} />
     <ConfirmationDialog key={selected ?? 'closed'} isOpen={!!selected} onClose={() => setSelected(undefined)}
-      title={actions.find(action => action.key === selected)?.label ?? 'Confirm action'} actionLabel="Confirm"
+      title={actions.find(action => action.key === selected)?.label ?? t("workers.confirmAction")} actionLabel={t("workers.confirm")}
       destructive={selected === 'revoke-api' || selected === 'revoke-delivery' || selected === 'Disabled'} disabled={pending || locked}
-      description={selected === 'revoke-delivery' ? 'Stop future delivery of Server-managed credentials to this Worker. Worker API authentication, node login and provider-side authorization are unchanged. Credentials already delivered are not removed from the node.' : selected === 'revoke-api'
-        ? 'Calls using this token will be denied and active leases may expire into recovery. Credential-delivery authorization, node login and provider credentials are unchanged.'
-        : selected === 'Enabled' ? 'Allow new assignments after current Server readiness validation. Existing assignments and leases are not cancelled.'
-        : selected === 'Draining' ? 'Pause new assignments while existing assignments keep their leases and finish. This does not cancel running work.'
-        : 'Stop new assignments. Existing assignments and leases are not cancelled. Current Server validation still applies.'}
+      description={selected === 'revoke-delivery' ? t("workers.stopFutureDeliveryOfServerManagedCredentialsToThisWorkerWorkerAPI") : selected === 'revoke-api'
+        ? t("workers.callsUsingThisTokenWillBeDeniedAndActiveLeasesMayExpire")
+        : selected === 'Enabled' ? t("workers.allowNewAssignmentsAfterCurrentServerReadinessValidationExistingAssignmentsAndLeases")
+        : selected === 'Draining' ? t("workers.pauseNewAssignmentsWhileExistingAssignmentsKeepTheirLeasesAndFinishThis")
+        : t("workers.stopNewAssignmentsExistingAssignmentsAndLeasesAreNotCancelledCurrentServer")}
       onSubmit={submit} />
   </>;
 }

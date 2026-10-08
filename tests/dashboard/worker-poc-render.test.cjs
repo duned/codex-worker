@@ -24,7 +24,7 @@ test('PoC renders named Worker, its capacity, real stage, outcomes and canonical
 test('Reported stages and terminal failures stay distinct; unknown timing is honest',()=>{
  for(const currentStage of ['Codex','Validation','Integration',null]){
   const html=render({executions:[{...current,currentStage}, {...completed,state:'Failed',durationMilliseconds:null,completedAtUtc:null,recoveryState:'LeaseExpiredUncertain'}]});
-  assert.ok(html.includes(currentStage||'Not reported'));assert.ok(html.includes('Failed'));assert.ok(html.includes('Duration unavailable'));assert.ok(html.includes('LeaseExpiredUncertain'));assert.ok(html.includes('Requested: 2025-12-31'));
+  assert.ok(html.includes(currentStage||'Not reported'));assert.ok(html.includes('Failed'));assert.ok(html.includes('Duration unavailable'));assert.ok(html.includes('LeaseExpiredUncertain'));assert.ok(html.includes('Requested: 31/12/2025'));
  }
 });
 test('Stale, missing, failed reads and absent resources remain understandable',()=>{

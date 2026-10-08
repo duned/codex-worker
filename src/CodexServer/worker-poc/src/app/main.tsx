@@ -1,3 +1,4 @@
+import { useLanguage } from '../shared/i18n';
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-aria-components';
 import { createRoot } from 'react-dom/client';
@@ -14,6 +15,7 @@ const normalized = normalizeBookmark(window.location.pathname, window.location.s
 if (normalized) window.history.replaceState(window.history.state, '', normalized);
 const icons = [HomeLine, Folder, Server01, Activity, Settings01];
 function Dashboard() {
+  useLanguage();
   const session = useSession();
   const navigate = useNavigate();
   const location = useLocation();

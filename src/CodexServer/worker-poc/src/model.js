@@ -1,9 +1,10 @@
+import { t } from './shared/i18n';
 // Presentation only: scheduling and readiness remain Server-owned.
 export function statusColor(value) {
   const state = String(value ?? '').toLowerCase();
   if (['online', 'connected', 'ready', 'current', 'healthy', 'installed', 'satisfied', 'completed', 'succeeded', 'synchronized', 'active', 'updated'].includes(state)) return 'success';
-  if (['stale', 'draining', 'drain-requested', 'starting', 'updating', 'restarting', 'reconnecting', 'not-ready', 'required', 'missing', 'degraded', 'pending', 'running', 'assigned', 'busy', 'available', 'cached', 'out-of-sync', 'not-synchronized'].includes(state)) return 'warning';
-  if (['offline', 'disconnected', 'failed', 'error', 'timedout', 'update-failed', 'restart-failed', 'capability-regression', 'configuration-incompatible'].includes(state)) return 'error';
+  if (['stale', 'draining', 'drain-requested', 'starting', 'updating', 'restarting', 'reconnecting', 'not-ready', 'required', 'missing', 'degraded', 'pending', 'running', 'assigned', 'busy', 'available', 'cached', 'out-of-sync', "not-synchronized"].includes(state)) return 'warning';
+  if (['offline', 'disconnected', 'failed', 'error', 'timedout', 'update-failed', 'restart-failed', "capability-regression", "configuration-incompatible"].includes(state)) return 'error';
   return 'gray';
 }
 export const terminalStates = ['Completed', 'Failed', 'Cancelled'];
@@ -26,7 +27,7 @@ export function issueLink(work, repository) {
 }
 export function timestamp(value) {
   const parsed = value ? Date.parse(value) : NaN;
-  if (!Number.isFinite(parsed)) return 'Not reported';
+  if (!Number.isFinite(parsed)) return t("shared.notReported");
   const date = new Date(parsed);
   const pad = number => String(number).padStart(2, '0');
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -38,7 +39,7 @@ export function duration(item, now) {
     const end = item.completedAtUtc ? Date.parse(item.completedAtUtc) : terminalStates.includes(item.state) ? NaN : now;
     ms = end - start;
   }
-  if (!Number.isFinite(ms) || ms < 0) return 'Duration unavailable';
+  if (!Number.isFinite(ms) || ms < 0) return t("shared.durationUnavailable");
   const seconds = Math.floor(ms / 1000);
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

@@ -1,18 +1,19 @@
+import { t } from '../../shared/i18n';
 import type { PairingRequest, WorkerObservation } from '../../shared/api/contracts';
 import { record } from '../../shared/api/validation';
 export function readPairingRequest(text: string, operation: 'enroll' | 'associate', origin: string): PairingRequest {
   let value: Record<string, unknown>;
-  try { value = record(JSON.parse(text)); } catch { throw new Error('Paste the complete public request printed by the node.'); }
+  try { value = record(JSON.parse(text)); } catch { throw new Error(t("workers.completeRequest")); }
   if (Object.keys(value).sort().join(',') !== 'contractVersion,operation,server,workerId' || value.contractVersion !== 1
     || typeof value.workerId !== 'string' || !/^[0-9a-f]{32}$/i.test(value.workerId) || value.operation !== operation || value.server !== origin || !origin.startsWith('https://'))
-    throw new Error('Request does not match this HTTPS Server and selected operation. Return to the node; do not edit its request.');
+    throw new Error(t("workers.requestMismatch"));
   return value as unknown as PairingRequest;
 }
 export function registrationInstruction(version: string, operation: 'enroll' | 'associate', origin: string) {
-  if (!/^\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/.test(version) || !origin.startsWith('https://')) return 'A supported pinned release and the final trusted HTTPS Server origin are required.';
+  if (!/^\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$/.test(version) || !origin.startsWith('https://')) return t("workers.aSupportedPinnedReleaseAndTheFinalTrustedHTTPSServerOriginAre");
   return operation === 'enroll'
     ? `curl -fsSL https://raw.githubusercontent.com/duned/codex-worker/v${version}/packaging/linux/install-worker.sh | sudo bash -s -- --version ${version} --server ${origin} --pair --start`
-    : `sudo -u codex-worker env HOME=/var/lib/codex-worker codex-worker register --config /etc/codex-worker/worker.yml --server ${origin} --operation associate --pair\n# After acknowledged registration:\nsudo systemctl start codex-worker`;
+    : `sudo -u codex-worker env HOME=/var/lib/codex-worker codex-worker register --config /etc/codex-worker/worker.yml --server ${origin} --operation associate --pair\n${t('workers.afterRegistration')}\nsudo systemctl start codex-worker`;
 }
 // Persist only a validated public request, never authorization or completion.
 export const pairingDraftKey = 'codex-worker-public-pairing-request';

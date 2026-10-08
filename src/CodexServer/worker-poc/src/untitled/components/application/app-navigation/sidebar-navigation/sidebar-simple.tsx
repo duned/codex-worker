@@ -9,6 +9,7 @@ import { NavList } from "../base-components/nav-list";
 import type { NavItemType } from "../config";
 
 interface SidebarNavigationProps {
+    navigationLabels: { expand: string; close: string; navigation: string };
     /** URL of the currently active item. */
     activeUrl?: string;
     /** List of items to display. */
@@ -29,6 +30,7 @@ interface SidebarNavigationProps {
 
 export const SidebarNavigationSimple = ({
     activeUrl,
+    navigationLabels,
     items,
     footerItems = [],
     featureCard,
@@ -55,7 +57,7 @@ export const SidebarNavigationSimple = ({
 
             </div>
 
-            <nav aria-label="Main navigation"><NavList activeUrl={activeUrl} items={items} /></nav>
+            <nav aria-label={navigationLabels.navigation}><NavList activeUrl={activeUrl} items={items} /></nav>
 
             <div className="mt-auto flex flex-col gap-3 px-4 py-4 lg:py-5">
                 {footerItems.length > 0 && (
@@ -79,7 +81,7 @@ export const SidebarNavigationSimple = ({
     return (
         <>
             {/* Mobile header navigation */}
-            <MobileNavigationHeader>{content}</MobileNavigationHeader>
+            <MobileNavigationHeader labels={navigationLabels}>{content}</MobileNavigationHeader>
 
             {/* Desktop sidebar navigation */}
             <div className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:flex">{content}</div>

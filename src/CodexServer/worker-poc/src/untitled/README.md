@@ -39,3 +39,6 @@ these upstream modules, using the upstream tokens and utility classes.
   Button source and tokens with upstream React Aria modal primitives, using the
   same overlay/surface composition as the approved shell. They are product
   composition rather than a claimed copy of a paid Untitled UI modal component.
+- Navigation accepts product-provided accessible labels; inputs accept a password
+  control label and validation renderer. `shared/Input.tsx` supplies localized
+  product copy while preserving the public component styles and behavior.

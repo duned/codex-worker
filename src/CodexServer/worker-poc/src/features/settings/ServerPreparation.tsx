@@ -1,3 +1,4 @@
+import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { timestamp } from '../../model';
 import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useState } from 'react';
@@ -13,16 +14,17 @@ import { ActionDialog } from '../../shared/Dialogs';
 import { Notice, AdvancedDisclosure, StatusBadge } from '../../shared/Presentation';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Checkbox } from '../../untitled/components/base/checkbox/checkbox';
-import { Input } from '../../untitled/components/base/input/input';
+import { Input } from '../../shared/Input';
 import type { NodeCommandSummary } from '../../shared/api/contracts';
 type Intent = { capabilityId: string; action: string } | { command: NodeCommandSummary; control: 'cancel' | 'reconcile' };
 const fence = 'node:server';
 function serverCommands(value: unknown) {
   const items = commands(value);
-  if (items.some(c => c.request.nodeId !== 'server')) throw Error('Unexpected node history.');
+  if (items.some(c => c.request.nodeId !== 'server')) throw Error(t("settings.unexpectedNodeHistory"));
   return items;
 }
 export function ServerPreparation() {
+  useLanguage();
   const runtime = useRuntime(), session = useSession();
   const inventory = useApiRead('/api/v1/nodes', nodes);
   const history = useApiRead('/api/v1/nodes/server/commands', serverCommands);
@@ -45,7 +47,7 @@ export function ServerPreparation() {
       runtime.read('/api/v1/nodes', signal, nodes), runtime.read('/api/v1/nodes/server/commands', signal, serverCommands), runtime.read(connectionPath, signal, serverGitHubConnection)
     ]);
     const current = currentNodes.find(n => n.id === 'server' && n.kind === 'server');
-    if (!current) throw Error('Server observations unavailable.');
+    if (!current) throw Error(t("settings.serverObservationsUnavailable"));
     return { node: current, commands: currentCommands, connection: currentConnection };
   }
   async function submit() {
@@ -59,75 +61,75 @@ export function ServerPreparation() {
       await runtime.mutate(fence, path, 'POST', body, value => {
         const result = command(value);
         if (result.request.nodeId !== 'server' || (control ? result.id !== intent.command.id
-          : result.request.capabilityId !== intent.capabilityId || result.request.action !== spec?.action)) throw Error('Unexpected operation confirmation.');
+          : result.request.capabilityId !== intent.capabilityId || result.request.action !== spec?.action)) throw Error(t("settings.unexpectedOperationConfirmation"));
         return result;
       }, async signal => {
         const current = await fresh(signal);
         if (control) {
           const operation = current.commands.find(c => c.id === intent.command.id);
-          if (!operation || (intent.control === 'cancel' ? operation.status !== 'Pending' : !quiescent || !expiredCommand(operation, Date.now()))) throw Error('Operation changed; refresh before continuing.');
+          if (!operation || (intent.control === 'cancel' ? operation.status !== 'Pending' : !quiescent || !expiredCommand(operation, Date.now()))) throw Error(t("settings.operationChangedRefreshBeforeContinuing"));
         } else {
           const capability = current.node.capabilities.find(c => c.definition.id === intent.capabilityId);
-          if (!spec || !capability?.availableActions.includes(intent.action) || current.node.provisioningReadiness === 'busy' || current.commands.some(activeCommand) || current.connection.commands.some(activeCommand)) throw Error('Action unavailable or node busy.');
-          if (spec.elevation && (!elevation || !current.connection.elevationAllowed)) throw Error('Elevation requires explicit consent and local permission.');
-          if (['Login', 'PrepareAuthentication', 'Install', 'Update', 'Uninstall', 'Configure', 'Logout', 'GenerateSshKey', 'RemoveSshKey'].includes(spec.action) && !current.connection.provisioningEnabled) throw Error('Local provisioning disabled.');
-          if (['Login', 'PrepareAuthentication'].includes(spec.action) && !consent) throw Error('Explicit service-account authorization required.');
+          if (!spec || !capability?.availableActions.includes(intent.action) || current.node.provisioningReadiness === 'busy' || current.commands.some(activeCommand) || current.connection.commands.some(activeCommand)) throw Error(t("settings.actionUnavailableOrNodeBusy"));
+          if (spec.elevation && (!elevation || !current.connection.elevationAllowed)) throw Error(t("settings.elevationRequiresExplicitConsentAndLocalPermission"));
+          if (['Login', "PrepareAuthentication", 'Install', 'Update', 'Uninstall', 'Configure', 'Logout', 'GenerateSshKey', 'RemoveSshKey'].includes(spec.action) && !current.connection.provisioningEnabled) throw Error(t("settings.localProvisioningDisabled"));
+          if (['Login', "PrepareAuthentication"].includes(spec.action) && !consent) throw Error(t("settings.explicitServiceAccountAuthorizationRequired"));
         }
       });
-      setMessage('Operation confirmed. Current authentication evidence determines connection success.'); close();
-    } catch { setMessage('Operation could not be confirmed. Refresh authoritative state to recover it before retrying.'); throw Error('Operation unavailable.'); }
+      setMessage(t("settings.operationConfirmedCurrentAuthenticationEvidenceDeterminesConnectionSuccess")); close();
+    } catch { setMessage(t("settings.operationCouldNotBeConfirmedRefreshAuthoritativeStateToRecoverItBefore")); throw Error(t("settings.operationUnavailable")); }
   }
   async function refresh() {
     try {
       await runtime.reconcile(fence, async signal => { await fresh(signal); });
       await runtime.queries.invalidateQueries({ queryKey: queryKeys.session(session.generation) });
-      setMessage('Authoritative state refreshed. Retained operations must finish or be reconciled before retrying.');
-    } catch { setMessage('Authoritative state unavailable. Operation lock retained.'); }
+      setMessage(t("settings.authoritativeStateRefreshedRetainedOperationsMustFinishOrBeReconciledBeforeRetrying"));
+    } catch { setMessage(t("settings.authoritativeStateUnavailableOperationLockRetained")); }
   }
   function offer(action: string, label: string) { return github?.availableActions.includes(action) && <Button key={action} color="secondary" isDisabled={busy} onPress={() => setIntent({ capabilityId: 'github-cli', action })}>{label}</Button>; }
   const prepared = latest?.status === 'Succeeded' && latest.request.action === 'PrepareAuthentication' || latest?.request.action === 'Login' && latest.diagnostic !== 'Denied';
   return <div className="space-y-6">
-    <section aria-label="Server GitHub connection" className="space-y-4 rounded-xl border border-secondary bg-primary p-5">
-      <h2 className="text-lg font-semibold text-primary">Server GitHub connection</h2>
+    <section aria-label={t("settings.serverGitHubConnection")} className="space-y-4 rounded-xl border border-secondary bg-primary p-5">
+      <h2 className="text-lg font-semibold text-primary">{t("settings.serverGitHubConnection")}</h2>
       <StatusBadge tone={readiness.tone}>{readiness.complete ? 'Connected' : readiness.detail}</StatusBadge>
-      <p className="text-sm text-secondary">Authentication uses the dedicated Server service account. Repository reads and Issue writes are checked in Projects; Worker login and repository push permission are separate.</p>
+      <p className="text-sm text-secondary">{t("settings.authenticationUsesTheDedicatedServerServiceAccountRepositoryReadsAndIssueWrites")}</p>
       {[inventory.error, history.error, connection.error].filter(Boolean).map((error, i) => <Notice error key={i}>{error}</Notice>)}
-      {latest && <p className="text-sm text-secondary">{latest.request.action} · {latest.status}{activeCommand(latest) && ' · You may leave and return to recover this operation.'}</p>}
-      {connection.challenge && <Notice>Open <ExternalLink className="underline" href="https://github.com/login/device">GitHub verification</ExternalLink> and enter <strong>{connection.challenge.userCode}</strong>. Only approve the login you started. Waiting for verification; expires {timestamp(new Date(connection.challenge.deadline).toISOString())}.</Notice>}
-      {latest && expiredCommand(latest, Math.max(now, Date.now())) && <Notice>Device login deadline expired. The code is no longer available. Verify the Server is quiescent before releasing its operation lock.</Notice>}
+      {latest && <p className="text-sm text-secondary">{localizeText(latest.request.action)} · {localizeText(latest.status)}{activeCommand(latest) && ' · You may leave and return to recover this operation.'}</p>}
+      {connection.challenge && <Notice>{t("settings.open")}{' '}<ExternalLink className="underline" href="https://github.com/login/device">{t("settings.gitHubVerification")}</ExternalLink>{' '}{t("settings.andEnter")}{' '}<strong>{connection.challenge.userCode}</strong>{t("settings.onlyApproveTheLoginYouStartedWaitingForVerificationExpires")}{' '}{timestamp(new Date(connection.challenge.deadline).toISOString())}.</Notice>}
+      {latest && expiredCommand(latest, Math.max(now, Date.now())) && <Notice>{t("settings.deviceLoginDeadlineExpiredTheCodeIsNoLongerAvailableVerifyThe")}</Notice>}
       <div className="flex flex-wrap gap-3">
-        <Button color="secondary" onPress={() => { void refresh(); }}>Refresh authoritative state</Button>
-        {offer('checkauthentication', 'Check Server authentication')}
+        <Button color="secondary" onPress={() => { void refresh(); }}>{t("settings.refreshAuthoritativeState")}</Button>
+        {offer('checkauthentication', t("settings.checkServerAuthentication"))}
         {!readiness.complete && connection.data?.provisioningEnabled && (github?.state.installation !== 'Installed'
-          ? connection.data.elevationAllowed && offer('install', 'Install GitHub CLI')
-          : prepared ? offer('login', 'Start device login') : offer('prepareauthentication', 'Connect · prepare authentication'))}
+          ? connection.data.elevationAllowed && offer('install', t("settings.installGitHubCLI"))
+          : prepared ? offer('login', t("settings.startDeviceLogin")) : offer('prepareauthentication', t("settings.connectPrepareAuthentication")))}
       </div>
-      {connection.data && !connection.data.provisioningEnabled && <Notice>Local provisioning is disabled. Ask the Server administrator to enable service-account preparation. Authentication checks remain available.</Notice>}
-      {!readiness.complete && github?.state.installation !== 'Installed' && connection.data && !connection.data.elevationAllowed && <Notice>Installation elevation is unavailable under local policy. Ask the Server administrator to install GitHub CLI, then refresh.</Notice>}
-      {!readiness.complete && github?.state.installation === 'Installed' && (!github.availableActions.includes('login') || !github.availableActions.includes('prepareauthentication')) && <Notice>The supported device flow is unavailable. Ask the Server administrator to inspect service-account configuration and local provisioning policy.</Notice>}
-      {!readiness.complete && <p className="text-sm text-tertiary">Preparation creates private product-managed GitHub configuration and refuses unrelated operator authentication. Installation requires separate elevation consent and node-local permission.</p>}
+      {connection.data && !connection.data.provisioningEnabled && <Notice>{t("settings.localProvisioningIsDisabledAskTheServerAdministratorToEnableServiceAccount")}</Notice>}
+      {!readiness.complete && github?.state.installation !== 'Installed' && connection.data && !connection.data.elevationAllowed && <Notice>{t("settings.installationElevationIsUnavailableUnderLocalPolicyAskTheServerAdministratorTo")}</Notice>}
+      {!readiness.complete && github?.state.installation === 'Installed' && (!github.availableActions.includes('login') || !github.availableActions.includes('prepareauthentication')) && <Notice>{t("settings.theSupportedDeviceFlowIsUnavailableAskTheServerAdministratorToInspect")}</Notice>}
+      {!readiness.complete && <p className="text-sm text-tertiary">{t("settings.preparationCreatesPrivateProductManagedGitHubConfigurationAndRefusesUnrelatedOperatorAuthentication")}</p>}
     </section>
-    <section className="space-y-4"><h2 className="text-lg font-semibold text-primary">Server capabilities</h2>
-      {node ? <><p className="text-sm text-secondary">{node.displayName ?? 'Server'} · {node.connectivity} · {node.observationsStale ? 'Stale observations' : 'Current observations'}</p>
-        <AdvancedDisclosure title="Advanced capabilities and typed actions"><p>Service health: {node.health ?? 'Unavailable'} · Execution readiness: {node.executionReadiness} · Provisioning readiness: {node.provisioningReadiness ?? 'Unavailable'}</p><div className="grid gap-4 lg:grid-cols-2">{node.capabilities.map(capability => <div key={capability.definition.id} className="min-w-0 space-y-3">
+    <section className="space-y-4"><h2 className="text-lg font-semibold text-primary">{t("settings.serverCapabilities")}</h2>
+      {node ? <><p className="text-sm text-secondary">{node.displayName ?? t("settings.server")} · {localizeText(node.connectivity)} · {node.observationsStale ? t("settings.staleObservations") : t("settings.currentObservations")}</p>
+        <AdvancedDisclosure title={t("settings.advancedCapabilitiesAndTypedActions")}><p>{t("settings.serviceHealth")}{' '}{localizeText(node.health ?? t("settings.unavailable"))}{' '}{t("settings.executionReadiness")}{' '}{localizeText(node.executionReadiness)}{' '}{t("settings.provisioningReadiness")}{' '}{localizeText(node.provisioningReadiness ?? t("settings.unavailable"))}</p><div className="grid gap-4 lg:grid-cols-2">{node.capabilities.map(capability => <div key={capability.definition.id} className="min-w-0 space-y-3">
           <Capability capability={capability} commands={allCommands ?? null} />
-          <div className="flex flex-wrap gap-2">{capability.availableActions.filter(action => Object.hasOwn(nodeActions, action)).map(action => <Button key={action} color="secondary" isDisabled={busy} onPress={() => setIntent({ capabilityId: capability.definition.id, action })}>{nodeActions[action].label}</Button>)}</div>
-        </div>)}</div></AdvancedDisclosure></> : <Notice>Server capabilities unavailable.</Notice>}
-      {allCommands?.filter(c => activeCommand(c)).map(c => <div key={c.id} className="space-y-2"><StatusBadge tone="warning">{c.request.action} · {c.status}</StatusBadge>
-        {(c.status === 'Pending' || expiredCommand(c, Math.max(now, Date.now()))) && <Button color="secondary" isDisabled={runtime.locked(fence)} onPress={() => setIntent({ command: c, control: c.status === 'Pending' ? 'cancel' : 'reconcile' })}>{c.status === 'Pending' ? 'Cancel queued operation' : 'Reconcile after node quiescence'}</Button>}
+          <div className="flex flex-wrap gap-2">{capability.availableActions.filter(action => Object.hasOwn(nodeActions, action)).map(action => <Button key={action} color="secondary" isDisabled={busy} onPress={() => setIntent({ capabilityId: capability.definition.id, action })}>{localizeText(nodeActions[action].label)}</Button>)}</div>
+        </div>)}</div></AdvancedDisclosure></> : <Notice>{t("settings.serverCapabilitiesUnavailable")}</Notice>}
+      {allCommands?.filter(c => activeCommand(c)).map(c => <div key={c.id} className="space-y-2"><StatusBadge tone="warning">{localizeText(c.request.action)} · {localizeText(c.status)}</StatusBadge>
+        {(c.status === 'Pending' || expiredCommand(c, Math.max(now, Date.now()))) && <Button color="secondary" isDisabled={runtime.locked(fence)} onPress={() => setIntent({ command: c, control: c.status === 'Pending' ? 'cancel' : 'reconcile' })}>{c.status === 'Pending' ? t("settings.cancelQueuedOperation") : t("settings.reconcileAfterNodeQuiescence")}</Button>}
       </div>)}
-      <AdvancedDisclosure title="Advanced operation history"><p>Bounded Server history; active operations are retained. No total-history count is available.</p>{allCommands?.length ? allCommands.map(c => <div key={c.id} className="break-all border-t border-secondary py-3"><p>{c.request.capabilityId} · {c.request.action} · {c.status}</p><p>ID {c.id} · queued {timestamp(c.createdAtUtc)} · started {timestamp(c.startedAtUtc)} · deadline {timestamp(c.deadlineUtc)} · completed {timestamp(c.completedAtUtc)} · {c.diagnostic ?? 'No diagnostic'}</p>{c.failureDetail && <p>{c.failureDetail.description}</p>}{c.publicIdentity && <pre className="whitespace-pre-wrap break-all">{c.publicIdentity.publicKey}\n{c.publicIdentity.fingerprint}</pre>}</div>) : <p>No operation history available.</p>}</AdvancedDisclosure>
+      <AdvancedDisclosure title={t("settings.advancedOperationHistory")}><p>{t("settings.boundedServerHistoryActiveOperationsAreRetainedNoTotalHistoryCountIs")}</p>{allCommands?.length ? allCommands.map(c => <div key={c.id} className="break-all border-t border-secondary py-3"><p>{c.request.capabilityId} · {localizeText(c.request.action)} · {localizeText(c.status)}</p><p>{t("settings.iD")}{' '}{c.id}{' '}{t("settings.queued")}{' '}{timestamp(c.createdAtUtc)}{' '}{t("settings.started")}{' '}{timestamp(c.startedAtUtc)}{' '}{t("settings.deadline")}{' '}{timestamp(c.deadlineUtc)}{' '}{t("settings.completed")}{' '}{timestamp(c.completedAtUtc)} · {localizeText(c.diagnostic ?? t("settings.noDiagnostic"))}</p>{c.failureDetail && <p>{c.failureDetail.description}</p>}{c.publicIdentity && <pre className="whitespace-pre-wrap break-all">{c.publicIdentity.publicKey}{'\n'}{c.publicIdentity.fingerprint}</pre>}</div>) : <p>{t("settings.noOperationHistoryAvailable")}</p>}</AdvancedDisclosure>
     </section>
     {message && <Notice>{message}</Notice>}
-    {intent && <ActionDialog isOpen title={'control' in intent ? intent.control === 'cancel' ? 'Cancel queued operation' : 'Reconcile after node quiescence' : nodeActions[intent.action].label}
-      description={'control' in intent ? 'Running operations stop at their deadline. Reconciliation releases the command lock only after you verify that the node mutation has stopped.' : 'Only this advertised typed action is submitted. Server authorization does not override node-local policy. No shell command or secret is accepted.'}
-      actionLabel="Confirm operation" onClose={close} onSubmit={submit}
+    {intent && <ActionDialog isOpen title={'control' in intent ? intent.control === 'cancel' ? t("settings.cancelQueuedOperation") : t("settings.reconcileAfterNodeQuiescence") : nodeActions[intent.action].label}
+      description={'control' in intent ? t("settings.runningOperationsStopAtTheirDeadlineReconciliationReleasesTheCommandLockOnly") : t("settings.onlyThisAdvertisedTypedActionIsSubmittedServerAuthorizationDoesNotOverride")}
+      actionLabel={t("settings.confirmOperation")} onClose={close} onSubmit={submit}
       disabled={'control' in intent ? intent.control === 'reconcile' && !quiescent : (!!nodeActions[intent.action].elevation && !elevation) || (['login', 'prepareauthentication'].includes(intent.action) && !consent) || (intent.action === 'verifyrepositoryaccess' && !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(repository))}
       destructive={'control' in intent || !!nodeActions['action' in intent ? intent.action : '']?.destructive}>
-      {'control' in intent ? intent.control === 'reconcile' && <Checkbox label="I verified the Server is quiescent and the mutation has stopped" isSelected={quiescent} onChange={setQuiescent} /> : <>
-        {['login', 'prepareauthentication'].includes(intent.action) && <Checkbox label="Authorize preparation and device login in the Server service account" isSelected={consent} onChange={setConsent} />}
-        {nodeActions[intent.action].elevation && <Checkbox label="Authorize installation/configuration elevation under local policy" isSelected={elevation} onChange={setElevation} />}
-        {intent.action === 'verifyrepositoryaccess' && <Input label="Repository (owner/repository)" value={repository} onChange={setRepository} maxLength={140} />}
+      {'control' in intent ? intent.control === 'reconcile' && <Checkbox label={t("settings.iVerifiedTheServerIsQuiescentAndTheMutationHasStopped")} isSelected={quiescent} onChange={setQuiescent} /> : <>
+        {['login', 'prepareauthentication'].includes(intent.action) && <Checkbox label={t("settings.authorizePreparationAndDeviceLoginInTheServerServiceAccount")} isSelected={consent} onChange={setConsent} />}
+        {nodeActions[intent.action].elevation && <Checkbox label={t("settings.authorizeInstallationConfigurationElevationUnderLocalPolicy")} isSelected={elevation} onChange={setElevation} />}
+        {intent.action === 'verifyrepositoryaccess' && <Input label={t("settings.repositoryOwnerRepository")} value={repository} onChange={setRepository} maxLength={140} />}
       </>}
     </ActionDialog>}
   </div>;

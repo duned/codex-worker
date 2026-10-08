@@ -1,3 +1,4 @@
+import { t, statusLabel } from '../../shared/i18n';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { executions, record } from '../../shared/api/validation';
 import type { Validator } from '../../shared/api/client';
@@ -58,10 +59,10 @@ export function offset(search: string) {
 }
 export function canReconcile(item: Execution) { return item.state === 'Failed' && item.recoveryState === 'LeaseExpiredUncertain' && item.lease?.state === 'Expired'; }
 export function presentation(item: Execution): { text: string; tone: 'gray' | 'success' | 'warning' | 'error' } {
-  if (item.recoveryState === 'LeaseExpiredUncertain') return { text: 'Integration uncertain · review evidence', tone: 'warning' };
-  if (item.state === 'Failed') return { text: 'Execution failed', tone: 'error' };
-  if (item.state === 'Completed') return { text: 'Completed', tone: 'success' };
-  return { text: item.currentStage ? `${item.state} · ${item.currentStage}` : item.state, tone: ['Running', 'Assigned'].includes(item.state) ? 'warning' : 'gray' };
+  if (item.recoveryState === 'LeaseExpiredUncertain') return { text: t("executions.integrationUncertainReviewEvidence"), tone: 'warning' };
+  if (item.state === 'Failed') return { text: t("executions.executionFailed"), tone: 'error' };
+  if (item.state === 'Completed') return { text: t("executions.completed"), tone: 'success' };
+  return { text: item.currentStage ? `${statusLabel(item.state)} · ${statusLabel(item.currentStage)}` : statusLabel(item.state), tone: ['Running', 'Assigned'].includes(item.state) ? 'warning' : 'gray' };
 }
 export function validEvidence(disposition: string, evidence: string, commit: string) {
   return !!evidence.trim() && evidence.length <= 1000 && !/[\u0000-\u001f\u007f-\u009f]/.test(evidence) &&

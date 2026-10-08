@@ -1,6 +1,14 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const model=import('../../src/CodexServer/worker-poc/src/model.js');
+const { buildSync } = require('../../src/CodexServer/worker-poc/node_modules/esbuild');
+const Module = require('node:module');
+const path = require('node:path');
+const frontend = path.resolve('src/CodexServer/worker-poc');
+const result = new Module(path.join(frontend, 'model-test.cjs'));
+result.paths = Module._nodeModulePaths(frontend);
+const output = buildSync({ entryPoints: [path.join(frontend, 'src/model.js')], bundle: true, write: false, platform: 'node', format: 'cjs' }).outputFiles[0].text;
+result._compile(output, path.join(frontend, 'model-test.cjs'));
+const model = Promise.resolve(result.exports);
 test('Worker execution projection excludes other Workers and preserves reported state/stage',async()=>{
  const {workerExecutions}=await model;
  const items=[{id:'other',assignedWorkerId:'b',createdAtUtc:'2026-01-03'}, {id:'done',assignedWorkerId:'a',createdAtUtc:'2026-01-01',state:'Failed'}, {id:'live',assignedWorkerId:'a',createdAtUtc:'2026-01-02',state:'Running',currentStage:'Validation'}];
