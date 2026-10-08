@@ -350,3 +350,40 @@ Worker evidence, retained messages, unknown statuses and timestamp stability in
 `tests/dashboard/localization-browser-review.cjs` Playwright fixture exercises real
 routes, project/credential drafts and dialogs, reload, status filter API values,
 error/empty states and mobile navigation. It submits no resource writes.
+
+## VM1 local development deployment
+
+`cw dashboard deploy` (exact alias `cw dd`) checks and builds only the React
+frontend from `CW_REPO_DIR` (default `~/projects/codex-worker`), including uncommitted
+edits. It works through the `cw` symlink on PATH from any working directory.
+It uses `npm ci` and `npm run check`, never a product build, release, or Worker update.
+Node matching the dashboard package's engines, npm, Python 3, systemctl and
+non-interactive sudo permission to restart **codex-server only** are required.
+
+This is for the VM1 development installation only. The installed Server must
+already contain development override support (install that version once).
+Create a dedicated directory outside the checkout and `/opt`, for example
+`/var/lib/codex-server/development-dashboard`, writable by the developer and
+readable by the Server account. Do not use symbolic links in this directory or
+its ancestors. Configure an explicit local systemd drop-in for `codex-server`:
+
+```ini
+[Service]
+Environment=DOTNET_ENVIRONMENT=Development
+Environment=CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR=/var/lib/codex-server/development-dashboard
+```
+
+Run `systemctl daemon-reload`, then `cw dd`. The command reads these explicit
+service properties; values supplied only by an EnvironmentFile are not accepted.
+It validates the installed `/opt/codex-server/current/CodexServer` service target,
+stages and verifies the full manifest, hashes and shell references, and swaps
+the assets before restarting the Server. The running Server retains its old
+assets in memory until restart; no partially staged build is served. The prior
+asset set is retained as `previous`; activation failure restores it and restarts
+the Server, reporting any rollback failure. An empty development directory uses embedded assets until the first deployment;
+first-deployment rollback returns to those embedded assets.
+Server configuration, database, sessions and Worker services are not modified.
+Browser refresh uses the canonical routes and asset prefix. Normal installations
+continue using embedded assets. Invalid enabled overrides fail startup explicitly.
+To return to embedded assets, remove both drop-in entries, daemon-reload and restart
+only `codex-server`. No remote upload endpoint or filesystem static hosting is added.

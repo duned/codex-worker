@@ -46,7 +46,7 @@ public static class ServerApplication
         IServerGitHubIssueWriteService? githubIssueWriteService = null)
     {
         // Verify product assets before opening persistent services.
-        var preview = new EmbeddedDashboardAssets();
+        var preview = EmbeddedDashboardAssets.LoadDevelopmentOverride();
         var builder = CreateBuilder(args);
         var configuration = new ServerConfiguration();
         builder.Configuration.GetSection("Server").Bind(configuration);

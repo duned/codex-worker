@@ -15,6 +15,7 @@ Usage: ./cw <command> [options]
 Developer and local Worker operations:
   status, s       Show repository and local Worker service status
   deploy, d       Refresh development WET, publish Worker and restart the service
+  dashboard deploy, dd  Build/check and deploy the local development Server dashboard
   restart, rs     Restart the installed Worker service
   log, l          Show Worker journal (default: last 100 lines)
     -f            Follow the journal
@@ -45,6 +46,12 @@ permission for non-interactive systemctl stop/start operations. It does not
 create a product release or change the repository product version.
 Deploy manages ~/.local/bin/wet; that directory must be on your login-shell PATH.
 Shell profiles are never edited. Bash and Zsh login shells are supported.
+
+cw dashboard deploy (or cw dd) requires an installed local codex-server with
+explicit systemd Environment entries DOTNET_ENVIRONMENT=Development and
+CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR pointing to a dedicated writable directory.
+It runs npm ci/check, verifies and stages assets, and restarts only codex-server.
+See docs/server-dashboard-react.md for VM1 setup and rollback instructions.
 
 cw restart (or cw rs) restarts the installed Worker service and verifies that
 it is active before reporting success.
@@ -895,17 +902,25 @@ except (ValueError,KeyError,TypeError):
   }
 }
 
+dashboard_deploy() {
+  local prerequisite
+  for prerequisite in node npm python3 systemctl sudo; do need_command "$prerequisite" || return 1; done
+  python3 "$REPO_ROOT/tools/dashboard-deploy.py" "$REPO_ROOT"
+}
+
 main() {
   (($#)) || { usage; return 0; }
   local command=$1; shift
   case $command in
     --help|-h|help|h) ;;
-    status|s|deploy|d|version|v|release|r|maintenance) validate_repository "$command" || return 1 ;;
+    status|s|deploy|d|dashboard|dd|version|v|release|r|maintenance) validate_repository "$command" || return 1 ;;
   esac
   case $command in
     --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
     status|s) (($# == 0)) || { error 'status does not accept options'; help_hint; return 2; }; status_command ;;
     deploy|d) (($# == 0)) || { error 'deploy does not accept options'; help_hint; return 2; }; deploy_command ;;
+    dashboard) [[ $# == 1 && $1 == deploy ]] || { error 'Usage: cw dashboard deploy'; return 2; }; dashboard_deploy ;;
+    dd) (($# == 0)) || { error 'Usage: cw dd'; return 2; }; dashboard_deploy ;;
     restart|rs) (($# == 0)) || { error 'restart does not accept options'; help_hint; return 2; }; restart_command ;;
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
