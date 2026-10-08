@@ -20,15 +20,39 @@ These repository images are the approved visual targets for the initial dashboar
 
 ### Workers list
 
-The Workers list visual reference is available at
-[Workers list reference](dashboard-design/workers-list-reference.md). It grounds
-the future list screen in the API's connection, freshness, readiness, capacity and
-active-project fields; it is a design artifact, not an implemented screen.
+![Workers list reference](dashboard-design/workers-list-reference.svg)
 
-Executions list and detail references are available at
-[Executions visual references](dashboard-design/executions-reference.md). They map
-the proposed hierarchy and state treatments to the current execution API; they are
-design artifacts, not implemented screens.
+### Projects list
+
+![Projects list reference](dashboard-design/projects-list-reference.svg)
+
+### Project detail
+
+![Project detail reference](dashboard-design/project-detail-reference.svg)
+
+### Issues workflow and list
+
+![Issues workflow and list reference](dashboard-design/issues-list-reference.svg)
+
+### Executions list
+
+![Executions list reference](dashboard-design/executions-list-reference.svg)
+
+### Execution detail
+
+![Execution detail reference](dashboard-design/execution-detail-reference.svg)
+
+### Settings and Server preparation
+
+![Settings and Server preparation reference](dashboard-design/settings-server-preparation-reference.svg)
+
+These screens are static design references, not implemented behavior. Sample
+names, statuses and timestamps are illustrative. The supporting field mappings
+remain in [Workers](dashboard-design/workers-list-reference.md),
+[Projects](dashboard-design/projects-reference.md),
+[Issues](dashboard-design/issues-reference.md),
+[Executions](dashboard-design/executions-reference.md), and
+[Settings](dashboard-design/settings-server-preparation-reference.md) notes.
 
 ## Foundation and hierarchy
 
