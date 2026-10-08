@@ -1,6 +1,6 @@
 # Workers list visual reference
 
-The [Workers list image](workers-list-reference.svg) is embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
+The [Workers list image](../mockups/workers-list-dark-reference.svg) is embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
 
 ## API fields represented
 

@@ -17,7 +17,7 @@ Before implementing, inspect the existing architecture, relevant contracts, repr
 ## Dashboard UI
 
 - When changing administration-dashboard UI, follow the [dashboard design guide](docs/dashboard-design-guide.md). Use the established React + Untitled UI foundation and shared components; the guide defines screen composition, interaction, responsive and accessibility expectations.
-- Treat the approved [Worker detail](docs/dashboard-design/worker-detail-approved.jpg) and [Home](docs/dashboard-design/home-approved.jpg) images linked from that guide as visual references. Compare the rendered screen with its reference; prose requirements alone do not replace the visual comparison.
+- Treat the approved [Worker detail](docs/mockups/worker-detail-approved.jpg), [Home](docs/mockups/home-summary.svg), and [Workers list](docs/mockups/workers-list-dark-reference.svg) files as visual targets. Draft mockups in `docs/mockups` are for owner review; do not treat them as approved implementation requirements until approved. Compare rendered screens with their approved references; prose requirements alone do not replace visual comparison.
 
 ## .NET and code quality
 

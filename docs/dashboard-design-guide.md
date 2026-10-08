@@ -8,43 +8,43 @@ routes and [React architecture and build](server-dashboard-react.md) for impleme
 
 ## Approved visual references
 
-These repository images are the approved visual targets for the initial dashboard redesign. Use them alongside the screen-specific requirements below. Match hierarchy, density, alignment, component treatment and overall look while preserving the real API contracts and data states.
+These owner-approved repository files are the current visual targets. Match their hierarchy, density, proportions, alignment, component treatment and overall look while preserving real API contracts and data states.
 
 ### Worker detail
 
-![Approved Worker detail reference](dashboard-design/worker-detail-approved.jpg)
+![Approved Worker detail reference](mockups/worker-detail-approved.jpg)
 
 ### Home
 
-![Approved Home reference](dashboard-design/home-approved.jpg)
+![Approved Home reference](mockups/home-summary.svg)
 
 ### Workers list
 
-![Workers list reference](dashboard-design/workers-list-reference.svg)
+![Approved Workers list reference](mockups/workers-list-dark-reference.svg)
 
-### Projects list
+## Draft mockups for review
 
-![Projects list reference](dashboard-design/projects-list-reference.svg)
+The following references are prepared for owner review. They become implementation targets only after approval.
+
+### Project list
+
+![Project list reference](mockups/project-list.svg)
 
 ### Project detail
 
-![Project detail reference](dashboard-design/project-detail-reference.svg)
+![Project detail reference](mockups/project-detail.svg)
 
-### Issues workflow and list
+### Execution list
 
-![Issues workflow and list reference](dashboard-design/issues-list-reference.svg)
-
-### Executions list
-
-![Executions list reference](dashboard-design/executions-list-reference.svg)
+![Execution list reference](mockups/execution-list.svg)
 
 ### Execution detail
 
-![Execution detail reference](dashboard-design/execution-detail-reference.svg)
+![Execution detail reference](mockups/execution-detail.svg)
 
-### Settings and Server preparation
+### Settings
 
-![Settings and Server preparation reference](dashboard-design/settings-server-preparation-reference.svg)
+![Settings reference](mockups/settings.svg)
 
 These screens are static design references, not implemented behavior. Sample
 names, statuses and timestamps are illustrative. The supporting field mappings

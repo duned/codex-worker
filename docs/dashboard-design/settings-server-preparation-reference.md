@@ -1,6 +1,6 @@
 # Settings and Server preparation visual reference
 
-The [Settings and Server preparation image](settings-server-preparation-reference.svg) is embedded in the dashboard design guide. This note preserves contract mappings; sample values are illustrative.
+The [Settings and Server preparation image](../mockups/settings.svg) is embedded in the dashboard design guide. This note preserves contract mappings; sample values are illustrative.
 
 ## Contract mapping
 

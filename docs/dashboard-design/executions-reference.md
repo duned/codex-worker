@@ -1,6 +1,6 @@
 # Executions visual references
 
-The [Executions list](executions-list-reference.svg) and [Execution detail](execution-detail-reference.svg) images are embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
+The [Executions list](../mockups/execution-list.svg) and [Execution detail](../mockups/execution-detail.svg) images are embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
 
 ## Field and state mapping
 

@@ -1,6 +1,6 @@
 # Projects visual references
 
-The [Projects list](projects-list-reference.svg) and [Project detail](project-detail-reference.svg) images are embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
+The [Projects list](../mockups/project-list.svg) and [Project detail](../mockups/project-detail.svg) images are embedded in the dashboard design guide. This note preserves API field mappings; sample values are illustrative.
 
 ## API fields represented
 
