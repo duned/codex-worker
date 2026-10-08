@@ -9,6 +9,7 @@ const createdAtUtc = '2026-01-01T00:00:00Z';
 const queued = { id: 'queued', projectId: 'project', state: 'Queued', createdAtUtc, workReference: { type: 'github-issue', id: '7', url: 'https://github.com/example/repository/issues/7' }, attemptNumber: 1 };
 const running = { ...queued, id: 'running', state: 'Running', assignedWorkerId: 'worker', currentStage: 'Validation', startedAtUtc: createdAtUtc, assignmentId: 'assignment', workerExecutionId: 'local', lease: { executionId: 'running', workerId: 'worker', generation: 2, acquiredAtUtc: createdAtUtc, expiresAtUtc: '2026-01-01T00:10:00Z', state: 'Active' } };
 const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState: 'LeaseExpiredUncertain', recoveryReason: 'Check authoritative repository evidence', retryOfExecutionId: 'previous', attemptNumber: 2, integrationResult: 'Unknown', lease: { ...running.lease, state: 'Expired' } };
+const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open', url: 'https://github.com/example/repository/issues/7', labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] };
 (async () => {
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ headless: true });
@@ -34,6 +35,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
         return route.fulfill({ json: endpoint.endsWith('/cancel') ? current : { execution: current, retry: req.postDataJSON().disposition === 'NotIntegrated' ? { ...queued, id: 'retry', retryOfExecutionId: current.id, attemptNumber: 3 } : null } });
       }
       if (endpoint === '/api/v1/projects') return route.fulfill({ json: [{ id: 'project', name: 'Example project', repository: 'example/repository' }] });
+      if (endpoint === '/api/v1/projects/project/github/issues/7') return route.fulfill({ json: issue });
       if (endpoint === '/api/v1/workers') return route.fulfill({ json: [{ workerId: 'worker', displayName: 'Build machine', availability: 'offline' }] });
       if (endpoint === '/api/v1/executions') {
         if (mode === 'stale') return route.fulfill({ status: 503 });
@@ -44,8 +46,8 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       if (endpoint.startsWith('/api/v1/executions/')) return mode === 'missing' || mode === 'stale' ? route.fulfill({ status: mode === 'missing' ? 404 : 503 }) : route.fulfill({ json: current });
       return route.fulfill({ json: [] });
     });
-    for (const width of [1280, 375]) {
-      await page.setViewportSize({ width, height: 1000 });
+    for (const { width, height } of [{ width: 1440, height: 1040 }, { width: 1280, height: 1000 }, { width: 375, height: 1000 }]) {
+      await page.setViewportSize({ width, height });
       mode = 'normal';
       await page.goto('https://dashboard.test/executions?project=project&state=Running&issue=7&offset=0');
       await page.getByText('Running · Validation', { exact: true }).waitFor({ timeout: 10000 }).catch(async error => { console.log(await page.locator('body').innerText()); throw error; });
@@ -61,20 +63,24 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       await page.getByRole('button', { name: 'Previous page' }).click();
       current = structuredClone(running);
       await page.locator('a[href^="/executions/running?"]').click();
-      await page.getByText('Reported stage: Validation', { exact: true }).waitFor();
-      await page.getByText('Advanced · assignment and lease evidence', { exact: true }).click();
-      await page.getByText('Advanced · attempt lineage and recovery', { exact: true }).click();
+      await page.getByRole('heading', { name: 'Execution · running', exact: true }).waitFor();
+      await page.getByText('Execution in progress', { exact: true }).waitFor();
+      await page.getByText('No completion outcome yet', { exact: true }).waitFor();
+      if (width === 1440) await page.screenshot({ path: path.join(output, 'execution-detail-1440.png') });
+      await page.locator('summary').filter({ hasText: 'Assignment and lease' }).click();
+      await page.locator('summary').filter({ hasText: 'Validation attempts' }).click();
       assert.ok((await page.locator('pre').first().textContent()).includes('assignment'));
+      assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).isDisabled(), true);
       current.currentStage = 'Integration';
       await page.getByRole('button', { name: 'Refresh authoritative execution' }).click();
-      await page.getByText('Reported stage: Integration', { exact: true }).waitFor();
+      await page.getByText('Integration', { exact: true }).waitFor();
       assert.equal(await page.locator('details[open]').count(), 2);
       await page.reload();
-      await page.getByText('Reported stage: Integration', { exact: true }).waitFor();
+      await page.getByText('Integration', { exact: true }).waitFor();
       assert.equal(new URL(page.url()).searchParams.get('issue'), '7');
       assert.equal(new URL(page.url()).searchParams.get('state'), 'Running');
       assert.equal(new URL(page.url()).searchParams.get('offset'), '0');
-      await page.getByRole('link', { name: 'Back to executions', exact: true }).click();
+      await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Executions', exact: true }).click();
       assert.equal(new URL(page.url()).searchParams.get('project'), 'project');
       mode = 'stale';
       await page.getByRole('button', { name: 'Refresh executions' }).click();
@@ -82,32 +88,32 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       mode = 'missing';
       await page.goto('https://dashboard.test/executions/deleted?project=project&offset=50');
       await page.getByText('Execution unavailable or deleted. Refresh this exact resource; list context is retained.').waitFor();
-      assert.ok((await page.getByRole('link', { name: 'Back to executions', exact: true }).getAttribute('href')).includes('offset=50'));
+      assert.ok((await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Executions' }).getAttribute('href')).includes('offset=50'));
       mode = 'normal'; current = structuredClone(queued);
       await page.goto('https://dashboard.test/executions/queued?project=project&issue=7');
-      await page.getByRole('button', { name: 'Cancel queued request', exact: true }).click();
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.locator('header').getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
       const before = writes.length;
-      await page.getByRole('button', { name: 'Cancel queued request', exact: true }).click();
+      await page.locator('header').getByRole('button', { name: 'Cancel', exact: true }).click();
       hold = new Promise(resolve => { release = resolve; });
       await page.getByRole('button', { name: 'Cancel request', exact: true }).click();
       await page.getByText('Submitting…').waitFor();
       await page.keyboard.press('Escape');
       assert.equal(await page.getByRole('dialog').count(), 1);
-      assert.equal(await page.getByRole('button', { name: 'Cancel', exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).isDisabled(), true);
       release(); hold = undefined;
       await page.getByText('Cancelled', { exact: true }).waitFor();
       assert.equal(writes.length, before + 1);
       // Fresh checks reject a request assigned while its cancellation dialog is open.
       current = structuredClone(queued);
       await page.goto('https://dashboard.test/executions/queued');
-      await page.getByRole('button', { name: 'Cancel queued request', exact: true }).click();
+      await page.locator('header').getByRole('button', { name: 'Cancel', exact: true }).click();
       current.state = 'Assigned';
       const beforeRejected = writes.length;
       await page.getByRole('button', { name: 'Cancel request', exact: true }).click();
       await page.getByText('Result unavailable. Close this dialog and review authoritative state before another action.').waitFor();
       assert.equal(writes.length, beforeRejected);
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
       mode = 'normal'; current = structuredClone(uncertain);
       await page.goto('https://dashboard.test/executions/uncertain');
       await page.getByRole('button', { name: 'Reconcile uncertain integration', exact: true }).click();
@@ -117,7 +123,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       mode = 'lost';
       await page.getByRole('button', { name: 'Record verified disposition' }).click();
       await page.getByText('Result unavailable. Close this dialog and review authoritative state before another action.').waitFor();
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
       await page.getByText('Operation pending or uncertain. Actions are locked until explicit authoritative refresh succeeds.').waitFor();
       mode = 'stale';
       await page.getByRole('button', { name: 'Refresh authoritative execution' }).click();
@@ -126,7 +132,7 @@ const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState:
       await page.getByRole('button', { name: 'Refresh authoritative execution' }).click();
       await page.getByText('Authoritative execution refreshed. Review current state and retained recovery evidence before another action.').waitFor();
       assert.equal(await page.getByRole('button', { name: 'Reconcile uncertain integration', exact: true }).count(), 0);
-      await page.getByText('Advanced · attempt lineage and recovery', { exact: true }).click();
+      await page.locator('summary').filter({ hasText: 'Integration and recovery' }).click();
       await page.getByRole('link', { name: 'Previous attempt · previous' }).waitFor();
       assert.ok((await page.locator('pre').last().textContent()).includes('OperatorVerifiedIntegrated'));
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));

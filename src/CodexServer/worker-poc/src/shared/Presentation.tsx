@@ -5,7 +5,7 @@ import { Badge } from '../untitled/components/base/badges/badges';
 import { TableCard } from '../untitled/components/application/table/table';
 
 /** Callers choose tone from reported evidence; this component never decides readiness. */
-export function StatusBadge({ children, tone = 'gray', compact = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info'; compact?: boolean }) {
+export function StatusBadge({ children, tone = 'gray', compact = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean }) {
   useLanguage();
   return <Badge className="inline-flex max-w-full whitespace-nowrap align-middle" type="pill-color" size={compact ? 'sm' : 'lg'} color={tone === 'info' ? 'blue' : tone}>{typeof children === 'string' ? localizeText(children) : children}</Badge>;
 }

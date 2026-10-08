@@ -82,11 +82,18 @@ const clone = value => structuredClone(value);
       throw Error(`Unexpected fixture ${method} ${endpoint}`);
     });
     const detail = 'https://dashboard.test/projects/project-a?issue=27&issueState=open&label=ready&issues=1&step=preparation';
-    for (const width of [1280, 375]) {
-      await page.setViewportSize({ width, height: 1000 }); await page.goto(detail);
+    for (const { width, height } of [{ width: 1440, height: 1040 }, { width: 1280, height: 1000 }, { width: 375, height: 1000 }]) {
+      await page.setViewportSize({ width, height }); await page.goto(detail);
       await page.getByRole('heading', { name: 'Sample project', exact: true }).waitFor();
+      await page.getByRole('heading', { name: 'Project configuration', exact: true }).waitFor();
+      await page.getByRole('heading', { name: 'Worker availability', exact: true }).waitFor();
+      await page.getByText('Connection · online', { exact: true }).waitFor();
+      await page.getByText('Readiness · ready', { exact: true }).waitFor();
+      await page.getByText('1 / 2 slots', { exact: true }).waitFor();
+      await page.getByRole('heading', { name: 'Recent executions', exact: true }).waitFor();
+      await page.getByRole('columnheader', { name: 'Issue / execution', exact: true }).waitFor();
+      await page.getByRole('link', { name: '#27 · Repair parser', exact: true }).waitFor();
       await page.getByRole('heading', { name: '#27 · Repair parser' }).waitFor();
-      await page.getByText('Stale heartbeat · check Worker connection', { exact: true }).waitFor();
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No overflow at ${width}`);
       assert.equal(effects.length, 0);
       await page.getByRole('button', { name: 'Check repository access' }).click();
@@ -102,7 +109,7 @@ const clone = value => structuredClone(value);
         await page.getByRole('link', { name: '#27 · Repair parser · Open' }).waitFor();
         assert.equal(await page.getByRole('button', { name: 'Enqueue #28' }).count(), 0);
       }
-      await page.screenshot({ path: path.join(output, `project-${width}.png`), fullPage: true });
+      await page.screenshot({ path: path.join(output, `project-${width}.png`), fullPage: width !== 1440 });
       await page.reload(); await page.getByRole('heading', { name: '#27 · Repair parser' }).waitFor(); assert.equal(new URL(page.url()).search, new URL(detail).search);
       if (width === 375) {
         await page.getByRole('button', { name: 'Edit project', exact: true }).click(); const mobileDialog = page.getByRole('dialog', { name: 'Edit project', exact: true });
@@ -160,6 +167,6 @@ const clone = value => structuredClone(value);
     await page.reload(); await page.getByRole('button', { name: 'Enable', exact: true }).waitFor(); await page.getByRole('button', { name: 'Enable', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Enable project?' }); await dialog.getByRole('button', { name: 'Enable project', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
     loseDelete = true; await page.getByRole('button', { name: 'Delete', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Delete central project?' }); await dialog.getByRole('button', { name: 'Delete project', exact: true }).click(); await dialog.getByRole('button', { name: 'Cancel' }).click(); await page.getByRole('button', { name: 'Reconcile authoritative state' }).click(); await page.getByText('Deletion confirmed.').waitFor(); assert.equal(effects.filter(e => e.method === 'DELETE').length, 1);
     assert.equal(previews.length >= 5, true); assert.deepEqual(errors, []);
-    console.log('Projects/Issue production browser review passed at 1280px and 375px.');
+    console.log('Projects/Issue production browser review passed at 1440px, 1280px and 375px.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
