@@ -97,7 +97,7 @@ function useWorkspaceOwner() {
             }
           }
         });
-      remember(key); setIssueDraft(undefined);
+      remember(key); if (d.change.kind !== 'enqueue') setIssueDraft(undefined);
       setMessage(d.change.kind === 'refresh' ? Array.isArray(result) && result.length ? result.map(e => `${e.id}: ${e.managedEligibilityState ?? 'unavailable'}${e.managedEligibilityReasons?.length ? ' · ' + e.managedEligibilityReasons.join('; ') : ''}`).join(' · ') : t("projects.noQueuedRequestExistsForThisIssue") : t("projects.issueActionConfirmedByTheServer"));
       return result;
     } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.issueActionCouldNotBeConfirmedReconcileExplicitlyBeforeAnotherWriteNo") : error instanceof Error ? error.message : t("projects.issueActionUnavailable")); throw error; }
