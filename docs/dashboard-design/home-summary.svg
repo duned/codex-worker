@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1000" viewBox="0 0 1440 1000" role="img" aria-labelledby="title desc">
+<title id="title">Codex Worker dashboard home mockup</title>
+<desc id="desc">Dark dashboard home with server status, worker summary, recent projects, current work and completed executions.</desc>
+<defs>
+  <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#0b1020"/></linearGradient>
+  <linearGradient id="accent" x2="1" y2="1"><stop stop-color="#7f56d9"/><stop offset="1" stop-color="#9e77ed"/></linearGradient>
+  <style>
+    text{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;fill:#f5f5f6}
+    .muted{fill:#9498a6}.faint{fill:#717585}.line{stroke:#282d3b}.card{fill:#171d2b;stroke:#282e3d}.sub{fill:#1d2433;stroke:#303748}
+    .small{font-size:12px}.body{font-size:14px}.label{font-size:11px;font-weight:700;letter-spacing:1.1px}.title{font-size:25px;font-weight:650}.h2{font-size:16px;font-weight:650}
+  </style>
+</defs>
+<rect width="1440" height="1000" fill="url(#bg)"/>
+<!-- Sidebar -->
+<rect width="244" height="1000" fill="#101521"/>
+<path d="M244 0v1000" stroke="#272c39"/>
+<rect x="25" y="24" width="34" height="34" rx="10" fill="url(#accent)"/>
+<path d="M35 42h14M42 35v14" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+<text x="70" y="39" font-size="15" font-weight="700">Codex Worker</text><text x="70" y="54" class="faint small">CONTROL CENTER</text>
+<text x="25" y="105" class="label faint">WORKSPACE</text>
+<rect x="13" y="119" width="218" height="40" rx="8" fill="#27213a"/>
+<rect x="13" y="119" width="3" height="40" rx="1.5" fill="#9e77ed"/>
+<text x="47" y="144" class="body" font-weight="600">Home</text>
+<text x="25" y="197" class="body muted">▦</text><text x="47" y="197" class="body muted">Projects</text>
+<text x="25" y="241" class="body muted">◉</text><text x="47" y="241" class="body muted">Workers</text>
+<text x="25" y="285" class="body muted">▤</text><text x="47" y="285" class="body muted">Executions</text>
+<text x="25" y="329" class="body muted">⚙</text><text x="47" y="329" class="body muted">Settings</text>
+<path d="M20 887h204" class="line"/>
+<circle cx="32" cy="919" r="5" fill="#32d583"/><text x="47" y="923" class="small" font-weight="650">Server ready</text>
+<text x="25" y="949" class="small muted">Last updated</text><text x="25" y="968" class="small">08/10/2026 16:57:43</text>
+<text x="205" y="968" class="small muted">↻</text>
+<!-- Main header -->
+<text x="280" y="52" class="title">Good afternoon, Victor</text>
+<text x="280" y="78" class="body muted">Here’s what’s happening across your workers and projects.</text>
+<rect x="1268" y="28" width="42" height="40" rx="9" class="sub"/><text x="1281" y="54" font-size="18" fill="#fdb022">☼</text>
+<rect x="1320" y="28" width="90" height="40" rx="9" fill="url(#accent)"/><text x="1337" y="53" class="small" font-weight="650">+ New task</text>
+<!-- stat row -->
+<rect x="280" y="106" width="262" height="100" rx="12" class="card"/>
+<text x="300" y="133" class="small muted">Active workers</text><text x="300" y="174" font-size="29" font-weight="700">4</text>
+<circle cx="499" cy="157" r="19" fill="#24213a"/><text x="491" y="163" font-size="16" fill="#b692f6">◉</text>
+<text x="344" y="181" class="small" fill="#32d583">3 online</text>
+<rect x="558" y="106" width="262" height="100" rx="12" class="card"/>
+<text x="578" y="133" class="small muted">Projects</text><text x="578" y="174" font-size="29" font-weight="700">8</text>
+<circle cx="777" cy="157" r="19" fill="#24213a"/><text x="770" y="163" font-size="16" fill="#b692f6">▦</text>
+<text x="622" y="181" class="small muted">2 with activity today</text>
+<rect x="836" y="106" width="262" height="100" rx="12" class="card"/>
+<text x="856" y="133" class="small muted">Running executions</text><text x="856" y="174" font-size="29" font-weight="700">3</text>
+<circle cx="1055" cy="157" r="19" fill="#24213a"/><text x="1048" y="163" font-size="16" fill="#b692f6">↻</text>
+<text x="900" y="181" class="small muted">Across 2 projects</text>
+<rect x="1114" y="106" width="296" height="100" rx="12" class="card"/>
+<text x="1134" y="133" class="small muted">Completed today</text><text x="1134" y="174" font-size="29" font-weight="700">12</text>
+<circle cx="1367" cy="157" r="19" fill="#153328"/><text x="1360" y="163" font-size="16" fill="#32d583">✓</text>
+<text x="1178" y="181" class="small muted">10 successful · 2 failed</text>
+<!-- Workers and projects -->
+<text x="280" y="251" class="h2">Workers</text><text x="350" y="251" class="small muted">4 total</text><text x="503" y="251" class="small" fill="#b692f6">View all →</text>
+<text x="566" y="251" class="h2">Recently active projects</text><text x="821" y="251" class="small" fill="#b692f6">View all →</text>
+<!-- worker cards -->
+<rect x="280" y="268" width="260" height="94" rx="11" class="card"/>
+<circle cx="306" cy="294" r="7" fill="#32d583"/><text x="323" y="299" class="body" font-weight="650">worker-primary</text>
+<rect x="463" y="281" width="58" height="23" rx="11" fill="#153328"/><text x="476" y="297" class="small" fill="#6ce9a6">Ready</text>
+<text x="300" y="334" class="small muted">Slots</text><text x="343" y="334" class="small">2 / 3</text><rect x="300" y="345" width="220" height="4" rx="2" fill="#303646"/><rect x="300" y="345" width="146" height="4" rx="2" fill="#7f56d9"/>
+<rect x="280" y="374" width="260" height="94" rx="11" class="card"/>
+<circle cx="306" cy="400" r="7" fill="#32d583"/><text x="323" y="405" class="body" font-weight="650">worker-ui</text>
+<rect x="463" y="387" width="58" height="23" rx="11" fill="#153328"/><text x="476" y="403" class="small" fill="#6ce9a6">Ready</text>
+<text x="300" y="440" class="small muted">Slots</text><text x="343" y="440" class="small">1 / 2</text><rect x="300" y="451" width="220" height="4" rx="2" fill="#303646"/><rect x="300" y="451" width="110" height="4" rx="2" fill="#7f56d9"/>
+<rect x="280" y="480" width="260" height="94" rx="11" class="card"/>
+<circle cx="306" cy="506" r="7" fill="#fdb022"/><text x="323" y="511" class="body" font-weight="650">worker-experimental</text>
+<rect x="453" y="493" width="68" height="23" rx="11" fill="#3a2c17"/><text x="464" y="509" class="small" fill="#fdb022">Busy</text>
+<text x="300" y="546" class="small muted">Slots</text><text x="343" y="546" class="small">1 / 1</text><rect x="300" y="557" width="220" height="4" rx="2" fill="#303646"/><rect x="300" y="557" width="220" height="4" rx="2" fill="#fdb022"/>
+<!-- project list -->
+<rect x="566" y="268" width="844" height="306" rx="11" class="card"/>
+<path d="M566 329h844M566 390h844M566 451h844M566 512h844" class="line"/>
+<text x="588" y="294" class="label faint">PROJECT</text><text x="872" y="294" class="label faint">STATUS</text><text x="1015" y="294" class="label faint">LATEST EXECUTION</text>
+<text x="588" y="352" class="body" font-weight="600">codex-worker</text><text x="588" y="370" class="small muted">duned / codex-worker ↗</text>
+<rect x="868" y="342" width="80" height="25" rx="12" fill="#153328"/><text x="881" y="359" class="small" fill="#6ce9a6">Working</text>
+<text x="1015" y="351" class="small" font-weight="600">26.18 · Replace screen mockups</text><text x="1015" y="369" class="small muted">08/10/2026 15:42:08 · Running</text>
+<text x="588" y="413" class="body" font-weight="600">finance</text><text x="588" y="431" class="small muted">duned / finance ↗</text>
+<rect x="868" y="403" width="70" height="25" rx="12" fill="#24213a"/><text x="881" y="420" class="small" fill="#b692f6">Active</text>
+<text x="1015" y="412" class="small" font-weight="600">Add portfolio position endpoint</text><text x="1015" y="430" class="small muted">08/10/2026 14:18:33 · Success</text>
+<text x="588" y="474" class="body" font-weight="600">content-platform</text><text x="588" y="492" class="small muted">duned / content-platform ↗</text>
+<rect x="868" y="464" width="74" height="25" rx="12" fill="#202b3f"/><text x="881" y="481" class="small" fill="#84caff">Idle</text>
+<text x="1015" y="473" class="small" font-weight="600">Update API dependencies</text><text x="1015" y="491" class="small muted">07/10/2026 18:02:11 · Success</text>
+<text x="588" y="535" class="body" font-weight="600">worker-test</text><text x="588" y="553" class="small muted">duned / codex-worker-test ↗</text>
+<rect x="868" y="525" width="70" height="25" rx="12" fill="#24213a"/><text x="881" y="542" class="small" fill="#b692f6">Active</text>
+<text x="1015" y="534" class="small" font-weight="600">Create health check endpoint</text><text x="1015" y="552" class="small muted">07/10/2026 12:38:04 · Success</text>
+<!-- current work -->
+<text x="280" y="624" class="h2">Current work</text><text x="376" y="624" class="small muted">3 running executions</text>
+<rect x="280" y="641" width="1130" height="147" rx="11" class="card"/>
+<text x="304" y="670" class="label faint">PROJECT / ISSUE</text><text x="855" y="670" class="label faint">WORKER</text><text x="1040" y="670" class="label faint">STARTED</text><text x="1248" y="670" class="label faint">STATUS</text>
+<path d="M280 683h1130M280 733h1130" class="line"/>
+<text x="304" y="714" class="body" font-weight="600">codex-worker · 26.18 Replace screen mockups</text><text x="855" y="714" class="small">worker-ui</text><text x="1040" y="714" class="small muted">08/10/2026 16:32:10</text>
+<rect x="1248" y="696" width="86" height="25" rx="12" fill="#3a2c17"/><text x="1261" y="713" class="small" fill="#fdb022">Running</text>
+<text x="304" y="764" class="body" font-weight="600">finance · Portfolio positions endpoint</text><text x="855" y="764" class="small">worker-primary</text><text x="1040" y="764" class="small muted">08/10/2026 16:18:46</text>
+<rect x="1248" y="746" width="86" height="25" rx="12" fill="#3a2c17"/><text x="1261" y="763" class="small" fill="#fdb022">Running</text>
+<!-- recent executions -->
+<text x="280" y="836" class="h2">Recent executions</text><text x="1215" y="836" class="small muted">Status: </text>
+<rect x="1268" y="818" width="142" height="30" rx="7" class="sub"/><text x="1282" y="838" class="small">All statuses⌄</text>
+<rect x="280" y="853" width="1130" height="113" rx="11" class="card"/>
+<path d="M280 909h1130" class="line"/>
+<text x="304" y="879" class="label faint">EXECUTION</text><text x="812" y="879" class="label faint">SUMMARY</text><text x="1165" y="879" class="label faint">FINISHED</text><text x="1327" y="879" class="label faint">STATUS</text>
+<text x="304" y="899" class="small" font-weight="600">Add API info endpoint</text><text x="304" y="923" class="small muted">codex-worker · #301</text>
+<text x="812" y="902" class="small muted">Endpoint and HTTP test added.</text><text x="1165" y="902" class="small muted">08/10/2026 15:12:09</text><rect x="1327" y="886" width="66" height="23" rx="11" fill="#153328"/><text x="1338" y="902" class="small" fill="#6ce9a6">Success</text>
+<text x="304" y="948" class="small" font-weight="600">Refresh worker configuration</text><text x="812" y="948" class="small muted">Updated execution settings.</text><text x="1165" y="948" class="small muted">08/10/2026 14:51:22</text><rect x="1327" y="932" width="66" height="23" rx="11" fill="#3c2026"/><text x="1338" y="948" class="small" fill="#fda29b">Failed</text>
+</svg>
