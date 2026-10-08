@@ -14,6 +14,10 @@ Before implementing, inspect the existing architecture, relevant contracts, repr
 - The host supports bounded concurrency under global and per-project limits. Implementation/validation run in independent execution worktrees; shared Git mutation is serialized by repository-scoped gates. Do not replace this with global mutable current-project state or bypass capacity/ownership checks.
 - Codex implements task files only. Do not delegate branch creation, commits, integration, push, or GitHub labels/comments/Issue state to Codex; those remain worker-owned lifecycle operations.
 
+## Dashboard UI
+
+- When changing administration-dashboard UI, follow the [dashboard design guide](docs/dashboard-design-guide.md). Use the established React + Untitled UI foundation and shared components; the guide defines screen composition, interaction, responsive and accessibility expectations.
+
 ## .NET and code quality
 
 - Target the repository's current .NET version (currently .NET 10 / `net10.0`) and retain nullable reference types. Model optional values explicitly, validate boundary inputs and avoid null-forgiving operators that hide missing invariants.

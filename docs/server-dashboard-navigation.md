@@ -1,5 +1,8 @@
 # Server dashboard navigation
 
+For approved visual and interaction requirements, follow the
+[dashboard design guide](dashboard-design-guide.md).
+
 React + Untitled UI is the sole Server dashboard. The shared package under
 `src/CodexServer/worker-poc` retains its historical directory name, but builds one
 Vite application and asset graph. The local standalone Worker dashboard is unchanged.
