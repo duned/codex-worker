@@ -50,7 +50,6 @@ These screens are static design references, not implemented behavior. Sample
 names, statuses and timestamps are illustrative. The supporting field mappings
 remain in [Workers](dashboard-design/workers-list-reference.md),
 [Projects](dashboard-design/projects-reference.md),
-[Issues](dashboard-design/issues-reference.md),
 [Executions](dashboard-design/executions-reference.md), and
 [Settings](dashboard-design/settings-server-preparation-reference.md) notes.
 
