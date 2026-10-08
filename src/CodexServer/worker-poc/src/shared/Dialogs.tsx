@@ -1,4 +1,3 @@
-import { LanguageControl } from './LanguageControl';
 import { t, useLanguage, localizeText } from './i18n';
 import { useId, useRef, useState, type ReactNode, type FormEvent } from 'react';
 import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
@@ -11,18 +10,27 @@ interface DialogProps {
   onClose(): void;
   children: ReactNode;
   pending?: boolean;
+  variant?: 'default' | 'enqueue';
+  projectName?: string;
 }
 /** React Aria owns focus containment/restoration, Escape and outside dismissal. */
-export function FormDialog({ isOpen, title, description, onClose, children, pending = false }: DialogProps) {
+export function FormDialog({ isOpen, title, description, onClose, children, pending = false, variant = 'default', projectName }: DialogProps) {
   useLanguage();
   const descriptionId = useId();
+  const isEnqueue = variant === 'enqueue';
   return <ModalOverlay isOpen={isOpen} onOpenChange={open => { if (!open && !pending) onClose(); }}
     isDismissable={!pending} isKeyboardDismissDisabled={pending}
-    className="fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm">
-    <Modal className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary">
-      <Dialog aria-describedby={descriptionId} className="flex flex-col gap-4 outline-none">
-        <div className="flex flex-wrap items-start justify-between gap-3"><Heading slot="title" className="text-lg font-semibold text-primary">{localizeText(title)}</Heading><LanguageControl /></div>
-        <p id={descriptionId} className="text-sm text-secondary">{localizeText(description)}</p>
+    className={isEnqueue ? 'enqueue-dialog-overlay' : 'fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
+    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
+      <Dialog aria-describedby={descriptionId} className={isEnqueue ? 'enqueue-dialog' : 'flex flex-col gap-4 outline-none'}>
+        {isEnqueue && <Button color="tertiary" className="enqueue-dialog-close" aria-label={t('shared.closeDialog')} isDisabled={pending} onPress={onClose}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" /></svg>
+        </Button>}
+        <div className={isEnqueue ? 'enqueue-dialog-copy' : 'contents'}>
+          <Heading slot="title" className={isEnqueue ? 'enqueue-dialog-title' : 'text-lg font-semibold text-primary'}>{localizeText(title)}</Heading>
+          {isEnqueue && projectName && <h2 className="enqueue-dialog-project">{projectName}</h2>}
+          <p id={descriptionId} className={isEnqueue ? 'enqueue-dialog-description' : 'text-sm text-secondary'}>{localizeText(description)}</p>
+        </div>
         {children}
       </Dialog>
     </Modal>
