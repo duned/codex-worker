@@ -4,13 +4,14 @@ import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { FormDialog, ConfirmationDialog } from '../../shared/Dialogs';
-import { Notice, StatusBadge, ViewState } from '../../shared/Presentation';
+import { AdvancedDisclosure, Notice, StatusBadge, ViewState } from '../../shared/Presentation';
 import { Input } from '../../shared/Input';
 import { TextArea } from '../../shared/TextArea';
 import { NumberInput } from '../../shared/NumberInput';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { TableCard } from '../../untitled/components/application/table/table';
 import { useApiRead, useRuntime } from '../../shared/api/session';
+import { executions } from '../../shared/api/validation';
 import { access, issue, issueList, issueResult, issueUrl, type Project } from './contracts';
 import { issuePath, projectPath, changeRequest, type IssueChange } from './model';
 import { useProjects } from './Workspace';
@@ -49,9 +50,10 @@ function RepositoryAccess({ id }: { id: string }) {
 function IssueList({ project, query, open }: { project: Project; query: string; open(change: IssueChange, before: import('./contracts').Issue): void }) {
   useLanguage();
   const read = useApiRead(issuePath(project.id) + '?' + query, issueList), [params] = useSearchParams(), w = useProjects();
+  const queue = useApiRead(`/api/v1/executions?projectId=${encodeURIComponent(project.id)}&workType=github-issue&limit=100&offset=0`, executions);
   if (!read.data) return <ViewState title={read.error ? t("projects.issuesUnavailableCheckRepositoryAccessAndRetryLoadIssues") : t("projects.loadingIssues")} error={!!read.error} />;
   if (!read.data.length) return <ViewState title={t("projects.noIssuesMatchedTheseFilters")} />;
-  return <TableCard.Root><ul className="divide-y divide-secondary">{read.data.map(i => { const next = new URLSearchParams(params); next.set('issue', String(i.number)); return <li key={i.number} className="flex flex-wrap items-start justify-between gap-3 p-4"><div className="min-w-0 flex-1 basis-full sm:basis-auto"><Link to={`?${next}`} className="font-medium text-primary">#{i.number} · {i.title}</Link><p className="text-sm text-tertiary">{localizeText(i.state)}{' '}{t("projects.labels")}{' '}{i.labels.join(', ') || t('projects.none')}</p>{i.blockedBy.length > 0 && <p className="text-sm text-secondary">{t("projects.blockedBy")}{' '}{i.blockedBy.map(b => `#${b.number} (${statusLabel(b.state)})`).join(', ')}</p>}{i.eligibilityReasons.map(r => <p key={r} className="text-sm text-warning-primary">{r}</p>)}</div><div className="flex flex-wrap gap-2"><StatusBadge tone={i.isEligible ? 'success' : 'warning'}>{i.isEligible ? statusLabel('Eligible') : statusLabel('Ineligible')}</StatusBadge>{i.isEligible && <Button size="sm" color="secondary" isDisabled={w.locked(project.id) || !project.enabled} onPress={() => open({ kind: 'enqueue' }, i)}>{t("projects.enqueue")}{i.number}</Button>}</div></li>; })}</ul></TableCard.Root>;
+  return <TableCard.Root><ul className="divide-y divide-secondary">{read.data.map(i => { const next = new URLSearchParams(params); next.set('issue', String(i.number)); const current = queue.data?.find(e => e.workReference?.type === 'github-issue' && e.workReference.id === String(i.number) && ['Queued', 'Assigned', 'Running'].includes(e.state)); return <li key={i.number} className="flex flex-wrap items-start justify-between gap-3 p-4"><div className="min-w-0 flex-1 basis-full space-y-2 sm:basis-auto"><ExternalLink href={issueUrl(project.repository, i)} className="font-medium text-primary">#{i.number} · {i.title}</ExternalLink><Link to={`?${next}`} className="block text-sm text-brand-secondary">{t('projects.issueDetails')}</Link><div className="flex flex-wrap gap-2"><StatusBadge tone={i.state.toLowerCase() === 'open' ? 'success' : 'gray'}>{localizeText(i.state)}</StatusBadge><StatusBadge tone={i.isEligible ? 'success' : 'warning'}>{i.isEligible ? statusLabel('Eligible') : statusLabel('Ineligible')}</StatusBadge><StatusBadge tone={current ? 'success' : 'gray'}>{current ? `${localizeText(current.state)} · ${current.id}` : t(queue.data ? 'projects.queueNotShown' : queue.error ? 'projects.queueUnavailable' : 'projects.queueLoading')}</StatusBadge></div><p className="text-sm text-tertiary">{t("projects.labels")}{' '}{i.labels.join(', ') || t('projects.none')}</p>{i.eligibilityReasons.map(r => <p key={r} className="text-sm text-warning-primary">{r}</p>)}{i.blockedBy.length > 0 && <AdvancedDisclosure title={t('projects.blockedByIssues', { count: i.blockedBy.length })}>{i.blockedBy.map(b => <p key={b.number}><ExternalLink href={issueUrl(project.repository, b)}>{`#${b.number} · ${b.title} · ${localizeText(b.state)}`}</ExternalLink></p>)}</AdvancedDisclosure>}</div><div className="flex flex-wrap gap-2">{i.isEligible && !current && <Button size="sm" color="secondary" isDisabled={w.locked(project.id) || !project.enabled} onPress={() => open({ kind: 'enqueue' }, i)}>{t("projects.enqueue")}{i.number}</Button>}</div></li>; })}</ul></TableCard.Root>;
 }
 function IssueDetail({ project, number, open }: { project: Project; number: number; open(change: IssueChange, before: import('./contracts').Issue): void }) {
   useLanguage();

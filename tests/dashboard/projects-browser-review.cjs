@@ -18,8 +18,11 @@ const clone = value => structuredClone(value);
     const errors = [], effects = [], previews = [];
     page.on('pageerror', error => errors.push(error.message));
     let projects = clone(props.projects), failVerify = false, loseSave = false, loseIssue = false, loseEnqueue = false, loseRefresh = false, loseLifecycle = false, loseDelete = false;
-    let queue = [], nextIssue = 30;
-    const issues = new Map([[27, { number: 27, title: 'Repair parser', body: 'Bounded description', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [], isEligible: true, eligibilityReasons: [] }]]);
+    let queue = [{ id: 'queued-27', projectId: 'project-a', workReference: { type: 'github-issue', id: '27' }, state: 'Queued', createdAtUtc: '2026-01-01T00:02:30Z', managedEligibilityState: 'eligible', managedEligibilityReasons: [], managedEligibilityCheckedAtUtc: '2026-01-01T00:02:30Z' }], nextIssue = 30;
+    const issues = new Map([
+      [27, { number: 27, title: 'Repair parser', body: 'Bounded description', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [], isEligible: true, eligibilityReasons: [] }],
+      [28, { number: 28, title: 'Blocked task', body: '', state: 'open', url: 'https://github.com/owner/repo/issues/28', labels: [], blockedBy: [{ number: 27, title: 'Repair parser', state: 'open', url: 'https://github.com/owner/repo/issues/27' }], isEligible: false, eligibilityReasons: ['Ready label is missing.', 'Blocked by open Issue #27.'] }]
+    ]);
     await page.route('https://dashboard.test/**', async route => {
       const request = route.request(), url = new URL(request.url()), endpoint = url.pathname, method = request.method();
       if (endpoint.startsWith('/dashboard-assets/preview/')) {
@@ -88,6 +91,17 @@ const clone = value => structuredClone(value);
       assert.equal(effects.length, 0);
       await page.getByRole('button', { name: 'Check repository access' }).click();
       await page.getByText(/Repository read: unavailable/).waitFor();
+      if (width === 1280) {
+        await page.goto('https://dashboard.test/projects/project-a?issues=1&issueState=open');
+        await page.getByRole('link', { name: '#28 · Blocked task' }).waitFor();
+        await page.getByText('Eligible', { exact: true }).waitFor();
+        await page.getByText('Queued · queued-27', { exact: true }).waitFor();
+        await page.getByText('Ineligible', { exact: true }).waitFor();
+        await page.getByText('Ready label is missing.', { exact: true }).waitFor();
+        await page.getByText('Blocked by (1)', { exact: true }).click();
+        await page.getByRole('link', { name: '#27 · Repair parser · Open' }).waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Enqueue #28' }).count(), 0);
+      }
       await page.screenshot({ path: path.join(output, `project-${width}.png`), fullPage: true });
       await page.reload(); await page.getByRole('heading', { name: '#27 · Repair parser' }).waitFor(); assert.equal(new URL(page.url()).search, new URL(detail).search);
       if (width === 375) {
