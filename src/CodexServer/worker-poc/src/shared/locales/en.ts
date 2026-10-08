@@ -1009,6 +1009,17 @@ export const en = {
   "status.delete": "delete",
   "status.lifecycle": "lifecycle",
   "status.issue": "issue",
-  "workers.afterRegistration": "# After acknowledged registration:"
+  "workers.afterRegistration": "# After acknowledged registration:",
+  "projects.searchProjects": "Search projects",
+  "projects.filterStatus": "Status",
+  "projects.allProjects": "All projects",
+  "projects.discoveryEnabled": "Discovery enabled",
+  "projects.discoveryPaused": "Discovery paused",
+  "projects.discoveryDisabled": "Discovery disabled",
+  "projects.recentActivityUnavailable": "Recent activity unavailable",
+  "projects.recentActivity": "Recent activity",
+  "projects.noRecentActivity": "No recorded activity",
+  "projects.discoveryAndEligibilityDetails": "Discovery and eligibility details",
+  "projects.noProjectsMatchFilters": "No projects match these filters"
 } as const;
 export type TranslationKey = keyof typeof en;

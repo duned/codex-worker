@@ -1,5 +1,16 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "projects.searchProjects": "Buscar proyectos",
+  "projects.filterStatus": "Estado",
+  "projects.allProjects": "Todos los proyectos",
+  "projects.discoveryEnabled": "Descubrimiento activado",
+  "projects.discoveryPaused": "Descubrimiento en pausa",
+  "projects.discoveryDisabled": "Descubrimiento desactivado",
+  "projects.recentActivityUnavailable": "Actividad reciente no disponible",
+  "projects.recentActivity": "Actividad reciente",
+  "projects.noRecentActivity": "Sin actividad registrada",
+  "projects.discoveryAndEligibilityDetails": "Detalles de descubrimiento y elegibilidad",
+  "projects.noProjectsMatchFilters": "Ningún proyecto coincide con estos filtros",
   "shared.dashboardUnavailable": "Panel no disponible",
   "shared.reloadToRestoreTheSessionAndAuthoritativeState": "Recargue para restaurar la sesión y el estado autorizado.",
   "shared.openCurrentDashboard": "Abrir el panel actual",

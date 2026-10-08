@@ -29,6 +29,7 @@ test('lost project responses reconcile only matching definitions and the expecte
   assert.equal(savedDefinition([p, { ...p, id: 'ambiguous' }], undefined, desired).state, 'conflict');
 });
 test('normalization retains advanced policy, custom descriptors, versions and authentication scopes', () => {
+  assert.deepEqual(definitionOf(p).automaticDiscovery, p.automaticDiscovery, 'opening an edit draft preserves the separately managed discovery policy');
   const before = { ...p, requirements: [{ type: 'custom-tool', name: 'Builder', version: '>=010.00', scope: null }, { type: 'authentication', name: 'github-api', version: null, scope: 'Owner/Repo' }] };
   assert.ok(sameDefinition(before, { ...before, repository: 'OWNER/REPO', requirements: [{ ...before.requirements[0], name: 'builder', version: '>=10.0' }, { ...before.requirements[1], scope: 'owner/repo' }] }));
   assert.equal(sameDefinition(before, { ...before, automaticDiscovery: { ...before.automaticDiscovery, enabled: true } }), false);

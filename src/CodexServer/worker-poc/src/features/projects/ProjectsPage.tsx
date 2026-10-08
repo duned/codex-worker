@@ -1,6 +1,6 @@
 import { t, useLanguage, localizeText } from '../../shared/i18n';
-import { DeleteAction } from '../../shared/Actions';
-import { useState } from 'react';
+import { DeleteAction, ExternalLink } from '../../shared/Actions';
+import { useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { PageHeading, Notice, StatusBadge, ResourceIdentity, ViewState, AdvancedDisclosure } from '../../shared/Presentation';
 import { ConfirmationDialog } from '../../shared/Dialogs';
@@ -19,6 +19,13 @@ export function ProjectsPage() {
   useLanguage();
   const { resourceId } = useParams(), location = useLocation(), w = useProjects(), read = useApiRead('/api/v1/projects', projectList);
   const [action, setAction] = useState<{ project: Project; enabled?: boolean }>();
+  const [filter, setFilter] = useState('all'), [search, setSearch] = useState('');
+  const activity = useApiRead('/api/v1/executions?limit=50&offset=0', executions);
+  const recentByProject = useMemo(() => {
+    const latest = new Map<string, string>();
+    for (const item of activity.data ?? []) if (!latest.has(item.projectId)) latest.set(item.projectId, item.createdAtUtc);
+    return latest;
+  }, [activity.data]);
   const selected = read.data?.find(p => p.id === resourceId);
   const open = (p?: Project) => {
     if (w.draft) { w.setDraft({ ...w.draft, open: true }); w.setMessage(t("projects.resumeOrDiscardTheRetainedDraftBeforeStartingAnotherDefinition")); return; }
@@ -38,7 +45,17 @@ export function ProjectsPage() {
         <DiscoveryPolicy project={selected} />
         <section className="space-y-3"><h2 className="text-lg font-semibold text-primary">{t("projects.executionPolicy")}</h2><p className="text-sm text-secondary">{t("projects.executionRequiresAnEligibleAuthorizedWorkerCurrentManagedConfigurationAndAvailableCapacity")}</p><a className="text-sm text-brand-secondary" href={`/executions?project=${encodeURIComponent(selected.id)}`}>{t("projects.projectFilteredExecutions")}</a><AdvancedDisclosure title={t("projects.advancedProjectRequirements")}>{selected.requirements.length ? selected.requirements.map((r, i) => <p key={i}>{r.type} · {r.name}{r.version ? ` ${r.version}` : ''}{r.scope ? t('projects.scope', { scope: r.scope }) : ''}</p>) : <p>{t("projects.noAdditionalRequirements")}</p>}</AdvancedDisclosure></section>
         <ProjectWorkers project={selected} /><Issues key={selected.id} project={selected} />
-      </> : <ViewState title={t("projects.projectUnavailableOrDeletedReturnToProjectsToInspectCurrentDefinitions")} error /> : read.data.length ? <TableCard.Root><ul className="divide-y divide-secondary">{read.data.map(p => <li key={p.id} className="flex flex-wrap items-start justify-between gap-4 p-5"><div className="min-w-0 flex-1 space-y-2"><Link to={`/projects/${encodeURIComponent(p.id)}${location.search}`}><ResourceIdentity name={p.name} id={p.id} /></Link><p className="break-words text-sm text-secondary">{p.repository} · {p.defaultBranch}</p><StatusBadge tone={p.enabled ? 'success' : 'gray'}>{p.enabled ? localizeText('Enabled') : localizeText('Disabled')}</StatusBadge><p className="text-sm text-secondary">{t("projects.automaticDiscovery2")}{' '}{p.automaticDiscovery?.enabled ? p.enabled ? localizeText('enabled') : t("projects.pausedByDisabledLifecycle") : localizeText('disabled')}{' '}{t("projects.executionRequiresCurrentWorkerReadiness")}</p>{!p.enabled && <p className="text-sm text-warning-primary">{t("projects.enableThisProjectToAdmitNewWork")}</p>}<p className="text-sm text-tertiary">{t("projects.readyLabel")}{' '}{p.issueReadyLabel ?? t("projects.noneConfigured")}{' '}{t("projects.blockedLabel")}{' '}{p.issueBlockedLabel ?? t("projects.noneConfigured")}{t("projects.inspectIssueEligibilityAndWorkerPreparationForActionableBlockers")}</p><ProjectBlockers project={p} /></div>{controls(p)}</li>)}</ul></TableCard.Root> : <ViewState title={t("projects.noCentralProjectsRegistered")}>{t("projects.createAProjectThenAssociateAndPrepareAWorker")}</ViewState>}
+      </> : <ViewState title={t("projects.projectUnavailableOrDeletedReturnToProjectsToInspectCurrentDefinitions")} error /> : read.data.length ? <>
+        <div className="flex flex-wrap items-end gap-3" aria-label={t("projects.projects")}>
+          <label className="flex min-w-56 flex-1 flex-col gap-1 text-sm text-secondary">{t("projects.searchProjects")}<input className="rounded-lg border border-secondary bg-primary px-3 py-2 text-primary" value={search} onChange={event => setSearch(event.target.value)} /></label>
+          <label className="flex flex-col gap-1 text-sm text-secondary">{t("projects.filterStatus")}<select className="rounded-lg border border-secondary bg-primary px-3 py-2 text-primary" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">{t("projects.allProjects")}</option><option value="enabled">{localizeText('Enabled')}</option><option value="disabled">{localizeText('Disabled')}</option></select></label>
+        </div>
+        {(() => { const visible = read.data.filter(p => (filter === 'all' || (filter === 'enabled') === p.enabled) && `${p.name} ${p.repository}`.toLowerCase().includes(search.trim().toLowerCase())); return visible.length ? <TableCard.Root><ul className="divide-y divide-secondary">{visible.map(p => {
+          const repoHref = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(p.repository) ? `https://github.com/${p.repository}` : undefined;
+          const discovery = p.automaticDiscovery?.enabled ? p.enabled ? t("projects.discoveryEnabled") : t("projects.discoveryPaused") : t("projects.discoveryDisabled");
+          return <li key={p.id} className="flex flex-wrap items-start justify-between gap-4 p-5"><div className="min-w-0 flex-1 space-y-2"><Link to={`/projects/${encodeURIComponent(p.id)}${location.search}`}><ResourceIdentity name={p.name} id={p.id} /></Link><p className="break-words text-sm text-secondary">{repoHref ? <ExternalLink href={repoHref}>{p.repository}</ExternalLink> : p.repository} · {p.defaultBranch}</p><div className="flex flex-wrap gap-2"><StatusBadge tone={p.enabled ? 'success' : 'gray'}>{p.enabled ? localizeText('Enabled') : localizeText('Disabled')}</StatusBadge><StatusBadge tone={p.automaticDiscovery?.enabled && p.enabled ? 'success' : 'gray'}>{discovery}</StatusBadge></div><p className="text-sm text-tertiary">{activity.error ? t("projects.recentActivityUnavailable") : recentByProject.has(p.id) ? `${t("projects.recentActivity")}: ${new Date(recentByProject.get(p.id) ?? '').toLocaleString()}` : t("projects.noRecentActivity")}</p>{!p.enabled && <p className="text-sm text-warning-primary">{t("projects.enableThisProjectToAdmitNewWork")}</p>}<AdvancedDisclosure title={t("projects.discoveryAndEligibilityDetails")}><p>{t("projects.readyLabel")} {p.issueReadyLabel ?? t("projects.noneConfigured")} · {t("projects.blockedLabel")} {p.issueBlockedLabel ?? t("projects.noneConfigured")}</p><ProjectBlockers project={p} /></AdvancedDisclosure></div>{controls(p)}</li>;
+        })}</ul></TableCard.Root> : <ViewState title={t("projects.noProjectsMatchFilters")} />; })()}
+      </> : <ViewState title={t("projects.noCentralProjectsRegistered")}>{t("projects.createAProjectThenAssociateAndPrepareAWorker")}</ViewState>}
     </div>
     {w.draft && <ProjectEditor key={w.draft.before?.id ?? 'new'} />}{w.issueDraft && <IssueEditor key={`${w.issueDraft.project.id}-${w.issueDraft.before?.number ?? 'new'}-${w.issueDraft.change.kind}`} />}
     {action && <ConfirmationDialog key={`${action.project.id}-${String(action.enabled)}`} isOpen title={action.enabled === undefined ? t("projects.deleteCentralProject") : action.enabled ? t("projects.enableProject") : t("projects.disableProject")} description={action.enabled === undefined ? t('projects.deleteDescription', { name: action.project.name }) : action.enabled ? t('projects.enableDescription', { name: action.project.name }) : t('projects.disableDescription', { name: action.project.name })} actionLabel={action.enabled === undefined ? t("projects.deleteProject") : action.enabled ? t("projects.enableProject2") : t("projects.disableProject2")} destructive={action.enabled !== true} onClose={() => setAction(undefined)} onSubmit={() => w.lifecycle(action.project, action.enabled)} />}
