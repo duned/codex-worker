@@ -138,6 +138,7 @@ export const es = {
   "executions.loadingExecution": "Cargando ejecución…",
   "executions.reportedStage": "Etapa informada:",
   "executions.noAdditionalResultReported": "No se informó ningún resultado adicional.",
+  "executions.nextPermittedAction": "Siguiente acción permitida",
   "executions.recovery": "Recuperación:",
   "executions.nextActionWaitForAssignmentOrCancelThisQueuedRequest": "Siguiente acción: esperar una asignación o cancelar esta solicitud en cola.",
   "executions.nextActionVerifyAuthoritativeRepositoryIntegrationEvidenceThenRecordTheDispositionBelow": "Siguiente acción: verificar la evidencia de integración del repositorio autorizado y registrar el resultado a continuación.",

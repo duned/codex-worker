@@ -126,6 +126,7 @@ export const en = {
   "executions.loadingExecution": "Loading execution…",
   "executions.reportedStage": "Reported stage:",
   "executions.noAdditionalResultReported": "No additional result reported.",
+  "executions.nextPermittedAction": "Next permitted action",
   "executions.recovery": "Recovery:",
   "executions.nextActionWaitForAssignmentOrCancelThisQueuedRequest": "Next action: wait for assignment or cancel this queued request.",
   "executions.nextActionVerifyAuthoritativeRepositoryIntegrationEvidenceThenRecordTheDispositionBelow": "Next action: verify authoritative repository integration evidence, then record the disposition below.",
