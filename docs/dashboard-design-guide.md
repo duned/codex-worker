@@ -18,6 +18,13 @@ These repository images are the approved visual targets for the initial dashboar
 
 ![Approved Home reference](dashboard-design/home-approved.jpg)
 
+### Workers list
+
+The Workers list visual reference is available at
+[Workers list reference](dashboard-design/workers-list-reference.md). It grounds
+the future list screen in the API's connection, freshness, readiness, capacity and
+active-project fields; it is a design artifact, not an implemented screen.
+
 ## Foundation and hierarchy
 
 Use the established React + Untitled UI application in
