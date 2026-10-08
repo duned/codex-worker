@@ -7,7 +7,7 @@ import { projectPath, issuePath, savedDefinition, sameDefinition, matchesIssue, 
 import { queryKeys } from '../../shared/api/runtime';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 export interface ProjectDraft { before?: Project; definition: Definition; step: number; reviewed?: Definition; open: boolean }
-export interface IssueDraft { project: Project; before?: Issue; change: IssueChange; preview?: IssueResult; open: boolean }
+export interface IssueDraft { project: Project; before?: Issue; change: IssueChange; preview?: IssueResult; accepted?: ExecutionSummary; open: boolean }
 type Attempt = { kind: 'save'; before?: Project; definition: Definition } | { kind: 'lifecycle' | 'delete'; before: Project; enabled?: boolean } | { kind: 'issue'; project: Project; before?: Issue; change: IssueChange; executionIds?: string[]; eligibilityChecks?: Record<string, string | undefined> };
 export const fenceKey = (id?: string) => `project:${id ?? 'new'}`;
 function executionList(value: unknown) { return executions(value); }

@@ -83,10 +83,16 @@ export function IssueEditor() {
   const w = useProjects(), runtime = useRuntime(), d = w.issueDraft, navigate = useNavigate(), [params] = useSearchParams();
   const [busy, setBusy] = useState(false), guard = useRef(false), controller = useRef<AbortController | undefined>(undefined);
   const [error, setError] = useState(''), [discard, setDiscard] = useState(false);
-  const [accepted, setAccepted] = useState<ExecutionSummary | undefined>();
+  const [accepted, setAccepted] = useState<ExecutionSummary | undefined>(d?.accepted);
   useEffect(() => () => controller.current?.abort(), []);
   if (!d) return null;
   const change = d.change, needsPreview = change.kind !== 'enqueue' && change.kind !== 'refresh', locked = w.locked(d.project.id);
+  function closeDialog() {
+    if (busy) return;
+    setError(''); setDiscard(false); setAccepted(undefined);
+    if (accepted) w.setIssueDraft(undefined);
+    else w.setIssueDraft(current => current ? { ...current, open: false } : current);
+  }
   const update = (change: IssueChange) => { w.setIssueDraft({ ...d, change, preview: undefined }); setError(''); };
   async function submit() {
     if (!d || guard.current || locked) return; guard.current = true; setBusy(true); setError('');
@@ -100,7 +106,11 @@ export function IssueEditor() {
         w.setIssueDraft({ ...d, preview });
       } else {
         const result = await w.submitIssue(d);
-        if (change.kind === 'enqueue' && !Array.isArray(result)) setAccepted(result as ExecutionSummary);
+        if (change.kind === 'enqueue' && !Array.isArray(result)) {
+          const execution = result as ExecutionSummary;
+          setAccepted(execution);
+          w.setIssueDraft({ ...d, accepted: execution });
+        }
         if (d.change.kind === 'create' && !Array.isArray(result) && 'issueNumber' in result && result.issueNumber) { const next = new URLSearchParams(params); next.set('issue', String(result.issueNumber)); next.set('issues', '1'); navigate(`/projects/${encodeURIComponent(d.project.id)}?${next}`); }
       }
     } catch (reason) {
@@ -115,7 +125,7 @@ export function IssueEditor() {
     finally { guard.current = false; setBusy(false); }
   }
   return <>
-    <FormDialog isOpen variant={change.kind === 'enqueue' ? 'enqueue' : 'default'} projectName={change.kind === 'enqueue' ? d.project.name : undefined} title={change.kind === 'enqueue' ? t('projects.enqueueHeading', { number: d.before?.number ?? '' }) : t(change.kind === 'create' ? 'projects.createIssueHeading' : change.kind === 'edit' ? 'projects.editIssueHeading' : 'projects.administerIssueHeading', { number: d.before ? ` #${d.before.number}` : '' })} description={change.kind === 'enqueue' ? t('projects.enqueueDescription') : `${d.project.name} · ${d.project.repository}. ${needsPreview ? t("projects.previewServerChangesBeforeApplying") : t("projects.reEvaluateQueuedEligibilityUsingCurrentGitHubEvidence")}`} pending={busy} onClose={() => w.setIssueDraft({ ...d, open: false })}>
+    <FormDialog isOpen={d.open} variant={change.kind === 'enqueue' ? 'enqueue' : 'default'} projectName={change.kind === 'enqueue' ? d.project.name : undefined} title={change.kind === 'enqueue' ? t('projects.enqueueHeading', { number: d.before?.number ?? '' }) : t(change.kind === 'create' ? 'projects.createIssueHeading' : change.kind === 'edit' ? 'projects.editIssueHeading' : 'projects.administerIssueHeading', { number: d.before ? ` #${d.before.number}` : '' })} description={change.kind === 'enqueue' ? t('projects.enqueueDescription') : `${d.project.name} · ${d.project.repository}. ${needsPreview ? t("projects.previewServerChangesBeforeApplying") : t("projects.reEvaluateQueuedEligibilityUsingCurrentGitHubEvidence")}`} pending={busy} onClose={closeDialog}>
       <form className={change.kind === 'enqueue' ? 'enqueue-dialog-form' : 'flex flex-col gap-4'} onSubmit={event => { event.preventDefault(); void submit(); }}>
         <fieldset disabled={busy || locked} className={change.kind === 'enqueue' ? 'enqueue-dialog-fields' : 'flex min-w-0 flex-col gap-3'}>
           {(change.kind === 'create' || change.kind === 'edit') && <><Input label={t("projects.issueTitle")} value={change.title} isRequired maxLength={256} onChange={title => update({ ...change, title })} /><TextArea label={t("projects.issueBody")} value={change.body} maxLength={65536} onChange={body => update({ ...change, body })} /></>}
@@ -126,7 +136,7 @@ export function IssueEditor() {
         {busy && change.kind === 'enqueue' && <p role="status" className="enqueue-dialog-feedback enqueue-dialog-feedback-pending">{t('projects.enqueuePending')}</p>}
         {accepted && (change.kind === 'enqueue' ? <div role="status" className="enqueue-dialog-feedback enqueue-dialog-feedback-success"><span>{t('projects.enqueueAccepted')}</span><Link className="enqueue-dialog-execution-link" to={`/executions/${encodeURIComponent(accepted.id)}`}>{t('projects.viewExecution')}</Link></div> : <Notice>{t('projects.enqueueAccepted')} <Link className="text-brand-secondary" to={`/executions/${encodeURIComponent(accepted.id)}`}>{t('projects.viewExecution')}</Link></Notice>)}
         {error && (change.kind === 'enqueue' ? <p role="alert" className="enqueue-dialog-feedback enqueue-dialog-feedback-error">{error}</p> : <Notice error>{error}</Notice>)}{locked && (change.kind === 'enqueue' ? <p role="alert" className="enqueue-dialog-feedback enqueue-dialog-feedback-error">{t("projects.resultUncertainCloseAndReconcileAuthoritativeState")}</p> : <Notice error>{t("projects.resultUncertainCloseAndReconcileAuthoritativeState")}</Notice>)}
-        <div className={change.kind === 'enqueue' ? 'enqueue-dialog-actions' : 'flex flex-wrap justify-end gap-2'}><Button autoFocus color={change.kind === 'enqueue' ? 'tertiary' : 'secondary'} className={change.kind === 'enqueue' ? 'enqueue-dialog-cancel' : undefined} isDisabled={busy} onPress={() => w.setIssueDraft({ ...d, open: false })}>{change.kind === 'enqueue' ? t('projects.cancel') : t("projects.close")}</Button>{change.kind !== 'enqueue' && <Button color="secondary" isDisabled={busy || locked} onPress={() => setDiscard(true)}>{t("projects.discardDraft")}</Button>}{!accepted && <Button type="submit" className={change.kind === 'enqueue' ? 'enqueue-dialog-submit' : undefined} isDisabled={busy || locked}>{busy ? t('projects.enqueuePending') : needsPreview ? d.preview ? t("projects.applyPreviewedChanges") : t("projects.previewChanges") : change.kind === 'enqueue' ? t("projects.enqueueIssue") : t("projects.refreshEligibility")}</Button>}</div>
+        <div className={change.kind === 'enqueue' ? 'enqueue-dialog-actions' : 'flex flex-wrap justify-end gap-2'}><Button autoFocus color={change.kind === 'enqueue' ? 'tertiary' : 'secondary'} className={change.kind === 'enqueue' ? 'enqueue-dialog-cancel' : undefined} isDisabled={busy} onPress={closeDialog}>{change.kind === 'enqueue' ? t('projects.cancel') : t("projects.close")}</Button>{change.kind !== 'enqueue' && <Button color="secondary" isDisabled={busy || locked} onPress={() => setDiscard(true)}>{t("projects.discardDraft")}</Button>}{!accepted && <Button type="submit" className={change.kind === 'enqueue' ? 'enqueue-dialog-submit' : undefined} isDisabled={busy || locked}>{busy ? t('projects.enqueuePending') : needsPreview ? d.preview ? t("projects.applyPreviewedChanges") : t("projects.previewChanges") : change.kind === 'enqueue' ? t("projects.enqueueIssue") : t("projects.refreshEligibility")}</Button>}</div>
       </form>
     </FormDialog>
     {discard && <ConfirmationDialog isOpen title={t("projects.discardIssueDraft")} description={t("projects.unsavedIssueChangesWillBeLostNoGitHubStateIsChanged")} destructive actionLabel={t("projects.discardDraft")} onClose={() => setDiscard(false)} onSubmit={async () => { w.setIssueDraft(undefined); }} />}
