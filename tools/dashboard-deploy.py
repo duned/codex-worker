@@ -12,13 +12,56 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import tempfile
+import urllib.request
+import urllib.error
+from urllib.parse import urlsplit
 
 
 INSTALLED_SERVER = Path("/opt/codex-server/current/CodexServer")
+CAPABILITY = 'codex-server-development-dashboard-override-v1'
+
+
+def check_capability(installed):
+    try:
+        result = run(str(installed), '--dashboard-override-capability', capture_output=True, text=True, timeout=10)
+        if result.stdout.strip() == CAPABILITY:
+            return
+    except (subprocess.SubprocessError, OSError):
+        pass
+    raise ValueError('installed codex-server override support could not be established; upgrade the installed Server once to a build containing development dashboard override support')
+
+
+def verification_url(value):
+    url = urlsplit(value)
+    if url.scheme not in ('http', 'https') or url.hostname not in ('127.0.0.1', '::1', 'localhost') or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
+        raise ValueError('dashboard verification URL must be a loopback HTTP/HTTPS origin')
+    return value.rstrip('/')
+
+
+def verify_served(directory, origin):
+    # No proxy, credentials, redirects or TLS bypass. Compare every manifest asset
+    # as well as the shell, so an embedded or partially served generation fails.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    files = [('index.html', '/')]
+    files.extend((item['path'], '/dashboard-assets/preview/' + item['path'])
+                 for item in json.loads((directory / 'assets.json').read_text()))
+    for name, route in files:
+        expected = (directory / name).read_bytes()
+        try:
+            with opener.open(urllib.request.Request(origin + route, headers={'Cache-Control': 'no-cache'}), timeout=10) as response:
+                actual = response.read(len(expected) + 1)
+        except (OSError, urllib.error.URLError) as error:
+            raise ValueError('dashboard verification endpoint unreachable or rejected the request') from error
+        if actual != expected:
+            raise ValueError('served dashboard generation does not match deployed assets')
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, check=True, timeout=300, **kwargs)
+    return subprocess.run(args, check=True, timeout=kwargs.pop('timeout', 300), **kwargs)
 
 
 def safe_directory(value):
@@ -60,6 +103,8 @@ def deploy(repo):
     start = run('systemctl', 'show', 'codex-server', '--property=ExecStart', '--value', capture_output=True, text=True).stdout
     if not installed.is_file() or 'path=/opt/codex-server/current/CodexServer ;' not in start:
         raise ValueError('local installed codex-server service was not found')
+    check_capability(installed)
+    origin = verification_url(env.get('CODEX_SERVER_DEVELOPMENT_DASHBOARD_VERIFY_URL', 'http://127.0.0.1:5090'))
     if root == Path('/') or root == repo or any(root.is_relative_to(Path(path)) for path in ('/opt', '/etc', '/usr', '/bin', '/sbin', '/boot', '/proc', '/sys', '/dev', '/run')) or root.is_relative_to(repo) or repo.is_relative_to(root):
         raise ValueError('unsafe dashboard destination')
     if (root / '.deploy.lock').is_symlink():
@@ -90,15 +135,16 @@ def deploy(repo):
                 candidate.rename(current)
                 run('sudo', '-n', 'systemctl', 'restart', 'codex-server')
                 run('systemctl', 'is-active', '--quiet', 'codex-server')
-            except (subprocess.SubprocessError, OSError):
+                verify_served(current, origin)
+            except (subprocess.SubprocessError, OSError, ValueError) as error:
                 if current.exists():
                     current.rename(candidate)
                 if had_current:
                     previous.rename(current)
                 run('sudo', '-n', 'systemctl', 'restart', 'codex-server')
                 run('systemctl', 'is-active', '--quiet', 'codex-server')
-                raise ValueError('activation failed; previous dashboard restored and Server restarted')
-        print('Activation succeeded; previous assets retained in previous. Worker unchanged.')
+                raise ValueError(f'activation/verification failed ({error}); previous dashboard restored and Server restarted') from error
+        print('Activation and served-generation verification succeeded; previous assets retained in previous. Worker unchanged.')
 
 
 if __name__ == '__main__':

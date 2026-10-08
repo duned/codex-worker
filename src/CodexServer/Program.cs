@@ -31,6 +31,12 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        // Deployment probes must not initialize configuration, persistence or hosting.
+        if (args is ["--dashboard-override-capability"])
+        {
+            Console.WriteLine("codex-server-development-dashboard-override-v1");
+            return 0;
+        }
         if (args is ["--help"] or ["-h"])
         {
             Console.WriteLine(Help);

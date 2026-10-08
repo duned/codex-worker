@@ -50,7 +50,11 @@ Shell profiles are never edited. Bash and Zsh login shells are supported.
 cw dashboard deploy (or cw dd) requires an installed local codex-server with
 explicit systemd Environment entries DOTNET_ENVIRONMENT=Development and
 CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR pointing to a dedicated writable directory.
-It runs npm ci/check, verifies and stages assets, and restarts only codex-server.
+It probes installed override support before activation (upgrade Server once if absent),
+runs npm ci/check, and restarts only codex-server. Success requires served HTML/assets
+to match; verification failure restores previous assets. Loopback verification defaults
+to http://127.0.0.1:5090; set CODEX_SERVER_DEVELOPMENT_DASHBOARD_VERIFY_URL in the
+systemd drop-in for another loopback origin (normal TLS verification applies).
 See docs/server-dashboard-react.md for VM1 setup and rollback instructions.
 
 cw restart (or cw rs) restarts the installed Worker service and verifies that

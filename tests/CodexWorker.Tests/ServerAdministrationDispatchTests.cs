@@ -6,6 +6,23 @@ using CodexServer;
 public sealed class ServerAdministrationDispatchTests
 {
     [Fact]
+    public async Task DashboardCapabilityProbeReturnsExactContractWithoutHosting()
+    {
+        var originalOutput = Console.Out;
+        using var output = new StringWriter();
+        Console.SetOut(output);
+        try
+        {
+            Assert.Equal(0, await Program.Main(["--dashboard-override-capability"]));
+            Assert.Equal("codex-server-development-dashboard-override-v1" + Environment.NewLine, output.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+        }
+    }
+
+    [Fact]
     public async Task ProgramDispatchesAdministrationRootsToTheirHandlers()
     {
         using var temporary = new TemporaryDirectory();

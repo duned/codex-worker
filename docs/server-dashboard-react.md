@@ -362,6 +362,11 @@ non-interactive sudo permission to restart **codex-server only** are required.
 
 This is for the VM1 development installation only. The installed Server must
 already contain development override support (install that version once).
+Deployment probes the installed binary with `--dashboard-override-capability`;
+only the exact supported capability response is accepted. An old binary, probe
+failure or timeout stops deployment before building, changing assets or restarting.
+Upgrade the installed Server once to a build containing this capability and the
+override, then retry `cw dd`; setting the environment alone cannot add support.
 Create a dedicated directory outside the checkout and `/opt`, for example
 `/var/lib/codex-server/development-dashboard`, writable by the developer and
 readable by the Server account. Do not use symbolic links in this directory or
@@ -377,7 +382,16 @@ Run `systemctl daemon-reload`, then `cw dd`. The command reads these explicit
 service properties; values supplied only by an EnvironmentFile are not accepted.
 It validates the installed `/opt/codex-server/current/CodexServer` service target,
 stages and verifies the full manifest, hashes and shell references, and swaps
-the assets before restarting the Server. The running Server retains its old
+the assets before restarting the Server. It then compares served HTML and every
+manifest asset byte for byte against the candidate through `http://127.0.0.1:5090`.
+For a different local listener, add an explicit systemd Environment entry
+`CODEX_SERVER_DEVELOPMENT_DASHBOARD_VERIFY_URL=https://localhost:PORT` (or a
+loopback HTTP origin). Verification accepts only loopback origins, uses no proxy,
+credentials or redirects, and retains normal certificate verification. Use the
+actual configured listener and trusted certificate; do not relax Server security
+settings. An unreachable/rejected endpoint is reported separately from a served
+generation mismatch; both fail deployment and restore the previous generation.
+The running Server retains its old
 assets in memory until restart; no partially staged build is served. The prior
 asset set is retained as `previous`; activation failure restores it and restarts
 the Server, reporting any rollback failure. An empty development directory uses embedded assets until the first deployment;
