@@ -4,7 +4,7 @@ import { StatusBadge, PageHeading, AdvancedDisclosure } from './shared/Presentat
 import { Button } from './untitled/components/base/buttons/button';
 import { Table, TableCard } from './untitled/components/application/table/table';
 import { FeaturedIcon } from './untitled/components/foundations/featured-icon/featured-icon';
-import { Activity, Terminal } from '@untitledui/icons';
+import { Activity, Terminal, Database01, Heart, Shield01 } from '@untitledui/icons';
 
 import { duration, issueLink, statusColor, terminalStates, timestamp, workerExecutions } from './model.js';
 
@@ -85,6 +85,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   useLanguage();
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
+  const readiness = !node ? t("shared.unknown") : node.observationsStale ? 'Stale' : node.executionReadiness ?? t("shared.unavailable");
   const items = workerExecutions(executions, id);
   const active = items.filter(item => ['Assigned', 'Running'].includes(item.state));
   const recent = items.filter(item => terminalStates.includes(item.state)).slice(0, 10);
@@ -104,14 +105,18 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     <PageHeading title={worker?.displayName || t("shared.workerDetails")} resourceId={id}
       breadcrumbs={[{ label: t("shared.workers"), href: workersHref }, { label: t("shared.workerDetail") }]}
       actions={readOnly && <Button href={administrationHref ?? '/workers/' + encodeURIComponent(id)} color="secondary" size="sm">{t("shared.openWorkerDetailAndAdministration")}</Button>} />
-    {!worker ? <p role="status">{loading ? t("shared.loadingCurrentWorkerObservations") : observations ? t("shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory") : t("shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState")}</p> : <div className={readOnly ? "poc-layout poc-read-only" : "poc-layout"}><div className="poc-main">
-      <TableCard.Root><div className="p-5"><dl className="poc-status-grid">
-        <Fact label={t("shared.connection")}><Status value={worker.availability} />{node && <p>{t("shared.node")}{' '}{localizeText(node.connectivity)}</p>}</Fact>
-        <Fact label={t("shared.executionReadiness")}><Status value={worker.lifecycleState} /><p>{t("shared.executionPrerequisites")}{' '}<Status value={node?.executionReadiness ?? t("shared.unavailable")} /></p><p>{t("shared.scheduling")}{' '}{localizeText(worker.schedulingPolicy ?? t("shared.unknown"))}</p></Fact>
-        <Fact label={t("shared.observationFreshness")}><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /><p>{t("shared.lastHeartbeat")}{' '}{timestamp(worker.lastHeartbeatAtUtc)}</p></Fact>
-        <Fact label={t("shared.workerSlots")}><strong>{worker.activeExecutions ?? t("shared.unknown")} / {worker.maximumCapacity ?? worker.capacity ?? t("shared.unknown")}{' '}{t("shared.active")}</strong><p>{worker.availableCapacity ?? t("shared.unknown")}{' '}{t("shared.available")}{' '}{worker.activeAssignments ?? t("shared.unknown")}{' '}{t("shared.activeServerAssignments")}</p></Fact>
-      </dl>
-      <AdvancedDisclosure title={t("shared.observationDetails")}><p>{t("shared.connectivityExecutionPrerequisitesAndSchedulingPolicyAreSeparateObservationsStaleEvidenceDoes")}</p></AdvancedDisclosure></div></TableCard.Root>
+    {!worker ? <p role="status">{loading ? t("shared.loadingCurrentWorkerObservations") : observations ? t("shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory") : t("shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState")}</p> : <>
+      <div className="poc-worker-summary" aria-label={t("shared.workerDetail")}>
+        <div className="poc-summary-statuses">
+          <div><span>{t("shared.connection")}</span><Status value={worker.availability} /></div>
+          <div><span>{t("shared.executionReadiness")}</span><Status value={readiness} /></div>
+          <div><span>{t("shared.observationFreshness")}</span><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /></div>
+          <div><span>{t("shared.scheduling")}</span><Status value={worker.schedulingPolicy ?? t("shared.unknown")} /></div>
+        </div>
+        <div className="poc-summary-metric"><Database01 aria-hidden="true" /><div><span>{t("shared.workerSlots")}</span><strong>{worker.activeExecutions ?? t("shared.unknown")} / {worker.maximumCapacity ?? worker.capacity ?? t("shared.unknown")}</strong></div></div>
+        <div className="poc-summary-metric"><Heart aria-hidden="true" /><div><span>{t("shared.lastHeartbeat")}</span><strong>{timestamp(worker.lastHeartbeatAtUtc)}</strong></div></div>
+      </div>
+      <div className={readOnly ? "poc-layout poc-read-only" : "poc-layout"}><div className="poc-main">
       <section className="poc-section"><div className="mb-3 flex items-center gap-3"><FeaturedIcon icon={Activity} color="brand" theme="light" size="sm" /><h2 className="text-lg font-semibold text-primary">{t(active.length > 1 ? 'shared.currentExecutions' : 'shared.currentExecution')}</h2></div>
         {executions === null ? <p>{t("shared.currentExecutionDataUnavailableRefreshToRecoverReportedStages")}</p> : active.length ? active.map(item => <Execution key={item.id} item={item} projects={projects} now={now} active />) : <p>{t("shared.noCurrentExecutionInTheLatest50ServerRequests")}{' '}{worker.activeAssignments > 0 || worker.activeExecutions > 0 ? t("shared.theWorkerReportsActiveWorkItsExecutionDetailIsUnavailableInThis") : t("shared.noActiveWorkReportedByThisWorker")}</p>}
       </section>
@@ -133,6 +138,14 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
         {diagnostics ? <AdvancedDisclosure title={t("shared.readinessEvidence")}><p>{t("shared.reportedReadinessEvidenceCodexPreflight")}{' '}{diagnostics.aiAgentReady ? localizeText('present') : localizeText('absent')}{' '}{t("shared.gitHubAccess")}{' '}{diagnostics.gitHubReady ? localizeText('present') : localizeText('absent')}{' '}{t("shared.gitAccess")}{' '}{diagnostics.gitReady ? localizeText('present') : localizeText('absent')}</p><p>{t("shared.configurationSynchronization")}{' '}<Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{localizeText(diagnostics.latestProvisioningOperation.action)} · {localizeText(diagnostics.latestProvisioningOperation.status)}</p>}</AdvancedDisclosure> : <p>{t("shared.workerReadinessDiagnosticsUnavailable")}</p>}
         {provisioning ?? (node ? node.capabilities?.length ? <div className="poc-capabilities mt-4">{node.capabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>{t("shared.noCapabilitiesReported")}</p> : <p>{t("shared.capabilityObservationsUnavailableRefreshProvisioningState")}</p>)}
       </section>
-    </div>{!readOnly && <ControlRail administration={administration} />}</div>}
+      </div>{!readOnly && <div className="poc-secondary-rail"><ControlRail administration={administration} />
+        <TableCard.Root><TableCard.Header title={t("shared.readinessEvidence")} contentTrailing={<FeaturedIcon icon={Shield01} color="gray" theme="modern" size="sm" />} /><div className="p-4 space-y-3 text-sm">
+          <div className="poc-rail-observation"><span>{t("shared.executionReadiness")}</span><Status value={readiness} /></div>
+          <div className="poc-rail-observation"><span>{t("shared.observationFreshness")}</span><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /><small>{timestamp(worker.lastHeartbeatAtUtc)}</small></div>
+          {node?.capabilities?.length ? node.capabilities.map(capability => <div className="poc-rail-observation" key={capability.definition.id}><span>{capability.definition.displayName}</span><Status value={capability.state.health ?? capability.state.installation} /></div>) : <p className="text-tertiary">{t("shared.noCapabilitiesReported")}</p>}
+          <AdvancedDisclosure title={t("shared.observationDetails")}><p>{t("shared.connectivityExecutionPrerequisitesAndSchedulingPolicyAreSeparateObservationsStaleEvidenceDoes")}</p>{node && <p>{t("shared.executionPrerequisites")}{' '}<Status value={node.executionReadiness} /> · {t("shared.node")}{' '}{localizeText(node.connectivity)}</p>}</AdvancedDisclosure>
+          {diagnostics && <AdvancedDisclosure title={t("shared.readinessEvidence")}><p>{t("shared.reportedReadinessEvidenceCodexPreflight")}{' '}{diagnostics.aiAgentReady ? localizeText('present') : localizeText('absent')}{' '}{t("shared.gitHubAccess")}{' '}{diagnostics.gitHubReady ? localizeText('present') : localizeText('absent')}{' '}{t("shared.gitAccess")}{' '}{diagnostics.gitReady ? localizeText('present') : localizeText('absent')}</p><p>{t("shared.configurationSynchronization")}{' '}<Status value={diagnostics.configurationSynchronization} /></p></AdvancedDisclosure>}
+        </div></TableCard.Root>
+      </div>}</div></>}
   </section>;
 }
