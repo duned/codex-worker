@@ -6,6 +6,18 @@ no external conversation or screenshot is required. The standalone Worker dashbo
 retains its existing scope. See [navigation](server-dashboard-navigation.md) for
 routes and [React architecture and build](server-dashboard-react.md) for implementation seams.
 
+## Approved visual references
+
+These repository images are the approved visual targets for the initial dashboard redesign. Use them alongside the screen-specific requirements below. Match hierarchy, density, alignment, component treatment and overall look while preserving the real API contracts and data states.
+
+### Worker detail
+
+![Approved Worker detail reference](dashboard-design/worker-detail-approved.jpg)
+
+### Home
+
+![Approved Home reference](dashboard-design/home-approved.jpg)
+
 ## Foundation and hierarchy
 
 Use the established React + Untitled UI application in

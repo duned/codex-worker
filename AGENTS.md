@@ -17,6 +17,7 @@ Before implementing, inspect the existing architecture, relevant contracts, repr
 ## Dashboard UI
 
 - When changing administration-dashboard UI, follow the [dashboard design guide](docs/dashboard-design-guide.md). Use the established React + Untitled UI foundation and shared components; the guide defines screen composition, interaction, responsive and accessibility expectations.
+- Treat the approved [Worker detail](docs/dashboard-design/worker-detail-approved.jpg) and [Home](docs/dashboard-design/home-approved.jpg) images linked from that guide as visual references. Compare the rendered screen with its reference; prose requirements alone do not replace the visual comparison.
 
 ## .NET and code quality
 
