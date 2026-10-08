@@ -1,3 +1,4 @@
+import { timestamp } from '../../model';
 import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useState } from 'react';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
@@ -92,7 +93,7 @@ export function ServerPreparation() {
       <p className="text-sm text-secondary">Authentication uses the dedicated Server service account. Repository reads and Issue writes are checked in Projects; Worker login and repository push permission are separate.</p>
       {[inventory.error, history.error, connection.error].filter(Boolean).map((error, i) => <Notice error key={i}>{error}</Notice>)}
       {latest && <p className="text-sm text-secondary">{latest.request.action} · {latest.status}{activeCommand(latest) && ' · You may leave and return to recover this operation.'}</p>}
-      {connection.challenge && <Notice>Open <ExternalLink className="underline" href="https://github.com/login/device">GitHub verification</ExternalLink> and enter <strong>{connection.challenge.userCode}</strong>. Only approve the login you started. Waiting for verification; expires {new Date(connection.challenge.deadline).toLocaleString()}.</Notice>}
+      {connection.challenge && <Notice>Open <ExternalLink className="underline" href="https://github.com/login/device">GitHub verification</ExternalLink> and enter <strong>{connection.challenge.userCode}</strong>. Only approve the login you started. Waiting for verification; expires {timestamp(new Date(connection.challenge.deadline).toISOString())}.</Notice>}
       {latest && expiredCommand(latest, Math.max(now, Date.now())) && <Notice>Device login deadline expired. The code is no longer available. Verify the Server is quiescent before releasing its operation lock.</Notice>}
       <div className="flex flex-wrap gap-3">
         <Button color="secondary" onPress={() => { void refresh(); }}>Refresh authoritative state</Button>
@@ -115,7 +116,7 @@ export function ServerPreparation() {
       {allCommands?.filter(c => activeCommand(c)).map(c => <div key={c.id} className="space-y-2"><StatusBadge tone="warning">{c.request.action} · {c.status}</StatusBadge>
         {(c.status === 'Pending' || expiredCommand(c, Math.max(now, Date.now()))) && <Button color="secondary" isDisabled={runtime.locked(fence)} onPress={() => setIntent({ command: c, control: c.status === 'Pending' ? 'cancel' : 'reconcile' })}>{c.status === 'Pending' ? 'Cancel queued operation' : 'Reconcile after node quiescence'}</Button>}
       </div>)}
-      <AdvancedDisclosure title="Advanced operation history"><p>Bounded Server history; active operations are retained. No total-history count is available.</p>{allCommands?.length ? allCommands.map(c => <div key={c.id} className="break-all border-t border-secondary py-3"><p>{c.request.capabilityId} · {c.request.action} · {c.status}</p><p>ID {c.id} · queued {c.createdAtUtc} · started {c.startedAtUtc ?? 'Not reported'} · deadline {c.deadlineUtc ?? 'Not reported'} · completed {c.completedAtUtc ?? 'Not reported'} · {c.diagnostic ?? 'No diagnostic'}</p>{c.failureDetail && <p>{c.failureDetail.description}</p>}{c.publicIdentity && <pre className="whitespace-pre-wrap break-all">{c.publicIdentity.publicKey}\n{c.publicIdentity.fingerprint}</pre>}</div>) : <p>No operation history available.</p>}</AdvancedDisclosure>
+      <AdvancedDisclosure title="Advanced operation history"><p>Bounded Server history; active operations are retained. No total-history count is available.</p>{allCommands?.length ? allCommands.map(c => <div key={c.id} className="break-all border-t border-secondary py-3"><p>{c.request.capabilityId} · {c.request.action} · {c.status}</p><p>ID {c.id} · queued {timestamp(c.createdAtUtc)} · started {timestamp(c.startedAtUtc)} · deadline {timestamp(c.deadlineUtc)} · completed {timestamp(c.completedAtUtc)} · {c.diagnostic ?? 'No diagnostic'}</p>{c.failureDetail && <p>{c.failureDetail.description}</p>}{c.publicIdentity && <pre className="whitespace-pre-wrap break-all">{c.publicIdentity.publicKey}\n{c.publicIdentity.fingerprint}</pre>}</div>) : <p>No operation history available.</p>}</AdvancedDisclosure>
     </section>
     {message && <Notice>{message}</Notice>}
     {intent && <ActionDialog isOpen title={'control' in intent ? intent.control === 'cancel' ? 'Cancel queued operation' : 'Reconcile after node quiescence' : nodeActions[intent.action].label}

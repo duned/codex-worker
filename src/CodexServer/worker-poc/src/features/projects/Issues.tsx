@@ -1,3 +1,4 @@
+import { timestamp } from '../../model';
 import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
@@ -40,7 +41,7 @@ export function Issues({ project }: { project: Project }) {
 }
 function RepositoryAccess({ id }: { id: string }) {
   const read = useApiRead(projectPath(id) + '/github/access', access);
-  return read.data ? <Notice><StatusBadge tone={read.data.cliAuthenticated ? 'success' : 'error'}>Server GitHub authentication: {read.data.cliAuthenticated ? 'available' : 'unavailable'}</StatusBadge> <StatusBadge tone={read.data.repositoryReadable ? 'success' : 'error'}>Repository read: {read.data.repositoryReadable ? 'available' : 'unavailable'}</StatusBadge>. Checked {read.data.checkedAtUtc}. Worker checkout and push permission are separate.</Notice> : <ViewState title={read.error ? 'Access unavailable. Check Server GitHub connection and repository permission in Settings.' : 'Checking repository access…'} error={!!read.error} />;
+  return read.data ? <Notice><StatusBadge tone={read.data.cliAuthenticated ? 'success' : 'error'}>Server GitHub authentication: {read.data.cliAuthenticated ? 'available' : 'unavailable'}</StatusBadge> <StatusBadge tone={read.data.repositoryReadable ? 'success' : 'error'}>Repository read: {read.data.repositoryReadable ? 'available' : 'unavailable'}</StatusBadge>. Checked {timestamp(read.data.checkedAtUtc)}. Worker checkout and push permission are separate.</Notice> : <ViewState title={read.error ? 'Access unavailable. Check Server GitHub connection and repository permission in Settings.' : 'Checking repository access…'} error={!!read.error} />;
 }
 function IssueList({ project, query, open }: { project: Project; query: string; open(change: IssueChange, before: import('./contracts').Issue): void }) {
   const read = useApiRead(issuePath(project.id) + '?' + query, issueList), [params] = useSearchParams(), w = useProjects();

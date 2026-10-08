@@ -17,6 +17,6 @@ export function WorkerAdvanced({ worker, diagnostics }: { worker: WorkerObservat
     <p>Worker-reported scoped capabilities</p>
     {worker.capabilities?.map((item, index) => <p key={index}>{item.type} · {item.name} · {item.scope ?? 'Global'} · {item.version ?? 'Version unreported'}</p>)}
     <p>Legacy plan history</p>
-    {!matching ? <p>{plans.error ? 'Legacy provisioning history unavailable.' : 'Loading history…'}</p> : !matching.length ? <p>No legacy plans in the available history.</p> : matching.map(plan => <div key={plan.id}><p>{plan.state} · {plan.createdAtUtc} · ID {plan.id}</p><p>{plan.actions.map(action => `${action.type} · ${action.name}${action.version ? ` ${action.version}` : ''}`).join('; ') || 'No actions required'}{plan.currentActionId && ` · current action ${plan.currentActionId}`}</p></div>)}
+    {!matching ? <p>{plans.error ? 'Legacy provisioning history unavailable.' : 'Loading history…'}</p> : !matching.length ? <p>No legacy plans in the available history.</p> : matching.map(plan => <div key={plan.id}><p>{plan.state} · {timestamp(plan.createdAtUtc)} · ID {plan.id}</p><p>{plan.actions.map(action => `${action.type} · ${action.name}${action.version ? ` ${action.version}` : ''}`).join('; ') || 'No actions required'}{plan.currentActionId && ` · current action ${plan.currentActionId}`}</p></div>)}
   </AdvancedDisclosure>;
 }

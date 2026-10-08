@@ -1,3 +1,4 @@
+import { timestamp } from '../../model';
 import { useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useApiRead, useSession } from '../../shared/api/session';
@@ -51,7 +52,7 @@ function SettingsView() {
           <Button color="secondary" isDisabled={owner.locked(c.id) || c.status !== 'Ready' || !registered.data?.length} onPress={() => open({ kind: 'assign', before: c })}>Assign</Button>
           <Button color="secondary" isDisabled={owner.locked(c.id) || !['Ready', 'NeedsReprovision'].includes(c.status)} onPress={() => open({ kind: 'replace', before: c })}>Replace secret</Button>
           <Button color="secondary-destructive" isDisabled={owner.locked(c.id) || !['Ready', 'NeedsReprovision'].includes(c.status)} onPress={() => open({ kind: 'revoke', before: c })}>Revoke</Button>
-        </div><AdvancedDisclosure title="Credential resource details"><p>Updated {c.updatedAtUtc}{c.revokedAtUtc && ` · Revoked ${c.revokedAtUtc}`}</p>{c.assignedWorkerId && <Button color="link-gray" href={`/workers/${encodeURIComponent(c.assignedWorkerId)}`}>Assigned Worker</Button>}</AdvancedDisclosure>
+        </div><AdvancedDisclosure title="Credential resource details"><p>Updated {timestamp(c.updatedAtUtc)}{c.revokedAtUtc && ` · Revoked ${timestamp(c.revokedAtUtc)}`}</p>{c.assignedWorkerId && <Button color="link-gray" href={`/workers/${encodeURIComponent(c.assignedWorkerId)}`}>Assigned Worker</Button>}</AdvancedDisclosure>
       </article>)}
       {owner.message && <Notice>{owner.message}</Notice>}
       {Object.keys(owner.attempts).filter(key => owner.locked(key.slice('credential:'.length))).map(key => <Notice key={key}>A credential action is unconfirmed. No secret input was retained. <Button color="secondary" onPress={() => { void owner.reconcile(key); }}>Refresh authoritative credential state</Button></Notice>)}

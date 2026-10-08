@@ -5,7 +5,7 @@ import { TableCard } from '../untitled/components/application/table/table';
 
 /** Callers choose tone from reported evidence; this component never decides readiness. */
 export function StatusBadge({ children, tone = 'gray' }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' }) {
-  return <Badge className="inline-flex max-w-full whitespace-normal align-middle" type="pill-color" size="md" color={tone}>{children}</Badge>;
+  return <Badge className="inline-flex max-w-full whitespace-normal align-middle" type="pill-color" size="lg" color={tone}>{children}</Badge>;
 }
 export function ResourceIdentity({ name, id }: { name: string; id: string }) {
   return <><span className="font-medium text-primary">{name}</span><span className="block break-all text-xs text-tertiary">ID {id}</span></>;

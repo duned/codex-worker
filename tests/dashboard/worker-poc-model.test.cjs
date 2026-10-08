@@ -38,3 +38,10 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  assert.equal(statusColor('active'),'success');
  for(const state of ['offline','disconnected'])assert.equal(statusColor(state),'error');
 });
+
+test('timestamps use padded day/month/year and browser-local time including seconds', async () => {
+ const {timestamp}=await model;
+ const local=new Date(2026, 0, 2, 3, 4, 5);
+ assert.equal(timestamp(local.toISOString()), '02/01/2026, 03:04:05');
+ assert.equal(timestamp(null), 'Not reported');
+});

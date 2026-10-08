@@ -1,3 +1,4 @@
+import { timestamp } from '../../model';
 import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useState } from 'react';
 import { ActionDialog } from '../../shared/Dialogs';
@@ -89,7 +90,7 @@ export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; 
       <AdvancedDisclosure title="Local preparation and authorization"><p>Server permission cannot override local policy. Authentication must use the node service account; login alone does not prove execution readiness. Re-detect after local preparation. A Denied command requires the node administrator to permit that typed action or complete preparation locally.</p></AdvancedDisclosure>
       <div className="flex flex-wrap gap-2">{actions.map(action => <Button key={action} color="secondary" size="sm" isDisabled={pending || locked || !!provisioningReason(node, commands.data, capability.definition.id, action)} onPress={() => choose({ capabilityId: capability.definition.id, action })}>{nodeActions[action].label}</Button>)}</div>
       {!actions.length && <p>No supported remote actions available. Prepare this tool in the node service account or ask its administrator to permit the typed action. Project runtimes outside the catalog require local preparation.</p>}
-      <AdvancedDisclosure title="Operation history and public SSH identities">{matching.length ? matching.map(item => <div key={item.id} className="break-all"><p>{item.request.action} · {item.status} · {item.diagnostic ?? 'No diagnostic reported'}</p><p>ID {item.id} · {item.createdAtUtc}</p>{item.publicIdentity && <pre className="whitespace-pre-wrap">{item.publicIdentity.publicKey}{'\n'}{item.publicIdentity.fingerprint}</pre>}</div>) : <p>No commands reported in bounded node history.</p>}</AdvancedDisclosure>
+      <AdvancedDisclosure title="Operation history and public SSH identities">{matching.length ? matching.map(item => <div key={item.id} className="break-all"><p>{item.request.action} · {item.status} · {item.diagnostic ?? 'No diagnostic reported'}</p><p>ID {item.id} · {timestamp(item.createdAtUtc)}</p>{item.publicIdentity && <pre className="whitespace-pre-wrap">{item.publicIdentity.publicKey}{'\n'}{item.publicIdentity.fingerprint}</pre>}</div>) : <p>No commands reported in bounded node history.</p>}</AdvancedDisclosure>
     </div>;
   }
   const spec = selected && 'capabilityId' in selected ? nodeActions[selected.action] : undefined;

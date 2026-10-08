@@ -2,7 +2,6 @@ import { useParams, useLocation } from 'react-router-dom';
 import { WorkerDetail } from '../../detail.jsx';
 import { useApiRead } from '../../shared/api/session';
 import { commands, workers, nodes as validateNodes, projects as validateProjects, executions as validateExecutions, diagnostics as validateDiagnostics } from '../../shared/api/validation';
-import { useSession } from '../../shared/api/session';
 import type { AdministrationPresentation } from './WorkerPocPage';
 import { Notice } from '../../shared/Presentation';
 import { canonicalPath } from '../../app/routes';
@@ -12,7 +11,6 @@ import { NodeProvisioning } from '../nodes/NodeProvisioning';
 export function WorkerDetailPage({ workerId, administration }: { workerId?: string; administration?: AdministrationPresentation } = {}) {
   const params = useParams();
   const resourceId = workerId ?? params.resourceId;
-  const session = useSession();
   const location = useLocation();
   if (!resourceId) throw new Error('Worker route ID missing.');
   const observations = useApiRead('/api/v1/workers', workers);
@@ -24,7 +22,6 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
   const observation = observations.data?.find(item => item.workerId === resourceId);
   const projectId = new URLSearchParams(location.search).get('project');
   return <div className="space-y-6">
-    <Notice>{session.live}</Notice>
     {observations.error && <Notice error>{observations.error}</Notice>}
     <WorkerDetail workersHref={workerId ? '/workers' : '/workers'} administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}

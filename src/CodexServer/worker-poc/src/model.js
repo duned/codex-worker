@@ -26,7 +26,10 @@ export function issueLink(work, repository) {
 }
 export function timestamp(value) {
   const parsed = value ? Date.parse(value) : NaN;
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : 'Not reported';
+  if (!Number.isFinite(parsed)) return 'Not reported';
+  const date = new Date(parsed);
+  const pad = number => String(number).padStart(2, '0');
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}, ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 export function duration(item, now) {
   let ms = item.durationMilliseconds;

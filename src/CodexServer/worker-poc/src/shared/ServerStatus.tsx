@@ -1,5 +1,6 @@
 import { useApiRead, useSession } from './api/session';
 import { serverStatus } from './api/validation';
+import { timestamp } from '../model';
 import { StatusBadge } from './Presentation';
 import type { ServerStatus as Status } from './api/contracts';
 
@@ -15,7 +16,7 @@ export function ServerStatusView({ data, error, live, updatedAt }: { data?: Stat
   const status = serverStatusPresentation(data, error, live);
   return <section aria-label="Server connection" className="space-y-2 border-t border-secondary pt-3 text-xs text-tertiary">
     <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-    <p>Last updated: {updatedAt > 0 ? <time dateTime={new Date(updatedAt).toISOString()}>{new Date(updatedAt).toLocaleString()}</time> : 'Unknown'}</p>
+    <p>Last updated: {updatedAt > 0 ? <time dateTime={new Date(updatedAt).toISOString()}>{timestamp(new Date(updatedAt).toISOString())}</time> : 'Unknown'}</p>
     {error && updatedAt > 0 && <p>Last successful observation is stale.</p>}
   </section>;
 }

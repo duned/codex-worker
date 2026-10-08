@@ -24,7 +24,7 @@ function Execution({ item, projects, now, active }) {
       <p className="poc-muted text-sm text-tertiary">{active ? item.startedAtUtc ? 'Started' : 'Assigned' : item.completedAtUtc ? 'Completed' : 'Requested'}: {timestamp(active ? item.startedAtUtc ?? item.assignedAtUtc : item.completedAtUtc ?? item.createdAtUtc)}</p>
       {item.recoveryState && <p>Recovery: {item.recoveryState}</p>}
     </div>
-  <p className="col-span-full text-xs text-tertiary">Only the reported current stage is available; stage history is not provided.</p></div></TableCard.Root>;
+  <AdvancedDisclosure title="Execution reporting details"><p>Only the reported current stage is available; stage history is not provided.</p></AdvancedDisclosure></div></TableCard.Root>;
 }
 export function CapabilityCard({ capability, commands, children }) {
   const { definition, state, availableActions } = capability;
@@ -69,7 +69,7 @@ function ControlRail({ administration }) {
     <p id="poc-token-effect">Revoking Worker API authentication denies calls using its token; active leases may expire into recovery. It does not revoke credential-delivery authorization, node login or provider credentials.</p></details>
     <div className="poc-controls">{actions.map(action => <div key={action.key}>
       <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`${action.key === 'revoke-delivery' ? 'poc-delivery-effect' : action.key === 'revoke-api' ? 'poc-token-effect' : 'poc-policy-effect'} poc-action-${action.key}`} onPress={() => administration?.onAction(action.key)}>{action.label}</Button>
-      <p id={'poc-action-' + action.key} className="poc-muted text-sm text-tertiary">{action.reason || 'Confirmation required.'}</p>
+      <AdvancedDisclosure title="Action details"><p id={'poc-action-' + action.key}>{action.reason || 'Confirmation required.'}</p></AdvancedDisclosure>
     </div>)}</div>
     <p role="status" aria-live="polite">{administration?.message}</p>
     <Button color="secondary" size="sm" className="w-full whitespace-normal text-center" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>Refresh authoritative state</Button></div></TableCard.Root>
@@ -100,11 +100,11 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     {!worker ? <p role="status">{loading ? 'Loading current Worker observations…' : observations ? 'Worker unavailable or deleted. Return to Workers to refresh the inventory.' : 'Current Worker observations unavailable. Sign in or refresh to recover current state.'}</p> : <div className={readOnly ? "poc-layout poc-read-only" : "poc-layout"}><div className="poc-main">
       <TableCard.Root><div className="p-5"><dl className="poc-status-grid">
         <Fact label="Connection"><Status value={worker.availability} />{node && <p>Node: {node.connectivity}</p>}</Fact>
-        <Fact label="Working / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
+        <Fact label="Execution / readiness"><Status value={worker.lifecycleState} /><p>Execution prerequisites: <Status value={node?.executionReadiness ?? 'Unavailable'} /></p><p>Scheduling: {worker.schedulingPolicy ?? 'Unknown'}</p></Fact>
         <Fact label="Observation freshness"><Status value={node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown'} /><p>Last heartbeat: {timestamp(worker.lastHeartbeatAtUtc)}</p></Fact>
         <Fact label="Worker slots"><strong>{worker.activeExecutions ?? 'Unknown'} / {worker.maximumCapacity ?? worker.capacity ?? 'Unknown'} active</strong><p>{worker.availableCapacity ?? 'Unknown'} available · {worker.activeAssignments ?? 'Unknown'} active Server assignments</p></Fact>
       </dl>
-      <p className="poc-muted mt-4">Connectivity, execution prerequisites and scheduling policy are separate observations. Stale evidence does not establish current readiness.</p></div></TableCard.Root>
+      <AdvancedDisclosure title="Observation details"><p>Connectivity, execution prerequisites and scheduling policy are separate observations. Stale evidence does not establish current readiness.</p></AdvancedDisclosure></div></TableCard.Root>
       <section className="poc-section"><div className="mb-3 flex items-center gap-3"><FeaturedIcon icon={Activity} color="brand" theme="light" size="sm" /><h2 className="text-lg font-semibold text-primary">Current execution{active.length > 1 ? 's' : ''}</h2></div>
         {executions === null ? <p>Current execution data unavailable. Refresh to recover reported stages.</p> : active.length ? active.map(item => <Execution key={item.id} item={item} projects={projects} now={now} active />) : <p>No current execution in the latest 50 Server requests. {worker.activeAssignments > 0 || worker.activeExecutions > 0 ? 'The Worker reports active work; its execution detail is unavailable in this bounded view.' : 'No active work reported by this Worker.'}</p>}
       </section>
@@ -123,7 +123,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
       </TableCard.Root>
       {preparation}
       <section className="poc-section"><h2 className="mb-3 text-lg font-semibold text-primary">Capabilities and provisioning</h2><p>Provisioning readiness: <Status value={node?.provisioningReadiness ?? 'Unavailable'} /> · Latest operation: <Status value={diagnostics?.provisioningState ?? 'Unavailable'} /></p>
-        {diagnostics ? <><p>Reported readiness evidence: Codex preflight {diagnostics.aiAgentReady ? 'present' : 'absent'} · GitHub access {diagnostics.gitHubReady ? 'present' : 'absent'} · Git access {diagnostics.gitReady ? 'present' : 'absent'}</p><p>Configuration synchronization: <Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{diagnostics.latestProvisioningOperation.action} · {diagnostics.latestProvisioningOperation.status}</p>}</> : <p>Worker readiness diagnostics unavailable.</p>}
+        {diagnostics ? <AdvancedDisclosure title="Readiness evidence"><p>Reported readiness evidence: Codex preflight {diagnostics.aiAgentReady ? 'present' : 'absent'} · GitHub access {diagnostics.gitHubReady ? 'present' : 'absent'} · Git access {diagnostics.gitReady ? 'present' : 'absent'}</p><p>Configuration synchronization: <Status value={diagnostics.configurationSynchronization} /></p>{diagnostics.latestProvisioningOperation && <p>{diagnostics.latestProvisioningOperation.action} · {diagnostics.latestProvisioningOperation.status}</p>}</AdvancedDisclosure> : <p>Worker readiness diagnostics unavailable.</p>}
         {provisioning ?? (node ? node.capabilities?.length ? <div className="poc-capabilities mt-4">{node.capabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands} />)}</div> : <p>No capabilities reported.</p> : <p>Capability observations unavailable. Refresh provisioning state.</p>)}
       </section>
     </div>{!readOnly && <ControlRail administration={administration} />}</div>}
