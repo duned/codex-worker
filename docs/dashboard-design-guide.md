@@ -25,6 +25,11 @@ The Workers list visual reference is available at
 the future list screen in the API's connection, freshness, readiness, capacity and
 active-project fields; it is a design artifact, not an implemented screen.
 
+Executions list and detail references are available at
+[Executions visual references](dashboard-design/executions-reference.md). They map
+the proposed hierarchy and state treatments to the current execution API; they are
+design artifacts, not implemented screens.
+
 ## Foundation and hierarchy
 
 Use the established React + Untitled UI application in
