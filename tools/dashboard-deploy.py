@@ -12,6 +12,9 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True
 import tempfile
+import time
+import ssl
+import signal
 import urllib.request
 import urllib.error
 from urllib.parse import urlsplit
@@ -38,7 +41,25 @@ def verification_url(value):
     return value.rstrip('/')
 
 
-def verify_served(directory, origin):
+def verify_served(directory, origin, window=25):
+    # Linux-only local tooling: an outer timer bounds even a trickling response
+    # whose individual socket reads never reach their timeout.
+    def expired(signum, frame):
+        raise TimeoutError('verification deadline reached')
+
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, window)
+    try:
+        return verify_until_ready(directory, origin, window)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def verify_until_ready(directory, origin, window):
+    started = time.monotonic()
+    deadline = started + window
+    attempts = 0
     # No proxy, credentials, redirects or TLS bypass. Compare every manifest asset
     # as well as the shell, so an embedded or partially served generation fails.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -49,15 +70,43 @@ def verify_served(directory, origin):
     files = [('index.html', '/')]
     files.extend((item['path'], '/dashboard-assets/preview/' + item['path'])
                  for item in json.loads((directory / 'assets.json').read_text()))
-    for name, route in files:
-        expected = (directory / name).read_bytes()
+    while True:
+        attempts += 1
         try:
-            with opener.open(urllib.request.Request(origin + route, headers={'Cache-Control': 'no-cache'}), timeout=10) as response:
-                actual = response.read(len(expected) + 1)
+            for name, route in files:
+                url = origin + route
+                expected = (directory / name).read_bytes()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('verification deadline reached')
+                with opener.open(urllib.request.Request(url, headers={'Cache-Control': 'no-cache'}), timeout=min(2, remaining)) as response:
+                    actual = response.read(len(expected) + 1)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('verification deadline reached')
+                if actual != expected:
+                    raise ValueError(f'{url}: served dashboard generation does not match deployed assets')
+            return
+        except urllib.error.HTTPError as error:
+            cause = f'{url}: HTTP {error.code} (redirects are rejected)'
+            break
+        except ValueError as error:
+            cause = str(error)
+            break
         except (OSError, urllib.error.URLError) as error:
-            raise ValueError('dashboard verification endpoint unreachable or rejected the request') from error
-        if actual != expected:
-            raise ValueError('served dashboard generation does not match deployed assets')
+            reason = getattr(error, 'reason', error)
+            cause = f'{url}: connection failure ({type(reason).__name__}: {reason})'
+            if isinstance(reason, ssl.SSLError) or time.monotonic() >= deadline:
+                break
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    raise ValueError(f'{cause}; verification failed after {time.monotonic() - started:.1f}s, {attempts} attempt(s)')
+
+
+def check_access(path):
+    for parent in reversed((path, *path.parents)):
+        if not os.access(parent, os.X_OK):
+            raise ValueError(f'{parent}: missing effective traverse permission; inspect getfacl -p {parent} and its ACL mask; grant only developer --x on private parents (see docs/server-dashboard-react.md)')
+    if not os.access(path, os.W_OK | os.R_OK):
+        raise ValueError(f'{path}: missing effective read/write permission on dedicated dashboard directory; inspect getfacl -p {path} and its ACL mask')
 
 
 def run(*args, **kwargs):
@@ -98,7 +147,10 @@ def deploy(repo):
     env = dict(item.split('=', 1) for item in shlex.split(run('systemctl', 'show', 'codex-server', '--property=Environment', '--value', capture_output=True, text=True).stdout) if '=' in item)
     if env.get('DOTNET_ENVIRONMENT') != 'Development':
         raise ValueError('codex-server must explicitly opt in with DOTNET_ENVIRONMENT=Development')
-    root = safe_directory(env.get('CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR', ''))
+    destination = env.get('CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR', '')
+    if Path(destination).is_absolute():
+        check_access(Path(destination))
+    root = safe_directory(destination)
     installed = INSTALLED_SERVER
     start = run('systemctl', 'show', 'codex-server', '--property=ExecStart', '--value', capture_output=True, text=True).stdout
     if not installed.is_file() or 'path=/opt/codex-server/current/CodexServer ;' not in start:
@@ -134,15 +186,17 @@ def deploy(repo):
             try:
                 candidate.rename(current)
                 run('sudo', '-n', 'systemctl', 'restart', 'codex-server')
-                run('systemctl', 'is-active', '--quiet', 'codex-server')
                 verify_served(current, origin)
             except (subprocess.SubprocessError, OSError, ValueError) as error:
                 if current.exists():
                     current.rename(candidate)
                 if had_current:
                     previous.rename(current)
-                run('sudo', '-n', 'systemctl', 'restart', 'codex-server')
-                run('systemctl', 'is-active', '--quiet', 'codex-server')
+                try:
+                    run('sudo', '-n', 'systemctl', 'restart', 'codex-server')
+                    run('systemctl', 'is-active', '--quiet', 'codex-server')
+                except (subprocess.SubprocessError, OSError) as rollback_error:
+                    raise ValueError(f'activation/verification failed ({error}); previous dashboard restored but rollback Server restart failed ({rollback_error})') from error
                 raise ValueError(f'activation/verification failed ({error}); previous dashboard restored and Server restarted') from error
         print('Activation and served-generation verification succeeded; previous assets retained in previous. Worker unchanged.')
 

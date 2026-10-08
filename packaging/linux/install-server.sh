@@ -351,6 +351,26 @@ bootstrap_github_cli_installation() {
   fail "GitHub CLI bootstrap did not finish before the installer wait expired. Inspect with: sudo codex-server provision show $command_id --json"
 }
 
+# Retain only explicit traversal opt-ins, including entries with an ineffective
+# mask from older installers. Never preserve read/write access to private state.
+ensure_private_server_directory() {
+  local directory=$1 entries="" entry
+  [[ ! -L $directory ]] || fail "Private Server directory is a symbolic link: $directory"
+  if [[ -d $directory ]] && command -v getfacl >/dev/null 2>&1; then
+    entries=$(getfacl -cpn "$directory" | sed -n 's/^user:\([0-9][0-9]*\):--x.*$/user:\1:--x/p')
+  fi
+  install -d -o codex-server -g codex-server -m 0700 "$directory"
+  if [[ -n $entries ]]; then
+    command -v setfacl >/dev/null 2>&1 || fail 'setfacl is required to preserve the explicit development directory traversal opt-in.'
+    # chmod/install changed the mask, not the named entries. Restore only x;
+    # group/other still cannot list or write the private directory.
+    while IFS= read -r entry; do
+      setfacl -n -m "$entry" "$directory"
+    done <<< "$entries"
+    setfacl -n -m group::---,mask::--x,other::--- "$directory"
+  fi
+}
+
 # Keep the credential logic available to the local installer test without running installation.
 # As in install-worker.sh, BASH_SOURCE may be empty when executing from stdin.
 if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
@@ -441,7 +461,7 @@ install_provisioning_sudoers
 
 install -d -o root -g root -m 0755 /opt/codex-server/releases
 install -d -o root -g codex-server -m 0750 /etc/codex-server
-install -d -o codex-server -g codex-server -m 0700 /var/lib/codex-server
+ensure_private_server_directory /var/lib/codex-server
 install -d -o codex-server -g codex-server -m 0750 /var/log/codex-server
 previous_target=""
 if [[ -L /opt/codex-server/current ]]; then

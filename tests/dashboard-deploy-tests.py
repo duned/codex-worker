@@ -29,6 +29,38 @@ def assets(root, content='new'):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_readiness_retries_connection_failure_then_checks_all_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets(root)
+            from io import BytesIO
+            responses = [deploy.urllib.error.URLError(ConnectionRefusedError('refused')),
+                         BytesIO((root / 'index.html').read_bytes()),
+                         BytesIO(b'new'), BytesIO(b'new')]
+            with patch.object(deploy.urllib.request, 'build_opener') as opener, patch.object(deploy.time, 'sleep'):
+                opener.return_value.open.side_effect = responses
+                deploy.verify_served(root, 'http://127.0.0.1:5090')
+                self.assertEqual(4, opener.return_value.open.call_count)
+
+    def test_verification_classifies_http_and_timeout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets(root)
+            for error, message in [
+                (deploy.urllib.error.HTTPError('url', 403, 'Forbidden', {}, None), 'HTTP 403'),
+                (deploy.urllib.error.HTTPError('url', 302, 'Redirect', {}, None), 'HTTP 302'),
+                (deploy.urllib.error.URLError(ConnectionRefusedError('refused')), 'ConnectionRefusedError')]:
+                with patch.object(deploy.urllib.request, 'build_opener') as opener, patch.object(deploy.time, 'monotonic', side_effect=[0, 0, 26, 26]):
+                    opener.return_value.open.side_effect = error
+                    with self.assertRaisesRegex(ValueError, message + '.*26.0s, 1 attempt'):
+                        deploy.verify_served(root, 'http://127.0.0.1:5090')
+                    opener.return_value.open.assert_called_once()
+
+    def test_inaccessible_parent_reports_effective_acl_before_build(self):
+        with patch.object(deploy.os, 'access', side_effect=lambda path, mode: path != Path('/private')):
+            with self.assertRaisesRegex(ValueError, '/private: missing effective traverse.*ACL mask'):
+                deploy.check_access(Path('/private/dashboard'))
+
     def test_binary_capability_requires_exact_success(self):
         for output, code in [('', 0), ('old server', 0)]:
             with patch.object(deploy, 'run', return_value=subprocess.CompletedProcess([], code, output)):

@@ -389,8 +389,10 @@ For a different local listener, add an explicit systemd Environment entry
 loopback HTTP origin). Verification accepts only loopback origins, uses no proxy,
 credentials or redirects, and retains normal certificate verification. Use the
 actual configured listener and trusted certificate; do not relax Server security
-settings. An unreachable/rejected endpoint is reported separately from a served
-generation mismatch; both fail deployment and restore the previous generation.
+settings. Connection failures are retried with short backoff for a 25-second readiness
+window. HTTP errors (including redirects), certificate errors and generation
+mismatches fail closed immediately. Diagnostics include the failing URL, cause,
+elapsed time and attempt count; failure restores the previous generation.
 The running Server retains its old
 assets in memory until restart; no partially staged build is served. The prior
 asset set is retained as `previous`; activation failure restores it and restarts
@@ -401,3 +403,30 @@ Browser refresh uses the canonical routes and asset prefix. Normal installations
 continue using embedded assets. Invalid enabled overrides fail startup explicitly.
 To return to embedded assets, remove both drop-in entries, daemon-reload and restart
 only `codex-server`. No remote upload endpoint or filesystem static hosting is added.
+
+### Development destination permissions after updates
+
+`cw dd` checks effective ancestor traversal and destination read/write access
+before building or restarting. If it reports an inaccessible path, inspect that
+exact path with `sudo getfacl -p PATH`. A named `--x` entry with `mask::---` grants
+no effective traversal. The installer now preserves explicit named-user `--x`
+opt-ins on `/var/lib/codex-server` across updates, including repairing this old
+ineffective-mask case. It leaves the dedicated dashboard subdirectory untouched.
+Production installations without these explicit entries remain mode 0700.
+
+For the development-only setup above, replace `DEVELOPER` with the local account:
+
+```sh
+sudo install -d -o DEVELOPER -g codex-server -m 0755 /var/lib/codex-server/development-dashboard
+sudo setfacl -m u:DEVELOPER:--x,g::---,m::--x,o::--- /var/lib/codex-server
+sudo getfacl -p /var/lib/codex-server
+sudo -u DEVELOPER test -x /var/lib/codex-server
+sudo -u DEVELOPER test -w /var/lib/codex-server/development-dashboard
+```
+
+Inspect existing ACL entries before changing the mask: its execute bit affects
+all named entries. Grant no parent read/write access, use no recursive `chown` or
+`chmod`, and keep persistent data files private. Do not run `chmod 0700` on the
+parent after this opt-in: it disables the ACL mask again. Normal production
+installs need no developer ACL. Retry `cw dd` once the effective permissions are
+correct; do not restart services to diagnose filesystem access.
