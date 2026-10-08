@@ -8,7 +8,7 @@ import { credentials, credential, credentialPath, type Credential, type Credenti
 import { useSettings } from './Workspace';
 import { ServerPreparation } from './ServerPreparation';
 import { ActionDialog, FormDialog } from '../../shared/Dialogs';
-import { PageHeading, Notice, ResourceIdentity, StatusBadge, AdvancedDisclosure } from '../../shared/Presentation';
+import { PageHeading, Notice, StatusBadge, AdvancedDisclosure } from '../../shared/Presentation';
 import { ThemeControl } from '../../shared/ThemeControl';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
@@ -39,8 +39,10 @@ function SettingsView() {
   }
   return <div className="space-y-8">
     <PageHeading title={t("settings.settings")} actions={<ThemeControl />} />
+    <p className="-mt-5 mb-6 text-sm text-secondary">{t("settings.authenticationUsesTheDedicatedServerServiceAccountRepositoryReadsAndIssueWrites")}</p>
+    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(18rem,0.85fr)] lg:items-start">
     <ServerPreparation />
-    <section aria-label={t("settings.credentialMetadata")} className="space-y-4">
+    <section aria-label={t("settings.credentialMetadata")} className="min-w-0 space-y-4 rounded-xl border border-secondary bg-primary p-5">
       <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold text-primary">{t("settings.credentialMetadata")}</h2>
         <div className="flex flex-wrap gap-3"><Button color="secondary" onPress={() => { void list.refetch(); }}>{t("settings.refreshMetadata")}</Button><Button isDisabled={owner.locked()} onPress={() => open({ kind: 'create' })}>{t("settings.addCredential")}</Button></div>
       </div>
@@ -48,18 +50,19 @@ function SettingsView() {
       {list.error && <Notice error>{list.error}</Notice>}{registered.error && <Notice error>{registered.error}</Notice>}
       {!list.data && !list.error && <Notice>{t("settings.loadingCredentialMetadata")}</Notice>}
       {list.data?.length === 0 && <Notice>{t("settings.noServerManagedCredentialsAreRegistered")}</Notice>}
-      {list.data?.map(c => <article key={c.id} className="space-y-3 rounded-xl border border-secondary bg-primary p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><ResourceIdentity name={`${c.provider} · ${c.type}`} id={c.id} /><StatusBadge tone={c.status === 'Ready' ? 'success' : c.status === 'NeedsReprovision' ? 'warning' : 'gray'}>{localizeText(c.status)}</StatusBadge></div>
+      {list.data?.map(c => <article key={c.id} className="min-w-0 space-y-3 border-t border-secondary pt-4 first:border-0 first:pt-0">
+        <div className="flex flex-wrap items-start justify-between gap-3"><span className="font-medium text-primary">{c.provider} · {c.type}</span><StatusBadge tone={c.status === 'Ready' ? 'success' : c.status === 'NeedsReprovision' ? 'warning' : 'gray'}>{localizeText(c.status)}</StatusBadge></div>
         <p className="text-sm text-secondary">{t("settings.version")}{' '}{c.version} · {c.assignedWorkerId ? t('settings.assignedTo', { name: registered.data?.find(w => w.workerId === c.assignedWorkerId)?.displayName ?? c.assignedWorkerId }) : localizeText('Unassigned')}</p>
         <div className="flex flex-wrap gap-3"><Button color="secondary" href={`/settings/${encodeURIComponent(c.id)}${location.search}`}>{t("settings.showMetadata")}</Button>
           <Button color="secondary" isDisabled={owner.locked(c.id) || c.status !== 'Ready' || !registered.data?.length} onPress={() => open({ kind: 'assign', before: c })}>{t("settings.assign")}</Button>
           <Button color="secondary" isDisabled={owner.locked(c.id) || !['Ready', "NeedsReprovision"].includes(c.status)} onPress={() => open({ kind: 'replace', before: c })}>{t("settings.replaceSecret")}</Button>
           <Button color="secondary-destructive" isDisabled={owner.locked(c.id) || !['Ready', "NeedsReprovision"].includes(c.status)} onPress={() => open({ kind: 'revoke', before: c })}>{t("settings.revoke")}</Button>
-        </div><AdvancedDisclosure title={t("settings.credentialResourceDetails")}><p>{t("settings.updated")}{' '}{timestamp(c.updatedAtUtc)}{c.revokedAtUtc && t('settings.revokedAt', { time: timestamp(c.revokedAtUtc) })}</p>{c.assignedWorkerId && <Button color="link-gray" href={`/workers/${encodeURIComponent(c.assignedWorkerId)}`}>{t("settings.assignedWorker")}</Button>}</AdvancedDisclosure>
+        </div><AdvancedDisclosure title={t("settings.credentialResourceDetails")}><p>{t("shared.iD")}{' '}{c.id}</p><p>{t("settings.updated")}{' '}{timestamp(c.updatedAtUtc)}{c.revokedAtUtc && t('settings.revokedAt', { time: timestamp(c.revokedAtUtc) })}</p>{c.assignedWorkerId && <Button color="link-gray" href={`/workers/${encodeURIComponent(c.assignedWorkerId)}`}>{t("settings.assignedWorker")}</Button>}</AdvancedDisclosure>
       </article>)}
       {owner.message && <Notice>{owner.message}</Notice>}
       {Object.keys(owner.attempts).filter(key => owner.locked(key.slice('credential:'.length))).map(key => <Notice key={key}>{t("settings.aCredentialActionIsUnconfirmedNoSecretInputWasRetained")}{' '}<Button color="secondary" onPress={() => { void owner.reconcile(key); }}>{t("settings.refreshAuthoritativeCredentialState")}</Button></Notice>)}
     </section>
+    </div>
     {resourceId && <CredentialDetail id={resourceId} onClose={() => navigate(`/settings${location.search}`)} />}
     {edit && <ActionDialog isOpen title={edit.kind === 'create' ? t("settings.addServerManagedCredential") : edit.kind === 'replace' ? t("settings.replaceCredentialSecret") : edit.kind === 'assign' ? t("settings.assignCredential") : t("settings.revokeCredential")}
       description={edit.kind === 'revoke' ? t("settings.stopFutureServerDeliveryProviderSideAuthorizationAndSecretsAlreadyDeliveredTo") : edit.kind === 'assign' ? t("settings.selectARegisteredWorkerDeliveryRequiresItsSeparatelyAuthorizedDeliveryCredentialNode") : t("settings.theInputIsSentOnceToProtectedServerStorageAndClearedBefore")}
