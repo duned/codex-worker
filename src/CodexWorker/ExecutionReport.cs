@@ -23,7 +23,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     IReadOnlyList<string>? SecretValues = null,
     string? FailureCategory = null,
     string? EffectiveModel = null,
-    string? EffectiveEffort = null)
+    string? EffectiveEffort = null,
+    string? RecoveryGuidance = null)
 {
     public string PostRebaseValidationOutcome => ValidationRepairs.Any(repair => repair.IntegrationRepair)
         ? $"failed: post-rebase validation ({ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s))"
@@ -48,6 +49,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
         if (kind == IssueOutcomeKind.Blocked)
         {
             if (!string.IsNullOrWhiteSpace(ImplementationSummary)) sections.Add($"### Work performed\n\n{ImplementationSummary}");
+            if (RecoveryGuidance is not null) sections.Add($"### Recovery\n\n{RecoveryGuidance}");
             sections.Add($"### Required prerequisite\n\n{HumanInput ?? Failure ?? "A required prerequisite is unavailable."}");
             if (WorkspacePreserved || RetryAvailable || !string.IsNullOrWhiteSpace(RecoveryBranch))
             {
@@ -149,6 +151,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
                 sections.Add(recovery[0] + "\n\n" + string.Join("\n", recovery.Skip(1)));
             }
         }
+        if (RecoveryGuidance is not null) sections.Add($"### Recovery\n\n{RecoveryGuidance}");
         var markdown = string.Join("\n\n", sections);
         return kind is IssueOutcomeKind.Failed or IssueOutcomeKind.IntegrationConflict
             ? FailureDiagnosticRedactor.Redact(markdown, SecretValues) : markdown;

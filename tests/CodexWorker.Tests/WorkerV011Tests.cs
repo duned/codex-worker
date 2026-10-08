@@ -106,19 +106,25 @@ public sealed class WorkerV011Tests
     }
 
     [Theory]
-    [InlineData(false, "restart")]
-    [InlineData(false, "resume")]
-    [InlineData(true, "restart")]
-    [InlineData(true, "resume")]
-    public async Task BlockedRetryFetchesNewUnblockContextForStandaloneAndManagedWork(bool managed, string retryMode)
+    [InlineData(false, "restart", true, "blocked")]
+    [InlineData(false, "resume", true, "blocked")]
+    [InlineData(true, "restart", true, "blocked")]
+    [InlineData(true, "resume", true, "blocked")]
+    [InlineData(false, "resume", false, "blocked")]
+    [InlineData(true, "resume", false, "blocked")]
+    [InlineData(false, "resume", false, "failed")]
+    [InlineData(true, "resume", false, "failed")]
+    public async Task BlockedRetryFetchesNewUnblockContextForStandaloneAndManagedWork(bool managed, string retryMode, bool usefulChanges, string outcome)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
         h.Worker.Configuration.Worker.RetryMode = retryMode;
-        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.");
+        h.Git.Recovery = usefulChanges ? new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.") : null;
         h.GitHub.CommentContext = "Original human clarification";
-        h.Codex.InitialOutcome = new("blocked", "Need authorization", [], true, "Authorize this task?", "human_input");
+        h.Codex.InitialOutcome = outcome == "blocked"
+            ? new("blocked", "Need authorization", [], true, "Authorize this task?", "human_input")
+            : new("failed", "No implementation completed", [], false, null, null);
 
         async Task<IssueProcessingResult?> RunAttemptAsync(int attempt)
         {
@@ -134,10 +140,11 @@ public sealed class WorkerV011Tests
             return await task;
         }
 
-        Assert.Equal(IssueOutcomeKind.Blocked, (await RunAttemptAsync(1))?.Kind);
+        Assert.Equal(outcome == "blocked" ? IssueOutcomeKind.Blocked : IssueOutcomeKind.Failed, (await RunAttemptAsync(1))?.Kind);
         var source = Assert.Single(await history.ReadAllAsync());
         h.GitHub.ReadyIssueCount = 2;
-        h.GitHub.Issue = h.GitHub.Issue with { Body = "Updated description" };
+        h.GitHub.IssueLabels = ["ready", outcome];
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Updated description", Labels = h.GitHub.IssueLabels };
         h.GitHub.CommentContext = "Original human clarification\nNew unblock authorization";
         h.Codex.InitialOutcome = Success("Completed authorized task");
 
@@ -149,7 +156,17 @@ public sealed class WorkerV011Tests
         Assert.Equal("Updated description", h.Codex.Issues[1].Body);
         var retry = (await history.ReadAllAsync()).Single(entry => entry.AttemptNumber == 2);
         Assert.Equal(source.ExecutionId, retry.RetryOfExecutionId);
-        Assert.Equal(retryMode == "resume", retry.Resumed);
+        Assert.Equal(usefulChanges && retryMode == "resume", retry.Resumed);
+        Assert.NotEqual(source.ExecutionId, retry.ExecutionId);
+        Assert.Contains(outcome, h.GitHub.RemovedLabels);
+        if (!usefulChanges)
+        {
+            Assert.Equal("cleaned-no-changes", source.RecoveryState);
+            Assert.Equal(System.Text.Json.JsonSerializer.Serialize(source),
+                System.Text.Json.JsonSerializer.Serialize((await history.ReadAllAsync()).Single(entry => entry.ExecutionId == source.ExecutionId)));
+            Assert.False(h.Git.LastResume);
+            Assert.Contains(h.GitHub.Comments, comment => comment.Contains("No useful file changes remained", StringComparison.Ordinal));
+        }
         Assert.DoesNotContain("New unblock authorization", System.Text.Json.JsonSerializer.Serialize(await history.ReadAllAsync()));
         Assert.DoesNotContain("New unblock authorization", h.Output.ToString());
         Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("New unblock authorization", StringComparison.Ordinal));
@@ -413,8 +430,12 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.GitHub.Comments, comment => comment.Contains("Preparation rejected", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("uncertain")]
+    [InlineData("missing")]
+    [InlineData("cleanup-pending")]
+    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling(string? recoveryState)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
@@ -425,7 +446,7 @@ public sealed class WorkerV011Tests
         var oldId = Guid.NewGuid();
         await history.CreateAsync(new ExecutionHistoryEntry(oldId, "Test Project", "owner/repo", 17, "Example task",
             "feature/17-example-task", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
-            "Failed", 1000, "Partial work", null, 0, [], null, null, null, "failed"));
+            "Failed", 1000, "Partial work", null, 0, [], null, null, null, "failed", RecoveryState: recoveryState));
 
         await h.RunAsync();
 
@@ -444,7 +465,7 @@ public sealed class WorkerV011Tests
         var notification = Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
         Assert.Contains("TAREA BLOQUEADA", notification);
         Assert.Contains(ExecutionFormatting.Display(rejected.ExecutionId), notification);
-        Assert.Contains("has no safe recoverable state", notification);
+        Assert.Contains("has no verified safe recoverable state", notification);
         Assert.Contains("TEST PROJECT", notification);
         Assert.Contains("https://github.com/owner/repo/issues/17", notification);
     }

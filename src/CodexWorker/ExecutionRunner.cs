@@ -431,6 +431,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             RecoveryBranch = recovery?.Branch,
             WorkspacePreserved = recovery is not null,
             RetryAvailable = recovery is not null,
+            RecoveryGuidance = recovery is null && context.Execution.MetadataError is null &&
+                kind is IssueOutcomeKind.Failed or IssueOutcomeKind.Blocked
+                ? "No useful file changes remained; the workspace was safely cleaned. Make the Issue ready again to start a new clean attempt, including when worker.retryMode is resume."
+                : null,
             SecretValues = config.Environment.Variables.Values.ToArray()
         };
         var historyFailure = completedReport.FinalValidationDiagnostics is null ? null :

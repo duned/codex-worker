@@ -414,7 +414,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             latest?.RecoveryState == "preparation-failed";
         var retryOf = !freshRecovery && !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
-        var resumed = retryOf is not null && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
+        // Only verified no-change cleanup authorizes a clean retry without recovery inspection.
+        var cleanRetry = retryOf?.RecoveryState == "cleaned-no-changes";
+        var resumed = retryOf is not null && !cleanRetry && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         issue = await PrepareCommentContextAsync(issue, ct);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
@@ -432,10 +434,12 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
             {
                 await RejectPreparationAsync(execution, issue, config.GitHub.ReadyLabel,
-                    $"Previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no safe recoverable state. Change worker.retryMode to restart or inspect the recovery workspace.", ct);
+                    $"Previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no verified safe recoverable state; possible work or uncertain state requires operator review. Inspect the preserved state before selecting worker.retryMode: restart.", ct);
                 _activeIssues.TryRemove(issueKey, out _);
                 return serverExecutionId is null ? null : Task.FromResult<IssueProcessingResult?>(null);
             }
+            if (cleanRetry)
+                _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · verified no-change cleanup starts a clean retry; previous execution {retryOf!.ExecutionId} is preserved.");
             if (freshAfterConflict)
                 _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · explicit ready after integration conflict starts a fresh execution; previous execution {latest!.ExecutionId} is preserved.");
             if (freshAfterPreparationFailure)
@@ -443,7 +447,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
-            foreach (var staleLabel in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel }
+            foreach (var staleLabel in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel, config.GitHub.BlockedLabel, config.GitHub.FailedLabel }
                          .Distinct(StringComparer.OrdinalIgnoreCase))
                 if (issue.Labels?.Contains(staleLabel, StringComparer.OrdinalIgnoreCase) == true)
                     await github.RemoveLabelAsync(issue.Number, staleLabel, ct);
