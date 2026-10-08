@@ -1,3 +1,4 @@
+import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useState } from 'react';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
 import { command, commands, nodes, serverGitHubConnection } from '../../shared/api/validation';
@@ -91,7 +92,7 @@ export function ServerPreparation() {
       <p className="text-sm text-secondary">Authentication uses the dedicated Server service account. Repository reads and Issue writes are checked in Projects; Worker login and repository push permission are separate.</p>
       {[inventory.error, history.error, connection.error].filter(Boolean).map((error, i) => <Notice error key={i}>{error}</Notice>)}
       {latest && <p className="text-sm text-secondary">{latest.request.action} · {latest.status}{activeCommand(latest) && ' · You may leave and return to recover this operation.'}</p>}
-      {connection.challenge && <Notice>Open <a className="underline" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">GitHub verification</a> and enter <strong>{connection.challenge.userCode}</strong>. Only approve the login you started. Waiting for verification; expires {new Date(connection.challenge.deadline).toLocaleString()}.</Notice>}
+      {connection.challenge && <Notice>Open <ExternalLink className="underline" href="https://github.com/login/device">GitHub verification</ExternalLink> and enter <strong>{connection.challenge.userCode}</strong>. Only approve the login you started. Waiting for verification; expires {new Date(connection.challenge.deadline).toLocaleString()}.</Notice>}
       {latest && expiredCommand(latest, Math.max(now, Date.now())) && <Notice>Device login deadline expired. The code is no longer available. Verify the Server is quiescent before releasing its operation lock.</Notice>}
       <div className="flex flex-wrap gap-3">
         <Button color="secondary" onPress={() => { void refresh(); }}>Refresh authoritative state</Button>

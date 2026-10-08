@@ -1,3 +1,4 @@
+import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { FormDialog, ConfirmationDialog } from '../../shared/Dialogs';
@@ -52,7 +53,7 @@ function IssueDetail({ project, number, open }: { project: Project; number: numb
   if (!read.data) return <ViewState title={read.error ? 'Issue unavailable or deleted. Check access and reload.' : 'Loading Issue…'} error={!!read.error} />;
   const i = read.data, disabled = w.locked(project.id);
   return <TableCard.Root><div className="space-y-4 p-5">
-    <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="break-words text-lg font-semibold text-primary"><a href={issueUrl(project.repository, i)}>#{i.number} · {i.title}</a></h3><Button color="secondary" onPress={() => { const next = new URLSearchParams(params); next.delete('issue'); setParams(next); }}>Close Issue detail</Button></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="break-words text-lg font-semibold text-primary"><ExternalLink href={issueUrl(project.repository, i)}>#{i.number} · {i.title}</ExternalLink></h3><Button color="secondary" onPress={() => { const next = new URLSearchParams(params); next.delete('issue'); setParams(next); }}>Close Issue detail</Button></div>
     <StatusBadge tone={i.isEligible ? 'success' : 'warning'}>{i.state} · {i.isEligible ? 'Eligible' : 'Ineligible'}</StatusBadge>
     {i.eligibilityReasons.map(r => <p key={r} className="text-sm text-secondary">{r}</p>)}
     <p className="text-sm text-tertiary">Labels: {i.labels.join(', ') || 'none'}</p>
@@ -60,7 +61,7 @@ function IssueDetail({ project, number, open }: { project: Project; number: numb
     <div className="flex flex-wrap gap-2">{[project.issueReadyLabel, project.issueBlockedLabel].filter((l): l is string => !!l).map(label => { const applied = i.labels.some(l => l.toLowerCase() === label.toLowerCase()); return <Button key={label} color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'label', label, applied: !applied }, i)}>{applied ? 'Remove' : 'Add'} {label}</Button>; })}</div>
     {!project.issueReadyLabel && !project.issueBlockedLabel && <p className="text-sm text-tertiary">No eligibility labels configured. Edit project policy to configure them.</p>}
     <h4 className="font-semibold text-primary">Native blocked-by relationships</h4>
-    {i.blockedBy.length ? i.blockedBy.map(b => <div key={b.number} className="flex flex-wrap items-center gap-2"><a href={issueUrl(project.repository, b)} className="text-sm text-secondary">#{b.number} · {b.title} · {b.state}</a><Button color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'dependency', blockerIssueNumber: b.number, applied: false }, i)}>Remove relationship #{b.number}</Button></div>) : <p className="text-sm text-tertiary">No blocking Issues.</p>}
+    {i.blockedBy.length ? i.blockedBy.map(b => <div key={b.number} className="flex flex-wrap items-center gap-2"><ExternalLink href={issueUrl(project.repository, b)} className="text-sm text-secondary">#{b.number} · {b.title} · {b.state}</ExternalLink><Button color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'dependency', blockerIssueNumber: b.number, applied: false }, i)}>Remove relationship #{b.number}</Button></div>) : <p className="text-sm text-tertiary">No blocking Issues.</p>}
     <Button color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'dependency', blockerIssueNumber: 0, applied: true }, i)}>Add blocked-by Issue</Button>
     <h4 className="font-semibold text-primary">Issue description</h4><pre className="whitespace-pre-wrap break-words text-sm text-secondary">{i.body || 'No description.'}</pre>
     <div className="flex flex-wrap gap-2"><Button color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'edit', title: i.title, body: i.body }, i)}>Edit title/body</Button><Button isDisabled={disabled || !i.isEligible || !project.enabled} onPress={() => open({ kind: 'enqueue' }, i)}>Explicitly enqueue</Button><Button color="secondary" isDisabled={disabled} onPress={() => open({ kind: 'refresh' }, i)}>Refresh queued eligibility</Button></div>

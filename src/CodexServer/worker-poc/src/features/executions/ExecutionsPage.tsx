@@ -1,3 +1,4 @@
+import { ExternalLink } from '../../shared/Actions';
 import { useState } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
@@ -22,7 +23,7 @@ function Identity({ item }: { item: Execution }) {
   const href = issueLink(item.workReference, project?.repository);
   return <div className="space-y-1 break-words text-sm text-secondary">
     <Link to={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</Link>
-    <p>{href ? <a href={href}>GitHub Issue #{item.workReference?.id}</a> : item.workReference ? `${item.workReference.type} ${item.workReference.id}` : 'Work reference unavailable'}</p>
+    <p>{href ? <ExternalLink href={href}>GitHub Issue #{item.workReference?.id}</ExternalLink> : item.workReference ? `${item.workReference.type} ${item.workReference.id}` : 'Work reference unavailable'}</p>
     <p>{item.assignedWorkerId ? <Link to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{worker?.displayName ?? item.assignedWorkerId}</Link> : 'Worker unassigned'}</p>
   </div>;
 }

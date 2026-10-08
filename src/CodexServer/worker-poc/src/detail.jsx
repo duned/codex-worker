@@ -1,3 +1,4 @@
+import { ExternalLink } from './shared/Actions';
 import { StatusBadge, PageHeading, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { Table, TableCard } from './untitled/components/application/table/table';
@@ -15,7 +16,7 @@ function Execution({ item, projects, now, active }) {
   const identity = work?.type === 'github-issue' ? `Issue #${work.id}` : `${work?.type ?? 'Work'} ${work?.id ?? 'Unknown'}`;
   return <TableCard.Root className="poc-current"><div className="poc-execution p-5">
     <div><p className="poc-project mb-1 text-sm font-medium text-tertiary"><a href={'/projects/' + encodeURIComponent(item.projectId)}>{project?.name ?? item.projectId}</a></p>
-      <h4 className="text-lg font-semibold text-primary">{url ? <a href={url} target="_blank" rel="noopener noreferrer">{identity}</a> : identity}</h4>
+      <h4 className="text-lg font-semibold text-primary">{url ? <ExternalLink href={url}>{identity}</ExternalLink> : identity}</h4>
       <p className="poc-muted text-sm text-tertiary">{work?.type === 'github-issue' && 'Issue title unavailable · '}{!url && work?.type === 'github-issue' && 'Issue link unavailable · '}<a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p>
     </div>
     <div className="space-y-2"><Status value={item.state} />{active && <p>Current stage: <strong className="text-brand-secondary">{item.currentStage || 'Not reported'}</strong></p>}
@@ -87,7 +88,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     const identity = item.workReference?.type === 'github-issue' ? `Issue #${item.workReference.id}` : item.workReference?.id ?? 'Work';
     return {
       id: item.id,
-      reference: <><p className="font-medium text-primary"><a href={'/projects/' + encodeURIComponent(item.projectId)}>{project?.name ?? item.projectId}</a></p>{url ? <a className="text-brand-secondary font-semibold" href={url} target="_blank" rel="noopener noreferrer">{identity}</a> : identity}<p><a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p></>,
+      reference: <><p className="font-medium text-primary"><a href={'/projects/' + encodeURIComponent(item.projectId)}>{project?.name ?? item.projectId}</a></p>{url ? <ExternalLink className="text-brand-secondary font-semibold" href={url}>{identity}</ExternalLink> : identity}<p><a href={'/executions/' + encodeURIComponent(item.id)}>Execution details</a></p></>,
       outcome: <><Status value={item.state} />{item.recoveryState && <p>Recovery: {item.recoveryState}</p>}</>,
       timing: <><p>Duration: {duration(item, now)}</p><p>{item.completedAtUtc ? 'Completed' : 'Requested'}: {timestamp(item.completedAtUtc ?? item.createdAtUtc)}</p></>
     };

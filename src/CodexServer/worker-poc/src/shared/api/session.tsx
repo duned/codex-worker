@@ -31,7 +31,7 @@ export function useApiRead<T>(path: string, validate: Validator<T>) {
   const query = useQuery({ queryKey: queryKeys.read(session.generation, path), enabled: session.authenticated,
     queryFn: ({ signal }) => runtime.read(path, signal, validate) });
   return { data: session.authenticated && !query.isError ? query.data : undefined,
-    error: query.error?.message, loading: query.isPending, stale: query.isStale, refetch: query.refetch };
+    updatedAt: query.dataUpdatedAt, error: query.error?.message, loading: query.isPending, stale: query.isStale, refetch: query.refetch };
 }
 // Callers provide fresh uncached Server checks and an explicit reconciliation
 // read. Timers, cache refreshes and render can never clear an uncertain lock.

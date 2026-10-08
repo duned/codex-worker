@@ -1,3 +1,4 @@
+import { DeleteAction } from '../../shared/Actions';
 import { useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { PageHeading, Notice, StatusBadge, ResourceIdentity, ViewState, AdvancedDisclosure } from '../../shared/Presentation';
@@ -21,7 +22,7 @@ export function ProjectsPage() {
     if (w.draft) { w.setDraft({ ...w.draft, open: true }); w.setMessage('Resume or discard the retained draft before starting another definition.'); return; }
     w.setConflict(undefined); w.setDraft({ before: p, definition: p ? definitionOf(p) : newDefinition(), step: 1, open: true });
   };
-  const controls = (p: Project) => <div className="flex flex-wrap gap-2"><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => open(p)}>Edit project</Button><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p, enabled: !p.enabled })}>{p.enabled ? 'Disable' : 'Enable'}</Button><Button color="primary-destructive" isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p })}>Delete</Button></div>;
+  const controls = (p: Project) => <div className="flex flex-wrap gap-2"><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => open(p)}>Edit project</Button><Button color="secondary" isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p, enabled: !p.enabled })}>{p.enabled ? 'Disable' : 'Enable'}</Button><DeleteAction isDisabled={w.locked(p.id)} onPress={() => setAction({ project: p })}>Delete</DeleteAction></div>;
   return <>
     <PageHeading title={resourceId ? selected?.name ?? 'Project' : 'Projects'} resourceId={resourceId} breadcrumbs={resourceId ? [{ label: 'Projects', href: `/projects${location.search}` }, { label: selected?.name ?? 'Project' }] : []} actions={!resourceId && <Button isDisabled={w.locked()} onPress={() => open()}>Create project</Button>} />
     <div className="space-y-6">

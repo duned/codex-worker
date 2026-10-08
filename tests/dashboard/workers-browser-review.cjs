@@ -30,6 +30,7 @@ const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
         if (request.method() === 'POST') signedIn = true;
         return route.fulfill({ status: signedIn ? 200 : 401, json: { csrfToken: 'fixture-csrf', expiresAtUtc: '2026-01-01T01:00:00Z' } });
       }
+      if (endpoint === '/api/status') return route.fulfill({ json: { state: 'running', version: 'fixture', startedAtUtc: '2026-01-01T00:00:00Z' } });
       if (endpoint === '/api/v1/events/stream') return route.fulfill({ status: 503 });
       if (request.method() !== 'GET') {
         assert.equal(request.headers()['x-codex-csrf'], 'fixture-csrf');
@@ -70,6 +71,17 @@ const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
       await page.getByText('2 / 2 active', { exact: true }).waitFor();
       assert.equal(await page.getByRole('link', { name: 'Issue #28' }).getAttribute('href'), 'https://github.com/owner/repo/issues/28');
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      if (width === 375) await page.getByRole('button', { name: 'Expand navigation menu' }).click();
+      const connection = page.getByRole('region', { name: 'Server connection' }).filter({ visible: true });
+      await connection.getByText(/live updates unavailable/).waitFor();
+      assert.equal(await connection.locator('time').count(), 1);
+      const toggle = page.getByRole('button', { name: 'Use light mode' }).filter({ visible: true });
+      assert.equal(await toggle.locator('svg').count(), 1);
+      await toggle.click({ position: { x: 20, y: 20 } });
+      assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), false);
+      await page.getByRole('button', { name: 'Use dark mode' }).filter({ visible: true }).click();
+      assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), true);
+      if (width === 375) { await page.keyboard.press('Escape'); await page.clock.runFor(300); }
       assert.equal(await page.locator('#poc-legacy-owner').count(), 0);
       assert.equal(await page.evaluate(() => !!window.codexWorkerPoc), false);
       await page.getByRole('button', { name: 'Activate scheduling' }).click();

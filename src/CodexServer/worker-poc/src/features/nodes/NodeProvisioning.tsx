@@ -1,3 +1,4 @@
+import { ExternalLink } from '../../shared/Actions';
 import { useEffect, useState } from 'react';
 import { ActionDialog } from '../../shared/Dialogs';
 import { AdvancedDisclosure, Notice } from '../../shared/Presentation';
@@ -80,7 +81,7 @@ export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; 
       {matching.filter(commandActive).map(item => {
         const expired = commandExpired(item, Date.now()), loginUrl = item.loginInstructions && deviceLoginUrl(item.loginInstructions.verificationUri);
         return <div key={item.id} className="space-y-2"><p>{item.request.action}: {item.status}{expired && ' · Deadline expired; confirm the node operation stopped before reconciliation.'}</p>
-          {!locked && item.status === 'Running' && !expired && Date.parse(item.deadlineUtc ?? '') > Date.now() && loginUrl && <p>Only approve the login you started on this node. Open <a href={loginUrl} target="_blank" rel="noopener noreferrer">device login</a> and enter <strong>{item.loginInstructions?.userCode}</strong>. Expires {item.deadlineUtc}.</p>}
+          {!locked && item.status === 'Running' && !expired && Date.parse(item.deadlineUtc ?? '') > Date.now() && loginUrl && <p>Only approve the login you started on this node. Open <ExternalLink href={loginUrl}>device login</ExternalLink> and enter <strong>{item.loginInstructions?.userCode}</strong>. Expires {item.deadlineUtc}.</p>}
           {(item.status === 'Pending' || expired) && <Button color="secondary" isDisabled={pending || locked || !commands.data || !node} onPress={() => choose({ command: item, action: expired ? 'reconcile' : 'cancel' })}>{expired ? 'Reconcile after node quiescence' : 'Cancel queued operation'}</Button>}
         </div>;
       })}

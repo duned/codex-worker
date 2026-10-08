@@ -1,3 +1,4 @@
+import { ServerStatus } from './ServerStatus';
 import { type ReactNode } from 'react';
 import { HomeLine, Folder, Server01, Activity, Settings01 } from '@untitledui/icons';
 import { SidebarNavigationSimple } from '../untitled/components/application/app-navigation/sidebar-navigation/sidebar-simple';
@@ -23,7 +24,7 @@ export function Application({ session, children, navigationItems = items, active
   return <div className="poc-app">
     <a className="poc-skip" href="#poc-content">Skip to content</a>
     <SidebarNavigationSimple key={session.authenticated ? 'authenticated' : 'signed-out'} activeUrl={activeUrl} items={navigationItems} showAccountCard={false}
-      featureCard={<div className="flex flex-col gap-3 text-sm text-tertiary"><p>Server administration</p>{themeControl}{session.authenticated && <Button color="secondary" size="sm" onPress={session.onSignOut}>Sign out</Button>}</div>} />
+      featureCard={<div className="flex flex-col gap-3 text-sm text-tertiary"><p>Server administration</p>{themeControl}{session.authenticated && <Button color="secondary" size="sm" onPress={session.onSignOut}>Sign out</Button>}{session.authenticated && <ServerStatus />}</div>} />
     <main id="poc-content" className="min-w-0 flex-1 px-4 py-8 md:px-8 lg:py-10" tabIndex={-1}>
       {session.authenticated ? children : <div className="mx-auto max-w-md py-8">
         <TableCard.Root><TableCard.Header title="Administration sign in" description="Use the Server management token. The existing session is restored on reload." />
