@@ -2132,7 +2132,7 @@ public sealed class WorkerV011Tests
             case "blocked": h.GitHub.CompletionLabels = ["blocked"]; break;
             case "closed": h.GitHub.Closed = true; break;
             case "new-attempt": await history.CreateAsync(pending with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2 }); break;
-            case "managed": pending = pending with { ServerExecutionId = "original-managed-execution" }; break;
+            case "managed": pending = pending with { ServerExecutionId = "original-managed-execution" }; h.Git.RemoteContainsIntegration = false; break;
             case "corrupt": pending = pending with { CompletionJson = "{" }; break;
             case "corrupt-terminal":
                 pending = pending with { CompletionJson = "{" };
@@ -2151,6 +2151,93 @@ public sealed class WorkerV011Tests
         Assert.Empty(h.GitHub.Comments);
         Assert.DoesNotContain("working->done", h.GitHub.Labels);
         Assert.Single(h.Codex.Issues);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public async Task ManagedHistoricalCompletionOnlyQuarantinesProvenIntegration(bool remoteContainsCommit, bool legacy)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.CompletionMode = true;
+        h.GitHub.CompletionMode = true;
+        h.Git.RemoteContainsIntegration = true;
+        h.Git.IntegrationException = new WorkerInfrastructureException("Lost push response");
+        await Assert.ThrowsAnyAsync<WorkerInfrastructureException>(() => h.ProcessOneAsync());
+        var pending = Assert.Single(await history.ReadAllAsync()) with
+        {
+            ServerExecutionId = "original-server-execution", AssignmentId = "original-assignment", OwnershipGeneration = 7
+        };
+        await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database.Path}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE executions SET server_execution_id=$server, assignment_id=$assignment, ownership_generation=$generation WHERE execution_id=$id";
+            command.Parameters.AddWithValue("$server", pending.ServerExecutionId);
+            command.Parameters.AddWithValue("$assignment", pending.AssignmentId);
+            command.Parameters.AddWithValue("$generation", 7);
+            command.Parameters.AddWithValue("$id", pending.ExecutionId.ToString());
+            await command.ExecuteNonQueryAsync();
+        }
+        if (legacy)
+        {
+            pending = pending with { CompletionJson = null };
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database.Path}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE executions SET completion_json=NULL WHERE execution_id=$id";
+            command.Parameters.AddWithValue("$id", pending.ExecutionId.ToString());
+            await command.ExecuteNonQueryAsync();
+        }
+        h.Git.RemoteContainsIntegration = remoteContainsCommit;
+        var config = h.Worker.Configuration;
+        var global = new GlobalWorkerConfiguration();
+        var runtime = new WorkerRuntimeReadModel(global, [("project.yml", config)], history);
+        var host = new WorkerHost(global, [("project.yml", config)]);
+        await host.ReconcileCompletionAsync(h.Worker, pending, runtime, CancellationToken.None);
+        var retained = await history.ReadExecutionAsync(pending.ExecutionId);
+        Assert.NotNull(retained);
+        Assert.Equal(pending.CompletionJson, retained.CompletionJson);
+        Assert.Equal(pending.ServerExecutionId, retained.ServerExecutionId);
+        Assert.Equal(pending.AssignmentId, retained.AssignmentId);
+        Assert.Equal(pending.OwnershipGeneration, retained.OwnershipGeneration);
+        Assert.Equal(pending.CommitSha, retained.CommitSha);
+        if (remoteContainsCommit)
+        {
+            Assert.Equal("managed-completion-quarantined", retained.RecoveryState);
+            Assert.False(WorkerHost.NeedsCompletionReconciliation(retained));
+            Assert.Equal(ProjectLifecycleState.Enabled, runtime.Registry.Get(config.Project.Name)?.State);
+            Assert.True(runtime.Registry.TryReserve(config.Project.Name, config));
+            runtime.Registry.Release(config.Project.Name);
+        }
+        else
+        {
+            Assert.True(WorkerHost.NeedsCompletionReconciliation(retained));
+            Assert.Equal(ProjectLifecycleState.Unavailable, runtime.Registry.Get(config.Project.Name)?.State);
+        }
+        Assert.Empty(h.GitHub.Comments);
+        Assert.DoesNotContain("working->done", h.GitHub.Labels);
+        Assert.Equal(0, h.GitHub.CloseCalls);
+        Assert.Single(h.Codex.Issues);
+        if (remoteContainsCommit)
+        {
+            using var reopened = new ExecutionHistoryStore(database.Path);
+            var restartedEntry = await reopened.ReadExecutionAsync(pending.ExecutionId);
+            Assert.NotNull(restartedEntry);
+            Assert.False(WorkerHost.NeedsCompletionReconciliation(restartedEntry));
+            h.Git.IntegrationException = null;
+            h.Git.CompletionMode = false;
+            h.GitHub.CompletionMode = false;
+            h.GitHub.ReadyIssueCount = 2;
+            h.GitHub.ReturnDistinctIssues = true;
+            Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+            Assert.Equal(2, h.Codex.Issues.Count);
+            Assert.Equal("managed-completion-quarantined", (await reopened.ReadExecutionAsync(pending.ExecutionId))?.RecoveryState);
+        }
     }
 
     [Fact]

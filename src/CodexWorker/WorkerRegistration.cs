@@ -719,7 +719,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         request.Content = JsonContent.Create(report);
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}");
+            throw new HttpRequestException($"Codex Server execution report failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
     }
 
     public async Task<DateTimeOffset?> RenewExecutionLeaseAsync(WorkerServerSettings settings, ServerExecutionLeaseContract lease,

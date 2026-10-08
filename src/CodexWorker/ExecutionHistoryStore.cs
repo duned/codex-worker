@@ -47,7 +47,7 @@ public sealed record ExecutionHistoryEntry(
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 13;
+    private const int CurrentSchemaVersion = 14;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -232,6 +232,42 @@ public sealed class ExecutionHistoryStore : IDisposable
                 throw new WorkerInfrastructureException($"Execution history row was not found for {executionId}.");
         }
         catch (SqliteException ex) { throw PersistenceFailure("update execution recovery metadata", ex); }
+    }
+
+    public async Task QuarantineCompletionAsync(Guid executionId, string reason, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE executions SET recovery_state='managed-completion-quarantined', reporting_failure=CASE WHEN recovery_state='managed-completion-quarantined' THEN reporting_failure WHEN reporting_failure IS NULL THEN $reason ELSE reporting_failure || char(10) || $reason END WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$reason", reason);
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException($"Execution history row was not found for {executionId}.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("quarantine managed completion", ex); }
+    }
+
+    public async Task<string?> ReadServerReportDispositionAsync(Guid executionId, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT disposition FROM execution_server_report_dispositions WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        try { return await command.ExecuteScalarAsync(ct) as string; }
+        catch (SqliteException ex) { throw PersistenceFailure("read Server report disposition", ex); }
+    }
+
+    public async Task SaveServerReportDispositionAsync(Guid executionId, string disposition, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO execution_server_report_dispositions (execution_id,disposition) VALUES ($id,$disposition) ON CONFLICT(execution_id) DO NOTHING";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$disposition", disposition);
+        try { await command.ExecuteNonQueryAsync(ct); }
+        catch (SqliteException ex) { throw PersistenceFailure("record Server report disposition", ex); }
     }
 
     /// <summary>Records a secondary reporting failure without replacing the execution's primary outcome.</summary>
@@ -503,6 +539,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "CREATE TABLE execution_acknowledgements (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), acknowledged_at_utc TEXT NOT NULL, proof TEXT NOT NULL, pruned INTEGER NOT NULL DEFAULT 0); PRAGMA user_version = 13;";
+                migration.ExecuteNonQuery();
+            }
+            if (schemaVersion < 14)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE execution_server_report_dispositions (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), disposition TEXT NOT NULL); PRAGMA user_version = 14;";
                 migration.ExecuteNonQuery();
             }
             transaction.Commit();

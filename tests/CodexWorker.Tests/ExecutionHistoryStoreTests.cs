@@ -5,6 +5,58 @@ namespace CodexWorker.Tests;
 public sealed class ExecutionHistoryStoreTests
 {
     [Theory]
+    [InlineData(404, true)]
+    [InlineData(409, true)]
+    [InlineData(500, false)]
+    [InlineData(503, false)]
+    [InlineData(0, false)]
+    public async Task HistoricalServerReportRejectionsAreDurableOnlyForDefinitiveResponses(int status, bool terminal)
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with
+        {
+            ServerExecutionId = "server-original", AssignmentId = "assignment-original", OwnershipGeneration = 3
+        };
+        var calls = 0;
+        var warnings = new List<string>();
+        Task Report()
+        {
+            calls++;
+            throw new HttpRequestException("Unavailable", null, status == 0 ? null : (System.Net.HttpStatusCode)status);
+        }
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            await WorkerHost.DeliverHistoricalServerResultAsync(store, entry, Report, warnings.Add, CancellationToken.None);
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        await WorkerHost.DeliverHistoricalServerResultAsync(reopened, entry, Report, warnings.Add, CancellationToken.None);
+        Assert.Equal(terminal ? 1 : 2, calls);
+        Assert.Equal(terminal, await reopened.ReadServerReportDispositionAsync(entry.ExecutionId) is not null);
+        Assert.All(warnings, warning => Assert.Contains("Server execution server-original", warning, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("acknowledged")]
+    [InlineData("manual-reconciliation-required: HTTP 404")]
+    [InlineData("manual-reconciliation-required: HTTP 409")]
+    public async Task ServerReportDispositionSurvivesRestartAndDuplicateRecording(string disposition)
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow);
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            Assert.Null(await store.ReadServerReportDispositionAsync(entry.ExecutionId));
+            await store.SaveServerReportDispositionAsync(entry.ExecutionId, disposition);
+            await store.SaveServerReportDispositionAsync(entry.ExecutionId, "duplicate");
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        Assert.Equal(disposition, await reopened.ReadServerReportDispositionAsync(entry.ExecutionId));
+        Assert.Equal(entry.ExecutionId, (await reopened.ReadExecutionAsync(entry.ExecutionId))?.ExecutionId);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task ManualCompletionRequiresVerifiedValidatedIntegration(bool verified)
@@ -196,7 +248,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; PRAGMA user_version = 11;";
+            command.CommandText = "DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; PRAGMA user_version = 11;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -293,7 +345,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
+            command.CommandText = "DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -314,7 +366,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
+            command.CommandText = "DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -339,7 +391,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
+            command.CommandText = "DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -492,7 +544,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(13L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(14L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

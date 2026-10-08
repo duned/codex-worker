@@ -181,9 +181,9 @@ public sealed class WorkerHost
                     // expiry reconciliation can fence retries and retain uncertain integration.
                     if (IsShutdownInterruption(entry) && entry.RecoveryState != "codex-interrupted") continue;
                     var serverState = entry.State == "Completed" ? "Completed" : "Failed";
-                    try { await _registration.ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct); }
-                    catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-                    { _output.Warning($"Codex Server result reporting remains pending for execution {entry.ExecutionId}: {ex.Message}"); }
+                    await DeliverHistoricalServerResultAsync(history, entry,
+                        () => _registration.ReportExecutionAsync(_global.Server, entry, serverState, null, entry.OwnershipGeneration.Value, ct),
+                        message => _output.Warning(message), ct);
                 }
             }
             var configurationProvider = new LocalYamlProjectConfigurationProvider(_global.Projects.Directory);
@@ -1033,6 +1033,30 @@ public sealed class WorkerHost
         string.Equals(configuration.Project.Repository, assigned.Repository, StringComparison.OrdinalIgnoreCase) &&
         configuration.Git.BaseBranch == assigned.DefaultBranch;
 
+    internal static async Task DeliverHistoricalServerResultAsync(ExecutionHistoryStore history, ExecutionHistoryEntry entry,
+        Func<Task> report, Action<string> warning, CancellationToken ct)
+    {
+        if (await history.ReadServerReportDispositionAsync(entry.ExecutionId, ct) is not null) return;
+        try
+        {
+            await report();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Conflict)
+        {
+            var status = ex.StatusCode == System.Net.HttpStatusCode.NotFound ? 404 : 409;
+            var reason = $"manual-reconciliation-required: Server result report rejected with HTTP {status}; original ownership/lifecycle must be reconciled on the Server. No remote effects authorized.";
+            await history.SaveServerReportDispositionAsync(entry.ExecutionId, reason, ct);
+            warning(ManagedExecutionLog.Execution(entry, reason));
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            warning(ManagedExecutionLog.Execution(entry, $"Server result reporting remains pending: {ex.Message}"));
+            return;
+        }
+        await history.SaveServerReportDispositionAsync(entry.ExecutionId, "acknowledged", ct);
+    }
+
     internal async Task ReconcileCompletionAsync(Worker worker, ExecutionHistoryEntry entry,
         WorkerRuntimeReadModel runtime, CancellationToken ct)
     {
@@ -1049,7 +1073,7 @@ public sealed class WorkerHost
     }
 
     internal static bool NeedsCompletionReconciliation(ExecutionHistoryEntry entry) =>
-        entry.RecoveryState != "operator-acknowledged" &&
+        entry.RecoveryState is not ("operator-acknowledged" or "managed-completion-quarantined") &&
         (entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState || entry.CompletionJson is not null ||
          entry.ValidationOutcome == "passed" && entry.RecoveryState is "uncertain" or "github-reconciled");
 

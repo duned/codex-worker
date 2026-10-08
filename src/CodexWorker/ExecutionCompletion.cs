@@ -70,6 +70,15 @@ public sealed partial class Worker
         if (history is null) throw new WorkerInfrastructureException("Completion history is unavailable.");
         if (entry.Project != config.Project.Name || entry.Repository != config.Project.Repository)
             throw new WorkerInfrastructureException("Completion execution belongs to another project or repository.");
+        var managed = entry.ServerExecutionId is not null || serverSettings?.Enabled == true;
+        if (managed && entry.CompletionJson is null && entry.ValidationOutcome == "passed" &&
+            entry.State is "Integrating" or "Reporting" or "InfrastructureFailure" or "Cancelled" or "Completed")
+        {
+            // Legacy history cannot authorize effects, but exact remote integration proof
+            // can establish that this historical completion need not fence independent work.
+            await QuarantineManagedCompletionAsync(entry, ct);
+            return;
+        }
         ExecutionCompletion completion;
         try { completion = ExecutionCompletion.Read(entry); }
         catch (WorkerInfrastructureException) when (entry.CompletionJson is null)
@@ -102,8 +111,11 @@ public sealed partial class Worker
             entry.State is not ("Integrating" or "Reporting" or "InfrastructureFailure" or "Cancelled" or "Completed"))
             throw new WorkerInfrastructureException("Integration identity, validation or completion policy is incompatible; manual reconciliation is required.");
         // A retained managed execution is not a lease. Do not infer delivery authority after restart.
-        if (entry.ServerExecutionId is not null || serverSettings?.Enabled == true)
-            throw new WorkerInfrastructureException("Managed completion requires current Server ownership of the original execution; manual reconciliation is required.");
+        if (managed)
+        {
+            await QuarantineManagedCompletionAsync(entry, ct);
+            return;
+        }
         var others = await history.ReadAllAsync(ct);
         if (others.Any(other => other.ExecutionId != entry.ExecutionId && other.Project == entry.Project &&
             other.Repository == entry.Repository && other.IssueNumber == entry.IssueNumber &&
@@ -130,6 +142,17 @@ public sealed partial class Worker
         await FinishCompletionLineageAsync(entry, ct);
         await ReportServerAsync(completed with { State = "Completed" }, ExecutionState.Completed, ct);
         _operationalLog($"Execution {entry.ExecutionId} · completed reconciliation without replaying Codex.");
+    }
+
+    private async Task QuarantineManagedCompletionAsync(ExecutionHistoryEntry entry, CancellationToken ct)
+    {
+        // Caller holds the repository gate. No GitHub effects or resource cleanup.
+        if (history is null) throw new WorkerInfrastructureException("Completion history is unavailable.");
+        if (!await git.VerifyRemoteIntegrationAsync(entry, ct))
+            throw new WorkerInfrastructureException("Authoritative remote base is missing the exact validated integration commit; managed completion cannot be quarantined safely.");
+        var reason = "Managed completion quarantined: current Server ownership of the original execution is unavailable; manual reconciliation required. Exact validated integration commit verified on authoritative remote base; no completion effects replayed.";
+        await history.QuarantineCompletionAsync(entry.ExecutionId, reason, ct);
+        _operationalLog(ManagedExecutionLog.Execution(entry, reason, config.Environment.Variables.Values.ToArray()));
     }
 
     private async Task FinishCompletionLineageAsync(ExecutionHistoryEntry entry, CancellationToken ct)

@@ -395,6 +395,13 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             _activeIssues.TryRemove(issueKey, out _);
             return null;
         }
+        if (issueHistory.Any(entry => entry.RecoveryState == "managed-completion-quarantined"))
+        {
+            if (serverExecutionId is not null)
+                throw new IssuePreparationRejectedException("This Issue has a quarantined integrated managed completion; reconcile the original execution before assigning it again.");
+            _activeIssues.TryRemove(issueKey, out _);
+            return null;
+        }
         var latest = issueHistory.FirstOrDefault();
         if (freshRecovery && issueHistory.Any(entry => entry.State == "Completed" || entry.IntegrationBranch is not null ||
             entry.CompletedBranch is not null || entry.RecoveryState is "codex-resuming" or "codex-recovery-inspection-required"))
@@ -847,6 +854,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 ExecutionState.Reporting => "Reporting",
                 _ => state.ToString()
             }) : null, entry.OwnershipGeneration ?? 0, ct);
+        if (terminal && history is not null)
+            await history.SaveServerReportDispositionAsync(entry.ExecutionId, "acknowledged", ct);
         if (terminal)
             _operationalLog(ManagedExecutionLog.ReportCompleted(entry,
                 state.ToString(), config.Environment.Variables.Values.ToArray()));
