@@ -47,6 +47,17 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  for(const state of ['offline','disconnected'])assert.equal(statusColor(state),'error');
 });
 
+test('Worker list projection keeps connectivity, freshness, readiness and scheduling independent', async () => {
+ const { workerListSignals } = await model;
+ const worker = { availability: 'Connected', lifecycleState: 'Registered', schedulingPolicy: 'Draining', activeExecutions: 1, maximumCapacity: 3, activeProjects: ['project-a'] };
+ assert.deepEqual(workerListSignals(worker, { observationsStale: true, executionReadiness: 'NotReady' }), {
+  connection: 'Connected', freshness: 'Stale', readiness: 'NotReady', scheduling: 'Draining', occupiedSlots: 1, totalSlots: 3, projects: ['project-a']
+ });
+ assert.deepEqual(workerListSignals({ availability: 'Disconnected', capacity: 2 }, null), {
+  connection: 'Disconnected', freshness: 'Unknown', readiness: 'Unknown', scheduling: 'Unknown', occupiedSlots: undefined, totalSlots: 2, projects: []
+ });
+});
+
 test('timestamps use padded day/month/year and browser-local time including seconds', async () => {
  const {timestamp}=await model;
  const local=new Date(2026, 0, 2, 3, 4, 5);

@@ -7,6 +7,18 @@ export function statusColor(value) {
   if (['offline', 'disconnected', 'failed', 'error', 'timedout', 'update-failed', 'restart-failed', "capability-regression", "configuration-incompatible"].includes(state)) return 'error';
   return 'gray';
 }
+/** Keep independent Worker observations separate; missing node data stays unknown. */
+export function workerListSignals(worker, node) {
+  return {
+    connection: worker.availability,
+    freshness: node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown',
+    readiness: node ? node.executionReadiness : 'Unknown',
+    scheduling: worker.schedulingPolicy ?? 'Unknown',
+    occupiedSlots: worker.activeExecutions,
+    totalSlots: worker.maximumCapacity ?? worker.capacity,
+    projects: worker.activeProjects ?? []
+  };
+}
 export const terminalStates = ['Completed', 'Failed', 'Cancelled'];
 export function workerExecutions(items, workerId) {
   return (items ?? []).filter(item => item.assignedWorkerId === workerId)
