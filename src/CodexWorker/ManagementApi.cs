@@ -127,6 +127,8 @@ public sealed class WorkerRuntimeReadModel
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
     public WorkerLifecycle Lifecycle => _lifecycle;
+    public Task<string?> ArchiveAuditAsync(Guid id, CancellationToken ct) => _history.ReadArchiveAuditAsync(id, ct);
+
     public ExecutionCleanupService ExecutionCleanup => new(_history, _registry, repositoryGates: _repositoryGates);
     public string State
     {
@@ -363,13 +365,13 @@ public static class ManagementApi
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
         app.MapGet("/api/executions/inventory", async (string? project, Guid? executionId, int? issueNumber,
-            string? outcome, int? olderThanDays, string? attention, string? origin, int? limit, int? offset,
+            string? outcome, int? olderThanDays, string? attention, string? origin, int? limit, int? offset, bool? includeArchived,
             WorkerRuntimeReadModel model, HttpContext context) =>
         {
             try
             {
                 var query = new ExecutionInventoryQuery(project, executionId, issueNumber, outcome, olderThanDays,
-                    attention, origin, limit ?? 50, offset ?? 0);
+                    attention, origin, limit ?? 50, offset ?? 0, includeArchived ?? false);
                 return (IResult)Results.Ok(await model.ExecutionInventoryAsync(query, context.RequestAborted));
             }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -382,6 +384,8 @@ public static class ManagementApi
             var entries = await model.IssueExecutionsAsync(issueNumber, context.RequestAborted);
             return entries.Count == 0 ? Results.NotFound() : Results.Ok(entries);
         });
+        app.MapGet("/api/executions/{executionId:guid}/archive-audit", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
+            await model.ArchiveAuditAsync(executionId, context.RequestAborted) is { } audit ? Results.Ok(new { audit }) : Results.NotFound());
         app.MapGet("/api/executions/{executionId:guid}/cleanup-inspection", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
         {
             var inspection = await model.InspectExecutionCleanupAsync(executionId, context.RequestAborted);

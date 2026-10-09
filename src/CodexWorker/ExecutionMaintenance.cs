@@ -2,7 +2,7 @@ namespace CodexWorker;
 
 public sealed record ExecutionInventoryQuery(string? Project = null, Guid? ExecutionId = null, int? IssueNumber = null,
     string? Outcome = null, int? OlderThanDays = null, string? Attention = null, string? Origin = null,
-    int Limit = 50, int Offset = 0);
+    int Limit = 50, int Offset = 0, bool IncludeArchived = false);
 
 public sealed record ExecutionMaintenanceAssessment(string Status, string ReasonCode, string Explanation,
     DateTimeOffset LastProgressAtUtc, string Authority, IReadOnlyList<string> Actions);
@@ -20,7 +20,7 @@ public static class ExecutionMaintenanceClassifier
     public static ExecutionMaintenanceAssessment Classify(ExecutionHistoryEntry entry, DateTimeOffset now,
         bool projectConfigured, int staleAfterDays = 7)
     {
-        var authority = entry.ServerExecutionId is not null || entry.AssignmentId is not null ? "managed" : "local";
+        var authority = entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null ? "managed" : "local";
         var progress = entry.CompletedAtUtc ?? entry.StartedAtUtc;
         var actions = new List<string> { "inspect" };
         var stale = now - progress >= TimeSpan.FromDays(staleAfterDays);

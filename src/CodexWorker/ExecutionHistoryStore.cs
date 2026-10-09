@@ -47,7 +47,7 @@ public sealed record ExecutionHistoryEntry(
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 14;
+    private const int CurrentSchemaVersion = 15;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -332,7 +332,7 @@ public sealed class ExecutionHistoryStore : IDisposable
         ReadAsync(" ORDER BY started_at_utc", null, null, ct);
 
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadRecentAsync(int limit, CancellationToken ct = default) =>
-        ReadAsync(" ORDER BY started_at_utc DESC, execution_id LIMIT $value", "$value", Math.Clamp(limit, 1, 500), ct);
+        ReadAsync(" WHERE execution_id NOT IN (SELECT execution_id FROM execution_archives) ORDER BY started_at_utc DESC, execution_id LIMIT $value", "$value", Math.Clamp(limit, 1, 500), ct);
 
     /// <summary>Returns a bounded, newest-first inventory slice. Filtering is applied by SQLite before pagination.</summary>
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadInventoryAsync(ExecutionInventoryQuery query,
@@ -346,18 +346,18 @@ public sealed class ExecutionHistoryStore : IDisposable
             throw new ArgumentException("Inventory limits, age, origin or identifiers are invalid.");
         var cutoff = query.OlderThanDays is { } age ? now.AddDays(-age).ToString("O") : null;
         return ReadAsync(" WHERE ($project IS NULL OR project=$project COLLATE NOCASE) AND ($id IS NULL OR execution_id=$id) " +
-            "AND ($issue IS NULL OR issue_number=$issue) AND ($outcome IS NULL OR " +
+            "AND ($includeArchived=1 OR execution_id NOT IN (SELECT execution_id FROM execution_archives)) AND ($issue IS NULL OR issue_number=$issue) AND ($outcome IS NULL OR " +
             "CASE state WHEN 'Completed' THEN 'succeeded' WHEN 'Blocked' THEN 'blocked' WHEN 'Failed' THEN 'failed' " +
             "WHEN 'InfrastructureFailure' THEN 'infrastructure-failure' WHEN 'Cancelled' THEN 'cancelled' " +
             "WHEN 'IntegrationConflict' THEN 'integration-conflict' ELSE 'active' END=$outcome) " +
             "AND ($cutoff IS NULL OR COALESCE(completed_at_utc, started_at_utc) <= $cutoff) " +
-            "AND ($origin IS NULL OR ($origin='managed' AND (server_execution_id IS NOT NULL OR assignment_id IS NOT NULL)) " +
-            "OR ($origin='local' AND server_execution_id IS NULL AND assignment_id IS NULL)) " +
+            "AND ($origin IS NULL OR ($origin='managed' AND (server_execution_id IS NOT NULL OR assignment_id IS NOT NULL OR ownership_generation IS NOT NULL)) " +
+            "OR ($origin='local' AND server_execution_id IS NULL AND assignment_id IS NULL AND ownership_generation IS NULL)) " +
             "ORDER BY started_at_utc DESC, execution_id LIMIT $limit OFFSET $offset", null, null, ct,
             ("$project", (object?)query.Project ?? DBNull.Value), ("$id", (object?)query.ExecutionId?.ToString() ?? DBNull.Value),
             ("$issue", (object?)query.IssueNumber ?? DBNull.Value), ("$outcome", (object?)query.Outcome ?? DBNull.Value),
             ("$cutoff", (object?)cutoff ?? DBNull.Value), ("$origin", (object?)query.Origin ?? DBNull.Value),
-            ("$limit", query.Limit), ("$offset", query.Offset));
+            ("$limit", query.Limit), ("$offset", query.Offset), ("$includeArchived", query.IncludeArchived));
     }
 
     public async Task<ExecutionHistoryEntry?> ReadExecutionAsync(Guid executionId, CancellationToken ct = default) =>
@@ -443,6 +443,44 @@ public sealed class ExecutionHistoryStore : IDisposable
         command.Parameters.AddWithValue("$proof", proof);
         await command.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
+    }
+
+    public async Task<string?> ReadArchiveAuditAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT archived_at_utc || ' · ' || proof_json FROM execution_archives WHERE execution_id=$id";
+        command.Parameters.AddWithValue("$id", id.ToString());
+        return await command.ExecuteScalarAsync(ct) as string;
+    }
+
+    // Append-only receipt: archive visibility and its proof commit atomically. Never delete lineage.
+    internal async Task ArchiveAsync(ExecutionHistoryEntry entry, ExecutionCleanupInspection proof, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO execution_archives(execution_id,archived_at_utc,proof_json)
+            SELECT execution_id,$now,$proof FROM executions
+            WHERE execution_id=$id AND completed_at_utc IS NOT NULL
+                AND state=$state AND recovery_state IS $recovery
+                AND completed_at_utc=$completed
+                AND server_execution_id IS NULL AND assignment_id IS NULL AND ownership_generation IS NULL
+                AND integration_recovery_claim IS NULL
+            ON CONFLICT(execution_id) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$id", entry.ExecutionId.ToString());
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$proof", JsonSerializer.Serialize(proof));
+        command.Parameters.AddWithValue("$state", entry.State);
+        Add(command, "$recovery", entry.RecoveryState);
+        Add(command, "$completed", entry.CompletedAtUtc?.ToString("O"));
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) == 0 && await ReadArchiveAuditAsync(entry.ExecutionId, ct) is null)
+                throw new WorkerInfrastructureException("Execution ownership changed; archive rejected.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("archive execution history", ex); }
     }
 
     public void Dispose() { }
@@ -573,6 +611,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "CREATE TABLE execution_server_report_dispositions (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), disposition TEXT NOT NULL); PRAGMA user_version = 14;";
+                migration.ExecuteNonQuery();
+            }
+            if (schemaVersion < 15)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE execution_archives (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), archived_at_utc TEXT NOT NULL, proof_json TEXT NOT NULL); PRAGMA user_version = 15;";
                 migration.ExecuteNonQuery();
             }
             transaction.Commit();

@@ -129,3 +129,35 @@ may publish only the proven commit to its saved Worker-owned archive name; an ar
 with another commit is a conflict. No reconciliation operation force-pushes or resets
 the base. History retains the original failure diagnostics and recovery lineage while
 recording completed reconciliation.
+
+### Historical execution archival
+
+`POST /api/executions/cleanup` also accepts `action`: `inspect`, `cleanup`
+(the default), `archive`, `reconcile`, or `purge`. Selection and the 1–100 batch
+limit are unchanged. Preview with `apply: false`; apply requires a completed
+Worker drain and holds the existing repository gate through durable recording.
+Each item is re-read and inspected separately; refusals and failures are returned
+per item, so a batch may partially complete. Retry after inspection rather than
+assuming all items succeeded.
+
+Archive is available only for standalone, configured executions with a confirmed
+terminal outcome at least 30 days old, a healthy-terminal classification, and
+fresh `safe/already-clean` resource inspection. Clean resources separately first.
+Active, ambiguous, pending recovery and inconsistent historical records remain
+visible. Age alone never proves eligibility. Archival never removes Git resources
+or changes recovery state. It atomically records an immutable receipt, preserved
+across restart and repeated apply, and hides the execution from recent and default
+inventory listings. `includeArchived=true` includes archived inventory entries;
+detail, Issue lineage and recovery reads retain all records. Retrieve the receipt
+at `GET /api/executions/{executionId}/archive-audit`.
+
+All outcome, Git provenance, completion, GitHub reporting and ownership metadata
+is retained indefinitely. Permanent purge is refused with
+`purge-proof-retention-required`, even if `confirmPurge` is true: current contracts
+cannot establish safe removal of incident and lineage evidence. `reconcile`
+returns `recovery-protocol-required`; request recovery using the existing owned
+recovery protocol. Managed cleanup and archive return `server-authority-required`,
+including historical records containing only an ownership generation. Local
+admin access, an expired lease, or a disconnected Server grants no authority;
+scoped Server maintenance authorization must be added to the protocol before
+managed operations can apply.

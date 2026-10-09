@@ -2530,7 +2530,7 @@ public sealed class GitWorktreeTests
         await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
         var workspace = git.ExecutionDirectory;
         var head = await fixture.GitAt(workspace, "rev-parse", "HEAD");
-        var started = DateTimeOffset.UtcNow.AddDays(-10);
+        var started = DateTimeOffset.UtcNow.AddDays(-40);
         var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
             await fixture.GitAt(workspace, "branch", "--show-current"), "main", started, started.AddMinutes(1), "Failed", 1,
             "primary outcome", "failed", 0, [], null, null, null, "task failed", "cleanup-pending", head);
@@ -2590,6 +2590,13 @@ public sealed class GitWorktreeTests
             Assert.False(Directory.Exists(workspace));
             Assert.Equal(string.Empty, await fixture.Git("branch", "--list", entry.FeatureBranch));
             Assert.Equal("already-clean", Assert.Single(await service.RunAsync(new(ExecutionId: id, Apply: true), CancellationToken.None)).Outcome);
+            var preview = Assert.Single(await service.RunAsync(new(ExecutionId: id, Action: "archive"), CancellationToken.None));
+            Assert.Equal("dry-run", preview.Outcome);
+            Assert.Null(await history.ReadArchiveAuditAsync(id));
+            Assert.Equal("archived", Assert.Single(await service.RunAsync(new(ExecutionId: id, Apply: true, Action: "archive"), CancellationToken.None)).Outcome);
+            Assert.Equal("already-archived", Assert.Single(await service.RunAsync(new(ExecutionId: id, Apply: true, Action: "archive"), CancellationToken.None)).Outcome);
+            Assert.NotNull(await history.ReadExecutionAsync(id));
+            Assert.Empty(await history.ReadRecentAsync(20));
         }
         else if (scenario == "partial-failure")
         {

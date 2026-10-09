@@ -5,6 +5,54 @@ namespace CodexWorker.Tests;
 public sealed class ExecutionMaintenanceTests
 {
     [Fact]
+    public async Task ArchiveReceiptSurvivesRestartAndRepeatedApplyWithoutLosingLineage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "history.db");
+        var started = DateTimeOffset.UtcNow.AddDays(-40);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "p", "o/r", 1, "issue", "feature/1", "main",
+            started, started.AddMinutes(1), "Failed", null, "retained", null, 0, [], null, null, null, null, "operator-cleaned");
+        var proof = new ExecutionCleanupInspection(entry.ExecutionId, "safe", "already-clean", "No resources remain.");
+        using (var store = new ExecutionHistoryStore(path))
+        {
+            await store.CreateAsync(entry);
+            await store.ArchiveAsync(entry, proof, CancellationToken.None);
+            var audit = await store.ReadArchiveAuditAsync(entry.ExecutionId);
+            await store.ArchiveAsync(entry, proof with { Message = "changed" }, CancellationToken.None);
+            Assert.Equal(audit, await store.ReadArchiveAuditAsync(entry.ExecutionId));
+            Assert.Empty(await store.ReadRecentAsync(20));
+            Assert.Empty(await store.ReadInventoryAsync(new(), DateTimeOffset.UtcNow));
+        }
+        using var reopened = new ExecutionHistoryStore(path);
+        Assert.NotNull(await reopened.ReadArchiveAuditAsync(entry.ExecutionId));
+        Assert.Equal(entry.ImplementationSummary, (await reopened.ReadExecutionAsync(entry.ExecutionId))?.ImplementationSummary);
+        Assert.Single(await reopened.ReadInventoryAsync(new(IncludeArchived: true), DateTimeOffset.UtcNow));
+        Assert.Single(await reopened.ReadAllAsync());
+    }
+
+    [Theory]
+    [InlineData("archive")]
+    [InlineData("cleanup")]
+    [InlineData("purge")]
+    public async Task ManagedMaintenanceRequiresServerAuthorityEvenWithOnlyStaleGeneration(string action)
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "history.db");
+        using var store = new ExecutionHistoryStore(path);
+        var started = DateTimeOffset.UtcNow.AddDays(-40);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "p", "o/r", 1, "issue", "feature/1", "main",
+            started, started.AddMinutes(1), "Completed", null, null, null, 0, [], null, null, null, null,
+            "operator-cleaned", OwnershipGeneration: 1);
+        await store.CreateAsync(entry);
+        var config = new WorkerConfiguration { Project = new ProjectSettings { Name = "p", Repository = "o/r" } };
+        var registry = new ProjectRuntimeRegistry([("p.yml", config)]);
+        registry.DrainWorker();
+        var service = new ExecutionCleanupService(store, registry);
+        var result = Assert.Single(await service.RunAsync(new(ExecutionId: entry.ExecutionId, Apply: true, Action: action), CancellationToken.None));
+        Assert.Equal("server-authority-required", result.Inspection.ReasonCode);
+        Assert.Null(await store.ReadArchiveAuditAsync(entry.ExecutionId));
+        Assert.NotNull(await store.ReadExecutionAsync(entry.ExecutionId));
+    }
+
+    [Fact]
     public async Task InventoryFiltersSameIssueByProjectAndPaginatesWithinBound()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "history.db");
