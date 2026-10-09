@@ -12,7 +12,7 @@ Vite application and asset graph. The local standalone Worker dashboard is uncha
 | Home | `/home` |
 | Projects | `/projects`, `/projects/{id}`; `issue`, `issueState`, `label`, `issues` |
 | Workers | `/workers`, `/workers/{id}`; preparation `step`, `project`, and enrollment `enroll=1` / `prepare=1` |
-| Executions | `/executions`, `/executions/{id}`; `project`, `state`, `issue`, `offset` |
+| Executions | `/executions`, `/executions/{id}`; `view=maintenance`, `project`, `state`, `issue`, `offset`, `operationOffset` |
 | Settings | `/settings`, `/settings/{credentialId}`; `node=server` |
 
 `/` normalizes to `/home` in the browser, preserving query context. Supported old

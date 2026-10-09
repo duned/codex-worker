@@ -43,7 +43,7 @@ const { once } = require('node:events');
     assert.ok(!html.includes('--ink:#183135'), 'Legacy theme must not ship on the PoC route.');
     for (const extension of ['js', 'css'])
       assert.equal((await read(`/dashboard-assets/worker-poc.${extension}`)).status, 404);
-    for (const route of ['/', '/home', '/projects', '/projects/p?issue=27', '/workers', '/workers/w?project=p', '/executions', '/executions/e?offset=50', '/settings', '/settings/c?node=server']) {
+    for (const route of ['/', '/home', '/projects', '/projects/p?issue=27', '/workers', '/workers/w?project=p', '/executions', '/executions?view=maintenance&offset=0', '/executions/e?offset=50', '/settings', '/settings/c?node=server']) {
       const response = await read(route);
       assert.equal(response.status, 200, `Deep link ${route}`);
       assert.equal(await response.text(), html);

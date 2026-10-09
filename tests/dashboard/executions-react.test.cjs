@@ -65,17 +65,20 @@ const capableWorker = { workerId, availability: 'online', schedulingPolicy: 'Act
 const currentNode = { id: workerId, kind: 'worker', connectivity: 'connected', executionReadiness: 'ready', observationsStale: false, capabilities: [] };
 test('attention view classifies stale lease, offline or stale Worker data, age and missing provenance from bounded Server records', () => {
   const now = Date.parse('2026-01-10T00:00:00Z');
-  const staleLease = { ...managed, state: 'Failed', recoveryState: 'LeaseExpiredUncertain', lease: { ...managed.lease, state: 'Expired', expiresAtUtc: '2026-01-01T00:00:00Z' } };
+  const current = { ...managed, createdAtUtc: '2026-01-09T00:00:00Z', assignedAtUtc: '2026-01-09T00:00:00Z', startedAtUtc: '2026-01-09T00:00:00Z',
+    lease: { ...managed.lease, acquiredAtUtc: '2026-01-09T00:00:00Z', expiresAtUtc: '2026-01-11T00:00:00Z' } };
+  const staleLease = { ...current, state: 'Failed', recoveryState: 'LeaseExpiredUncertain', lease: { ...current.lease, state: 'Expired', expiresAtUtc: '2026-01-01T00:00:00Z' } };
   assert.equal(attentionAssessment(staleLease, capableWorker, currentNode, now).classification, 'stale-lease');
-  assert.equal(attentionAssessment(managed, { ...capableWorker, availability: 'offline' }, currentNode, now).classification, 'worker-offline');
-  assert.equal(attentionAssessment(managed, capableWorker, { ...currentNode, observationsStale: true }, now).classification, 'worker-data-outdated');
-  assert.equal(attentionAssessment(managed, undefined, currentNode, now, 'loading').reason, 'attention.workerStateLoading');
-  assert.equal(attentionAssessment(managed, undefined, currentNode, now, 'unavailable').reason, 'attention.workerStateUnavailable');
-  assert.equal(attentionAssessment({ ...managed, startedAtUtc: '2025-12-31T00:00:00Z' }, capableWorker, currentNode, now).classification, 'stale');
-  assert.equal(attentionAssessment({ ...managed, workerExecutionId: undefined }, capableWorker, currentNode, now).classification, 'provenance-uncertain');
-  assert.equal(attentionAssessment({ ...managed, assignedWorkerId: undefined }, undefined, currentNode, now).classification, 'provenance-uncertain');
-  assert.equal(attentionAssessment({ ...managed, state: 'Completed', recoverable: false, recoveryState: 'OperatorCleaned' }, undefined, currentNode, now), undefined);
-  assert.equal(attentionAssessment(managed, capableWorker, currentNode, now), undefined);
+  assert.equal(attentionAssessment(current, { ...capableWorker, availability: 'offline' }, currentNode, now).classification, 'worker-offline');
+  assert.equal(attentionAssessment(current, capableWorker, { ...currentNode, observationsStale: true }, now).classification, 'worker-data-outdated');
+  assert.equal(attentionAssessment(current, undefined, currentNode, now, 'loading').reason, 'attention.workerStateLoading');
+  assert.equal(attentionAssessment(current, undefined, currentNode, now, 'unavailable').reason, 'attention.workerStateUnavailable');
+  const oldActivity = { ...current, createdAtUtc: '2025-12-31T00:00:00Z', assignedAtUtc: '2025-12-31T00:00:00Z', startedAtUtc: '2025-12-31T00:00:00Z' };
+  assert.equal(attentionAssessment(oldActivity, capableWorker, currentNode, now).classification, 'stale');
+  assert.equal(attentionAssessment({ ...current, workerExecutionId: undefined }, capableWorker, currentNode, now).classification, 'provenance-uncertain');
+  assert.equal(attentionAssessment({ ...current, assignedWorkerId: undefined }, undefined, currentNode, now).classification, 'provenance-uncertain');
+  assert.equal(attentionAssessment({ ...current, state: 'Completed', recoverable: false, recoveryState: 'OperatorCleaned' }, undefined, currentNode, now), undefined);
+  assert.equal(attentionAssessment(current, capableWorker, currentNode, now), undefined);
   assert.equal(lastActivity({ ...managed, completedAtUtc: '2026-01-04T00:00:00Z' }), '2026-01-04T00:00:00Z');
   assert.equal(timeSince('2026-01-09T22:00:00Z', now), '2h');
 });

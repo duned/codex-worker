@@ -1,4 +1,4 @@
-import { t, statusLabel } from '../../shared/i18n';
+import { t, statusLabel, type TranslationKey } from '../../shared/i18n';
 import type { ExecutionMaintenanceCommand, ExecutionMaintenanceDetail, ExecutionMaintenanceObservation, ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
 import { executions, record } from '../../shared/api/validation';
 import type { Validator } from '../../shared/api/client';
@@ -85,6 +85,22 @@ export const maintenanceDetail: Validator<ExecutionMaintenanceDetail> = value =>
   else result.execution = null;
   return result;
 };
+export function maintenanceReason(code: string) {
+  const reasons: Record<string, TranslationKey> = {
+    'already-clean': 'maintenance.reason.alreadyClean', integrated: 'maintenance.reason.integrated', 'archive-resources-remain': 'maintenance.reason.archiveResourcesRemain',
+    'execution-active': 'maintenance.reason.executionActive', 'recovery-or-attempt-active': 'maintenance.reason.recoveryActive', 'lineage-inconsistent': 'maintenance.reason.lineageInconsistent',
+    'incomplete-recovery-metadata': 'maintenance.reason.provenanceIncomplete', 'inspection-unavailable': 'maintenance.reason.inspectionUnavailable',
+    'archive-retention-or-review': 'maintenance.reason.archiveRetention', 'server-authority-required': 'maintenance.reason.serverAuthorityRequired',
+    'recovery-protocol-required': 'maintenance.reason.recoveryProtocolRequired', 'worker-drain-required': 'maintenance.reason.drainRequired',
+    'completion-report-preview': 'maintenance.reason.reportPreview', 'completion-report-acknowledged': 'maintenance.reason.reportAcknowledged',
+    'inventory-observed': 'maintenance.reason.inventoryObserved', 'operator-cancelled-before-dispatch': 'maintenance.reason.operatorCancelled',
+    'server-authority-rejected': 'maintenance.reason.serverAuthorityRejected', 'stale-lease-report-reconciliation-required': 'maintenance.reason.staleLease',
+    'worker-record-missing': 'maintenance.reason.workerRecordMissing', 'worker-identity-mismatch': 'maintenance.reason.workerIdentityMismatch',
+    'terminal-worker-proof-required': 'maintenance.reason.terminalWorkerProofRequired', 'maintenance-failed-inspect-before-retry': 'maintenance.reason.operationFailed'
+  };
+  const key = reasons[code];
+  return key ? t(key) : statusLabel(code);
+}
 export function archiveApplyAllowed(detail: ExecutionMaintenanceDetail | undefined) {
   if (!detail || detail.operation.request.action !== 'archive' || detail.operation.request.apply ||
       detail.operation.report?.outcome !== 'succeeded' || detail.operation.report.reason !== 'already-clean' || detail.observations.length !== 1) return false;

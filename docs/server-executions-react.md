@@ -24,6 +24,8 @@ records, including verified integration evidence.
 | Existing behavior/evidence | Shared React parity |
 | --- | --- |
 | Execution list | Existing `GET /api/v1/executions` with project/state/GitHub Issue filters, limit 50 and offset bounded to 10,000; previous/next controls. No total count is claimed. |
+| Managed execution maintenance | `/executions?view=maintenance` exposes the bounded Server execution registry, up to 100 Worker-only observations from the latest 50 maintenance operations, and Worker inventory requests through the existing Server endpoint. Missing leases/observations, offline Workers, stale reports and orphan records remain explicit. Exact execution links open the existing inspect/preview/confirm workflow. |
+| Maintenance operation audit | Existing `GET /api/v1/maintenance/executions` is paginated 50 at a time. Operation status/results link back to exact Server execution details; undispatched operations can be cancelled, and uncertain results require an explicit fresh status read. |
 | Project, work and Worker identity | Names resolved from existing project/Worker inventories, with exact IDs as fallback; canonical safe GitHub Issue links and exact resource links. Deleted dependencies do not substitute another resource. |
 | Current work and terminal results | Reported current stage, state, pending/recovery reasons and completion summary. Completed, failed, cancelled and uncertain integration remain distinct. Worker health is not inferred from an execution outcome. |
 | Timing | Created/assigned/started/completed timestamps and reported duration or available timestamp-derived elapsed time, using the existing shared helpers. Missing timing stays unavailable. |
@@ -57,11 +59,16 @@ cancelled and uncertain requests at desktop/mobile widths. It covers pagination,
 query context, reload/Back, disclosures, stale/missing reads, safe cancellation,
 pending dismissal locks, changed-state rejection, evidence reconciliation in both
 dispositions, response loss and explicit authoritative refresh.
+`tests/dashboard/execution-maintenance-queue-browser-review.cjs` covers queue
+navigation, managed orphan/stale-report/offline/no-lease/reconciliation states,
+inventory submission, operation refresh/cancellation, API incompatibility,
+authorization rejection, EN/ES and mobile reflow.
 
 ```sh
 npm run check --prefix src/CodexServer/worker-poc
 node --test --test-isolation=none tests/dashboard/executions-react.test.cjs tests/dashboard/react-infrastructure.test.cjs
 NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/executions-browser-review.cjs
+NODE_PATH=/path/to/playwright/node_modules node tests/dashboard/execution-maintenance-queue-browser-review.cjs
 ```
 
 These fixtures do not replace deployed HTTPS/session/provider acceptance or the

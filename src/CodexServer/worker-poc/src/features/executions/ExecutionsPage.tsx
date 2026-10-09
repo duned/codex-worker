@@ -14,14 +14,16 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
 import { TableCard } from '../../untitled/components/application/table/table';
 import { timestamp, duration, statusColor } from '../../model';
-import { archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, presentation, canReconcile, validEvidence, type Execution } from './model';
+import { archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceReason, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, presentation, canReconcile, validEvidence, type Execution } from './model';
 import { IssueTitle } from '../projects/IssueTitle';
+import { ExecutionMaintenancePage } from './ExecutionMaintenancePage';
 
 export function ExecutionsPage() {
   useLanguage();
   const { resourceId } = useParams(), location = useLocation();
   // Resource keys discard dialog drafts when navigation changes identity.
-  return resourceId ? <ExecutionDetail key={resourceId} id={resourceId} search={location.search} /> : <ExecutionList />;
+  return resourceId ? <ExecutionDetail key={resourceId} id={resourceId} search={location.search} />
+    : new URLSearchParams(location.search).get('view') === 'maintenance' ? <ExecutionMaintenancePage /> : <ExecutionList />;
 }
 function Timing({ item }: { item: Execution }) {
   useLanguage();
@@ -47,7 +49,8 @@ function ExecutionList() {
   const attentionEntries = entries.flatMap(entry => entry.assessment ? [{ item: entry.item, assessment: entry.assessment }] : []);
   const attentionParams = new URLSearchParams(params); attentionParams.delete('offset'); if (attentionOnly) attentionParams.delete('attention'); else attentionParams.set('attention', 'needed');
   const attentionSearch = attentionParams.toString();
-  return <><PageHeading title={t("executions.executions")} actions={<div className="flex flex-wrap gap-2"><Link className="inline-flex min-h-10 items-center rounded-lg px-3 text-sm font-semibold text-brand-secondary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" to={`/executions${attentionSearch ? `?${attentionSearch}` : ''}`}>{attentionOnly ? t('maintenance.allExecutions') : t('maintenance.attentionView')}</Link><Button color="secondary" onPress={() => { void read.refetch(); }}>{t("executions.refreshExecutions")}</Button></div>} />
+  const maintenanceParams = new URLSearchParams(params); maintenanceParams.set('view', 'maintenance');
+  return <><PageHeading title={t("executions.executions")} actions={<div className="flex flex-wrap gap-2"><Link className="inline-flex min-h-10 items-center rounded-lg border border-secondary px-3 text-sm font-semibold text-primary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" to={`/executions?${maintenanceParams}`}>{t('maintenance.executionMaintenance')}</Link><Link className="inline-flex min-h-10 items-center rounded-lg px-3 text-sm font-semibold text-brand-secondary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" to={`/executions${attentionSearch ? `?${attentionSearch}` : ''}`}>{attentionOnly ? t('maintenance.allExecutions') : t('maintenance.attentionView')}</Link><Button color="secondary" onPress={() => { void read.refetch(); }}>{t("executions.refreshExecutions")}</Button></div>} />
     <TableCard.Root><div className="mb-6 flex flex-wrap items-end gap-4 p-4">
       <label className="text-sm text-secondary">{t("executions.project")}<select className="block max-w-full rounded-lg border border-secondary bg-primary p-2" value={params.get('project') ?? ''} onChange={e => change('project', e.target.value)}><option value="">{t("executions.allProjects")}</option>{params.get('project') && !p.data?.some(x => x.id === params.get('project')) && <option value={params.get('project') ?? ''}>{params.get('project')}</option>}{p.data?.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
       <label className="text-sm text-secondary">{t("executions.state")}<select className="block rounded-lg border border-secondary bg-primary p-2" value={params.get('state') ?? ''} onChange={e => change('state', e.target.value)}><option value="">{t("executions.allStates")}</option>{states.map(x => <option key={x} value={x}>{statusLabel(x)}</option>)}</select></label>
@@ -378,22 +381,6 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
 function sameMaintenanceIdentity(before: Execution, current: Execution) {
   return before.id === current.id && before.assignedWorkerId === current.assignedWorkerId && before.assignmentId === current.assignmentId &&
     before.workerExecutionId === current.workerExecutionId && before.lease?.generation === current.lease?.generation && before.lease?.workerId === current.lease?.workerId;
-}
-function maintenanceReason(code: string) {
-  const reasons: Record<string, TranslationKey> = {
-    'already-clean': 'maintenance.reason.alreadyClean', integrated: 'maintenance.reason.integrated', 'archive-resources-remain': 'maintenance.reason.archiveResourcesRemain',
-    'execution-active': 'maintenance.reason.executionActive', 'recovery-or-attempt-active': 'maintenance.reason.recoveryActive', 'lineage-inconsistent': 'maintenance.reason.lineageInconsistent',
-    'incomplete-recovery-metadata': 'maintenance.reason.provenanceIncomplete', 'inspection-unavailable': 'maintenance.reason.inspectionUnavailable',
-    'archive-retention-or-review': 'maintenance.reason.archiveRetention', 'server-authority-required': 'maintenance.reason.serverAuthorityRequired',
-    'recovery-protocol-required': 'maintenance.reason.recoveryProtocolRequired', 'worker-drain-required': 'maintenance.reason.drainRequired',
-    'completion-report-preview': 'maintenance.reason.reportPreview', 'completion-report-acknowledged': 'maintenance.reason.reportAcknowledged',
-    'inventory-observed': 'maintenance.reason.inventoryObserved',
-    'server-authority-rejected': 'maintenance.reason.serverAuthorityRejected', 'stale-lease-report-reconciliation-required': 'maintenance.reason.staleLease',
-    'worker-record-missing': 'maintenance.reason.workerRecordMissing', 'worker-identity-mismatch': 'maintenance.reason.workerIdentityMismatch',
-    'terminal-worker-proof-required': 'maintenance.reason.terminalWorkerProofRequired', 'maintenance-failed-inspect-before-retry': 'maintenance.reason.operationFailed'
-  };
-  const key = reasons[code];
-  return key ? t(key) : statusLabel(code);
 }
 function statusTone(value: string): 'gray' | 'success' | 'warning' | 'error' {
   const tone = statusColor(value);
