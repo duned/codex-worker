@@ -188,6 +188,29 @@ public sealed class WorkerRuntimeReadModel
     public async Task<IReadOnlyList<ExecutionRuntimeInfo>> ExecutionsAsync(int limit, CancellationToken ct) =>
         (await _history.ReadRecentAsync(limit, ct)).Select(ProjectExecution).ToArray();
 
+    public async Task<ExecutionInventoryPage> ExecutionInventoryAsync(ExecutionInventoryQuery query, CancellationToken ct)
+    {
+        if (query.Limit is < 1 or > 200 || query.Offset is < 0 or > 10000 ||
+            query.Attention is { } attention && attention is not ("healthy-active" or "healthy-terminal" or "recoverable" or "reconciliation-required" or "stale" or "orphaned" or "retained-review") ||
+            query.Outcome is { } outcome && outcome is not ("succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active"))
+            throw new ArgumentException("Inventory filters, limit or offset are invalid.");
+        var candidates = await _history.ReadInventoryAsync(query with { Limit = 5001, Offset = 0 }, DateTimeOffset.UtcNow, ct);
+        var scanned = Math.Min(candidates.Count, 5000);
+        var hasUnscanned = candidates.Count > 5000;
+        var configured = _registry.Snapshot();
+        var items = candidates.Take(5000).Select(entry =>
+        {
+            var projectConfigured = configured.Any(p => string.Equals(p.Configuration.Project.Name, entry.Project, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(p.Configuration.Project.Repository, entry.Repository, StringComparison.OrdinalIgnoreCase));
+            var info = ProjectExecution(entry);
+            return new ExecutionInventoryItem(info, ExecutionMaintenanceClassifier.Classify(entry, DateTimeOffset.UtcNow, projectConfigured));
+        });
+        var filtered = items.Where(item => query.Attention is null || item.Maintenance.Status == query.Attention)
+            .Skip(query.Offset).Take(query.Limit + 1).ToArray();
+        return new ExecutionInventoryPage(filtered.Take(query.Limit).ToArray(), query.Limit, query.Offset,
+            filtered.Length > query.Limit || hasUnscanned, scanned);
+    }
+
     public async Task<ExecutionRuntimeInfo?> ExecutionAsync(Guid executionId, CancellationToken ct) =>
         await _history.ReadExecutionAsync(executionId, ct) is { } entry ? ProjectExecution(entry) : null;
 
@@ -339,6 +362,18 @@ public static class ManagementApi
         });
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
+        app.MapGet("/api/executions/inventory", async (string? project, Guid? executionId, int? issueNumber,
+            string? outcome, int? olderThanDays, string? attention, string? origin, int? limit, int? offset,
+            WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            try
+            {
+                var query = new ExecutionInventoryQuery(project, executionId, issueNumber, outcome, olderThanDays,
+                    attention, origin, limit ?? 50, offset ?? 0);
+                return (IResult)Results.Ok(await model.ExecutionInventoryAsync(query, context.RequestAborted));
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
         app.MapGet("/api/executions/{executionId:guid}", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
             await model.ExecutionAsync(executionId, context.RequestAborted) is { } entry ? Results.Ok(entry) : Results.NotFound());
         app.MapGet("/api/executions/issue/{issueNumber:int}", async (int issueNumber, WorkerRuntimeReadModel model, HttpContext context) =>

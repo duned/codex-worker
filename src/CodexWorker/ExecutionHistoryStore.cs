@@ -334,6 +334,32 @@ public sealed class ExecutionHistoryStore : IDisposable
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadRecentAsync(int limit, CancellationToken ct = default) =>
         ReadAsync(" ORDER BY started_at_utc DESC, execution_id LIMIT $value", "$value", Math.Clamp(limit, 1, 500), ct);
 
+    /// <summary>Returns a bounded, newest-first inventory slice. Filtering is applied by SQLite before pagination.</summary>
+    public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadInventoryAsync(ExecutionInventoryQuery query,
+        DateTimeOffset now, CancellationToken ct = default)
+    {
+        if (query.Limit is < 1 or > 5001 || query.Offset is < 0 or > 10000 || query.IssueNumber is <= 0 ||
+            query.ExecutionId == Guid.Empty || query.OlderThanDays is < 1 or > 3650 ||
+            query.Origin is not (null or "local" or "managed") ||
+            query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active") ||
+            query.Project is { } project && (string.IsNullOrWhiteSpace(project) || project.Length > 80 || project.Any(char.IsControl)))
+            throw new ArgumentException("Inventory limits, age, origin or identifiers are invalid.");
+        var cutoff = query.OlderThanDays is { } age ? now.AddDays(-age).ToString("O") : null;
+        return ReadAsync(" WHERE ($project IS NULL OR project=$project COLLATE NOCASE) AND ($id IS NULL OR execution_id=$id) " +
+            "AND ($issue IS NULL OR issue_number=$issue) AND ($outcome IS NULL OR " +
+            "CASE state WHEN 'Completed' THEN 'succeeded' WHEN 'Blocked' THEN 'blocked' WHEN 'Failed' THEN 'failed' " +
+            "WHEN 'InfrastructureFailure' THEN 'infrastructure-failure' WHEN 'Cancelled' THEN 'cancelled' " +
+            "WHEN 'IntegrationConflict' THEN 'integration-conflict' ELSE 'active' END=$outcome) " +
+            "AND ($cutoff IS NULL OR COALESCE(completed_at_utc, started_at_utc) <= $cutoff) " +
+            "AND ($origin IS NULL OR ($origin='managed' AND (server_execution_id IS NOT NULL OR assignment_id IS NOT NULL)) " +
+            "OR ($origin='local' AND server_execution_id IS NULL AND assignment_id IS NULL)) " +
+            "ORDER BY started_at_utc DESC, execution_id LIMIT $limit OFFSET $offset", null, null, ct,
+            ("$project", (object?)query.Project ?? DBNull.Value), ("$id", (object?)query.ExecutionId?.ToString() ?? DBNull.Value),
+            ("$issue", (object?)query.IssueNumber ?? DBNull.Value), ("$outcome", (object?)query.Outcome ?? DBNull.Value),
+            ("$cutoff", (object?)cutoff ?? DBNull.Value), ("$origin", (object?)query.Origin ?? DBNull.Value),
+            ("$limit", query.Limit), ("$offset", query.Offset));
+    }
+
     public async Task<ExecutionHistoryEntry?> ReadExecutionAsync(Guid executionId, CancellationToken ct = default) =>
         (await ReadAsync(" WHERE execution_id=$value", "$value", executionId.ToString(), ct)).SingleOrDefault();
 
@@ -342,12 +368,13 @@ public sealed class ExecutionHistoryStore : IDisposable
             "$value", issueNumber, ct);
 
     private async Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAsync(string suffix, string? parameter, object? value,
-        CancellationToken ct)
+        CancellationToken ct, params (string Name, object Value)[] additionalParameters)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json FROM executions" + suffix;
         if (parameter is not null) command.Parameters.AddWithValue(parameter, value ?? DBNull.Value);
+        foreach (var (name, parameterValue) in additionalParameters) command.Parameters.AddWithValue(name, parameterValue);
         var entries = new List<ExecutionHistoryEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))

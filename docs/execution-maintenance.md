@@ -6,6 +6,40 @@ For automatic continuation of interrupted Codex implementation, see [Codex inter
 
 ## Inspect and select
 
+The Worker exposes a read-only, bounded maintenance inventory at
+`GET /api/executions/inventory`. It supports `project`, `executionId`, `issueNumber`,
+`outcome`, `olderThanDays`, `attention`, `origin` (`local` or `managed`), `limit`
+(1–200) and `offset`. Results are newest-first and include the existing execution
+read model plus a derived maintenance assessment (`status`, stable `reasonCode`,
+explanation, last known progress time, authority and currently available actions).
+The endpoint scans at most 5,000 matching history rows per request; `hasMore` also
+signals when that scan bound was reached. The last progress timestamp is the
+completion time when present, otherwise the start time; the history schema does
+not record intermediate progress timestamps.
+
+Example:
+
+```sh
+curl --fail "$worker_url/api/executions/inventory?project=sample&attention=reconciliation-required&limit=25"
+```
+
+Maintenance status is operational guidance derived from local history, not a new
+authoritative lifecycle state. Business `outcome` remains the execution result.
+`managed` authority means history has a Server execution or assignment identity;
+it does not mean the Server is currently reachable or that an old lease is valid.
+An unconfirmed managed report is marked `reconciliation-required`; uncertain
+recovery, missing ownership and integration ambiguity stay retained for review.
+Age can mark active work `stale` or retained terminal resources `recoverable`, but
+never proves cleanup eligibility. The inventory advertises inspection only. The
+existing cleanup inspection/apply path performs fresh repository and ownership
+proof under its normal repository gate and drain safeguards. A missing configured
+project is `orphaned`, not disposable.
+
+The Server execution registry remains the authority for managed queue state,
+assignment, lease expiry and reconciliation. Its `/api/v1/executions` listing
+continues to report those authoritative states; local Worker inventory does not
+substitute for Server reconciliation when disconnected or when a lease is absent.
+
 ```sh
 ./cw executions list
 ./cw executions show --issue 210
