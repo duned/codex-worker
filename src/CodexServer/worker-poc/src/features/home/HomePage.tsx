@@ -11,6 +11,7 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { issueLink, timestamp, duration, statusColor } from '../../model';
 import { presentation } from '../executions/model';
 import type { ExecutionSummary } from '../../shared/api/contracts';
+import { GuidDisplay } from '../../shared/GuidDisplay';
 
 export function HomePage() {
   useLanguage();
@@ -40,7 +41,7 @@ export function HomePage() {
   function executionRow(item: ExecutionSummary, active = false) {
     const state = presentation(item);
     return <li key={item.id} className="grid gap-2 border-b border-secondary px-3 py-3 last:border-0 sm:grid-cols-[minmax(9rem,1.2fr)_minmax(7rem,1fr)_minmax(7rem,1fr)_auto] sm:items-center">
-      <div className="min-w-0">{issue(item)}{active && <span className="block text-xs text-tertiary">{t("home.stage")}{' '}{localizeText(item.currentStage ?? t("home.unavailable"))}</span>}</div>
+      <div className="min-w-0">{issue(item)} <Link className="text-xs text-tertiary hover:text-primary" to={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></Link>{active && <span className="block text-xs text-tertiary">{t("home.stage")}{' '}{localizeText(item.currentStage ?? t("home.unavailable"))}</span>}</div>
       <Link className={linkClass} to={`/projects/${encodeURIComponent(item.projectId)}`}>{catalog.data?.find(p => p.id === item.projectId)?.name ?? t("home.projectNameUnavailable")}</Link>
       <div className="flex items-center gap-2">{item.assignedWorkerId ? <Link className={linkClass} to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{registry.data?.find(w => w.workerId === item.assignedWorkerId)?.displayName ?? t("home.workerNameUnavailable")}</Link> : <span>{t("home.workerUnassigned")}</span>}</div>
       <div className="flex flex-wrap items-center gap-2"><StatusBadge compact tone={state.tone}>{state.text}</StatusBadge><Link className="text-sm text-tertiary hover:text-primary" to={`/executions/${encodeURIComponent(item.id)}`} aria-label={t("home.executionDetails")}>{active ? duration(item, Date.now()) : timestamp(item.completedAtUtc)}</Link></div>

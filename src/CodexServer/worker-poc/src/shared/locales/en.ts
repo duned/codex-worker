@@ -6,6 +6,7 @@ export const en = {
   "shared.unknownDashboardRoute": "Unknown dashboard route.",
   "shared.unknown": "Unknown",
   "shared.work": "Work",
+  "shared.shortGuidAccessible": "GUID {short}; full value {full}",
   "shared.executionDetails": "Execution details",
   "shared.currentStage": "Current stage:",
   "shared.notReported": "Not reported",

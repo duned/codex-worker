@@ -1,4 +1,5 @@
 import { t, useLanguage, localizeText } from '../../shared/i18n';
+import { GuidDisplay } from '../../shared/GuidDisplay';
 import { Link } from 'react-aria-components';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeading, ViewState, Notice } from '../../shared/Presentation';
@@ -58,7 +59,7 @@ export function WorkersPage() {
               return <tr key={worker.workerId} className="h-[87px]">
                 <td className="px-5"><Link href={`/workers/${encodeURIComponent(worker.workerId)}`} className="flex min-w-0 items-center gap-3 rounded focus-visible:outline-2 focus-visible:outline-focus-ring">
                   <span aria-hidden="true" className={`flex size-[38px] shrink-0 items-center justify-center rounded-full ${workerTone === 'text-success-primary' ? 'bg-success-secondary' : workerTone === 'text-error-primary' ? 'bg-error-secondary' : 'bg-tertiary'} ${workerTone}`}><svg viewBox="0 0 24 24" className="size-[19px]" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v4m-5 0h10"/></svg></span>
-                  <span className="min-w-0"><span className="block truncate text-sm font-semibold text-primary">{worker.displayName || t('workers.worker')}</span><span className="block truncate text-xs text-tertiary">{worker.workerId}</span></span>
+                  <span className="min-w-0"><span className="block truncate text-sm font-semibold text-primary">{worker.displayName || t('workers.worker')}</span><span className="block truncate text-xs text-tertiary"><GuidDisplay value={worker.workerId} /></span></span>
                 </Link></td>
                 <td className="px-5"><div className="flex items-center gap-2 text-sm text-secondary"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dotTone(signals.connection)}`}/>{localizeText(signals.connection)}</div><div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-tertiary">
                   <span className={`rounded-full px-2 py-0.5 font-semibold ${signals.freshness === 'Current' ? 'bg-success-secondary text-success-primary' : signals.freshness === 'Stale' ? 'bg-warning-secondary text-warning-primary' : 'bg-tertiary text-tertiary'}`}>{localizeText(signals.freshness)}</span><span>· {heartbeatDetail(worker.lastHeartbeatAtUtc)}</span>

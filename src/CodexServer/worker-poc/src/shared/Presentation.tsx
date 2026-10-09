@@ -3,6 +3,7 @@ import { type ReactNode } from 'react';
 import { Link } from 'react-aria-components';
 import { Badge, BadgeWithDot } from '../untitled/components/base/badges/badges';
 import { TableCard } from '../untitled/components/application/table/table';
+import { GuidDisplay } from './GuidDisplay';
 
 /** Callers choose tone from reported evidence; this component never decides readiness. */
 export function StatusBadge({ children, tone = 'gray', compact = false, withDot = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean; withDot?: boolean }) {
@@ -16,7 +17,7 @@ export function StatusBadge({ children, tone = 'gray', compact = false, withDot 
 }
 export function ResourceIdentity({ name, id }: { name: string; id: string }) {
   useLanguage();
-  return <><span className="font-medium text-primary">{name}</span><span className="block break-all text-xs text-tertiary">{t("shared.iD")}{' '}{id}</span></>;
+  return <><span className="font-medium text-primary">{name}</span><span className="block break-all text-xs text-tertiary">{t("shared.iD")}{' '}<GuidDisplay value={id} /></span></>;
 }
 export function PageHeading({ title, resourceId, breadcrumbs = [], actions }: {
   title: string; resourceId?: string; breadcrumbs?: { label: string; href?: string }[]; actions?: ReactNode;
@@ -28,7 +29,7 @@ export function PageHeading({ title, resourceId, breadcrumbs = [], actions }: {
         {breadcrumbs.map((item, index) => <li key={`${item.label}-${index}`}>{index > 0 && <span aria-hidden="true">/ </span>}{item.href ? <Link href={item.href}>{item.label}</Link> : <span aria-current="page">{item.label}</span>}</li>)}
       </ol></nav>}
       <h1 tabIndex={-1} className="text-display-sm font-semibold text-primary">{title}</h1>
-      {resourceId && <p className="mt-2 break-all text-sm text-tertiary">{t("shared.iD")}{' '}{resourceId}</p>}
+      {resourceId && <p className="mt-2 break-all text-sm text-tertiary">{t("shared.iD")}{' '}<GuidDisplay value={resourceId} /></p>}
     </div>{actions}
   </header>;
 }

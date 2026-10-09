@@ -20,6 +20,7 @@ export const es = {
   "shared.unknownDashboardRoute": "Ruta del panel desconocida.",
   "shared.unknown": "Desconocido",
   "shared.work": "Trabajo",
+  "shared.shortGuidAccessible": "GUID {short}; valor completo {full}",
   "shared.executionDetails": "Detalles de ejecución",
   "shared.currentStage": "Etapa actual:",
   "shared.notReported": "No informado",

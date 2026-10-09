@@ -2,6 +2,7 @@ import { ChevronDown } from '@untitledui/icons';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { localizeText, statusLabel, t, useLanguage } from '../../shared/i18n';
+import { GuidDisplay } from '../../shared/GuidDisplay';
 import { ExternalLink } from '../../shared/Actions';
 import { useApiRead } from '../../shared/api/session';
 import { executions as executionList } from '../../shared/api/validation';
@@ -203,7 +204,7 @@ function ProjectRecentActivity({ project, read, workers: workerList, recent }: {
             <tbody className="divide-y divide-secondary">{rows.map(item => {
               const worker = workerList.find(value => value.workerId === item.assignedWorkerId);
               return <tr key={item.id} className="align-middle">
-                <td className="px-5 py-4"><p className="font-semibold text-primary"><IssueTitle projectId={project.id} repository={project.repository} workReference={item.workReference} className="hover:text-brand-secondary" /></p><Link className="mt-1 block break-all text-xs text-tertiary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}`}>{item.id}</Link></td>
+                <td className="px-5 py-4"><p className="font-semibold text-primary"><IssueTitle projectId={project.id} repository={project.repository} workReference={item.workReference} className="hover:text-brand-secondary" /></p><Link className="mt-1 block break-all text-xs text-tertiary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></Link></td>
                 <td className="px-5 py-4"><StatusBadge tone={toneOf(item.state)}>{statusLabel(item.state)}</StatusBadge></td>
                 <td className="px-5 py-4 text-sm text-secondary">{item.assignedWorkerId ? <Link to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`} className="hover:text-brand-secondary">{worker?.displayName ?? item.assignedWorkerId}</Link> : t('executions.workerUnassigned')}</td>
                 <td className="px-5 py-4 text-sm text-secondary"><time dateTime={item.createdAtUtc}>{timestamp(item.createdAtUtc)}</time></td>

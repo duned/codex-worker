@@ -103,7 +103,7 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
       </nav>
       <h1 tabIndex={-1}>{worker.displayName || t('shared.workerDetails')}</h1>
       <div className="poc-worker-meta">
-        <span className="poc-worker-id">{worker.workerId}</span><CopyWorkerId id={worker.workerId} />
+        <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />
         <div className="poc-worker-statuses" aria-label={t('workers.workerStatus')}>
           <Status value={connection} tone={connection === t('workers.connected') ? 'success' : statusTone(node?.connectivity ?? worker.availability)} />
           <Status value={readiness} tone={statusTone(readinessValue)} />
@@ -211,7 +211,7 @@ function RecentExecutions({ items, projects, now, loading }) {
             const project = projects?.find(value => value.id === item.projectId);
             return <tr key={item.id}>
               <td><a href={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</a></td>
-              <td><WorkReference item={item} project={project} /></td>
+              <td><WorkReference item={item} project={project} /><a className="block break-all text-xs text-tertiary" href={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></a></td>
               <td><span className="poc-table-status"><Status value={item.state} /></span></td>
               <td>{item.startedAtUtc ? timestamp(item.startedAtUtc) : t('workers.notReported')}</td>
               <td>{duration(item, now)}</td>
