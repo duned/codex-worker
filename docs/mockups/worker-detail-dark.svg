@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1040" viewBox="0 0 1440 1040" role="img" aria-labelledby="title desc">
+<title id="title">Worker detail · dark · Codex Worker</title>
+<desc id="desc">Dark Worker detail dashboard with current execution, recent executions, capabilities, worker controls and readiness checks.</desc>
+<defs>
+  <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#0b1020"/></linearGradient>
+  <linearGradient id="sidebar" x2="0" y2="1"><stop stop-color="#121725"/><stop offset="1" stop-color="#101521"/></linearGradient>
+  <linearGradient id="accent" x2="1" y2="1"><stop stop-color="#7f56d9"/><stop offset="1" stop-color="#9e77ed"/></linearGradient>
+  <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity=".22"/></filter>
+  <style>
+    .ui{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f5f5f6}
+    .h1{font-size:27px;font-weight:650}.h2{font-size:16px;font-weight:650}.h3{font-size:14px;font-weight:650}
+    .brand{font-size:15px;font-weight:700}.micro{font-size:10px;fill:#717585}.micro-bright{font-size:11px;fill:#c7c9d1}
+    .nav{font-size:14px;fill:#a5a7b2}.nav-active{font-size:14px;fill:#f5f5f6;font-weight:600}
+    .icon{font-size:16px;fill:#9498a6}.icon-active{font-size:16px;fill:#b692f6}
+    .body{font-size:13px;fill:#d0d5dd}.small{font-size:12px;fill:#9498a6}.small-strong{font-size:12px;fill:#d0d5dd;font-weight:600}
+    .muted{font-size:13px;fill:#9498a6}.faint{font-size:11px;fill:#85899a}
+    .label{font-size:10px;fill:#85899a;font-weight:700;letter-spacing:1px}.chip{font-size:12px;font-weight:650}
+    .good{fill:#32d583}.warn{fill:#fdb022}.bad{fill:#fda29b}.info{fill:#84caff}.neutral{fill:#9498a6}
+  </style>
+</defs>
+<rect width="1440" height="1040" fill="url(#bg)"/><rect width="244" height="1040" fill="url(#sidebar)"/>
+<rect x="25" y="24" width="34" height="34" rx="10" fill="url(#accent)"/><path d="M35 42h14M42 35v14" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+<text x="70" y="39" class="ui brand">Codex Worker</text><text x="70" y="54" class="ui micro">CONTROL CENTER</text>
+<text x="26" y="144" class="ui icon">⌂</text><text x="53" y="144" class="ui nav">Home</text>
+<text x="26" y="194" class="ui icon">▦</text><text x="53" y="194" class="ui nav">Projects</text>
+<rect x="13" y="219" width="218" height="40" rx="8" fill="#27213a"/><rect x="13" y="219" width="3" height="40" rx="1.5" fill="#9e77ed"/><text x="26" y="244" class="ui icon-active">◉</text><text x="53" y="244" class="ui nav-active">Workers</text>
+<text x="26" y="294" class="ui icon">▤</text><text x="53" y="294" class="ui nav">Executions</text><text x="26" y="344" class="ui icon">⚙</text><text x="53" y="344" class="ui nav">Settings</text>
+<line x1="20" y1="948" x2="224" y2="948" stroke="#282d3b"/><circle cx="31" cy="976" r="5" fill="#32d583"/><text x="46" y="980" class="ui small-strong">Server live</text><text x="25" y="1003" class="ui micro">Last updated</text><text x="25" y="1022" class="ui micro-bright">08/10/2026 19:00:00</text>
+
+<text x="280" y="31" class="ui small">Workers  /  Build Worker · EU 02</text>
+<text x="280" y="70" class="ui h1">Build Worker · EU 02</text><text x="280" y="98" class="ui muted">wrk_7f3a91c2</text>
+<rect x="387" y="82" width="26" height="25" rx="5" fill="#1d2433" stroke="#303748"/><rect x="396" y="89" width="9" height="11" rx="1.5" fill="none" stroke="#aeb3c2" stroke-width="1.4"/><path d="M399 86h9v11" fill="none" stroke="#aeb3c2" stroke-width="1.4"/>
+<rect x="438" y="81" width="98" height="28" rx="14" fill="#153328"/><circle cx="453" cy="95" r="4" fill="#32d583"/><text x="465" y="99" class="ui chip" fill="#6ce9a6">Connected</text>
+<rect x="544" y="81" width="77" height="28" rx="14" fill="#153328"/><circle cx="559" cy="95" r="4" fill="#32d583"/><text x="571" y="99" class="ui chip" fill="#6ce9a6">Ready</text>
+<rect x="629" y="81" width="75" height="28" rx="14" fill="#153328"/><circle cx="644" cy="95" r="4" fill="#32d583"/><text x="656" y="99" class="ui chip" fill="#6ce9a6">Fresh</text>
+<line x1="852" y1="35" x2="852" y2="96" stroke="#303748"/>
+<circle cx="883" cy="52" r="15" fill="none" stroke="#9498a6" stroke-width="1.7"/><path d="M874 52h18M877 46v12M889 46v12" fill="none" stroke="#9498a6" stroke-width="1.5"/><text x="908" y="49" class="ui small">Work slots</text><text x="908" y="73" class="ui h2">1 / 2</text>
+<line x1="1029" y1="35" x2="1029" y2="96" stroke="#303748"/>
+<path d="M1050 64h6l5-17 8 32 6-20 5 5h8" fill="none" stroke="#9498a6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text x="1098" y="49" class="ui small">Last heartbeat</text><text x="1098" y="73" class="ui h2">8 sec ago</text>
+
+<!-- Current execution -->
+<rect x="280" y="126" width="812" height="250" rx="10" fill="#171d2b" stroke="#282e3d" filter="url(#shadow)"/>
+<text x="304" y="158" class="ui h2">Current execution</text>
+<rect x="972" y="139" width="96" height="28" rx="14" fill="#3a2c17"/><circle cx="988" cy="153" r="4" fill="#fdb022"/><text x="1000" y="157" class="ui chip" fill="#fdb022">Validating</text>
+<text x="304" y="190" class="ui faint">PROJECT</text><text x="304" y="213" class="ui body" fill="#b692f6">codex-worker-test</text>
+<line x1="530" y1="178" x2="530" y2="222" stroke="#303748"/>
+<text x="554" y="190" class="ui faint">GITHUB ISSUE</text><path d="M562 201a9 9 0 1 0 .1 0M559 216c1-4 7-4 8 0" fill="none" stroke="#d0d5dd" stroke-width="1.4"/><text x="578" y="213" class="ui body" fill="#b692f6">#1  Add application information endpoint  ↗</text>
+<line x1="348" y1="260" x2="1018" y2="260" stroke="#303748" stroke-width="3"/>
+<line x1="348" y1="260" x2="850" y2="260" stroke="#32d583" stroke-width="3"/>
+<circle cx="348" cy="260" r="16" fill="#153328" stroke="#32d583" stroke-width="2"/><path d="M341 260l5 5 9-10" fill="none" stroke="#6ce9a6" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="516" cy="260" r="16" fill="#153328" stroke="#32d583" stroke-width="2"/><path d="M509 260l5 5 9-10" fill="none" stroke="#6ce9a6" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="684" cy="260" r="16" fill="#153328" stroke="#32d583" stroke-width="2"/><path d="M677 260l5 5 9-10" fill="none" stroke="#6ce9a6" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="852" cy="260" r="16" fill="#3a2c17" stroke="#fdb022" stroke-width="2"/><circle cx="852" cy="260" r="7" fill="none" stroke="#fdb022" stroke-width="2"/><circle cx="852" cy="260" r="3" fill="#fdb022"/>
+<circle cx="1020" cy="260" r="16" fill="#1d2433" stroke="#4b5263" stroke-width="2"/>
+<text x="348" y="293" text-anchor="middle" class="ui small-strong">Claimed</text><text x="348" y="312" text-anchor="middle" class="ui faint">Worker assigned</text><text x="348" y="329" text-anchor="middle" class="ui faint">2 min ago</text>
+<text x="516" y="293" text-anchor="middle" class="ui small-strong">Preparing</text><text x="516" y="312" text-anchor="middle" class="ui faint">Environment ready</text><text x="516" y="329" text-anchor="middle" class="ui faint">1 min ago</text>
+<text x="684" y="293" text-anchor="middle" class="ui small-strong">Codex</text><text x="684" y="312" text-anchor="middle" class="ui faint">Changes generated</text><text x="684" y="329" text-anchor="middle" class="ui faint">48 sec ago</text>
+<text x="852" y="293" text-anchor="middle" class="ui small-strong" fill="#fdb022">Validating</text><text x="852" y="312" text-anchor="middle" class="ui faint">Running validation</text><text x="852" y="329" text-anchor="middle" class="ui faint">checks…</text>
+<text x="1020" y="293" text-anchor="middle" class="ui small-strong" fill="#9498a6">Integrating</text><text x="1020" y="312" text-anchor="middle" class="ui faint">Applying changes</text>
+
+<!-- Worker controls -->
+<rect x="1116" y="126" width="294" height="414" rx="10" fill="#171d2b" stroke="#282e3d" filter="url(#shadow)"/><text x="1140" y="158" class="ui h2">Worker controls</text>
+<rect x="1140" y="179" width="246" height="46" rx="8" fill="#087443" stroke="#079455"/><path d="M1163 193l12 9-12 9z" fill="#ecfdf3"/><text x="1190" y="207" class="ui small-strong" fill="#fff">Activate scheduling</text>
+<rect x="1140" y="236" width="246" height="46" rx="8" fill="#1d2433" stroke="#4b5263"/><path d="M1162 250v18M1170 250v18" stroke="#d0d5dd" stroke-width="2.5" stroke-linecap="round"/><text x="1190" y="264" class="ui small-strong">Drain worker</text>
+<rect x="1140" y="293" width="246" height="46" rx="8" fill="#221a22" stroke="#f04438"/><rect x="1163" y="309" width="12" height="12" rx="2" fill="#f04438"/><text x="1190" y="321" class="ui small-strong" fill="#fda29b">Deactivate</text>
+<line x1="1140" y1="358" x2="1386" y2="358" stroke="#303748"/>
+<rect x="1140" y="371" width="246" height="42" rx="8" fill="#171d2b"/><path d="M1160 383h16l-1 17h-14zM1159 381h18M1164 378h8M1164 385v11M1171 385v11" fill="none" stroke="#fda29b" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><text x="1190" y="397" class="ui small-strong" fill="#fda29b">Revoke API token</text>
+<rect x="1140" y="425" width="246" height="91" rx="8" fill="#1d2433"/><circle cx="1158" cy="446" r="8" fill="none" stroke="#98a2b3" stroke-width="1.5"/><text x="1158" y="450" text-anchor="middle" class="ui faint" fill="#98a2b3">i</text><text x="1174" y="446" class="ui small">Activation requires a fresh</text><text x="1174" y="464" class="ui small">readiness state and at least one</text><text x="1174" y="482" class="ui small">eligible project for scheduling.</text>
+
+<!-- Recent executions -->
+<rect x="280" y="394" width="812" height="286" rx="10" fill="#171d2b" stroke="#282e3d" filter="url(#shadow)"/><text x="304" y="426" class="ui h2">Recent executions</text><text x="973" y="426" class="ui link-small">View all executions →</text>
+<rect x="297" y="444" width="778" height="38" rx="6" fill="#1d2433"/>
+<text x="313" y="468" class="ui label">PROJECT</text><text x="451" y="468" class="ui label">GITHUB ISSUE</text><text x="765" y="468" class="ui label">STATUS</text><text x="857" y="468" class="ui label">STARTED AT</text><text x="1003" y="468" class="ui label">DURATION</text>
+<line x1="297" y1="535" x2="1075" y2="535" stroke="#282d3b"/><text x="313" y="507" class="ui small" fill="#b692f6">codex-worker-test</text><text x="451" y="507" class="ui small" fill="#b692f6">#1  Add application information endpoint  ↗</text><rect x="765" y="490" width="68" height="24" rx="12" fill="#153328"/><circle cx="779" cy="502" r="3.5" fill="#32d583"/><text x="790" y="506" class="ui chip" fill="#6ce9a6">Passed</text><text x="857" y="506" class="ui small">27/04/2025 14:32:00</text><text x="1003" y="506" class="ui small">4m 12s</text>
+<line x1="297" y1="588" x2="1075" y2="588" stroke="#282d3b"/><text x="313" y="560" class="ui small" fill="#b692f6">finance</text><text x="451" y="560" class="ui small" fill="#b692f6">#84  Fix balance calculation rounding  ↗</text><rect x="765" y="543" width="64" height="24" rx="12" fill="#3c2026"/><circle cx="779" cy="555" r="3.5" fill="#f04438"/><text x="790" y="559" class="ui chip" fill="#fda29b">Failed</text><text x="857" y="559" class="ui small">27/04/2025 11:03:00</text><text x="1003" y="559" class="ui small">6m 41s</text>
+<line x1="297" y1="641" x2="1075" y2="641" stroke="#282d3b"/><text x="313" y="613" class="ui small" fill="#b692f6">codex-worker-test</text><text x="451" y="613" class="ui small" fill="#b692f6">#12  Improve health check response  ↗</text><rect x="765" y="596" width="92" height="24" rx="12" fill="#252b39"/><circle cx="779" cy="608" r="3.5" fill="#98a2b3"/><text x="790" y="612" class="ui chip" fill="#c7c9d1">Completed</text><text x="857" y="612" class="ui small">26/04/2025 18:17:00</text><text x="1003" y="612" class="ui small">3m 55s</text>
+
+<!-- Readiness checks -->
+<rect x="1116" y="558" width="294" height="286" rx="10" fill="#171d2b" stroke="#282e3d" filter="url(#shadow)"/><text x="1140" y="590" class="ui h2">Readiness checks</text>
+<path d="M1148 616l10-4 10 4v8c0 7-5 12-10 15-5-3-10-8-10-15z" fill="none" stroke="#c7c9d1" stroke-width="1.7"/><path d="M1153 625l4 4 7-8" fill="none" stroke="#c7c9d1" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><text x="1180" y="623" class="ui small-strong">Execution preflight</text><text x="1180" y="644" class="ui faint">Environment and tools ready</text><rect x="1310" y="612" width="76" height="26" rx="13" fill="#153328"/><circle cx="1323" cy="625" r="4" fill="#32d583"/><text x="1334" y="629" class="ui chip" fill="#6ce9a6">Ready</text>
+<line x1="1140" y1="663" x2="1386" y2="663" stroke="#303748"/>
+<circle cx="1158" cy="697" r="10" fill="none" stroke="#c7c9d1" stroke-width="1.7"/><path d="M1152 697h12M1158 691v12" stroke="#c7c9d1" stroke-width="1.5"/><text x="1180" y="693" class="ui small-strong">Project eligibility</text><text x="1180" y="714" class="ui faint">2 eligible projects</text><rect x="1310" y="682" width="76" height="26" rx="13" fill="#153328"/><circle cx="1323" cy="695" r="4" fill="#32d583"/><text x="1334" y="699" class="ui chip" fill="#6ce9a6">Ready</text>
+<line x1="1140" y1="733" x2="1386" y2="733" stroke="#303748"/>
+<path d="M1147 770h5l5-14 7 28 5-18 4 4h6" fill="none" stroke="#c7c9d1" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><text x="1180" y="764" class="ui small-strong">Heartbeat freshness</text><text x="1180" y="785" class="ui faint">Last heartbeat 8 sec ago</text><rect x="1310" y="753" width="76" height="26" rx="13" fill="#153328"/><circle cx="1323" cy="766" r="4" fill="#32d583"/><text x="1334" y="770" class="ui chip" fill="#6ce9a6">Fresh</text>
+
+
+<!-- Capabilities and provisioning -->
+<rect x="280" y="726" width="812" height="288" rx="10" fill="#171d2b" stroke="#282e3d" filter="url(#shadow)"/><text x="304" y="759" class="ui h2">Capabilities &amp; provisioning</text>
+<rect x="297" y="779" width="185" height="212" rx="9" fill="#1d2433" stroke="#303748"/><path d="M323 819l16-9 16 9v18l-16 9-16-9z" fill="#f04438"/><path d="M332 827l7-7 7 7-7 7zM339 820v14" fill="none" stroke="#fff" stroke-width="2"/><text x="366" y="818" class="ui h3">Git</text><circle cx="369" cy="843" r="4" fill="#32d583"/><text x="380" y="847" class="ui small-strong" fill="#6ce9a6">Ready</text><text x="313" y="887" class="ui small">v2.43.0</text><line x1="313" y1="910" x2="466" y2="910" stroke="#3a4254"/><text x="313" y="938" class="ui faint">Version detected</text>
+<rect x="493" y="779" width="185" height="212" rx="9" fill="#1d2433" stroke="#303748"/><circle cx="526" cy="829" r="20" fill="#0b1020"/><path d="M517 840c2-7 15-7 18 0M521 824a5 5 0 1 0 10 0 5 5 0 0 0-10 0" fill="none" stroke="#f5f5f6" stroke-width="2"/><text x="555" y="818" class="ui h3">GitHub CLI</text><circle cx="555" cy="843" r="4" fill="#32d583"/><text x="566" y="847" class="ui small-strong" fill="#6ce9a6">Ready</text><text x="509" y="887" class="ui small">Authenticated</text><path d="M511 924l4 4 8-9" fill="none" stroke="#32d583" stroke-width="2"/><text x="530" y="930" class="ui faint">Token available</text>
+<rect x="689" y="779" width="185" height="212" rx="9" fill="#1d2433" stroke="#303748"/><rect x="707" y="810" width="38" height="38" rx="8" fill="#0b1020" stroke="#303748"/><path d="M717 820l7 7-7 7M729 835h8" fill="none" stroke="#d0d5dd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text x="754" y="818" class="ui h3">Codex CLI</text><circle cx="754" cy="843" r="4" fill="#32d583"/><text x="765" y="847" class="ui small-strong" fill="#6ce9a6">Ready</text><text x="705" y="887" class="ui small">v0.157.0</text><path d="M707 924l4 4 8-9" fill="none" stroke="#32d583" stroke-width="2"/><text x="726" y="930" class="ui faint">Authenticated</text>
+<rect x="885" y="779" width="190" height="212" rx="9" fill="#1d2433" stroke="#303748"/><rect x="904" y="810" width="42" height="38" rx="8" fill="#53389e"/><text x="925" y="835" text-anchor="middle" class="ui small-strong" fill="#fff">.NET</text><text x="956" y="818" class="ui h3">.NET SDK</text><circle cx="956" cy="843" r="4" fill="#32d583"/><text x="967" y="847" class="ui small-strong" fill="#6ce9a6">Available</text><text x="901" y="887" class="ui small">10.0</text><line x1="901" y1="910" x2="1059" y2="910" stroke="#3a4254"/><text x="901" y="938" class="ui faint">Runtime version</text>
+</svg>

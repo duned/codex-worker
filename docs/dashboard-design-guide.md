@@ -26,6 +26,10 @@ These owner-approved repository files are the current visual targets. Match thei
 
 The following references are prepared for owner review. They become implementation targets only after approval.
 
+### Worker detail · dark
+
+![Worker detail dark reference](mockups/worker-detail-dark.svg)
+
 ### Project list
 
 ![Project list reference](mockups/project-list.svg)

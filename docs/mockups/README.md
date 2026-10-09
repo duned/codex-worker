@@ -10,6 +10,7 @@ These SVGs and images are repository-owned visual references for the React + Unt
 
 ## Drafts for review
 
+- [Worker detail · dark](worker-detail-dark.svg)
 - [Project list](project-list.svg)
 - [Project detail](project-detail.svg)
 - [Execution list](execution-list.svg)
