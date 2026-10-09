@@ -65,7 +65,7 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                 string? refusal = authority is null && (entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null)
                     ? "server-authority-required" : request.Action == "purge" ? "purge-proof-retention-required" :
                     request.Action == "reconcile" ? "recovery-protocol-required" :
-                    request.Action == "archive" && (assessment.Status != "healthy-terminal" || entry.CompletedAtUtc > DateTimeOffset.UtcNow.AddDays(-30))
+                    request.Action == "archive" && (assessment.Status is not ("healthy-terminal" or "terminal-clean") || entry.CompletedAtUtc > DateTimeOffset.UtcNow.AddDays(-30))
                         ? "archive-retention-or-review" : null;
                 if (refusal is not null)
                 {

@@ -192,10 +192,13 @@ public sealed class WorkerRuntimeReadModel
 
     public async Task<ExecutionInventoryPage> ExecutionInventoryAsync(ExecutionInventoryQuery query, CancellationToken ct)
     {
-        if (query.Limit is < 1 or > 200 || query.Offset is < 0 or > 10000 ||
-            query.Attention is { } attention && attention is not ("healthy-active" or "healthy-terminal" or "recoverable" or "reconciliation-required" or "stale" or "orphaned" or "retained-review") ||
-            query.Outcome is { } outcome && outcome is not ("succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active"))
-            throw new ArgumentException("Inventory filters, limit or offset are invalid.");
+        query = query with { Outcome = query.Outcome?.ToLowerInvariant() };
+        if (query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active"))
+            throw new ArgumentException("Invalid outcome. Allowed values: succeeded, blocked, failed, infrastructure-failure, cancelled, integration-conflict, active (case-insensitive).");
+        if (query.Attention is not (null or "healthy-active" or "healthy-terminal" or "terminal-clean" or "recoverable" or "reconciliation-required" or "stale" or "orphaned" or "retained-review"))
+            throw new ArgumentException("Invalid attention. Allowed values: healthy-active, healthy-terminal, terminal-clean, recoverable, reconciliation-required, stale, orphaned, retained-review.");
+        if (query.Limit is < 1 or > 200 || query.Offset is < 0 or > 10000)
+            throw new ArgumentException("Inventory limit must be 1–200 and offset must be 0–10000.");
         var candidates = await _history.ReadInventoryAsync(query with { Limit = 5001, Offset = 0 }, DateTimeOffset.UtcNow, ct);
         var scanned = Math.Min(candidates.Count, 5000);
         var hasUnscanned = candidates.Count > 5000;

@@ -29,8 +29,40 @@ authoritative lifecycle state. Business `outcome` remains the execution result.
 it does not mean the Server is currently reachable or that an old lease is valid.
 An unconfirmed managed report is marked `reconciliation-required`; uncertain
 recovery, missing ownership and integration ambiguity stay retained for review.
-Age can mark active work `stale` or retained terminal resources `recoverable`, but
-never proves cleanup eligibility. The inventory advertises inspection only. The
+Recovery and reporting take precedence over terminal outcomes and age. The mapping is explicit:
+
+| Persisted evidence | Maintenance status / reason |
+| --- | --- |
+| Reporting failure (including after GitHub reconciliation) | `reconciliation-required` / `managed-report-unconfirmed` or `github-report-unconfirmed` |
+| `github-reconciliation-required`, pending completion JSON | `reconciliation-required` / `github-report-unconfirmed`, `completion-pending` |
+| Integration recovery claim | `retained-review` / `recovery-claimed` |
+| `recoverable`, `cleanup-pending` | `recoverable` / `workspace-recoverable`, `cleanup-pending`, regardless of expiry or age |
+| `uncertain`, integration conflict/unavailable/interrupted | `retained-review` / `recovery-ambiguous` |
+| `missing`, `preparation-failed`, `managed-completion-quarantined` | `retained-review` / `workspace-missing`, `preparation-resource-proof-missing`, `managed-completion-quarantined` |
+| Codex interrupted/resuming/exhausted/inspection-required | `retained-review` / `codex-recovery-pending` |
+| Codex recovered/recovery-finished, integration-recovered, superseded | `retained-review` / `recovery-transfer-unverified`: consumption does not prove source cleanup or successful descendant lineage |
+| `github-reconciled` | `retained-review` / `github-resource-proof-missing`: verifies Issue eligibility, not completion delivery or local resources |
+| operator/expired/resumed-cleaned, discarded, cleaned-no-changes, completion-reconciled | `healthy-terminal` for Completed, otherwise `terminal-clean`, with `cleanup-recorded`; business outcome is unchanged |
+| Unknown recovery vocabulary | `retained-review` / `recovery-state-unknown` |
+| Nonterminal or incomplete history without recovery evidence | `healthy-active`, or `stale` after seven days |
+| Terminal without receipts | Recent Completed: `healthy-terminal`; older Completed or other outcomes: `retained-review` / `terminal-resource-proof-missing` |
+
+Missing project configuration takes precedence as `orphaned`. Age never proves cleanup eligibility.
+Canonical `outcome` values are `succeeded`, `blocked`, `failed`, `infrastructure-failure`,
+`cancelled`, `integration-conflict`, and `active`; inventory accepts case variants such as `Failed`.
+Unknown outcome and attention filters return allowed values. `terminal-clean` distinguishes resource-clean
+failures from successful business results; no successful later Issue attempt alone clears an ambiguous source.
+`includeArchived=true` includes archived history, with the same assessment and filters.
+
+Safe read-only examples (paging follows attention filtering):
+
+```sh
+curl --fail "$worker_url/api/executions/inventory?attention=recoverable&limit=25&offset=0"
+curl --fail "$worker_url/api/executions/inventory?attention=retained-review&olderThanDays=7"
+curl --fail "$worker_url/api/executions/inventory?outcome=failed&attention=terminal-clean&includeArchived=true"
+```
+
+The inventory advertises inspection only. The
 existing cleanup inspection/apply path performs fresh repository and ownership
 proof under its normal repository gate and drain safeguards. A missing configured
 project is `orphaned`, not disposable.
@@ -141,7 +173,7 @@ per item, so a batch may partially complete. Retry after inspection rather than
 assuming all items succeeded.
 
 Archive is available only for standalone, configured executions with a confirmed
-terminal outcome at least 30 days old, a healthy-terminal classification, and
+terminal outcome at least 30 days old, a healthy-terminal or terminal-clean classification, and
 fresh `safe/already-clean` resource inspection. Clean resources separately first.
 Active, ambiguous, pending recovery and inconsistent historical records remain
 visible. Age alone never proves eligibility. Archival never removes Git resources

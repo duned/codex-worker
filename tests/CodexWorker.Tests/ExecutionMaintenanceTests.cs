@@ -100,4 +100,80 @@ public sealed class ExecutionMaintenanceTests
         Assert.Equal("orphaned", ExecutionMaintenanceClassifier.Classify(entry, started.AddDays(1), false).Status);
         Assert.Equal("stale", ExecutionMaintenanceClassifier.Classify(entry, started.AddDays(8), true).Status);
     }
+    [Theory]
+    [InlineData("recoverable", "recoverable", "workspace-recoverable")]
+    [InlineData("preparation-failed", "retained-review", "preparation-resource-proof-missing")]
+    [InlineData("github-reconciliation-required", "reconciliation-required", "github-report-unconfirmed")]
+    [InlineData("github-reconciled", "retained-review", "github-resource-proof-missing")]
+    [InlineData("codex-recovered", "retained-review", "recovery-transfer-unverified")]
+    [InlineData("codex-recovery-finished", "retained-review", "recovery-transfer-unverified")]
+    [InlineData("cleanup-pending", "recoverable", "cleanup-pending")]
+    [InlineData("uncertain", "retained-review", "recovery-ambiguous")]
+    [InlineData("resumed-cleaned", "terminal-clean", "cleanup-recorded")]
+    [InlineData("cleaned-no-changes", "terminal-clean", "cleanup-recorded")]
+    [InlineData("new-unknown-state", "retained-review", "recovery-state-unknown")]
+    [InlineData(null, "retained-review", "terminal-resource-proof-missing")]
+    public void FailedAttemptsNeverInferSafetyFromRecency(string? recovery, string status, string reason)
+    {
+        var now = new DateTimeOffset(2026, 10, 9, 0, 0, 0, TimeSpan.Zero);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "p", "o/r", 328, "issue", "feature/328", "main",
+            now.AddMinutes(-2), now.AddMinutes(-1), "Failed", null, null, null, 0, [], null, null, null, null,
+            recovery, RecoveryStatus: "15 modified / 12 staged", RecoveryExpiresAtUtc: now.AddDays(7));
+        foreach (var age in new[] { 0, 100 })
+        {
+            var assessment = ExecutionMaintenanceClassifier.Classify(entry, now.AddDays(age), true);
+            Assert.Equal(status, assessment.Status);
+            Assert.Equal(reason, assessment.ReasonCode);
+            Assert.Equal("failed", ExecutionMaintenanceClassifier.Outcome(entry.State));
+            Assert.Equal(new[] { "inspect" }, assessment.Actions);
+        }
+    }
+
+    [Fact]
+    public async Task InventoryOutcomeCaseAndAttentionPagingPreserveBusinessFailure()
+    {
+        using var history = new ExecutionHistoryStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "history.db"));
+        var now = DateTimeOffset.UtcNow;
+        for (var index = 0; index < 3; index++)
+            await history.CreateAsync(new(Guid.NewGuid(), "p", "o/r", 328, "issue", "feature/328", "main",
+                now.AddDays(-40).AddMinutes(index), now.AddDays(-40).AddMinutes(index + 1), "Failed",
+                null, null, null, 0, [], null, null, null, null, index == 0 ? "operator-cleaned" : "recoverable"));
+        var config = new WorkerConfiguration { Project = new ProjectSettings { Name = "p", Repository = "o/r" } };
+        var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [("p.yml", config)], history);
+        var query = new ExecutionInventoryQuery(Outcome: "Failed", OlderThanDays: 30, Attention: "recoverable", Limit: 1);
+        var first = await model.ExecutionInventoryAsync(query, CancellationToken.None);
+        var second = await model.ExecutionInventoryAsync(query with { Offset = 1 }, CancellationToken.None);
+        Assert.True(first.HasMore);
+        Assert.False(second.HasMore);
+        Assert.NotEqual(Assert.Single(first.Items).Execution.ExecutionId, Assert.Single(second.Items).Execution.ExecutionId);
+        var invalid = await Assert.ThrowsAsync<ArgumentException>(() => model.ExecutionInventoryAsync(query with { Outcome = "unknown" }, CancellationToken.None));
+        Assert.Contains("Allowed values: succeeded", invalid.Message);
+    }
+
+    [Theory]
+    [InlineData("github-reconciled")]
+    [InlineData("operator-cleaned")]
+    public void ReportingFailureOverridesReconciliationAndCleanupReceipts(string recovery)
+    {
+        var now = new DateTimeOffset(2026, 10, 9, 0, 0, 0, TimeSpan.Zero);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "p", "o/r", 282, "issue", "feature/282", "main",
+            now.AddMinutes(-2), now.AddMinutes(-1), "InfrastructureFailure", null, null, null, 0, [], null, null, null, null,
+            recovery, ReportingFailure: "delivery failed");
+        Assert.Equal("github-report-unconfirmed", ExecutionMaintenanceClassifier.Classify(entry, now, true).ReasonCode);
+        Assert.Equal("infrastructure-failure", ExecutionMaintenanceClassifier.Outcome(entry.State));
+        Assert.Equal("completion-pending", ExecutionMaintenanceClassifier.Classify(
+            entry with { ReportingFailure = null, CompletionJson = "{}" }, now, true).ReasonCode);
+    }
+
+    [Fact]
+    public void ActiveAndSuccessfulCompletionRemainDistinctFromCleanedFailures()
+    {
+        var now = new DateTimeOffset(2026, 10, 9, 0, 0, 0, TimeSpan.Zero);
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "p", "o/r", 1, "issue", "feature/1", "main",
+            now.AddMinutes(-2), null, "Implementing", null, null, null, 0, [], null, null, null, null);
+        Assert.Equal("healthy-active", ExecutionMaintenanceClassifier.Classify(entry, now, true).Status);
+        Assert.Equal("healthy-terminal", ExecutionMaintenanceClassifier.Classify(
+            entry with { State = "Completed", CompletedAtUtc = now, RecoveryState = "completion-reconciled" }, now.AddDays(100), true).Status);
+    }
+
 }
