@@ -7,7 +7,7 @@ import { ExternalLink } from '../../shared/Actions';
 import { useApiRead } from '../../shared/api/session';
 import { executions as executionList } from '../../shared/api/validation';
 import type { ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
-import { timestamp, workerListSignals, statusColor } from '../../model.js';
+import { timestamp, workerListSignals, statusColor, isActiveExecutionState } from '../../model.js';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Dropdown } from '../../untitled/components/base/dropdown/dropdown';
 import { TableCard } from '../../untitled/components/application/table/table';
@@ -175,7 +175,7 @@ function LatestExecution({ item, project }: { item: ExecutionSummary; project: P
   return <div>
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0 font-semibold text-primary"><IssueTitle projectId={project.id} repository={project.repository} workReference={item.workReference} className="hover:text-brand-secondary" /></div>
-      <StatusBadge tone={toneOf(item.state)}>{statusLabel(item.state)}</StatusBadge>
+      <StatusBadge tone={toneOf(item.state)} active={isActiveExecutionState(item.state)}>{statusLabel(item.state)}</StatusBadge>
     </div>
     <time className="mt-2 block text-xs text-tertiary" dateTime={item.createdAtUtc}>{timestamp(item.createdAtUtc)}</time>
     <Link className="mt-3 inline-block text-sm text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}`}>{t('projects.viewExecution')}</Link>
@@ -208,7 +208,7 @@ function ProjectRecentActivity({ project, read, workers: workerList, recent }: {
               const worker = workerList.find(value => value.workerId === item.assignedWorkerId);
               return <tr key={item.id} className="align-middle">
                 <td className="px-5 py-4"><p className="font-semibold text-primary"><IssueTitle projectId={project.id} repository={project.repository} workReference={item.workReference} className="hover:text-brand-secondary" /></p><Link className="mt-1 block break-all text-xs text-tertiary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></Link></td>
-                <td className="px-5 py-4"><StatusBadge tone={toneOf(item.state)}>{statusLabel(item.state)}</StatusBadge></td>
+                <td className="px-5 py-4"><StatusBadge tone={toneOf(item.state)} active={isActiveExecutionState(item.state)}>{statusLabel(item.state)}</StatusBadge></td>
                 <td className="px-5 py-4 text-sm text-secondary">{item.assignedWorkerId ? <Link to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`} className="hover:text-brand-secondary">{worker?.displayName ?? item.assignedWorkerId}</Link> : t('executions.workerUnassigned')}</td>
                 <td className="px-5 py-4 text-sm text-secondary"><time dateTime={item.createdAtUtc}>{timestamp(item.createdAtUtc)}</time></td>
               </tr>;
@@ -228,9 +228,8 @@ function concurrencyLabel(limit: number | null) {
 }
 
 function toneOf(value: string) {
-  if (value.toLowerCase() === 'running') return 'info';
   const tone = statusColor(value);
-  return tone === 'success' || tone === 'warning' || tone === 'error' ? tone : 'gray';
+  return tone === 'success' || tone === 'warning' || tone === 'error' || tone === 'info' ? tone : 'gray';
 }
 
 function toneDot(value: string) {

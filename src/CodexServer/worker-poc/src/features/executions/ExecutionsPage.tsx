@@ -13,7 +13,7 @@ import type { ExecutionMaintenanceDetail, WorkerObservation } from '../../shared
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
 import { TableCard } from '../../untitled/components/application/table/table';
-import { timestamp, duration, statusColor } from '../../model';
+import { timestamp, duration, statusColor, isActiveExecutionState } from '../../model';
 import { archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceReason, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, presentation, canReconcile, validEvidence, type Execution } from './model';
 import { IssueTitle } from '../projects/IssueTitle';
 import { ExecutionMaintenancePage } from './ExecutionMaintenancePage';
@@ -30,9 +30,9 @@ function Timing({ item }: { item: Execution }) {
   return <div className="text-sm text-tertiary"><p>{t("executions.created")}{' '}{timestamp(item.createdAtUtc)}</p>{item.assignedAtUtc && <p>{t("executions.assigned")}{' '}{timestamp(item.assignedAtUtc)}</p>}{item.startedAtUtc && <p>{t("executions.started")}{' '}{timestamp(item.startedAtUtc)}</p>}{item.completedAtUtc && <p>{t("executions.completed")}{' '}{timestamp(item.completedAtUtc)}</p>}<p>{duration(item, Date.now())}</p></div>;
 }
 function State({ item }: { item: Execution }) {
-  useLanguage(); const state = presentation(item); return <StatusBadge tone={state.tone}>{state.text}</StatusBadge>; }
+  useLanguage(); const state = presentation(item); return <StatusBadge tone={state.tone} active={state.active}>{state.text}</StatusBadge>; }
 function ExecutionStatus({ item }: { item: Execution }) {
-  useLanguage(); return <StatusBadge tone={stateTone(item.state)}>{statusLabel(item.state)}</StatusBadge>;
+  useLanguage(); return <StatusBadge tone={stateTone(item.state)} active={isActiveExecutionState(item.state)}>{statusLabel(item.state)}</StatusBadge>;
 }
 function ExecutionList() {
   useLanguage();
@@ -80,7 +80,7 @@ function AttentionList({ entries, search, projects: projectItems, workers: worke
         </div>
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-tertiary">{t('maintenance.executionAndClassification')}</p>
-          <div className="mt-2 flex flex-wrap gap-2"><StatusBadge tone={stateTone(item.state)}>{statusLabel(item.state)}</StatusBadge><StatusBadge tone="warning">{t(`maintenance.classification.${assessment.classification}` as TranslationKey)}</StatusBadge></div>
+          <div className="mt-2 flex flex-wrap gap-2"><StatusBadge tone={stateTone(item.state)} active={isActiveExecutionState(item.state)}>{statusLabel(item.state)}</StatusBadge><StatusBadge tone="warning">{t(`maintenance.classification.${assessment.classification}` as TranslationKey)}</StatusBadge></div>
           <Link className="mt-2 block break-all text-xs text-tertiary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}${search}`}><GuidDisplay value={item.id} /></Link>
         </div>
         <div>
@@ -371,7 +371,7 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
         {currentCommand?.status === 'pending' && <Button color="secondary" isDisabled={pending || locked} onPress={() => { void cancelPendingOperation(); }}>{t('maintenance.cancelPendingOperation')}</Button>}
         {report && previewAction !== 'inventory' && <div className="grid gap-3 sm:grid-cols-2"><p className="rounded-lg bg-secondary p-3 text-sm text-secondary">{before ? t('maintenance.beforeOutcome', { state: statusLabel(before.state), recovery: statusLabel(before.recoveryState) }) : t('maintenance.beforeStateUnavailable')}</p><p className="rounded-lg bg-secondary p-3 text-sm text-secondary">{t('maintenance.afterOutcome', { state: statusLabel(detail.observations[0]?.observation.state ?? detail.execution?.state ?? item.state), recovery: statusLabel(detail.observations[0]?.observation.recoveryState ?? detail.execution?.recoveryState ?? item.recoveryState) })}</p></div>}
         {detail.workerStatus !== 'online' && detail.workerStatus !== 'draining' && <Notice>{t('maintenance.workerOfflineStatus')}</Notice>}
-        {!!detail.observations.length && <ul className="divide-y divide-secondary rounded-lg border border-secondary">{detail.observations.map(row => <li key={row.observation.executionId} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm"><span className="break-all">{row.observation.project} · #{row.observation.issueNumber}</span><span className="flex flex-wrap gap-2"><StatusBadge tone="gray">{statusLabel(row.observation.state)}</StatusBadge><StatusBadge tone={row.status === 'confirmed' ? 'success' : 'warning'}>{statusLabel(row.status)}</StatusBadge><StatusBadge tone={statusTone(row.observation.reportingStatus)}>{statusLabel(row.observation.reportingStatus)}</StatusBadge></span></li>)}</ul>}
+        {!!detail.observations.length && <ul className="divide-y divide-secondary rounded-lg border border-secondary">{detail.observations.map(row => <li key={row.observation.executionId} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm"><span className="break-all">{row.observation.project} · #{row.observation.issueNumber}</span><span className="flex flex-wrap gap-2"><StatusBadge tone={stateTone(row.observation.state)} active={isActiveExecutionState(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge><StatusBadge tone={row.status === 'confirmed' ? 'success' : 'warning'}>{statusLabel(row.status)}</StatusBadge><StatusBadge tone={statusTone(row.observation.reportingStatus)}>{statusLabel(row.observation.reportingStatus)}</StatusBadge></span></li>)}</ul>}
         {previewPassed && applyScope && applyAction && <div className="flex flex-wrap items-center gap-3"><p className="text-sm text-secondary">{!applyScope.allowed ? t(applyScope.reason as TranslationKey) : applyAction === 'archive' && !archiveProofReady ? t('maintenance.archivePreviewRequiresCleanHistory') : t('maintenance.previewAllowsApply')}</p>{applyScope.allowed && (applyAction !== 'archive' || archiveProofReady) && <Button color={applyAction === 'cleanup' || applyAction === 'archive' ? 'primary-destructive' : 'primary'} isDisabled={frozen} onPress={() => beginApply(applyAction)}>{applyAction === 'cleanup' ? t('maintenance.applyCleanup') : applyAction === 'archive' ? t('maintenance.applyArchive') : t('maintenance.applyReportRetry')}</Button>}</div>}
       </>}
     </section></TableCard.Root>}
@@ -407,10 +407,9 @@ function Evidence({ value }: { value: unknown }) {
     : <pre className="whitespace-pre-wrap break-all rounded-lg bg-secondary p-4 text-xs text-secondary">{serialized}</pre>;
 }
 
-function stateTone(state: string) {
-  if (state.toLowerCase() === 'running') return 'info';
+function stateTone(state: string): 'gray' | 'success' | 'warning' | 'error' | 'info' {
   const tone = statusColor(state);
-  return tone === 'success' || tone === 'warning' || tone === 'error' ? tone : 'gray';
+  return tone === 'success' || tone === 'warning' || tone === 'error' || tone === 'info' ? tone : 'gray';
 }
 
 function stateDot(state: string) {

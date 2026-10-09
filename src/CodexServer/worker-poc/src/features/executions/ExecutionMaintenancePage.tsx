@@ -7,7 +7,7 @@ import { nodes, projects, serverStatus, worker as validateWorker, workers } from
 import { queryKeys } from '../../shared/api/runtime';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
 import { statusLabel, t, useLanguage, type TranslationKey } from '../../shared/i18n';
-import { timestamp, statusColor } from '../../model';
+import { timestamp, statusColor, isActiveExecutionState } from '../../model';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { TableCard } from '../../untitled/components/application/table/table';
 import { Notice, PageHeading, StatusBadge, ViewState } from '../../shared/Presentation';
@@ -27,9 +27,9 @@ type QueueRow = {
   activity?: string;
 };
 
-function tone(value: string): 'gray' | 'success' | 'warning' | 'error' {
+function tone(value: string): 'gray' | 'success' | 'warning' | 'error' | 'info' {
   const result = statusColor(value);
-  return result === 'success' || result === 'warning' || result === 'error' ? result : 'gray';
+  return result === 'success' || result === 'warning' || result === 'error' || result === 'info' ? result : 'gray';
 }
 
 function isMaintenanceCapable(worker: WorkerObservation | undefined) {
@@ -332,8 +332,8 @@ export function ExecutionMaintenancePage() {
               : workerRead.error ? t('maintenance.attention.workerStateUnavailable') : t('maintenance.workerRecordMissing')}</p>
           </div>
           <div className="min-w-0"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary">{t('maintenance.executionAndClassification')}</p>
-            <div className="mt-2 flex flex-wrap gap-2">{row.item && <StatusBadge tone={tone(row.item.state)}>{statusLabel(row.item.state)}</StatusBadge>}
-              {row.observation && <StatusBadge tone={tone(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge>}
+            <div className="mt-2 flex flex-wrap gap-2">{row.item && <StatusBadge tone={tone(row.item.state)} active={isActiveExecutionState(row.item.state)}>{statusLabel(row.item.state)}</StatusBadge>}
+              {row.observation && <StatusBadge tone={tone(row.observation.state)} active={isActiveExecutionState(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge>}
               {row.observation?.archived && <StatusBadge tone="gray">{t('maintenance.archivedObservation')}</StatusBadge>}
               <StatusBadge tone="warning">{t(row.reason)}</StatusBadge></div>
             {row.item && <p className="mt-2 break-all text-xs text-secondary">{t('maintenance.serverExecutionId')}: {row.item.id}</p>}
@@ -394,7 +394,7 @@ export function ExecutionMaintenancePage() {
           {selectedServerExecutionId && <Link className="text-sm font-medium text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(selectedServerExecutionId)}${search}`}>{t('maintenance.inspectPreviewExecution')}</Link>}
           {!!selected.observations.length && <ul className="divide-y divide-secondary rounded-lg border border-secondary">{selected.observations.map(row => <li key={row.observation.executionId} className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
             <span className="min-w-0 break-words">{row.observation.project} · #{row.observation.issueNumber}<span className="mt-1 block break-all text-xs text-tertiary">{row.observation.executionId}</span></span>
-            <span className="flex flex-wrap gap-2"><StatusBadge tone={tone(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge>{row.observation.archived && <StatusBadge tone="gray">{t('maintenance.archivedObservation')}</StatusBadge>}<StatusBadge tone={row.status === 'confirmed' ? 'success' : 'warning'}>{statusLabel(row.status)}</StatusBadge><StatusBadge tone={tone(row.observation.reportingStatus)}>{statusLabel(row.observation.reportingStatus)}</StatusBadge></span>
+            <span className="flex flex-wrap gap-2"><StatusBadge tone={tone(row.observation.state)} active={isActiveExecutionState(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge>{row.observation.archived && <StatusBadge tone="gray">{t('maintenance.archivedObservation')}</StatusBadge>}<StatusBadge tone={row.status === 'confirmed' ? 'success' : 'warning'}>{statusLabel(row.status)}</StatusBadge><StatusBadge tone={tone(row.observation.reportingStatus)}>{statusLabel(row.observation.reportingStatus)}</StatusBadge></span>
             {row.execution?.id && <Link className="text-sm text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(row.execution.id)}${search}`}>{t('maintenance.executionDetails')}</Link>}
           </li>)}</ul>}
           {!selected.observations.length && selected.operation.report?.outcome && <Notice>{t('maintenance.operationNoObservations')}</Notice>}

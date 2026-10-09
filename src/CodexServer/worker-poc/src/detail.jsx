@@ -7,7 +7,7 @@ import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
-import { duration, issueLink, statusColor, terminalStates, timestamp, workerExecutions } from './model.js';
+import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions } from './model.js';
 
 const executionStages = [
   { id: 'claimed', label: 'Claimed' },
@@ -23,9 +23,9 @@ function statusTone(value) {
   return statusColor(value);
 }
 
-function Status({ value, tone }) {
+function Status({ value, tone, active = false }) {
   useLanguage();
-  return <StatusBadge compact tone={tone ?? statusTone(value)} withDot>{value ?? t('shared.unknown')}</StatusBadge>;
+  return <StatusBadge compact tone={tone ?? statusTone(value)} withDot active={active}>{value ?? t('shared.unknown')}</StatusBadge>;
 }
 
 function stageKey(value) {
@@ -107,7 +107,7 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
       <div className="poc-worker-meta">
         <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />{worker.workerVersion && <span>{t('workers.workerVersion')} {worker.workerVersion}</span>}
         <div className="poc-worker-statuses" aria-label={t('workers.workerStatus')}>
-          <Status value={connection} tone={connection === t('workers.connected') ? 'success' : statusTone(node?.connectivity ?? worker.availability)} />
+          <Status value={connection} tone={connection === t('workers.connected') ? 'success' : statusTone(node?.connectivity ?? worker.availability)} active={isActiveExecutionState(worker.availability)} />
           <Status value={readiness} tone={statusTone(readinessValue)} />
           <Status value={freshness.value} tone={freshness.tone} />
         </div>
@@ -167,7 +167,7 @@ function CurrentExecution({ item, projects, now, showStatus }) {
   const project = projects?.find(value => value.id === item.projectId);
   const stage = item.currentStage ? stageLabel(item.currentStage) : localizeText(item.state);
   return <article className="poc-current-execution">
-    {showStatus && <div className="poc-current-execution-heading"><span>{t('workers.execution')}</span><Status value={stage} tone={item.currentStage ? 'warning' : statusTone(item.state)} /></div>}
+    {showStatus && <div className="poc-current-execution-heading"><span>{t('workers.execution')}</span><Status value={stage} tone={isActiveExecutionState(item.state) ? 'info' : item.currentStage ? 'warning' : statusTone(item.state)} active={isActiveExecutionState(item.state)} /></div>}
     <dl className="poc-execution-fields">
       <div>
         <dt>{t('executions.project')}</dt>
@@ -187,7 +187,7 @@ function CurrentExecutions({ items, projects, now, worker, unavailable }) {
   useLanguage();
   const title = items.length > 1 ? t('shared.currentExecutions') : t('shared.currentExecution');
   const currentStage = items.length === 1 ? items[0].currentStage ? stageLabel(items[0].currentStage) : localizeText(items[0].state) : null;
-  const trailing = currentStage && <Status value={currentStage} tone={items[0].currentStage ? 'warning' : statusTone(items[0].state)} />;
+  const trailing = currentStage && <Status value={currentStage} tone={isActiveExecutionState(items[0].state) ? 'info' : items[0].currentStage ? 'warning' : statusTone(items[0].state)} active={isActiveExecutionState(items[0].state)} />;
   return <TableCard.Root className="poc-dashboard-panel poc-current-panel">
     <PanelHeading id="poc-current-heading" title={title} trailing={trailing} />
     {unavailable ? <p className="poc-empty-panel">{t('shared.currentExecutionDataUnavailableRefreshToRecoverReportedStages')}</p>
@@ -407,7 +407,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
   const items = workerExecutions(executions, id);
-  const active = items.filter(item => ['Assigned', 'Running'].includes(item.state));
+  const active = items.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state));
   const recent = items.filter(item => terminalStates.includes(item.state));
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>

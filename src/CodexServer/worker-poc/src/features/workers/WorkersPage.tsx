@@ -12,7 +12,7 @@ import { EnrollmentDialog } from './EnrollmentDialog';
 
 const dotTone = (value: string) => {
   const tone = statusColor(value);
-  return tone === 'success' ? 'bg-success-solid' : tone === 'warning' ? 'bg-warning-solid' : tone === 'error' ? 'bg-error-solid' : 'bg-secondary-solid';
+  return tone === 'success' ? 'bg-success-solid' : tone === 'warning' ? 'bg-warning-solid' : tone === 'error' ? 'bg-error-solid' : tone === 'info' ? 'bg-utility-blue-500' : 'bg-secondary-solid';
 };
 
 function heartbeatDetail(value?: string) {

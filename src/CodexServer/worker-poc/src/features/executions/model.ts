@@ -1,4 +1,5 @@
 import { t, statusLabel, type TranslationKey } from '../../shared/i18n';
+import { isActiveExecutionState } from '../../shared/status-model.mjs';
 import type { ExecutionMaintenanceCommand, ExecutionMaintenanceDetail, ExecutionMaintenanceObservation, ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
 import { executions, record } from '../../shared/api/validation';
 import type { Validator } from '../../shared/api/client';
@@ -222,11 +223,12 @@ export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' 
   return { allowed: true, reason: undefined };
 }
 export function canReconcile(item: Execution) { return item.state === 'Failed' && item.recoveryState === 'LeaseExpiredUncertain' && item.lease?.state === 'Expired'; }
-export function presentation(item: Execution): { text: string; tone: 'gray' | 'success' | 'warning' | 'error' } {
-  if (item.recoveryState === 'LeaseExpiredUncertain') return { text: t("executions.integrationUncertainReviewEvidence"), tone: 'warning' };
-  if (item.state === 'Failed') return { text: t("executions.executionFailed"), tone: 'error' };
-  if (item.state === 'Completed') return { text: t("executions.completed"), tone: 'success' };
-  return { text: item.currentStage ? `${statusLabel(item.state)} · ${statusLabel(item.currentStage)}` : statusLabel(item.state), tone: ['Running', 'Assigned'].includes(item.state) ? 'warning' : 'gray' };
+export function presentation(item: Execution): { text: string; tone: 'gray' | 'success' | 'warning' | 'error' | 'info'; active: boolean } {
+  if (item.recoveryState === 'LeaseExpiredUncertain') return { text: t("executions.integrationUncertainReviewEvidence"), tone: 'warning', active: false };
+  if (item.state === 'Failed') return { text: t("executions.executionFailed"), tone: 'error', active: false };
+  if (item.state === 'Completed') return { text: t("executions.completed"), tone: 'success', active: false };
+  const active = isActiveExecutionState(item.state);
+  return { text: item.currentStage ? `${statusLabel(item.state)} · ${statusLabel(item.currentStage)}` : statusLabel(item.state), tone: active ? 'info' : item.state === 'Assigned' ? 'warning' : 'gray', active };
 }
 export function validEvidence(disposition: string, evidence: string, commit: string) {
   return !!evidence.trim() && evidence.length <= 1000 && !/[\u0000-\u001f\u007f-\u009f]/.test(evidence) &&

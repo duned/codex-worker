@@ -6,12 +6,12 @@ import { TableCard } from '../untitled/components/application/table/table';
 import { GuidDisplay } from './GuidDisplay';
 
 /** Callers choose tone from reported evidence; this component never decides readiness. */
-export function StatusBadge({ children, tone = 'gray', compact = false, withDot = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean; withDot?: boolean }) {
+export function StatusBadge({ children, tone = 'gray', compact = false, withDot = false, active = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean; withDot?: boolean; active?: boolean }) {
   useLanguage();
-  const color = tone === 'info' ? 'blue' : tone;
+  const color = active || tone === 'info' ? 'blue' : tone;
   const content = typeof children === 'string' ? localizeText(children) : children;
-  const className = 'inline-flex max-w-full whitespace-nowrap align-middle';
-  return withDot
+  const className = `inline-flex max-w-full whitespace-nowrap align-middle${active ? ' dashboard-active-status' : ''}`;
+  return withDot || active
     ? <BadgeWithDot className={className} type="pill-color" size={compact ? 'sm' : 'lg'} color={color}>{content}</BadgeWithDot>
     : <Badge className={className} type="pill-color" size={compact ? 'sm' : 'lg'} color={color}>{content}</Badge>;
 }
