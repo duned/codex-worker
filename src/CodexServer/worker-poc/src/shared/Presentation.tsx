@@ -1,13 +1,18 @@
 import { t, useLanguage, localizeText } from './i18n';
 import { type ReactNode } from 'react';
 import { Link } from 'react-aria-components';
-import { Badge } from '../untitled/components/base/badges/badges';
+import { Badge, BadgeWithDot } from '../untitled/components/base/badges/badges';
 import { TableCard } from '../untitled/components/application/table/table';
 
 /** Callers choose tone from reported evidence; this component never decides readiness. */
-export function StatusBadge({ children, tone = 'gray', compact = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean }) {
+export function StatusBadge({ children, tone = 'gray', compact = false, withDot = false }: { children: ReactNode; tone?: 'gray' | 'success' | 'warning' | 'error' | 'info' | 'purple'; compact?: boolean; withDot?: boolean }) {
   useLanguage();
-  return <Badge className="inline-flex max-w-full whitespace-nowrap align-middle" type="pill-color" size={compact ? 'sm' : 'lg'} color={tone === 'info' ? 'blue' : tone}>{typeof children === 'string' ? localizeText(children) : children}</Badge>;
+  const color = tone === 'info' ? 'blue' : tone;
+  const content = typeof children === 'string' ? localizeText(children) : children;
+  const className = 'inline-flex max-w-full whitespace-nowrap align-middle';
+  return withDot
+    ? <BadgeWithDot className={className} type="pill-color" size={compact ? 'sm' : 'lg'} color={color}>{content}</BadgeWithDot>
+    : <Badge className={className} type="pill-color" size={compact ? 'sm' : 'lg'} color={color}>{content}</Badge>;
 }
 export function ResourceIdentity({ name, id }: { name: string; id: string }) {
   useLanguage();

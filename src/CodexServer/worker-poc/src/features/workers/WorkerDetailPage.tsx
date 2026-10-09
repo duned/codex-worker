@@ -23,7 +23,7 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
   const nodeCommands = useApiRead(`/api/v1/nodes/${encodeURIComponent(resourceId)}/commands`, commands);
   const observation = observations.data?.find(item => item.workerId === resourceId);
   const projectId = new URLSearchParams(location.search).get('project');
-  return <div className="space-y-6">
+  return <div className="poc-worker-detail-page">
     {observations.error && <Notice error>{observations.error}</Notice>}
     <WorkerDetail workersHref={workerId ? '/workers' : '/workers'} administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}
