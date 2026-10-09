@@ -147,7 +147,8 @@ public sealed class ManagedWorkerReadinessTests
                 return new(HttpStatusCode.OK) { Content = JsonContent.Create(command) };
             }
             Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
-            return new(path.EndsWith("/provisioning/request", StringComparison.Ordinal) ||
+            return new(path.EndsWith("/maintenance/executions/request", StringComparison.Ordinal) ||
+                path.EndsWith("/provisioning/request", StringComparison.Ordinal) ||
                 path.EndsWith("/commands/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
         });
         using var client = new HttpClient(handler);

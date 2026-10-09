@@ -45,9 +45,9 @@ public sealed record ExecutionHistoryEntry(
     string? CompletionJson = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
-public sealed class ExecutionHistoryStore : IDisposable
+public sealed partial class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 15;
+    private const int CurrentSchemaVersion = 16;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -271,13 +271,13 @@ public sealed class ExecutionHistoryStore : IDisposable
     }
 
     /// <summary>Records a secondary reporting failure without replacing the execution's primary outcome.</summary>
-    public async Task UpdateReportingFailureAsync(Guid executionId, string failure, CancellationToken ct = default)
+    public async Task UpdateReportingFailureAsync(Guid executionId, string? failure, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = "UPDATE executions SET reporting_failure=$failure WHERE execution_id=$id";
         command.Parameters.AddWithValue("$id", executionId.ToString());
-        command.Parameters.AddWithValue("$failure", failure);
+        command.Parameters.AddWithValue("$failure", (object?)failure ?? DBNull.Value);
         try
         {
             if (await command.ExecuteNonQueryAsync(ct) != 1)
@@ -618,6 +618,13 @@ public sealed class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "CREATE TABLE execution_archives (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), archived_at_utc TEXT NOT NULL, proof_json TEXT NOT NULL); PRAGMA user_version = 15;";
+                migration.ExecuteNonQuery();
+            }
+            if (schemaVersion < 16)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE execution_maintenance_receipts (id TEXT PRIMARY KEY, endpoint TEXT NOT NULL, acknowledged INTEGER NOT NULL, body TEXT NOT NULL); PRAGMA user_version = 16;";
                 migration.ExecuteNonQuery();
             }
             transaction.Commit();

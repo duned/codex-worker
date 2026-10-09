@@ -173,10 +173,17 @@ public sealed class ProjectRuntimeRegistry
 
     /// <summary>Holds a completed drain until maintenance finishes, including durable recording.</summary>
     public IDisposable? TryBeginMaintenance()
+        => TryBeginMaintenanceCore(serverDrain: false);
+
+    // Managed callers must confirm current Server drain authority while holding this reservation.
+    internal IDisposable? TryBeginServerMaintenance()
+        => TryBeginMaintenanceCore(serverDrain: true);
+
+    private IDisposable? TryBeginMaintenanceCore(bool serverDrain)
     {
         lock (_gate)
         {
-            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance || _projects.Values.Any(e => e.Removing)) return null;
+            if ((!serverDrain && !WorkerDrainRequested) || WorkerActive != 0 || _maintenance || _projects.Values.Any(e => e.Removing)) return null;
             _maintenance = true;
             return new MaintenanceReservation(this);
         }

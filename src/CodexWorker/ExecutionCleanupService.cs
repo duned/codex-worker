@@ -11,13 +11,22 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _repositoryGates =
         repositoryGates ?? new(StringComparer.OrdinalIgnoreCase);
-    public async Task<IReadOnlyList<ExecutionCleanupResult>> RunAsync(ExecutionCleanupRequest request, CancellationToken ct)
+    public Task<IReadOnlyList<ExecutionCleanupResult>> RunAsync(ExecutionCleanupRequest request, CancellationToken ct) =>
+        RunCoreAsync(request, null, null, ct);
+
+    internal Task<IReadOnlyList<ExecutionCleanupResult>> RunManagedAsync(CodexProvisioning.ExecutionMaintenanceCommand command,
+        Func<CancellationToken, Task<bool>> authorize, CancellationToken ct) =>
+        RunCoreAsync(new(ExecutionId: command.Request.WorkerExecutionId, Apply: command.Request.Apply,
+            Action: command.Request.Action), command, authorize, ct);
+
+    private async Task<IReadOnlyList<ExecutionCleanupResult>> RunCoreAsync(ExecutionCleanupRequest request,
+        CodexProvisioning.ExecutionMaintenanceCommand? authority, Func<CancellationToken, Task<bool>>? authorize, CancellationToken ct)
     {
         if ((request.ExecutionId.HasValue ? 1 : 0) + (request.IssueNumber.HasValue ? 1 : 0) + (request.Stale ? 1 : 0) != 1 ||
             request.Action is not ("inspect" or "cleanup" or "archive" or "purge" or "reconcile") ||
             request.ExecutionId == Guid.Empty || request.IssueNumber is <= 0 || request.Limit is < 1 or > 100)
             throw new ArgumentException("Select one execution, one positive Issue number, or stale executions; limit must be 1 through 100.");
-        using var maintenance = request.Apply ? registry.TryBeginMaintenance() : null;
+        using var maintenance = request.Apply ? authority is null ? registry.TryBeginMaintenance() : registry.TryBeginServerMaintenance() : null;
         if (request.Apply && maintenance is null)
             throw new InvalidOperationException("Cleanup requires a completed Worker drain with no active executions or other maintenance. Drain the Worker and retry.");
         var initial = await history.ReadAllAsync(ct);
@@ -38,6 +47,13 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
             {
                 var current = await history.ReadAllAsync(ct);
                 var entry = current.Single(e => e.ExecutionId == id);
+                if (authority is not null && (entry.ServerExecutionId != authority.Request.ServerExecutionId ||
+                    entry.AssignmentId != authority.Request.AssignmentId || entry.OwnershipGeneration != authority.Request.Generation ||
+                    authorize is null || !await authorize(ct)))
+                {
+                    results.Add(new(new(id, "review", "server-authority-rejected", "Current Server scope does not authorize this execution."), "refused"));
+                    continue;
+                }
                 var projects = registry.Snapshot().Where(p => p.Configuration.Project.Name == entry.Project &&
                     p.Configuration.Project.Repository == entry.Repository).ToArray();
                 if (projects.Length != 1)
@@ -46,7 +62,7 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                     continue;
                 }
                 var assessment = ExecutionMaintenanceClassifier.Classify(entry, DateTimeOffset.UtcNow, true);
-                string? refusal = entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null
+                string? refusal = authority is null && (entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null)
                     ? "server-authority-required" : request.Action == "purge" ? "purge-proof-retention-required" :
                     request.Action == "reconcile" ? "recovery-protocol-required" :
                     request.Action == "archive" && (assessment.Status != "healthy-terminal" || entry.CompletedAtUtc > DateTimeOffset.UtcNow.AddDays(-30))

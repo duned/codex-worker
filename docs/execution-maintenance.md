@@ -159,5 +159,66 @@ returns `recovery-protocol-required`; request recovery using the existing owned
 recovery protocol. Managed cleanup and archive return `server-authority-required`,
 including historical records containing only an ownership generation. Local
 admin access, an expired lease, or a disconnected Server grants no authority;
-scoped Server maintenance authorization must be added to the protocol before
-managed operations can apply.
+managed apply uses the scoped Server protocol below.
+
+## Managed maintenance through Server
+
+The authenticated Server management API coordinates Worker-local maintenance.
+It never opens VM files or deletes Git refs itself. Workers advertise the
+`protocol/execution-maintenance-v1` capability; unavailable, offline or older
+Workers receive an explicit refusal rather than granting authority from cached history.
+
+`POST /api/v1/maintenance/executions` accepts an operator-generated `operationId`
+(a GUID in `N` format), `workerId`, `action`, `apply` (default false), and a
+`timeoutSeconds` deadline (5–300, default 60). Exact actions (`inspect`, `cleanup`,
+`archive`, `retry-report`) also require `serverExecutionId`, `workerExecutionId`,
+`assignmentId` and `generation`. Server, assignment and Worker IDs use GUID `N`
+format; the local execution ID is a GUID. A reused operation ID must have the
+same complete request. Conflicting requests and concurrent outstanding operations
+on one Worker return 409. Authentication uses the existing Server management
+authorization; Worker dispatch, confirmation and reports use that Worker's
+revocable API credential.
+
+`inventory` is read-only and omits exact execution identities. It supports
+`project` (Worker project name), `issueNumber`, `outcome`, `origin` (`local` or
+`managed`), `limit` (1–100) and `offset` (0–10000). It includes archived rows.
+Use the existing Server execution listing for canonical filtered registry records,
+including records whose Worker cannot currently provide observations.
+
+`GET /api/v1/maintenance/executions?workerId=…&limit=…&offset=…` lists bounded
+command audit. `GET /api/v1/maintenance/executions/{operationId}` combines the
+retained command and bounded Worker observations with current Server records.
+It distinguishes an offline Worker, orphan local records, stale ownership/leases,
+pending reporting and potentially recoverable executions. Observations are
+snapshots, not scheduling or recovery authority. Exact inspect reports the
+Worker's existing Git cleanup assessment reason without deleting resources.
+`POST /api/v1/maintenance/executions/{operationId}/cancel` cancels only commands
+that have not been dispatched and retains their audit; running commands use their deadline.
+
+For apply, first set the Server Worker scheduling policy to `Draining` and wait
+for zero active assignments (completion-report retry can finish its own outstanding
+assignment). The Worker must also have no local active execution
+or concurrent maintenance. Its local maintenance reservation prevents new local
+reservations, and cleanup/archival hold the existing repository gate. Inside that
+gate the Worker checks exact local identities and asks the Server for fresh scope
+confirmation. Cleanup and archive require a terminal Server result and released
+lease of the matching generation, then repeat all existing Git provenance and
+retention checks. Standalone API calls still cannot maintain managed executions.
+
+`retry-report` previews or retries only delivery of a locally terminal result to
+the existing Server completion endpoint. It requires matching ownership plus a
+current active lease or the matching canonical terminal result. It never reruns
+implementation, integration, Issue notification or GitHub mutation. Stale leases
+require the existing Server reconciliation protocol. 404/409 reporting results
+become durable, visible reconciliation dispositions; they are not silently retried.
+
+Commands retain authorization/request correlation, deadline, terminal timestamps
+and outcomes in the Server database. Worker receipts retain started operations
+and terminal reports in local execution history. A lost report acknowledgement
+resends only the report; a restart never replays a started mutation. Expired
+dispatches appear as uncertain and retain the concurrency slot until the
+quiescent Worker reconnects and records an interrupted disposition. Partial
+failure or timeout requires fresh inspection before a new operation ID is used.
+An out-of-date or disconnected Worker cannot apply commands; queued audit remains
+visible until it reconnects. Archive receipts, execution lineage and provenance
+remain retained; permanent purge and remote Issue maintenance are not supported.

@@ -31,7 +31,7 @@ public sealed class ServerHealthService(IRegistryStore registryStore) : IServerH
     }
 }
 
-public static class ServerApplication
+public static partial class ServerApplication
 {
     internal static WebApplicationBuilder CreateBuilder(string[] args) =>
         WebApplication.CreateBuilder(new WebApplicationOptions
@@ -75,6 +75,7 @@ public static class ServerApplication
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
+        builder.Services.AddSingleton(_ => new ExecutionMaintenanceStore(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
             services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
         builder.Services.AddHostedService<LocalProvisioningCommandService>();
@@ -110,6 +111,7 @@ public static class ServerApplication
             var persistence = app.Services.GetRequiredService<IRegistryStore>();
             await persistence.InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<ExecutionMaintenanceStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
         }
         catch
@@ -969,6 +971,7 @@ public static class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (ExecutionRequestReconciliationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
+        MapExecutionMaintenance(app);
         return app;
     }
 

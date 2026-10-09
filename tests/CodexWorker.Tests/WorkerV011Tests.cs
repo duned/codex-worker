@@ -1208,7 +1208,7 @@ public sealed class WorkerV011Tests
         var workerTask = h.Worker.RunAsync(h.Cancellation.Token);
 
         await WaitForOutputAsync(h.Output, "Example task #17 · completed");
-        await WaitForOutputAsync(h.Output, "Waiting for work... 00:00");
+        await WaitForOutputAsync(h.Output, "Waiting for work... 00:00", after: "Example task #17 · completed");
         h.Cancellation.Cancel();
         await workerTask;
 
@@ -1221,7 +1221,7 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("\r\u001b[2K", output[idle..stopped]);
     }
 
-    private static async Task WaitForOutputAsync(StringWriter output, string value)
+    private static async Task WaitForOutputAsync(StringWriter output, string value, string? after = null)
     {
         for (var i = 0; i < 50; i++)
         {
@@ -1229,10 +1229,16 @@ public sealed class WorkerV011Tests
             // under the same lock because StringWriter's StringBuilder is not thread-safe.
             string snapshot;
             lock (output) snapshot = output.ToString();
-            if (snapshot.Contains(value, StringComparison.Ordinal)) return;
+            var start = after is null ? 0 : snapshot.IndexOf(after, StringComparison.Ordinal);
+            if (start >= 0 && snapshot.IndexOf(value, start, StringComparison.Ordinal) >= 0) return;
             await Task.Delay(100);
         }
-        lock (output) Assert.Contains(value, output.ToString());
+        lock (output)
+        {
+            var snapshot = output.ToString();
+            var start = after is null ? 0 : snapshot.IndexOf(after, StringComparison.Ordinal);
+            Assert.True(start >= 0 && snapshot.IndexOf(value, start, StringComparison.Ordinal) >= 0, snapshot);
+        }
     }
 
     [Fact]

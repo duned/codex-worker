@@ -532,6 +532,9 @@ public sealed class WorkerHost
                 }
 
                 var foundWork = false;
+                if (managed && active.Count == 0 && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&
+                    await _registration.ExecuteMaintenanceCommandAsync(_global.Server, history, runtimeReadModel, executionToken))
+                    continue;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
                     managedConfiguration?.Status.SynchronizationStatus == "synchronized")
                 {

@@ -290,7 +290,7 @@ internal static partial class WorkerRegistrationFile
     private static partial int Link(string existingPath, string newPath);
 }
 
-public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null,
+public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = null, NodeCapabilityDiscovery? provisioningDiscovery = null,
     WorkerCapabilityDiscovery? capabilityDiscovery = null)
 {
     // One process-owned connection pool. Injected clients are caller-owned test seams.
@@ -433,7 +433,10 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
     private async Task<WorkerRegistrationContract> RegistrationAsync(string identity, int capacity, CancellationToken cancellationToken) =>
         new(2, identity, WorkerIdentity.DisplayName, ApplicationVersion.Display,
             $"{RuntimeInformation.OSDescription}; {RuntimeInformation.ProcessArchitecture}", capacity,
-            await CapabilityDiscovery.GetCachedAsync(cancellationToken), await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
+            WithMaintenanceCapability(await CapabilityDiscovery.GetCachedAsync(cancellationToken)), await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
+
+    private static IReadOnlyList<WorkerCapabilityContract> WithMaintenanceCapability(IReadOnlyList<WorkerCapabilityContract> capabilities) =>
+        capabilities.Append(new("protocol", ExecutionMaintenanceProtocol.Capability)).Distinct().ToArray();
 
     private async Task<bool> TryVerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
     {
@@ -544,7 +547,7 @@ public sealed class WorkerRegistrationClient(HttpClient? httpClient = null, Node
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{identity}/heartbeat"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
-            lifecycleState, activeExecutions, capacity, capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken), activeProjects,
+            lifecycleState, activeExecutions, capacity, WithMaintenanceCapability(capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken)), activeProjects,
             configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
             await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics));
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
