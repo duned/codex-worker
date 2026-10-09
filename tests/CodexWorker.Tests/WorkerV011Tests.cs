@@ -5,6 +5,26 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerV011Tests
 {
+    [Theory]
+    [InlineData("success", IssueOutcomeKind.Succeeded)]
+    [InlineData("failed", IssueOutcomeKind.Failed)]
+    public async Task QuotaLookupErrorsDoNotChangeExecutionOutcome(string status, IssueOutcomeKind expected)
+    {
+        using var h = new Harness();
+        h.Codex.QuotaReader = new ThrowingQuotaReader();
+        h.Codex.InitialOutcome = new(status, "task outcome", [], false, null);
+        Assert.Equal(expected, (await h.ProcessOneAsync())?.Kind);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("Codex quota start", StringComparison.Ordinal));
+        Assert.Contains(h.OperationalMessages, message => message.Contains("Codex quota end", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("private quota error", StringComparison.Ordinal));
+    }
+
+    private sealed class ThrowingQuotaReader : ICodexQuotaReader
+    {
+        public Task<CodexQuotaObservation> ReadAsync(CancellationToken ct) =>
+            Task.FromException<CodexQuotaObservation>(new IOException("private quota error"));
+    }
+
     [Fact]
     public async Task CodexFailureDuringRequestedShutdownDoesNotBecomeWorkerFailure()
     {
@@ -2642,6 +2662,7 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
+        public ICodexQuotaReader? QuotaReader { get; set; }
         public List<GitHubIssue> Issues { get; } = [];
         private Action<string?>? _modelObserver;
         public string? CliModel { get; set; }

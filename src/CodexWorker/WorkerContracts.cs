@@ -95,6 +95,7 @@ public interface IGitRepository : IDisposable
 
 public interface ICodexExecutor
 {
+    ICodexQuotaReader? QuotaReader => null;
     ICodexExecutor WithSessionObserver(Func<string, Task> observer) => this;
     ICodexExecutor WithModelObserver(Action<string?> observer) => this;
     ICodexExecutor WithProfile(CodexExecutionProfile profile) => this;

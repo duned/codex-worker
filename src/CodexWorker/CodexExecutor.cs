@@ -37,6 +37,8 @@ public static class CodexResultParser
 public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     IReadOnlyDictionary<string, string>? projectEnvironment = null) : ICodexExecutor
 {
+    public ICodexQuotaReader QuotaReader => CodexQuotaReader.Local;
+
     public ICodexExecutor WithProfile(CodexExecutionProfile profile) => new CodexExecutor(runner, new CodexSettings
     {
         Model = profile.Model, ReasoningEffort = profile.Effort,

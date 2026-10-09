@@ -44,6 +44,7 @@ public sealed class WorkerExecution
         OwnershipGeneration = ownershipGeneration;
     }
 
+    public CodexQuotaObservation? QuotaAtEnd { get; set; }
     public Guid ExecutionId { get; }
     public string Project { get; }
     public string Repository { get; }

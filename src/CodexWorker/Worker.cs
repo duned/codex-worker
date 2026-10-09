@@ -523,7 +523,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
                 AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.EffectiveModel,
-                EffectiveEffort = execution.CodexProfile?.Effort };
+                EffectiveEffort = execution.CodexProfile?.Effort, QuotaAtEnd = execution.QuotaAtEnd };
             var terminalState = result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
@@ -801,7 +801,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, operationalLog: _operationalLog);
         return runner.RunAsync(context, ct);
     }
 
@@ -953,7 +953,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact(
-                        result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues), ct);
+                        result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues) + QuotaNotification(result.Report), ct);
                 _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
                     FailureDiagnosticRedactor.Redact(result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues));
                 break;
@@ -962,7 +962,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
-                    result.Report.ExecutionId!.Value, "See the Issue report for validation diagnostics and recovery details.", ct);
+                    result.Report.ExecutionId!.Value, "See the Issue report for validation diagnostics and recovery details." + QuotaNotification(result.Report), ct);
                 var recoveryDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.RecoveryBranch is null ? " · workspace not preserved · retry/resume unavailable" :
                         $" · workspace preserved on {result.Report.RecoveryBranch} · retry/resume {(result.Report.RetryAvailable ? "available" : "unavailable")}");
@@ -973,7 +973,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact($"Integration recovery is required after {result.Report.ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s). " +
-                        (result.Report.FinalValidationDiagnostics ?? result.Report.Failure ?? "See the Issue report."), result.Report.SecretValues), ct);
+                        (result.Report.FinalValidationDiagnostics ?? result.Report.Failure ?? "See the Issue report."), result.Report.SecretValues) + QuotaNotification(result.Report), ct);
                 var conflictDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.WorkspacePreserved ? $" · implementation workspace preserved on {result.Report.RecoveryBranch} · integration recovery available" :
                         " · implementation workspace preservation could not be verified");
@@ -997,9 +997,14 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
     }
 
+    internal static string QuotaNotification(IssueExecutionReport report) =>
+        report.QuotaAtEnd is { Status: "available" } quota && DateTimeOffset.UtcNow - quota.ObservedAtUtc <= TimeSpan.FromMinutes(2)
+            ? "\n\nCodex account quota: " + quota.Summary(DateTimeOffset.UtcNow) : "";
+
     private static string TelegramCompletion(IssueExecutionReport report)
     {
         var details = new List<string>();
+        if (QuotaNotification(report) is { Length: > 0 } quota) details.Add(quota.Trim());
         if (report.Integration is not null) details.Add(report.Integration.Summary);
         var integrationRepairs = report.ValidationRepairs.Count(repair => repair.IntegrationRepair);
         if (integrationRepairs > 0) details.Add($"Integration repair succeeded after {integrationRepairs} attempt(s).");

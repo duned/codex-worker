@@ -24,7 +24,8 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? FailureCategory = null,
     string? EffectiveModel = null,
     string? EffectiveEffort = null,
-    string? RecoveryGuidance = null)
+    string? RecoveryGuidance = null,
+    CodexQuotaObservation? QuotaAtEnd = null)
 {
     public string PostRebaseValidationOutcome => ValidationRepairs.Any(repair => repair.IntegrationRepair)
         ? $"failed: post-rebase validation ({ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s))"

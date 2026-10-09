@@ -14,7 +14,7 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
-    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null)
+    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null, ICodexQuotaReader? quotaReader = null, Action<string>? operationalLog = null)
 {
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
@@ -88,11 +88,17 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 RecoveryBaseCommit = workspaceSnapshot?.BaseCommit, RecoveryStatus = workspaceSnapshot?.StatusSummary
             }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
-            var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
-                executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
-                    execution.Resumed, execution.AttemptNumber, ct),
-                completion: x => x.Status, succeeded: x => x.Status == "success",
-                warning: x => x.Status == "blocked", ct: ct);
+            await ObserveQuotaAsync(execution, "start", ct);
+            CodexOutcome outcome;
+            try
+            {
+                outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
+                    executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
+                        execution.Resumed, execution.AttemptNumber, ct),
+                    completion: x => x.Status, succeeded: x => x.Status == "success",
+                    warning: x => x.Status == "blocked", ct: ct);
+            }
+            finally { await ObserveQuotaAsync(execution, "end", ct); }
             if (outcome.Status == "failed")
                 output.FailureReason(execution.ExecutionId, "Codex reported incomplete task", outcome.Summary,
                     config.Environment.Variables.Values.ToArray());
@@ -279,6 +285,22 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             await history.SaveCompletionAsync(execution.ExecutionId,
                 new ExecutionCompletion(report, ExecutionCompletion.IssueIntent(issue), ExecutionCompletion.Policy(config), confirmed), false, token);
         });
+    }
+
+    private async Task ObserveQuotaAsync(WorkerExecution execution, string phase, CancellationToken ct)
+    {
+        CodexQuotaObservation observation;
+        try
+        {
+            var reader = quotaReader ?? codex.QuotaReader;
+            observation = reader is not null ? await reader.ReadAsync(ct)
+                : new(DateTimeOffset.UtcNow, "reader unavailable", []);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        { observation = new(DateTimeOffset.UtcNow, "query failed", []); }
+        if (phase == "end") execution.QuotaAtEnd = observation;
+        output.Quota(execution, phase, observation);
+        operationalLog?.Invoke(CodexQuotaFormatting.Journal(execution, phase, observation, (timeProvider ?? TimeProvider.System).GetUtcNow()));
     }
 
     private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, ICodexExecutor executionCodex, CancellationToken ct)
