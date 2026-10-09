@@ -5,7 +5,11 @@ export type { TranslationKey } from './locales/en';
 export const resources = { en, es };
 /** Typed feature keys and complete Spanish resources make omissions build errors. */
 export function t(key: TranslationKey, values: Record<string, string | number> = {}, language: Language = usePreferences.getState().language): string {
-  return resources[language][key].replace(/\{(\w+)\}/g, (match, name: string) => String(values[name] ?? match));
+  // Some keys are assembled from server-reported states at runtime. Keep a
+  // missing/unknown key from taking down the whole page and use the same
+  // localized fallback shown for other unavailable status text.
+  const template = resources[language][key] ?? resources[language]['shared.unknown'];
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => String(values[name] ?? match));
 }
 const textKeys = new Map<string, TranslationKey>();
 for (const key of Object.keys(en) as TranslationKey[]) {
