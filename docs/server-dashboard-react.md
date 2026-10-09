@@ -430,3 +430,27 @@ all named entries. Grant no parent read/write access, use no recursive `chown` o
 parent after this opt-in: it disables the ACL mask again. Normal production
 installs need no developer ACL. Retry `cw dd` once the effective permissions are
 correct; do not restart services to diagnose filesystem access.
+
+### Worker host observations and product versions
+
+The sidebar uses `/api/status` for the Server product version; Worker cards and
+identity headers use `workerVersion` from the existing Worker read model. Missing
+versions remain absent. These values are separate from capability and OS versions.
+
+Worker heartbeats optionally include `hostResources`, retained in the existing
+heartbeat JSON and projected into Worker reads. Older heartbeats remain readable.
+The Worker detail resources section shows unavailable values explicitly and labels
+samples stale after two minutes or when the Server marks the Worker stale; the
+measurement timestamp does not replace heartbeat or readiness state.
+
+Linux Workers sample aggregate `/proc/stat` CPU counters over at least one second.
+CPU usage is 100 × (delta total − delta idle/iowait) / delta total across all reported
+logical CPUs (guest counters are excluded to avoid double counting). Counter resets,
+CPU-count changes and invalid deltas yield unavailable CPU usage. RAM usage is
+`MemTotal − MemAvailable`, with percentage relative to `MemTotal`. These are host
+counters, not Worker-process consumption or container allocation limits. Other
+platforms currently leave CPU/RAM fields unavailable. Disk totals and available
+space describe the volume containing the Worker application, when the runtime can
+read it. No volume paths or unrelated host details are transmitted. Each metric can
+be absent independently; percentages are finite and bounded to 0–100 at the API
+boundary. Collection cancellation propagates through the heartbeat lifecycle.

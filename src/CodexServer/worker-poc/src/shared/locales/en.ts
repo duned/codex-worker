@@ -1,4 +1,10 @@
 export const en = {
+  "workers.hostResources": "Host specifications and resources",
+  "workers.logicalCpus": "Logical CPUs",
+  "workers.cpuUsage": "CPU usage",
+  "workers.memoryUsage": "RAM usage (used / total)",
+  "workers.diskCapacity": "Disk (available / total)",
+  "workers.measuredAt": "Measured at",
   "shared.dashboardUnavailable": "Dashboard unavailable",
   "shared.reloadToRestoreTheSessionAndAuthoritativeState": "Reload to restore the session and authoritative state.",
   "shared.openCurrentDashboard": "Open current dashboard",

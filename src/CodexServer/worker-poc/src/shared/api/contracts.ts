@@ -4,6 +4,7 @@ export interface WorkerObservation {
   workerId: string; displayName?: string; availability: string; lifecycleState?: string;
   capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
   activeAssignments?: number; schedulingPolicy?: string; lastHeartbeatAtUtc?: string;
+  hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
   platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[];
 }
 export interface ProjectSummary { id: string; name: string; repository: string; revision?: number; enabled?: boolean; requirements?: { type: string; name: string; version?: string }[] }

@@ -1,5 +1,11 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "workers.hostResources": "Especificaciones y recursos del equipo",
+  "workers.logicalCpus": "CPU lógicas",
+  "workers.cpuUsage": "Uso de CPU",
+  "workers.memoryUsage": "Uso de RAM (usada / total)",
+  "workers.diskCapacity": "Disco (disponible / total)",
+  "workers.measuredAt": "Medido el",
   "projects.searchProjects": "Buscar proyectos",
   "projects.filterStatus": "Estado",
   "projects.allProjects": "Todos los proyectos",

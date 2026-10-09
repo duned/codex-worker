@@ -16,6 +16,11 @@ function validateWorker(value: unknown) {
   optional(item, ['workerVersion', 'displayName', 'lifecycleState', 'schedulingPolicy', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc', 'platform', 'firstRegisteredAtUtc'], [],
     ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments']);
   if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version']); }); }
+  if (item.hostResources != null) {
+    const resources = fields(item.hostResources, ['measuredAtUtc']);
+    optional(resources, [], [], ['logicalCpuCount', 'totalMemoryBytes', 'usedMemoryBytes', 'diskTotalBytes', 'diskAvailableBytes', 'cpuUsagePercent', 'memoryUsagePercent', 'sampleSeconds']);
+    if (!Number.isFinite(Date.parse(resources.measuredAtUtc as string)) || Object.entries(resources).some(([key, value]) => typeof value === 'number' && (value < 0 || (key.endsWith('Percent') && value > 100)))) throw new Error('Invalid host resources.');
+  }
   if (item.activeProjects != null) stringList(item.activeProjects);
 }
 function fields(value: unknown, strings: string[], booleans: string[] = []) {

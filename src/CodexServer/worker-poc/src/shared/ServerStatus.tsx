@@ -17,7 +17,7 @@ export function ServerStatusView({ data, error, live, updatedAt }: { data?: Stat
   useLanguage();
   const status = serverStatusPresentation(data, error, live);
   return <section aria-label={t("shared.serverConnection")} className="space-y-2 border-t border-secondary pt-3 text-xs text-tertiary">
-    <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+    <div className="flex flex-wrap items-center gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge>{data?.version && <span>v{data.version.replace(/^v/, '')}</span>}</div>
     <p>{t("shared.lastUpdated")}{' '}{updatedAt > 0 ? <time dateTime={new Date(updatedAt).toISOString()}>{timestamp(new Date(updatedAt).toISOString())}</time> : localizeText('Unknown')}</p>
     {error && updatedAt > 0 && <p>{t("shared.lastSuccessfulObservationIsStale")}</p>}
   </section>;

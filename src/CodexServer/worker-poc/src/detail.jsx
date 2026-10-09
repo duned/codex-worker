@@ -1,3 +1,4 @@
+import { WorkerResources } from './features/workers/WorkerResources';
 import { useState } from 'react';
 import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
 import { ExternalLink } from './shared/Actions';
@@ -103,7 +104,7 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
       </nav>
       <h1 tabIndex={-1}>{worker.displayName || t('shared.workerDetails')}</h1>
       <div className="poc-worker-meta">
-        <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />
+        <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />{worker.workerVersion && <span>{t('workers.workerVersion')} {worker.workerVersion}</span>}
         <div className="poc-worker-statuses" aria-label={t('workers.workerStatus')}>
           <Status value={connection} tone={connection === t('workers.connected') ? 'success' : statusTone(node?.connectivity ?? worker.availability)} />
           <Status value={readiness} tone={statusTone(readinessValue)} />
@@ -416,6 +417,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />
           <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
           <CapabilitiesPanel node={node} />
+          <WorkerResources worker={worker} now={now} />
         </div>
         {!readOnly && <aside className="poc-worker-rail poc-secondary-rail" aria-label={t('workers.workerControlsAndReadiness')}>
           <ControlRail administration={administration} />

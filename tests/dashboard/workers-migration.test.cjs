@@ -65,3 +65,11 @@ test('Server-shaped command, readiness and delivery metadata validate nested pre
   assert.deepEqual(api.workers([worker]), [worker]);
   assert.throws(() => api.workers([{ ...worker, activeProjects: [{}] }]));
 });
+test('optional host observations preserve older Workers and reject unsafe resource evidence', () => {
+  const worker = { workerId: request.workerId, availability: 'online', workerVersion: '0.15.0' };
+  assert.deepEqual(api.workers([worker]), [worker]);
+  const hostResources = { measuredAtUtc: '2026-01-01T00:00:00Z', logicalCpuCount: 8, totalMemoryBytes: 1024, usedMemoryBytes: 512, cpuUsagePercent: 25, memoryUsagePercent: 50, sampleSeconds: 1 };
+  assert.deepEqual(api.workers([{ ...worker, hostResources }])[0].hostResources, hostResources);
+  for (const invalid of [{ cpuUsagePercent: 101 }, { memoryUsagePercent: -1 }, { logicalCpuCount: {} }, { measuredAtUtc: 'invalid' }, { totalMemoryBytes: Infinity }])
+    assert.throws(() => api.workers([{ ...worker, hostResources: { ...hostResources, ...invalid } }]));
+});
