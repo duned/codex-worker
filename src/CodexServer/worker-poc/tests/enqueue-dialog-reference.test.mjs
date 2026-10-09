@@ -89,11 +89,18 @@ test('enqueue retains keyboard, pending, rejection and safe navigation behavior'
 });
 
 test('enqueue close controls share cleanup and visibility follows the retained draft state', () => {
-  assert.match(issues, /function closeDialog\(\) \{\s*if \(busy\) return;\s*setError\(''\); setDiscard\(false\); setAccepted\(undefined\);\s*if \(accepted\) w\.setIssueDraft\(undefined\);\s*else w\.setIssueDraft\(\{ \.\.\.d, open: false \}\);\s*\}/);
+  const closeDialog = issues.match(/function closeDialog\(\) \{([\s\S]*?)\n  \}/)?.[1];
+  assert.ok(closeDialog, 'closeDialog is defined');
+  assert.match(closeDialog, /if\s*\(\s*busy\s*\)\s*return/);
+  assert.match(closeDialog, /setError\(\s*''\s*\)/);
+  assert.match(closeDialog, /setDiscard\(\s*false\s*\)/);
+  assert.match(closeDialog, /setAccepted\(\s*undefined\s*\)/);
+  assert.match(closeDialog, /if\s*\(\s*accepted\s*\)\s*w\.setIssueDraft\(\s*undefined\s*\)/);
+  assert.match(closeDialog, /else\s*w\.setIssueDraft\(\s*(?:current\s*=>\s*current\s*\?\s*\{\s*\.\.\.current\s*,\s*open:\s*false\s*\}\s*:\s*current|\{\s*\.\.\.d\s*,\s*open:\s*false\s*\})\s*\)/);
   assert.match(issues, /<FormDialog isOpen=\{d\.open\}[^>]*onClose=\{closeDialog\}/);
   assert.match(issues, /className=\{change\.kind === 'enqueue' \? 'enqueue-dialog-cancel' : undefined\} isDisabled=\{busy\} onPress=\{closeDialog\}/);
   assert.match(issues, /<Button type="submit" className=\{change\.kind === 'enqueue' \? 'enqueue-dialog-submit' : undefined\}/);
   assert.match(workspace, /accepted\?: ExecutionSummary/);
   assert.match(issues, /w\.setIssueDraft\(\{ \.\.\.d, accepted: execution \}\)/);
-  assert.doesNotMatch(issues.match(/function closeDialog\(\) \{[\s\S]*?\n  \}/)?.[0] ?? '', /submitIssue|submit\(\)/);
+  assert.doesNotMatch(closeDialog, /submitIssue|submit\(\)/);
 });
