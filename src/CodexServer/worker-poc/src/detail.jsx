@@ -2,6 +2,7 @@ import { WorkerResources } from './features/workers/WorkerResources';
 import { useState } from 'react';
 import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
 import { ExternalLink } from './shared/Actions';
+import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
