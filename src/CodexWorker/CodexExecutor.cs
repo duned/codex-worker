@@ -584,7 +584,7 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds,
             var shell = OperatingSystem.IsWindows() ? "powershell" : "/bin/sh";
             var args = OperatingSystem.IsWindows() ? new[] { "-NoProfile", "-Command", command } : new[] { "-c", command };
             ProcessResult result;
-            try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct, environment); }
+            try { result = await runner.RunAsync(shell, args, directory, TimeSpan.FromSeconds(timeoutSeconds), ct, environment, captureTail: true); }
             catch (ProcessTimeoutException ex)
             {
                 return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true,

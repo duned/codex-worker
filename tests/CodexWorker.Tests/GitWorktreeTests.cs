@@ -635,6 +635,62 @@ public sealed class GitWorktreeTests
         await retry.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData("ignored", false)]
+    [InlineData("unignored", true)]
+    [InlineData("tracked", true)]
+    [InlineData("ancestor", true)]
+    public async Task ResumeUsesGitPathsAndRejectsCaptureLinks(string scenario, bool rejected)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await RepositoryFixture.CreateAsync();
+        await fixture.AddAndPushAsync("generated/tracked.txt", "tracked source");
+        await fixture.AddAndPushAsync(".gitignore", "generated/\n");
+        using var original = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await original.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await original.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var workspace = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "partial.txt"), "preserved source");
+        var generated = Path.Combine(workspace, "generated");
+        await File.WriteAllTextAsync(Path.Combine(generated, "tracked.txt"), "changed tracked source");
+        var bin = Path.Combine(generated, "node_modules", ".bin");
+        Directory.CreateDirectory(bin);
+        File.CreateSymbolicLink(Path.Combine(bin, "esbuild"), "/outside/missing/esbuild");
+        Directory.CreateSymbolicLink(Path.Combine(bin, "external-tree"), "/outside/missing/tree");
+        await File.WriteAllTextAsync(Path.Combine(generated, "staged-source.txt"), "staged source");
+        await fixture.GitAt(workspace, "add", "--force", "generated/staged-source.txt");
+        if (scenario == "unignored") File.CreateSymbolicLink(Path.Combine(workspace, "unsafe.txt"), "/etc/passwd");
+        if (scenario == "tracked")
+        {
+            File.Delete(Path.Combine(generated, "tracked.txt"));
+            File.CreateSymbolicLink(Path.Combine(generated, "tracked.txt"), "/etc/passwd");
+        }
+        if (scenario == "ancestor")
+        {
+            Directory.Move(generated, generated + "-saved");
+            Directory.CreateSymbolicLink(generated, generated + "-saved");
+        }
+        var recovery = Assert.IsType<GitRecoveryInfo>(await original.PreserveFailedIssueChangesAsync(CancellationToken.None));
+        var previous = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            recovery.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1, null,
+            null, 0, [], null, null, null, "failed", "recoverable", recovery.BaseCommit, recovery.StatusSummary);
+        using var retry = original.CreateExecutionRepository();
+        if (rejected)
+            await Assert.ThrowsAsync<IssuePreparationRejectedException>(() => retry.StartIssueAsync(Guid.NewGuid(), fixture.Issue,
+                previous, true, 2, CancellationToken.None));
+        else
+        {
+            await retry.StartIssueAsync(Guid.NewGuid(), fixture.Issue, previous, true, 2, CancellationToken.None);
+            Assert.Equal("preserved source", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "partial.txt")));
+            Assert.Equal("changed tracked source", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "generated", "tracked.txt")));
+            Assert.Equal("staged source", await File.ReadAllTextAsync(Path.Combine(retry.ExecutionDirectory, "generated", "staged-source.txt")));
+            Assert.False(Directory.Exists(Path.Combine(retry.ExecutionDirectory, "generated", "node_modules")));
+        }
+        Assert.Equal("preserved source", await File.ReadAllTextAsync(Path.Combine(workspace, "partial.txt")));
+        Assert.True(Directory.Exists(workspace));
+    }
+
     [Fact]
     public async Task ResumeRejectsMissingOrUnsafePersistedRecoveryMetadata()
     {

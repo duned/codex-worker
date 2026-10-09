@@ -428,9 +428,9 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
 
     private async Task ApplyRecoveryDeltaAsync(string source, string destination, string baseCommit, CancellationToken ct)
     {
-        ValidateRecoveryPaths(source);
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "codex-worker-recovery", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(temporaryDirectory);
+        if (OperatingSystem.IsWindows()) Directory.CreateDirectory(temporaryDirectory);
+        else Directory.CreateDirectory(temporaryDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var index = Path.Combine(temporaryDirectory, "index");
         var patch = Path.Combine(temporaryDirectory, "recovery.patch");
         var environment = new Dictionary<string, string?> { ["GIT_INDEX_FILE"] = index };
@@ -443,10 +443,38 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, environment);
             if (readTree.ExitCode != 0)
                 throw new IssuePreparationRejectedException("Could not initialize the preserved task delta from its recorded base commit.");
-            var added = await runner.RunAsync("git", ["add", "--all"], source,
+            var paths = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var candidateEnvironment in new IReadOnlyDictionary<string, string?>?[] { environment, null })
+            {
+                var tracked = await runner.RunAsync("git", ["ls-files", "--stage", "-z"], source,
+                    TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, candidateEnvironment);
+                if (tracked.ExitCode != 0 || tracked.StandardOutput.Contains("[output truncated]", StringComparison.Ordinal) ||
+                    tracked.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                        .Any(entry => !IsSafeRecoveryIndexEntry(entry)))
+                    throw new IssuePreparationRejectedException("Recovery index contains links, submodules or unprovable entries; inspect the preserved workspace.");
+                var candidates = await runner.RunAsync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], source,
+                    TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, candidateEnvironment);
+                if (candidates.ExitCode != 0 || candidates.StandardOutput.Contains("[output truncated]", StringComparison.Ordinal))
+                    throw new IssuePreparationRejectedException("Cannot prove the complete Git recovery path set; inspect the preserved workspace.");
+                paths.UnionWith(candidates.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries));
+            }
+            ValidateRecoveryPaths(source, paths);
+            var pathspec = Path.Combine(temporaryDirectory, "paths");
+            await File.WriteAllTextAsync(pathspec, string.Join('\0', paths) + "\0", ct);
+            // Explicit literal pathspecs retain real-index additions even when newly ignored.
+            // Git never needs to descend into ignored dependency trees outside this set.
+            var added = await runner.RunAsync("git", ["--literal-pathspecs", "add", "--all", "--force",
+                $"--pathspec-from-file={pathspec}", "--pathspec-file-nul"], source,
                 TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, environment);
             if (added.ExitCode != 0)
                 throw new IssuePreparationRejectedException($"Could not capture the preserved task delta: {Tail(added.StandardError)}");
+            ValidateRecoveryPaths(source, paths);
+            var captured = await runner.RunAsync("git", ["ls-files", "--stage", "-z"], source,
+                TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, environment);
+            if (captured.ExitCode != 0 || captured.StandardOutput.Contains("[output truncated]", StringComparison.Ordinal) ||
+                captured.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(entry => !IsSafeRecoveryIndexEntry(entry)))
+                throw new IssuePreparationRejectedException("Captured recovery index contains links, submodules or unprovable entries; refusing to apply it.");
             var diff = await runner.RunAsync("git", ["diff", "--cached", "--binary", "--full-index", $"--output={patch}", baseCommit], source,
                 TimeSpan.FromSeconds(timeouts.GitTimeoutSeconds), ct, environment);
             if (diff.ExitCode != 0)
@@ -468,21 +496,33 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
         }
     }
 
-    private static void ValidateRecoveryPaths(string directory)
+    private static bool IsSafeRecoveryIndexEntry(string entry)
     {
-        var pending = new Stack<string>();
-        pending.Push(directory);
-        while (pending.TryPop(out var current))
+        var separator = entry.IndexOf('\t');
+        return separator > 0 && entry[..separator].EndsWith(" 0", StringComparison.Ordinal) &&
+            (entry.StartsWith("100644 ", StringComparison.Ordinal) || entry.StartsWith("100755 ", StringComparison.Ordinal));
+    }
+
+    private static void ValidateRecoveryPaths(string directory, IEnumerable<string> paths)
+    {
+        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+            throw new IssuePreparationRejectedException("Recovery workspace became a link; refusing to capture it.");
+        foreach (var relative in paths)
         {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(current))
+            if (Path.IsPathRooted(relative) || relative.Split('/').Any(part => part is ".." or ".git"))
+                throw new IssuePreparationRejectedException("Git recovery path escapes the owned workspace or refers to Git metadata.");
+            var current = directory;
+            foreach (var part in relative.Split('/'))
             {
-                if (Path.GetFullPath(entry).Equals(Path.GetFullPath(Path.Combine(directory, ".git")),
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                    continue;
-                var attributes = File.GetAttributes(entry);
+                current = Path.Combine(current, part);
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(current); }
+                catch (FileNotFoundException) { break; } // Tracked deletion.
+                catch (DirectoryNotFoundException) { break; }
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
-                    throw new IssuePreparationRejectedException($"Recoverable workspace contains a link that cannot be safely resumed: {entry}");
-                if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+                    throw new IssuePreparationRejectedException($"Git-selected recovery path contains a link; refusing to resume: {relative}");
+                if (PathEquals(current, Path.Combine(directory, relative)) && (attributes & FileAttributes.Directory) != 0)
+                    throw new IssuePreparationRejectedException($"Tracked recovery file was replaced by a directory; inspect it before recovery: {relative}");
             }
         }
     }

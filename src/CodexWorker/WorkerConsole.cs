@@ -170,6 +170,29 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine($"{ExecutionFormatting.OperationalIdentity(issue, executionId)} · failed · {FormatDuration(elapsed)}" +
             (details.Contains("## ", StringComparison.Ordinal) ? "" : $" · {details}"),
             ConsoleColor.Red, "✗", _errorWriter);
+    public void ValidationFailure(int issueNumber, Guid executionId, string step, int repairAttempt,
+        int commandCount, ValidationFailure? failure, TimeSpan elapsed, IReadOnlyList<string>? secretValues = null,
+        string? category = null, string? detail = null)
+    {
+        string SafeTail(string value)
+        {
+            var safe = FailureDiagnosticRedactor.Redact(value, secretValues);
+            safe = FailureDiagnosticRedactor.Redact(safe, failure?.SecretValues);
+            return Compact(safe.Length <= 700 ? safe : safe[^700..], 700);
+        }
+        var status = category ?? (failure?.TimedOut == true ? "timeout" :
+            failure?.ExitCode == 127 ? "process exit (command unavailable)" :
+            failure is not null && System.Text.RegularExpressions.Regex.IsMatch(failure.StandardError + "\n" + failure.StandardOutput,
+                @"(?i)(assertion failed|assert\.[^\s]+exception)") ? "process exit (assertion diagnostic)" : "process exit");
+        // Use a stable ordinal instead of printing potentially credential-bearing shell arguments.
+        var command = failure is null ? "unavailable" : $"{failure.CommandNumber}/{commandCount}";
+        WriteLine($"Validation diagnostic · Issue #{issueNumber} · execution {executionId} · {step} · repair attempt {repairAttempt} · " +
+            $"configured command {command} · {status} · exit {failure?.ExitCode?.ToString() ?? "unavailable"} · elapsed {elapsed.TotalSeconds:F1}s · " +
+            (failure is null ? SafeTail(detail ?? "No output available.") :
+                $"stderr tail: {SafeTail(failure.StandardError)} · stdout tail: {SafeTail(failure.StandardOutput)}"),
+            ConsoleColor.DarkGray, writer: _hasExplicitErrorWriter ? _errorWriter : _writer);
+    }
+
     public void FailureReason(Guid executionId, string category, string reason, IReadOnlyList<string>? secretValues = null)
     {
         var safeReason = FailureDiagnosticRedactor.Redact(reason, secretValues);

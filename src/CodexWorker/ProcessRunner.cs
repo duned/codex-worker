@@ -11,7 +11,7 @@ public sealed class ProcessRunner
 
     public async Task<ProcessResult> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory,
         TimeSpan? timeout = null, CancellationToken cancellationToken = default, IReadOnlyDictionary<string, string?>? environment = null,
-        string? standardInput = null, Action<string>? standardErrorObserver = null, Func<string, Task>? standardOutputObserver = null)
+        string? standardInput = null, Action<string>? standardErrorObserver = null, Func<string, Task>? standardOutputObserver = null, bool captureTail = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(executable)
@@ -58,8 +58,8 @@ public sealed class ProcessRunner
         }
         catch (Exception ex) { throw new InvalidOperationException($"Could not start '{start.FileName}' in '{workingDirectory}': {ex.Message}", ex); }
 
-        var stdout = ReadLimitedAsync(process.StandardOutput, CaptureLimit, asyncObserver: standardOutputObserver);
-        var stderr = ReadLimitedAsync(process.StandardError, CaptureLimit, standardErrorObserver);
+        var stdout = ReadLimitedAsync(process.StandardOutput, CaptureLimit, asyncObserver: standardOutputObserver, captureTail: captureTail);
+        var stderr = ReadLimitedAsync(process.StandardError, CaptureLimit, standardErrorObserver, captureTail: captureTail);
         using var timeoutCts = timeout is null ? null : new CancellationTokenSource(timeout.Value);
         using var linked = timeoutCts is null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
@@ -150,7 +150,7 @@ public sealed class ProcessRunner
         }
     }
 
-    private static async Task<string> ReadLimitedAsync(StreamReader reader, int limit, Action<string>? observer = null, Func<string, Task>? asyncObserver = null)
+    private static async Task<string> ReadLimitedAsync(StreamReader reader, int limit, Action<string>? observer = null, Func<string, Task>? asyncObserver = null, bool captureTail = false)
     {
         var buffer = new char[4096];
         var output = new StringBuilder(Math.Min(limit, 8192));
@@ -159,7 +159,12 @@ public sealed class ProcessRunner
         while ((count = await reader.ReadAsync(buffer)) > 0)
         {
             var remaining = limit - output.Length;
-            if (remaining > 0) output.Append(buffer, 0, Math.Min(remaining, count));
+            if (captureTail)
+            {
+                output.Append(buffer, 0, count);
+                if (output.Length > limit) output.Remove(0, output.Length - limit);
+            }
+            else if (remaining > 0) output.Append(buffer, 0, Math.Min(remaining, count));
             if (count > remaining) truncated = true;
             if (asyncObserver is not null)
             {
@@ -174,7 +179,11 @@ public sealed class ProcessRunner
                 observer = null;
             }
         }
-        if (truncated) output.Append("\n[output truncated]");
+        if (truncated)
+        {
+            if (captureTail) output.Insert(0, "[output truncated; showing tail]\n");
+            else output.Append("\n[output truncated]");
+        }
         return output.ToString();
     }
 }

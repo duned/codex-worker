@@ -112,7 +112,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             {
                 await TransitionAsync(execution, ExecutionState.Validating, ct);
                 var validationResult = await output.RunProgressAsync(TaskLabel(issue, "Validation", execution), () =>
-                    validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
+                    RunValidationAsync(context, "Validation", repairAttempts, ct),
                     x => x.Succeeded ? "passed" : $"command {x.Failure!.CommandNumber} failed",
                     x => x.Succeeded, ct: ct);
                 if (validationResult.Succeeded)
@@ -391,20 +391,38 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         return new IntegrationRepairResult(true, outcome.Status == "success");
     }
 
+    private async Task<ValidationResult> RunValidationAsync(ExecutionContext context, string step, int repairAttempt, CancellationToken ct)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var result = await validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct);
+            if (result.Failure is { } failure)
+                output.ValidationFailure(context.Issue.Number, context.Execution.ExecutionId, step, repairAttempt,
+                    config.Validation.Commands.Count, failure, elapsed.Elapsed, config.Environment.Variables.Values.ToArray());
+            return result;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException)
+        {
+            // Preserve cancellation and infrastructure/startup semantics; observability must not add retries.
+            output.ValidationFailure(context.Issue.Number, context.Execution.ExecutionId, step, repairAttempt,
+                config.Validation.Commands.Count, null, elapsed.Elapsed, config.Environment.Variables.Values.ToArray(),
+                ex is OperationCanceledException ? "cancelled" : "environment/startup error", ex.Message);
+            throw;
+        }
+    }
+
     private async Task<ValidationResult> ValidateAfterRebaseAsync(ExecutionContext context,
         List<ValidationRepairRecord> repairs, CancellationToken ct)
     {
         var integrationRepair = repairs.LastOrDefault(repair => repair.IntegrationRepair);
         var stage = integrationRepair is null ? (context.IntegrationRecovery ? "Validation after integration recovery" : "Validation after rebase") : "Validation after integration repair";
         var result = await output.RunProgressAsync(TaskLabel(context.Issue, stage, context.Execution),
-            () => validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct),
+            () => RunValidationAsync(context, stage, integrationRepair?.Attempt ?? 0, ct),
             x => x.Succeeded ? (integrationRepair is null ? "passed" : "integration repair succeeded") : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);
         if (integrationRepair is not null)
             repairs[^1] = integrationRepair with { PassedAfterRepair = result.Succeeded,
                 ValidationAfterRepair = result.Failure?.ToSummary() };
-        if (!result.Succeeded)
-            output.FailureReason(context.Execution.ExecutionId, $"{stage} failed",
-                result.Failure!.ToSummary(), config.Environment.Variables.Values.ToArray());
         await SaveHistoryAsync(CreateEntry(context.Execution, new IssueExecutionReport(null, repairs), null, null)
             with { ValidationOutcome = result.Succeeded ? "passed" : $"failed: {stage.ToLowerInvariant()}" }, ct);
         return result;

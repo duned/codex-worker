@@ -1089,6 +1089,14 @@ public sealed class WorkerV011Tests
 
         Assert.Equal(new[] { 1, 2 }, h.Codex.RepairAttempts);
         Assert.Equal(3, h.Validation.Calls);
+        var diagnostics = h.ErrorOutput.ToString();
+        Assert.Equal(3, diagnostics.Split("Validation diagnostic", StringSplitOptions.None).Length - 1);
+        Assert.Contains("repair attempt 0", diagnostics);
+        Assert.Contains("repair attempt 1", diagnostics);
+        Assert.Contains("repair attempt 2", diagnostics);
+        Assert.Contains("exit 7", diagnostics);
+        Assert.Contains("initial failure", diagnostics);
+        Assert.Contains("repair two still fails", diagnostics);
         Assert.Equal(0, h.Git.Integrations);
         Assert.Equal(1, h.Git.Cleanups);
         Assert.Contains("working->failed", h.GitHub.Labels);
