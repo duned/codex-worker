@@ -23,8 +23,12 @@ function useWorkspaceOwner() {
   const [draft, setDraft] = useState<ProjectDraft>();
   const [issueDraft, setIssueDraft] = useState<IssueDraft>();
   const [attempts, setAttempts] = useState<Record<string, Attempt>>({});
-  const [message, setMessage] = useState('');
+  const [message, setMessageText] = useState(''), [messageProjectId, setMessageProjectId] = useState<string>();
   const [conflict, setConflict] = useState<Project>();
+  function setMessage(value: string, projectId?: string) {
+    setMessageText(value);
+    setMessageProjectId(projectId);
+  }
   useEffect(() => {
     if (!draft && !issueDraft && !Object.keys(attempts).length) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
@@ -56,9 +60,13 @@ function useWorkspaceOwner() {
         const checked = await runtime.preview('/api/v1/projects/verify', 'POST', { ...d.reviewed }, signal, verification);
         if (!checked.repositoryReadable || !checked.branchExists || checked.repository.toLowerCase() !== d.definition.repository.trim().toLowerCase() || checked.defaultBranch !== d.definition.defaultBranch.trim()) throw Error(t("projects.repositoryOrBranchUnavailableCheckServerGitHubAccess"));
       });
-      remember(key); setDraft(undefined); setMessage(t('projects.saved', { name: saved.name }));
+      remember(key); setDraft(undefined);
+      const previousLimit = d.before?.maxParallelTasks ?? null, savedLimit = saved.maxParallelTasks ?? null;
+      setMessage(previousLimit !== savedLimit
+        ? t('projects.projectConcurrencySaved', { name: saved.name, limit: concurrencyLabel(savedLimit) })
+        : t('projects.saved', { name: saved.name }), saved.id);
       return saved;
-    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.saveCouldNotBeConfirmedCheckSavedDefinitionBeforeAnotherWrite") : error instanceof Error ? error.message : t("projects.saveUnavailable")); throw error; }
+    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.saveCouldNotBeConfirmedCheckSavedDefinitionBeforeAnotherWrite") : error instanceof Error ? error.message : t("projects.saveUnavailable"), d.before?.id); throw error; }
   }
   async function lifecycle(p: Project, enabled?: boolean) {
     const key = fenceKey(p.id), deleting = enabled === undefined;
@@ -66,8 +74,8 @@ function useWorkspaceOwner() {
     remember(key, { kind: deleting ? 'delete' : 'lifecycle', before: p, enabled });
     try {
       await runtime.mutate(key, deleting ? `${projectPath(p.id)}?expectedRevision=${p.revision}` : projectPath(p.id) + '/lifecycle', deleting ? 'DELETE' : 'PUT', deleting ? undefined : { enabled, expectedRevision: p.revision }, deleting ? empty : project, signal => freshProject(p, signal).then(() => {}));
-      remember(key); setMessage(deleting ? t("projects.projectDeletedExecutionHistoryIsRetained") : t('projects.lifecycleChanged', { state: statusLabel(enabled ? 'Enabled' : 'Disabled') }));
-    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(t("projects.actionUnavailableCheckAuthoritativeStateTheServerEnforcesRevisionAndInUse")); throw error; }
+      remember(key); setMessage(deleting ? t("projects.projectDeletedExecutionHistoryIsRetained") : t('projects.lifecycleChanged', { state: statusLabel(enabled ? 'Enabled' : 'Disabled') }), p.id);
+    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(t("projects.actionUnavailableCheckAuthoritativeStateTheServerEnforcesRevisionAndInUse"), p.id); throw error; }
   }
   async function submitIssue(d: IssueDraft) {
     if (d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && !d.preview) throw Error(t("projects.previewTheCurrentChangesBeforeApplying"));
@@ -98,18 +106,25 @@ function useWorkspaceOwner() {
           }
         });
       remember(key); if (d.change.kind !== 'enqueue') setIssueDraft(undefined);
-      setMessage(d.change.kind === 'refresh' ? Array.isArray(result) && result.length ? result.map(e => `${e.id}: ${e.managedEligibilityState ?? 'unavailable'}${e.managedEligibilityReasons?.length ? ' · ' + e.managedEligibilityReasons.join('; ') : ''}`).join(' · ') : t("projects.noQueuedRequestExistsForThisIssue") : t("projects.issueActionConfirmedByTheServer"));
+      setMessage(d.change.kind === 'refresh' ? Array.isArray(result) && result.length ? result.map(e => `${e.id}: ${e.managedEligibilityState ?? 'unavailable'}${e.managedEligibilityReasons?.length ? ' · ' + e.managedEligibilityReasons.join('; ') : ''}`).join(' · ') : t("projects.noQueuedRequestExistsForThisIssue") : t("projects.issueActionConfirmedByTheServer"), d.project.id);
       return result;
-    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.issueActionCouldNotBeConfirmedReconcileExplicitlyBeforeAnotherWriteNo") : error instanceof Error ? error.message : t("projects.issueActionUnavailable")); throw error; }
+    } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.issueActionCouldNotBeConfirmedReconcileExplicitlyBeforeAnotherWriteNo") : error instanceof Error ? error.message : t("projects.issueActionUnavailable"), d.project.id); throw error; }
   }
   async function reconcile(key: string, createdNumber?: number) {
     const a = attempts[key]; if (!a) throw Error(t("projects.noRetainedAttempt"));
-    let outcome = '';
+    let outcome = '', outcomeProjectId: string | undefined;
     try {
       await runtime.reconcile(key, async signal => {
         if (a.kind === 'save') {
           const state = savedDefinition(await runtime.read('/api/v1/projects', signal, projectList), a.before, a.definition);
-          if (state.state === 'applied') { setDraft(undefined); outcome = t("projects.savedConfirmed"); }
+          if (state.state === 'applied') {
+            setDraft(undefined);
+            outcomeProjectId = state.project?.id;
+            const previousLimit = a.before?.maxParallelTasks ?? null, savedLimit = state.project?.maxParallelTasks ?? null;
+            outcome = state.project && previousLimit !== savedLimit
+              ? t('projects.projectConcurrencySaved', { name: state.project.name, limit: concurrencyLabel(savedLimit) })
+              : t("projects.savedConfirmed");
+          }
           else if (state.state === 'not-applied') { setDraft(d => d ? { ...d, reviewed: undefined, step: 2 } : d); outcome = t("projects.saveNotApplied"); }
           else { setConflict(state.project); setDraft(d => d ? { ...d, reviewed: undefined } : d); outcome = t("projects.persistedDiffers"); }
         } else if (a.kind === 'delete' || a.kind === 'lifecycle') {
@@ -140,11 +155,18 @@ function useWorkspaceOwner() {
           }
         }
       });
-      remember(key); setMessage(outcome);
+      remember(key); setMessage(outcome, outcomeProjectId ?? attemptProjectId(a));
       await runtime.queries.invalidateQueries({ queryKey: queryKeys.session(runtime.snapshot().generation) });
-    } catch (error) { setMessage(error instanceof Error ? error.message : t("projects.authoritativeCheckUnavailableLockRetained")); }
+    } catch (error) { setMessage(error instanceof Error ? error.message : t("projects.authoritativeCheckUnavailableLockRetained"), attemptProjectId(a)); }
   }
-  return { draft, setDraft, issueDraft, setIssueDraft, attempts, message, setMessage, conflict, setConflict, save, lifecycle, submitIssue, reconcile, locked: (id?: string) => runtime.locked(fenceKey(id)) };
+  return { draft, setDraft, issueDraft, setIssueDraft, attempts, message, messageProjectId, setMessage, conflict, setConflict, save, lifecycle, submitIssue, reconcile, locked: (id?: string) => runtime.locked(fenceKey(id)) };
+}
+function attemptProjectId(attempt: Attempt) {
+  if (attempt.kind === 'issue') return attempt.project.id;
+  return attempt.before?.id;
+}
+function concurrencyLabel(limit: number | null) {
+  return limit === null ? t('projects.projectConcurrencyAutomatic') : t(limit === 1 ? 'projects.projectConcurrencyOneExecution' : 'projects.projectConcurrencyExecutions', { count: limit });
 }
 type Workspace = ReturnType<typeof useWorkspaceOwner>;
 const Context = createContext<Workspace | null>(null);

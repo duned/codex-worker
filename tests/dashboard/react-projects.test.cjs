@@ -7,9 +7,9 @@ const { join, resolve } = require('node:path');
 const dir = mkdtempSync(join(tmpdir(), 'projects-regression-'));
 const entry = resolve('src/CodexServer/worker-poc/src');
 buildSync({ stdin: { contents: `export * from '${entry}/features/projects/model'; export * from '${entry}/features/projects/contracts'; export * from '${entry}/features/projects/Readiness'; export * from '${entry}/shared/api/runtime'; export * from '${entry}/shared/api/client';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'test.cjs'), alias: { '@': resolve(entry, 'untitled') } });
-const { savedDefinition, sameDefinition, definitionOf, project, issue, readiness, matchesIssue, changeRequest, issueUrl, DashboardRuntime, HttpClient } = require(join(dir, 'test.cjs'));
+const { savedDefinition, sameDefinition, definitionOf, newDefinition, project, issue, readiness, matchesIssue, changeRequest, issueUrl, DashboardRuntime, HttpClient } = require(join(dir, 'test.cjs'));
 after(() => rmSync(dir, { recursive: true, force: true }));
-const p = { id: 'project-a', name: 'Sample project', repository: 'owner/repo', defaultBranch: 'main', description: '', requirements: [], revision: 2, enabled: true, issueReadyLabel: 'ready', issueBlockedLabel: 'blocked', automaticDiscovery: { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 } };
+const p = { id: 'project-a', name: 'Sample project', repository: 'owner/repo', defaultBranch: 'main', description: '', requirements: [], revision: 2, enabled: true, issueReadyLabel: 'ready', issueBlockedLabel: 'blocked', automaticDiscovery: { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }, maxParallelTasks: null };
 const i = { number: 27, title: 'Fix parsing', body: 'Details', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [{ number: 28, title: 'Prerequisite', state: 'open', url: 'https://github.com/owner/repo/issues/28' }], isEligible: false, eligibilityReasons: ['Blocked by #28'] };
 test('current automatic-discovery and typed requirement contracts reject malformed evidence', () => {
   assert.deepEqual(project(p), p);
@@ -33,6 +33,19 @@ test('normalization retains advanced policy, custom descriptors, versions and au
   const before = { ...p, requirements: [{ type: 'custom-tool', name: 'Builder', version: '>=010.00', scope: null }, { type: 'authentication', name: 'github-api', version: null, scope: 'Owner/Repo' }] };
   assert.ok(sameDefinition(before, { ...before, repository: 'OWNER/REPO', requirements: [{ ...before.requirements[0], name: 'builder', version: '>=10.0' }, { ...before.requirements[1], scope: 'owner/repo' }] }));
   assert.equal(sameDefinition(before, { ...before, automaticDiscovery: { ...before.automaticDiscovery, enabled: true } }), false);
+});
+test('project concurrency defaults to Automatic and round-trips through revision reconciliation', () => {
+  assert.equal(newDefinition().maxParallelTasks, null);
+  const legacy = { ...p }; delete legacy.maxParallelTasks;
+  assert.equal(definitionOf(legacy).maxParallelTasks, null);
+  assert.deepEqual(project({ ...p, maxParallelTasks: undefined }), { ...p, maxParallelTasks: undefined });
+  for (const maxParallelTasks of [0, 1.5, 9, -1]) assert.throws(() => project({ ...p, maxParallelTasks }));
+
+  const desired = { ...definitionOf(p), maxParallelTasks: 2 };
+  assert.equal(sameDefinition(p, desired), false);
+  assert.equal(savedDefinition([{ ...p, ...desired, revision: p.revision + 1 }], p, desired).state, 'applied');
+  assert.equal(savedDefinition([{ ...p, ...desired, maxParallelTasks: 1, revision: p.revision + 1 }], p, desired).state, 'conflict');
+  assert.equal(definitionOf({ ...p, maxParallelTasks: 1 }).maxParallelTasks, 1);
 });
 test('native relationship and configured label reconciliation uses observable Issue state', () => {
   assert.ok(matchesIssue(i, { kind: 'dependency', blockerIssueNumber: 28, applied: true }));

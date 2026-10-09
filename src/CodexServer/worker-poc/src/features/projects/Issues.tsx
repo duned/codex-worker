@@ -19,7 +19,7 @@ import { issuePath, projectPath, changeRequest, type IssueChange } from './model
 import { useProjects } from './Workspace';
 export function Issues({ project }: { project: Project }) {
   useLanguage();
-  const [params, setParams] = useSearchParams(), w = useProjects();
+  const [params, setParams] = useSearchParams(), navigate = useNavigate(), w = useProjects();
   const [state, setState] = useState(params.get('issueState') ?? 'open'), [label, setLabel] = useState(params.get('label') ?? ''), [checkAccess, setCheckAccess] = useState(false);
   // Back/reload restore filters from the URL; unsent filter input is a transient form.
   useEffect(() => { setState(params.get('issueState') ?? 'open'); setLabel(params.get('label') ?? ''); }, [params]);
@@ -27,12 +27,17 @@ export function Issues({ project }: { project: Project }) {
   const context = { state: ['open', 'closed', 'all'].includes(params.get('issueState') ?? '') ? params.get('issueState') ?? 'open' : 'open', limit: '50' };
   const query = new URLSearchParams(context); if (params.get('label')) query.set('label', params.get('label') ?? '');
   const open = (change: IssueChange, before?: import('./contracts').Issue) => {
-    if (w.issueDraft) { w.setIssueDraft({ ...w.issueDraft, open: true }); w.setMessage(t("projects.resumeOrDiscardTheRetainedIssueDraftBeforeStartingAnotherAction")); return; }
+    if ((w.draft && w.draft.before?.id !== project.id) || (w.issueDraft && w.issueDraft.project.id !== project.id)) {
+      w.setMessage(t("projects.resumeOrDiscardTheRetainedIssueDraftBeforeStartingAnotherAction"));
+      navigate('/projects');
+      return;
+    }
+    if (w.issueDraft) { w.setIssueDraft({ ...w.issueDraft, open: true }); return; }
     w.setIssueDraft({ project, before, change, open: true });
   };
   return <section className="space-y-4">
     <h2 className="text-lg font-semibold text-primary">{t("projects.gitHubIssues")}</h2>
-    <div className="flex flex-wrap gap-2"><Button color="secondary" onPress={() => setCheckAccess(true)}>{t("projects.checkRepositoryAccess")}</Button><Button isDisabled={w.locked(project.id)} onPress={() => open({ kind: 'create', title: '', body: '' })}>{t("projects.createIssue")}</Button></div>
+    <div className="flex flex-wrap gap-2"><Button color="secondary" onPress={() => setCheckAccess(true)}>{t("projects.checkRepositoryAccess")}</Button><Button isDisabled={w.locked(project.id)} onPress={() => open({ kind: 'create', title: '', body: '' })}>{t("projects.createIssue")}</Button>{w.issueDraft?.project.id === project.id && !w.issueDraft.open && <Button color="secondary" onPress={() => w.setIssueDraft(d => d ? { ...d, open: true } : d)}>{t("projects.resumeIssueDraft")}</Button>}</div>
     {checkAccess && <RepositoryAccess id={project.id} />}
     <form className="flex flex-wrap items-end gap-3" onSubmit={event => { event.preventDefault(); const next = new URLSearchParams(params); next.set('issueState', state); if (label.trim()) next.set('label', label.trim()); else next.delete('label'); next.set('issues', '1'); next.delete('issue'); setParams(next); }}>
       <label className="flex flex-col gap-2 text-sm text-secondary">{t("projects.issueState")}<select value={state} onChange={event => setState(event.target.value)} className="rounded-lg border border-secondary bg-primary p-2"><option value="open">{t("projects.open")}</option><option value="closed">{t("projects.closed")}</option><option value="all">{t("projects.all")}</option></select></label>

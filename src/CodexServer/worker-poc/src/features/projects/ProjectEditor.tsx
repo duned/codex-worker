@@ -63,6 +63,16 @@ export function ProjectEditor() {
           </>}
           {d.step === 2 && <>
             {text('name', t("projects.projectName"), true, 120)}{text('defaultBranch', t("projects.baseBranch"), true, 200)}<TextArea label={t("projects.description")} value={definition.description} maxLength={4000} onChange={description => update({ description })} />
+            <div className="space-y-2">
+              <label className="flex flex-col gap-2 text-sm text-secondary" htmlFor="project-concurrency">
+                {t('projects.projectConcurrency')}
+                <select id="project-concurrency" aria-describedby="project-concurrency-help" className="w-full rounded-lg border border-secondary bg-primary p-2 text-primary" value={definition.maxParallelTasks === null ? '' : String(definition.maxParallelTasks)} onChange={event => update({ maxParallelTasks: event.target.value === '' ? null : Number(event.target.value) })}>
+                  <option value="">{t('projects.projectConcurrencyAutomatic')}</option>
+                  {Array.from({ length: 8 }, (_, index) => index + 1).map(limit => <option key={limit} value={limit}>{limit}</option>)}
+                </select>
+              </label>
+              <p id="project-concurrency-help" className="text-sm text-tertiary">{t('projects.projectConcurrencyExplanation')}</p>
+            </div>
             <Checkbox label={t("projects.enableAutomaticIssueDiscovery")} isSelected={definition.automaticDiscovery?.enabled === true} onChange={enabled => update({ automaticDiscovery: { ...(definition.automaticDiscovery ?? { intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }), enabled } })} />
             <p className="text-sm text-tertiary">{t("projects.discoveryCanQueueEligibleIssuesExecutionRequiresAnAuthorizedEligibleWorkerAnd")}</p>
             <AdvancedDisclosure title={t("projects.advancedDiscoveryAndExecutionRequirements")}>
@@ -78,7 +88,7 @@ export function ProjectEditor() {
               <Button color="secondary" isDisabled={definition.requirements.length >= 64} onPress={() => update({ requirements: [...definition.requirements, { type: 'runtime', name: '', version: null, scope: null }] })}>{t("projects.addRequirement")}</Button>
             </AdvancedDisclosure>
           </>}
-          {d.step === 3 && <><p className="font-medium text-primary">{definition.name} · {definition.repository} · {definition.defaultBranch}</p><p className="whitespace-pre-wrap text-sm text-secondary">{definition.description || t("projects.noDescription")}</p><p className="text-sm text-secondary">{t("projects.readyLabel")}{' '}{definition.issueReadyLabel || localizeText('none')}{' '}{t("projects.blockedLabel")}{' '}{definition.issueBlockedLabel || localizeText('none')}</p><p className="text-sm text-secondary">{t("projects.automaticDiscovery")}{' '}{definition.automaticDiscovery?.enabled ? localizeText('enabled') : localizeText('disabled')}{' '}{t("projects.interval")}{' '}{definition.automaticDiscovery?.intervalSeconds ?? 300}{t("projects.sPageSize")}{' '}{definition.automaticDiscovery?.pageSize ?? 25}{' '}{t("projects.deadline")}{' '}{definition.automaticDiscovery?.deadlineSeconds ?? 120}{t("projects.s")}</p>{definition.requirements.map((r, index) => <p key={index} className="text-sm text-secondary">{r.type} · {r.name}{r.version ? ` ${r.version}` : ''}{r.scope ? t('projects.scope', { scope: r.scope }) : ''}</p>)}<Notice>{t("projects.repositoryAndBranchReadVerifiedWorkerCheckoutPushPermissionCodexExecutionReadiness")}</Notice></>}
+          {d.step === 3 && <><p className="font-medium text-primary">{definition.name} · {definition.repository} · {definition.defaultBranch}</p><p className="whitespace-pre-wrap text-sm text-secondary">{definition.description || t("projects.noDescription")}</p><p className="text-sm text-secondary">{t("projects.projectConcurrency")}: {concurrencyLabel(definition.maxParallelTasks)}</p><p className="text-sm text-secondary">{t("projects.readyLabel")}{' '}{definition.issueReadyLabel || localizeText('none')}{' '}{t("projects.blockedLabel")}{' '}{definition.issueBlockedLabel || localizeText('none')}</p><p className="text-sm text-secondary">{t("projects.automaticDiscovery")}{' '}{definition.automaticDiscovery?.enabled ? localizeText('enabled') : localizeText('disabled')}{' '}{t("projects.interval")}{' '}{definition.automaticDiscovery?.intervalSeconds ?? 300}{t("projects.sPageSize")}{' '}{definition.automaticDiscovery?.pageSize ?? 25}{' '}{t("projects.deadline")}{' '}{definition.automaticDiscovery?.deadlineSeconds ?? 120}{t("projects.s")}</p>{definition.requirements.map((r, index) => <p key={index} className="text-sm text-secondary">{r.type} · {r.name}{r.version ? ` ${r.version}` : ''}{r.scope ? t('projects.scope', { scope: r.scope }) : ''}</p>)}<Notice>{t("projects.repositoryAndBranchReadVerifiedWorkerCheckoutPushPermissionCodexExecutionReadiness")}</Notice></>}
         </fieldset>
         {error && <Notice error>{error}</Notice>}
         {locked && <Notice error>{t("projects.saveResultUncertainCloseAndChooseCheckSavedDefinitionBeforeAnotherWrite")}</Notice>}
@@ -93,4 +103,7 @@ export function ProjectEditor() {
     </FormDialog>
     {discard && <ConfirmationDialog isOpen title={t("projects.discardProjectDraft")} description={t("projects.unsavedConfigurationWillBeLostNoServerDefinitionIsChanged")} actionLabel={t("projects.discardDraft")} destructive onClose={() => setDiscard(false)} onSubmit={async () => { w.setDraft(undefined); }} />}
   </>;
+}
+function concurrencyLabel(limit: number | null) {
+  return limit === null ? t('projects.projectConcurrencyAutomatic') : t(limit === 1 ? 'projects.projectConcurrencyOneExecution' : 'projects.projectConcurrencyExecutions', { count: limit });
 }

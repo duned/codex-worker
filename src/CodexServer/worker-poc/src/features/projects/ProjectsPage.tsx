@@ -2,7 +2,7 @@ import { GuidDisplay } from '../../shared/GuidDisplay';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { ExternalLink } from '../../shared/Actions';
 import { useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { PageHeading, Notice, StatusBadge, ViewState } from '../../shared/Presentation';
 import { ConfirmationDialog } from '../../shared/Dialogs';
 import { Button } from '../../untitled/components/base/buttons/button';
@@ -19,26 +19,36 @@ import { ProjectDetail } from './Detail';
 import { timestamp } from '../../model';
 export function ProjectsPage() {
   useLanguage();
-  const { resourceId } = useParams(), location = useLocation(), w = useProjects(), read = useApiRead('/api/v1/projects', projectList);
+  const { resourceId } = useParams(), location = useLocation(), navigate = useNavigate(), w = useProjects(), read = useApiRead('/api/v1/projects', projectList);
   const [action, setAction] = useState<{ project: Project; enabled?: boolean }>();
   const [filter, setFilter] = useState('all'), [search, setSearch] = useState('');
   const activity = useApiRead('/api/v1/executions?limit=50&offset=0', executions);
   const selected = read.data?.find(p => p.id === resourceId);
   const open = (p?: Project) => {
-    if (w.draft) { w.setDraft({ ...w.draft, open: true }); w.setMessage(t("projects.resumeOrDiscardTheRetainedDraftBeforeStartingAnotherDefinition")); return; }
+    const projectDraftMatches = !w.draft || w.draft.before?.id === p?.id;
+    const issueDraftMatches = !w.issueDraft || w.issueDraft.project.id === p?.id;
+    if (!projectDraftMatches || !issueDraftMatches) {
+      w.setMessage(t("projects.resumeOrDiscardTheRetainedDraftBeforeStartingAnotherDefinition"));
+      if (resourceId) navigate(`/projects${location.search}`);
+      return;
+    }
+    if (w.draft) { w.setDraft({ ...w.draft, open: true }); return; }
     w.setConflict(undefined); w.setDraft({ before: p, definition: p ? definitionOf(p) : newDefinition(), step: 1, open: true });
   };
   return <>
     {!resourceId && <PageHeading title={t('home.projects')} actions={<Button isDisabled={w.locked()} onPress={() => open()}>{t("projects.createProject")}</Button>} />}
     {resourceId && !selected && read.data && <PageHeading title={t("projects.project")} />}
     <div className="space-y-6">
-      {w.message && <Notice>{w.message}</Notice>}
-      {w.draft && !w.draft.open && <Button color="secondary" onPress={() => w.setDraft(d => d ? { ...d, open: true } : d)}>{t("projects.resumeProjectDraft")}</Button>}
-      {w.issueDraft && !w.issueDraft.open && <Button color="secondary" onPress={() => w.setIssueDraft(d => d ? { ...d, open: true } : d)}>{t("projects.resumeIssueDraft")}</Button>}
-      {Object.keys(w.attempts).map(key => <Reconciliation key={key} resource={key} />)}
+      {!resourceId && <>
+        {w.message && <Notice>{w.message}</Notice>}
+        {w.draft && !w.draft.open && <Button color="secondary" onPress={() => w.setDraft(d => d ? { ...d, open: true } : d)}>{t("projects.resumeProjectDraft")}</Button>}
+        {w.issueDraft && !w.issueDraft.open && <Button color="secondary" onPress={() => w.setIssueDraft(d => d ? { ...d, open: true } : d)}>{t("projects.resumeIssueDraft")}</Button>}
+        {Object.keys(w.attempts).map(key => <Reconciliation key={key} resource={key} />)}
+      </>}
       {!read.data ? <ViewState title={read.error ? t("projects.projectConfigurationUnavailableRefreshProjects") : t("projects.loadingProjects")} error={!!read.error}><Button color="secondary" onPress={() => { void read.refetch(); }}>{t("projects.refreshProjects")}</Button></ViewState> : resourceId ? selected ? <>
-        <div className="space-y-6"><ProjectDetail project={selected} onEdit={() => open(selected)} onAction={(project, enabled) => setAction({ project, enabled })} locked={w.locked(selected.id)} listHref={`/projects${location.search}`} />
-          <Issues key={selected.id} project={selected} /></div>
+        <div className="space-y-6"><ProjectDetail project={selected} onEdit={() => open(selected)} onAction={(project, enabled) => setAction({ project, enabled })} locked={w.locked(selected.id)} listHref={`/projects${location.search}`} message={w.messageProjectId === selected.id ? w.message : undefined} />
+          <Issues key={selected.id} project={selected} />
+          {Object.keys(w.attempts).filter(key => key === `project:${selected.id}`).map(key => <Reconciliation key={key} resource={key} />)}</div>
       </> : <ViewState title={t("projects.projectUnavailableOrDeletedReturnToProjectsToInspectCurrentDefinitions")} error /> : read.data.length ? <>
         <TableCard.Root><div className="flex flex-wrap items-end gap-3 p-4" aria-label={t("projects.projects")}>
           <label className="flex min-w-56 flex-1 flex-col gap-1 text-sm text-secondary">{t("projects.searchProjects")}<input className="rounded-lg border border-secondary bg-primary px-3 py-2 text-primary" value={search} onChange={event => setSearch(event.target.value)} /></label>

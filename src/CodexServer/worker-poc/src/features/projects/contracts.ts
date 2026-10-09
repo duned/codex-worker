@@ -4,7 +4,7 @@ export interface Requirement { type: string; name: string; version: string | nul
 export interface Discovery { enabled: boolean; intervalSeconds: number; pageSize: number; deadlineSeconds: number }
 export interface Definition {
   name: string; repository: string; defaultBranch: string; description: string; requirements: Requirement[];
-  issueReadyLabel: string | null; issueBlockedLabel: string | null; automaticDiscovery: Discovery | null;
+  issueReadyLabel: string | null; issueBlockedLabel: string | null; automaticDiscovery: Discovery | null; maxParallelTasks: number | null;
 }
 export interface Project extends Definition { id: string; revision: number; enabled: boolean }
 export interface Repository { repository: string; name: string; defaultBranch: string; description: string }
@@ -26,6 +26,7 @@ const stringList = (value: unknown) => array(value, item => { if (typeof item !=
 export const project: Validator<Project> = value => {
   const p = record(value); strings(p, ['id', 'name', 'repository', 'defaultBranch', 'description']); integer(p, 'revision'); bool(p, 'enabled');
   nullableText(p, ['issueReadyLabel', 'issueBlockedLabel']);
+  if (p.maxParallelTasks != null) integer(p, 'maxParallelTasks', 1, 8);
   array(p.requirements, value => { const r = record(value); strings(r, ['type', 'name']); nullableText(r, ['version', 'scope']); return r; }, 64);
   if (p.automaticDiscovery != null) {
     const d = record(p.automaticDiscovery); bool(d, 'enabled'); integer(d, 'intervalSeconds', 30, 86400); integer(d, 'pageSize', 1, 100); integer(d, 'deadlineSeconds', 10, 120);

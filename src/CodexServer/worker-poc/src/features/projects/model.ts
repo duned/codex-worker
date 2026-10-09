@@ -1,8 +1,8 @@
 import type { Definition, Project, Issue } from './contracts';
-export const newDefinition = (): Definition => ({ name: '', repository: '', defaultBranch: '', description: '', requirements: [], issueReadyLabel: null, issueBlockedLabel: null, automaticDiscovery: null });
+export const newDefinition = (): Definition => ({ name: '', repository: '', defaultBranch: '', description: '', requirements: [], issueReadyLabel: null, issueBlockedLabel: null, automaticDiscovery: null, maxParallelTasks: null });
 export function definitionOf(p: Definition): Definition {
   return { name: p.name, repository: p.repository, defaultBranch: p.defaultBranch, description: p.description, requirements: p.requirements,
-    issueReadyLabel: p.issueReadyLabel ?? null, issueBlockedLabel: p.issueBlockedLabel ?? null, automaticDiscovery: p.automaticDiscovery ?? null };
+    issueReadyLabel: p.issueReadyLabel ?? null, issueBlockedLabel: p.issueBlockedLabel ?? null, automaticDiscovery: p.automaticDiscovery ?? null, maxParallelTasks: p.maxParallelTasks ?? null };
 }
 export function sameDefinition(a: Definition, b: Definition) {
   const normalized = (d: Definition) => ({ ...definitionOf(d), name: d.name.trim(), repository: d.repository.trim().toLowerCase(), defaultBranch: d.defaultBranch.trim(), description: d.description.trim(),

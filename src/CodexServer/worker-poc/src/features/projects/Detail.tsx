@@ -18,12 +18,13 @@ import { IssueTitle, projectRepositoryUrl } from './IssueTitle';
 
 type ProjectAction = (project: Project, enabled?: boolean) => void;
 
-export function ProjectDetail({ project, onEdit, onAction, locked, listHref }: {
+export function ProjectDetail({ project, onEdit, onAction, locked, listHref, message }: {
   project: Project;
   onEdit: () => void;
   onAction: ProjectAction;
   locked: boolean;
   listHref: string;
+  message?: string;
 }) {
   useLanguage();
   const inventory = useApiRead('/api/v1/workers', workers);
@@ -70,6 +71,7 @@ export function ProjectDetail({ project, onEdit, onAction, locked, listHref }: {
         </Dropdown.Root>
       </div>
     </header>
+    {message && <Notice>{message}</Notice>}
 
     <section aria-label={t('projects.projectSummary')} className="mb-5 rounded-xl bg-primary px-5 py-4 shadow-xs ring-1 ring-secondary">
       <div className="grid gap-y-4 xl:grid-cols-[0.8fr_1fr_1.15fr_1.55fr_auto] xl:items-center">
@@ -89,6 +91,7 @@ export function ProjectDetail({ project, onEdit, onAction, locked, listHref }: {
             <DetailRow label={t('projects.repository')}><span className="break-all">{repoUrl ? <ExternalLink href={repoUrl}>{project.repository}</ExternalLink> : project.repository}</span></DetailRow>
             <DetailRow label={t('projects.defaultBranch')}>{project.defaultBranch}</DetailRow>
             <DetailRow label={t('projects.projectStatus')}><div className="flex flex-wrap gap-2"><StatusBadge tone={project.enabled ? 'success' : 'gray'}>{project.enabled ? localizeText('Enabled') : localizeText('Disabled')}</StatusBadge><StatusBadge tone={readiness.tone}>{readiness.label}</StatusBadge></div></DetailRow>
+            <DetailRow label={`${t('projects.projectConcurrency')}:`}><span className="font-medium text-primary">{concurrencyLabel(project.maxParallelTasks ?? null)}</span><span className="mt-1 block text-xs text-tertiary">{t(project.maxParallelTasks == null ? 'projects.projectConcurrencyAutomaticDetail' : 'projects.projectConcurrencyExplicitDetail')}</span><span className="mt-1 block text-xs text-tertiary">{t('projects.projectConcurrencyFreshness')}</span></DetailRow>
             <DetailRow label={t('projects.automaticDiscovery2')}>{discovery}{project.automaticDiscovery?.enabled && <span className="block text-xs text-tertiary">{t('projects.discoveryPageAndDeadline', { pageSize: project.automaticDiscovery.pageSize, deadline: project.automaticDiscovery.deadlineSeconds })}</span>}</DetailRow>
             <DetailRow label={t('projects.requirements')}><div className="space-y-1">{project.requirements.length ? project.requirements.map((requirement, index) => <p key={`${requirement.type}-${requirement.name}-${index}`}>{requirement.type} · {requirement.name}{requirement.version ? ` ${requirement.version}` : ''}{requirement.scope ? ` · ${requirement.scope}` : ''}</p>) : <p>{t('projects.noAdditionalRequirements')}</p>}</div></DetailRow>
           </div>
@@ -218,6 +221,10 @@ function ProjectRecentActivity({ project, read, workers: workerList, recent }: {
 
 function discoveryInterval(seconds: number) {
   return seconds % 60 === 0 ? t('projects.intervalMinutes', { count: seconds / 60 }) : t('projects.intervalShortSeconds', { count: seconds });
+}
+
+function concurrencyLabel(limit: number | null) {
+  return limit === null ? t('projects.projectConcurrencyAutomatic') : t(limit === 1 ? 'projects.projectConcurrencyOneExecution' : 'projects.projectConcurrencyExecutions', { count: limit });
 }
 
 function toneOf(value: string) {
