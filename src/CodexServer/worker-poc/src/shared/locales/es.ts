@@ -1198,6 +1198,7 @@ export const es = {
   "executions.startedAt": "Iniciada {time}",
   "executions.outcomeAndRecovery": "Resultado y recuperación",
   "executions.noCompletionSummaryReported": "No se informó un resumen de finalización",
+  "executions.failureReasonUnavailable": "Motivo del fallo no disponible",
   "executions.completionSummaryReported": "El servidor informó un resumen de finalización.",
   "executions.terminalStateHasNoCompletionSummary": "La ejecución alcanzó un estado final, pero no informó un resumen de finalización.",
   "executions.noCompletionOutcomeYet": "Aún no hay resultado de finalización",

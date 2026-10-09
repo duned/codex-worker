@@ -1197,6 +1197,7 @@ export const en = {
   "executions.startedAt": "Started {time}",
   "executions.outcomeAndRecovery": "Outcome and recovery",
   "executions.noCompletionSummaryReported": "No completion summary reported",
+  "executions.failureReasonUnavailable": "Failure reason unavailable",
   "executions.completionSummaryReported": "Completion summary reported by the Server.",
   "executions.terminalStateHasNoCompletionSummary": "The execution reached a terminal state but reported no completion summary.",
   "executions.noCompletionOutcomeYet": "No completion outcome yet",
