@@ -1,30 +1,46 @@
-import { t, useLanguage, statusLabel, localizeText } from './i18n';
-import { useApiRead, useSession } from './api/session';
+import { t, useLanguage, statusLabel, resources, type TranslationKey } from './i18n';
+import { useApiRead } from './api/session';
 import { serverStatus } from './api/validation';
 import { timestamp } from '../model';
-import { StatusBadge } from './Presentation';
+import { serverStatusPresentation } from './server-status-model.mjs';
 import type { ServerStatus as Status } from './api/contracts';
 
-export function serverStatusPresentation(data: Status | undefined, error: string | undefined, live: string) {
-  if (error) return { label: t("shared.serverStatusUnavailableRefreshFailed"), tone: 'warning' as const };
-  if (!data) return { label: t("shared.serverStatusUnknown"), tone: 'gray' as const };
-  if (data.state === 'offline') return { label: t("shared.serverOffline"), tone: 'error' as const };
-  if (live !== 'Live · connected') return { label: t('shared.liveUnavailable', { state: statusLabel(data.state) }), tone: 'warning' as const };
-  if (data.state === 'running') return { label: t("shared.serverLive"), tone: 'success' as const };
-  return { label: t('shared.serverState', { state: statusLabel(data.state) }), tone: 'gray' as const };
+function localizedServerState(state: string) {
+  const key = `status.${state.toLowerCase()}` as TranslationKey;
+  return Object.hasOwn(resources.en, key) ? t(key) : statusLabel(state);
 }
-export function ServerStatusView({ data, error, live, updatedAt }: { data?: Status; error?: string; live: string; updatedAt: number }) {
+
+function statusLabelText(status: ReturnType<typeof serverStatusPresentation>) {
+  switch (status.kind) {
+    case 'ready': return t('shared.serverReady');
+    case 'unavailable': return t('shared.serverStatusUnavailable');
+    case 'loading': return t('shared.serverStatusLoading');
+    case 'unknown': return t('shared.serverStatusUnknown');
+    case 'offline': return t('shared.serverOffline');
+    case 'not-ready': return t('shared.serverState', { state: localizedServerState(status.state) });
+  }
+}
+
+function toneDot(tone: ReturnType<typeof serverStatusPresentation>['tone']) {
+  return tone === 'success' ? 'bg-success-solid' : tone === 'warning' ? 'bg-warning-solid' : tone === 'error' ? 'bg-error-solid' : 'bg-secondary-solid';
+}
+
+export function ServerStatusView({ data, hasError, loading, updatedAt }: { data?: Status; hasError: boolean; loading: boolean; updatedAt: number }) {
   useLanguage();
-  const status = serverStatusPresentation(data, error, live);
-  return <section aria-label={t("shared.serverConnection")} className="space-y-2 border-t border-secondary pt-3 text-xs text-tertiary">
-    <div className="flex flex-wrap items-center gap-2"><StatusBadge tone={status.tone}>{status.label}</StatusBadge>{data?.version && <span>v{data.version.replace(/^v/, '')}</span>}</div>
-    <p>{t("shared.lastUpdated")}{' '}{updatedAt > 0 ? <time dateTime={new Date(updatedAt).toISOString()}>{timestamp(new Date(updatedAt).toISOString())}</time> : localizeText('Unknown')}</p>
-    {error && updatedAt > 0 && <p>{t("shared.lastSuccessfulObservationIsStale")}</p>}
+  const status = serverStatusPresentation(data, hasError, loading, updatedAt);
+  const version = typeof data?.version === 'string' ? data.version.trim().replace(/^v/i, '') : '';
+  const timestampIso = Number.isFinite(updatedAt) && updatedAt > 0 ? new Date(updatedAt).toISOString() : undefined;
+  return <section aria-label={t('shared.serverConnection')} className="grid min-h-[58px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 rounded-[10px] border border-secondary bg-secondary px-3 py-2.5">
+    <div className="flex min-w-0 items-center gap-2">
+      <span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ring-4 ${toneDot(status.tone)} ${status.tone === 'success' ? 'ring-bg-success-primary' : status.tone === 'warning' ? 'ring-bg-warning-primary' : status.tone === 'error' ? 'ring-bg-error-primary' : 'ring-secondary'}`} />
+      <span role="status" className="truncate text-sm font-semibold text-primary">{statusLabelText(status)}</span>
+    </div>
+    {version && <span className="row-span-2 rounded-md border border-secondary bg-primary px-2 py-1 text-[10px] font-semibold leading-none text-secondary">v{version}</span>}
+    <p className="min-w-0 truncate text-[10px] leading-4 text-tertiary">{t('shared.updated')}{' '}{timestampIso ? <time dateTime={timestampIso}>{timestamp(timestampIso)}</time> : t('shared.unavailable')}{status.freshness === 'stale' && <span className="ml-1 text-warning-primary">· {t('status.stale')}</span>}</p>
   </section>;
 }
 export function ServerStatus() {
   useLanguage();
   const query = useApiRead('/api/status', serverStatus);
-  const session = useSession();
-  return <ServerStatusView data={query.data} error={query.error} live={session.live} updatedAt={query.updatedAt} />;
+  return <ServerStatusView data={query.hasError ? query.retainedData : query.data} hasError={query.hasError} loading={query.loading} updatedAt={query.updatedAt} />;
 }

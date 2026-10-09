@@ -7,5 +7,6 @@ export function ThemeControl() {
   useLanguage();
   const theme = usePreferences(state => state.theme), setTheme = usePreferences(state => state.setTheme);
   useEffect(() => { document.documentElement.classList.toggle('dark-mode', theme === 'dark'); document.documentElement.style.colorScheme = theme; }, [theme]);
-  return <Button color="secondary" size="sm" iconLeading={theme === 'dark' ? Moon01 : Sun} onPress={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{t(theme === 'dark' ? 'shared.lightMode' : 'shared.darkMode')}</Button>;
+  const Icon = theme === 'dark' ? Sun : Moon01;
+  return <Button color="secondary" size="sm" className="!h-[42px] !w-[42px] !shrink-0 !rounded-full !p-0" iconLeading={<Icon aria-hidden="true" className="!size-5 text-warning-primary" />} aria-label={t(theme === 'dark' ? 'shared.lightMode' : 'shared.darkMode')} onPress={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />;
 }

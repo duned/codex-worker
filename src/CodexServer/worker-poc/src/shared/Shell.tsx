@@ -2,7 +2,7 @@ import { LanguageControl } from './LanguageControl';
 import { t, useLanguage, localizeText } from './i18n';
 import { ServerStatus } from './ServerStatus';
 import { type ReactNode } from 'react';
-import { HomeLine, Folder, Server01, Activity, Settings01 } from '@untitledui/icons';
+import { HomeLine, Folder, Server01, Activity, Settings01, LogOut01 } from '@untitledui/icons';
 import { SidebarNavigationSimple } from '../untitled/components/application/app-navigation/sidebar-navigation/sidebar-simple';
 import { Button } from '../untitled/components/base/buttons/button';
 import { Input } from './Input';
@@ -27,7 +27,19 @@ export function Application({ session, children, navigationItems = items, active
   return <div className="poc-app">
     <a className="poc-skip" href="#poc-content">{t("shared.skipToContent")}</a>
     <SidebarNavigationSimple key={session.authenticated ? 'authenticated' : 'signed-out'} activeUrl={activeUrl} items={navigationItems.map(item => ({ ...item, label: localizeText(item.label) }))} showAccountCard={false} navigationLabels={{ expand: t('shared.expandNavigation'), close: t('shared.closeNavigation'), navigation: t('shared.mainNavigation') }}
-      featureCard={<div className="flex flex-col gap-3 text-sm text-tertiary"><p>{t("shared.serverAdministration")}</p>{themeControl}<LanguageControl />{session.authenticated && <Button color="secondary" size="sm" onPress={session.onSignOut}>{t("shared.signOut")}</Button>}{session.authenticated && <ServerStatus />}</div>} />
+      featureCard={<section aria-label={t('shared.serverAdministration')} className="flex min-w-0 flex-col gap-3 text-sm text-tertiary">
+        <h2 className="text-[10px] font-bold uppercase tracking-[0.11em] text-tertiary">{t('shared.serverAdministration')}</h2>
+        {session.authenticated && <ServerStatus />}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <LanguageControl />
+          {themeControl}
+          {session.authenticated && <Button color="tertiary" size="sm" className="!h-[42px] !min-w-0 !shrink !gap-1 !px-1.5 !text-[11px]" iconLeading={<LogOut01 className="!size-4" />} onPress={session.onSignOut}>{t('shared.signOut')}</Button>}
+        </div>
+        <div className="border-t border-secondary pt-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-quaternary">Codex Server</p>
+          <p className="mt-1 text-[10px] text-quaternary">{t('shared.controlPlane')}</p>
+        </div>
+      </section>} />
     <main id="poc-content" className="min-w-0 flex-1 px-4 py-8 md:px-8 lg:py-10" tabIndex={-1}>
       {session.authenticated ? children : <div className="mx-auto max-w-md py-8">
         <TableCard.Root><TableCard.Header title={t("shared.administrationSignIn")} description={t("shared.useTheServerManagementTokenTheExistingSessionIsRestoredOnReload")} />

@@ -117,7 +117,8 @@ export const serverGitHubConnection: Validator<import('./contracts').ServerGitHu
   return { commands: commands(item.commands), provisioningEnabled: Boolean(item.provisioningEnabled), elevationAllowed: Boolean(item.elevationAllowed) };
 };
 export const serverStatus: Validator<import('./contracts').ServerStatus> = value => {
-  fields(value, ['state', 'version', 'startedAtUtc']);
+  const item = fields(value, ['state', 'startedAtUtc']);
+  optional(item, ['version']);
   return value as import('./contracts').ServerStatus;
 };
 
