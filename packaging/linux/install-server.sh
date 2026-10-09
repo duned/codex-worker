@@ -8,6 +8,9 @@ publish_dir=""
 staging_dir=""
 bootstrap_github_cli=false
 non_interactive=false
+reset_development_dashboard=false
+dashboard_backup=""
+dashboard_root=""
 keep_bootstrap_provisioning_policy=false
 bootstrap_restore_needed=false
 bootstrap_previous_enabled=false
@@ -20,6 +23,9 @@ readonly provisioning_sudoers=/etc/sudoers.d/codex-server-provisioning
 provisioning_changed=false
 cleanup() {
   local status=$?
+  if [[ -n $dashboard_backup ]]; then
+    restore_development_dashboard && systemctl restart codex-server || printf "Could not restore dashboard generations; retained at %s\n" "$dashboard_backup" >&2
+  fi
   if ((status != 0)) && [[ $provisioning_changed == true ]]; then
     if [[ -e $temporary_dir/previous.provisioning ]]; then cp -a --remove-destination "$temporary_dir/previous.provisioning" "$provisioning_sudoers"; else rm -f "$provisioning_sudoers"; fi
     if [[ -e $temporary_dir/previous.docker-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.docker-helper" /usr/local/libexec/codex-provisioning-docker;
@@ -51,6 +57,7 @@ from a local self-contained publish directory when PUBLISHED_DIRECTORY is set.
 Options:
   --version VERSION  Install a specific release (optional leading v is allowed)
   --bootstrap-github-cli  Offer or perform a typed local GitHub CLI installation
+  --reset-development-dashboard  Retire cw dd generations after verified activation
   --non-interactive       Do not prompt; only perform bootstrap when explicitly requested
   --keep-bootstrap-provisioning-policy  Leave both local provisioning settings enabled
   -h, --help         Show this help
@@ -371,6 +378,72 @@ ensure_private_server_directory() {
   fi
 }
 
+# This transaction shares cw dd's lock. Only its validated generation layout is
+# eligible; unknown content is rejected before any rename or release activation.
+prepare_development_dashboard() {
+  local environment
+  environment=$(systemctl show codex-server --property=Environment --value) || return 1
+  [[ $environment == *CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR=* ]] || return 0
+  dashboard_root=$(python3 - "$environment" <<'PYTHON'
+import pathlib, shlex, sys
+values = dict(item.split('=', 1) for item in shlex.split(sys.argv[1]) if '=' in item)
+root = pathlib.Path(values['CODEX_SERVER_DEVELOPMENT_DASHBOARD_DIR'])
+if values.get('DOTNET_ENVIRONMENT') != 'Development' or not root.is_absolute() or str(root.resolve()) != str(root) or not root.is_dir() or root == pathlib.Path('/'):
+    raise ValueError('Invalid development dashboard directory')
+if any(root.is_relative_to(pathlib.Path(path)) for path in ('/opt', '/etc', '/usr', '/bin', '/sbin', '/boot', '/proc', '/sys', '/dev', '/run')):
+    raise ValueError('Unsafe dashboard directory')
+print(root)
+PYTHON
+  ) || return 1
+  [[ ! -L $dashboard_root/.deploy.lock ]] || return 1
+  exec {dashboard_lock}>"$dashboard_root/.deploy.lock"
+  flock -n "$dashboard_lock" || return 1
+  python3 - "$dashboard_root" <<'PYTHON'
+import hashlib, json, pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+for name in ('current', 'previous'):
+    generation = root / name
+    if not generation.exists() and not generation.is_symlink():
+        continue
+    if generation.is_symlink() or not generation.is_dir():
+        raise ValueError('Invalid dashboard generation')
+    if any(entry.is_symlink() for entry in generation.rglob('*')):
+        raise ValueError('Symbolic dashboard content')
+    manifest = json.loads((generation / 'assets.json').read_text())
+    allowed = {'index.html', 'assets.json'}
+    for item in manifest:
+        path = item['path']
+        if not re.fullmatch(r'assets/[A-Za-z0-9/_.-]+', path) or '..' in path or path in allowed:
+            raise ValueError('Invalid asset path')
+        allowed.add(path)
+        if hashlib.sha256((generation / path).read_bytes()).hexdigest() != item['sha256']:
+            raise ValueError('Invalid asset hash')
+    for entry in generation.rglob('*'):
+        relative = entry.relative_to(generation).as_posix()
+        if entry.is_symlink() or (entry.is_file() and relative not in allowed) or (entry.is_dir() and not any(path.startswith(relative + '/') for path in allowed)):
+            raise ValueError('Unmanaged generation content')
+PYTHON
+  [[ $? == 0 ]] || return 1
+  dashboard_backup=$(mktemp -d "$dashboard_root/.update-XXXXXXXX") || return 1
+  for generation in current previous; do
+    [[ ! -e $dashboard_root/$generation ]] || mv -- "$dashboard_root/$generation" "$dashboard_backup/$generation" || return 1
+  done
+}
+
+restore_development_dashboard() {
+  local generation
+  for generation in current previous; do
+    [[ ! -e $dashboard_backup/$generation ]] || mv -- "$dashboard_backup/$generation" "$dashboard_root/$generation" || return 1
+  done
+  rmdir -- "$dashboard_backup" || return 1
+  dashboard_backup=""
+}
+
+commit_development_dashboard() {
+  [[ -z $dashboard_backup ]] || rm -rf -- "$dashboard_backup" || return 1
+  dashboard_backup=""
+}
+
 # Keep the credential logic available to the local installer test without running installation.
 # As in install-worker.sh, BASH_SOURCE may be empty when executing from stdin.
 if [[ "${BASH_SOURCE[0]:-$0}" != "$0" ]]; then
@@ -390,6 +463,10 @@ while (($#)); do
     --bootstrap-github-cli)
       [[ $bootstrap_github_cli == false ]] || fail '--bootstrap-github-cli may only be specified once.'
       bootstrap_github_cli=true
+      shift
+      ;;
+    --reset-development-dashboard)
+      reset_development_dashboard=true
       shift
       ;;
     --non-interactive)
@@ -528,6 +605,10 @@ WantedBy=multi-user.target
 EOF
 chmod 0644 /etc/systemd/system/codex-server.service
 
+if [[ $reset_development_dashboard == true ]]; then
+  prepare_development_dashboard || fail "Could not stage development dashboard retirement; release selection unchanged."
+fi
+
 ln -sfn "$new_target" /opt/codex-server/current.new
 mv -Tf /opt/codex-server/current.new /opt/codex-server/current
 systemctl daemon-reload
@@ -537,7 +618,8 @@ if systemctl is-active --quiet codex-server; then
 else
   start_command=start
 fi
-if ! systemctl "$start_command" codex-server; then
+if ! systemctl "$start_command" codex-server || ! systemctl is-active --quiet codex-server; then
+  [[ -z $dashboard_backup ]] || restore_development_dashboard || fail "Could not restore development dashboard; backup retained."
   if [[ -n "$previous_target" ]]; then
     ln -sfn "$previous_target" /opt/codex-server/current.new
     mv -Tf /opt/codex-server/current.new /opt/codex-server/current
@@ -549,6 +631,7 @@ if ! systemctl "$start_command" codex-server; then
   fail "Could not start Codex Server after installing ${version:-the local build}; the previous release selection was restored when available. Check journalctl -u codex-server."
 fi
 if [[ $bootstrap_github_cli == true ]]; then bootstrap_github_cli_installation; fi
+commit_development_dashboard
 printf 'Codex Server %s installed. Service: ' "${version:-local build}"
 systemctl is-active codex-server || true
 cat <<'EOF'

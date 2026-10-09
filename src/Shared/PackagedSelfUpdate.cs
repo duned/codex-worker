@@ -80,7 +80,11 @@ public sealed class PackagedSelfUpdate(HttpClient http) : ISelfUpdateOperations
             var path = Path.Combine(directory, component.Installer);
             await File.WriteAllTextAsync(path, script, downloadDeadline.Token);
             var arguments = new List<string> { path, "--version", release.Version };
-            if (component.Name == "server") arguments.Add("--non-interactive");
+            if (component.Name == "server")
+            {
+                arguments.Add("--non-interactive");
+                arguments.Add("--reset-development-dashboard");
+            }
             await RunProcessAsync("/bin/bash", arguments, deadline.Token);
             var installed = (await RunProcessAsync(component.InstalledExecutable, ["--version"], deadline.Token)).Trim();
             var prefix = component.DisplayName + " ";

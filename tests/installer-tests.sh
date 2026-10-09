@@ -40,6 +40,7 @@ if bash "$server_uninstaller" --unknown > "$temp_dir/unknown-uninstall-option.tx
 fi
 grep -q 'unknown option' "$temp_dir/unknown-uninstall-option.txt"
 
+bash "$repo_root/tests/server-dashboard-update-tests.sh"
 bash "$repo_root/tests/uninstaller-lifecycle-tests.sh"
 bash "$repo_root/tests/codex-provisioning-helper-tests.sh"
 bash "$repo_root/tests/docker-provisioning-helper-tests.sh"

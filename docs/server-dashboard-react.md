@@ -454,3 +454,12 @@ space describe the volume containing the Worker application, when the runtime ca
 read it. No volume paths or unrelated host details are transmitted. Each metric can
 be absent independently; percentages are finite and bounded to 0–100 at the API
 boundary. Collection cancellation propagates through the heartbeat lifecycle.
+
+### Server updates reset the development dashboard
+
+A successful `sudo codex-server update` retires the validated `current` and
+`previous` dashboard generations deployed by `cw dd`. The restarted Server uses
+its release-bundled React assets. The override directory, unrelated files, and
+systemd drop-in remain intact. Activation failure restores the generations before
+restarting the previous release. Run `cw dd` again to explicitly deploy a local
+development bundle after updating. Worker updates do not reset this override.
