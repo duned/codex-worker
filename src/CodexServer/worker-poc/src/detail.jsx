@@ -4,7 +4,7 @@ import { ExternalLink } from './shared/Actions';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
-import { Activity, Database01, Shield01 } from '@untitledui/icons';
+import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
 import { duration, issueLink, statusColor, terminalStates, timestamp, workerExecutions } from './model.js';
 
 const executionStages = [
@@ -190,7 +190,7 @@ function CurrentExecutions({ items, projects, now, worker, unavailable }) {
     <PanelHeading id="poc-current-heading" title={title} trailing={trailing} />
     {unavailable ? <p className="poc-empty-panel">{t('shared.currentExecutionDataUnavailableRefreshToRecoverReportedStages')}</p>
       : items.length ? <div className="poc-current-executions-list">{items.map(item => <CurrentExecution key={item.id} item={item} projects={projects} now={now} showStatus={items.length > 1} />)}</div>
-      : <p className="poc-empty-panel">{t('shared.noCurrentExecutionInTheLatest50ServerRequests')} {worker.activeAssignments > 0 || worker.activeExecutions > 0 ? t('shared.theWorkerReportsActiveWorkItsExecutionDetailIsUnavailableInThis') : t('shared.noActiveWorkReportedByThisWorker')}</p>}
+      : <p className="poc-empty-panel">{worker.activeAssignments > 0 || worker.activeExecutions > 0 ? t('shared.theWorkerReportsActiveWorkItsExecutionDetailIsUnavailableInThis') : t('shared.noCurrentExecutionInTheLatest50ServerRequests')}</p>}
   </TableCard.Root>;
 }
 
@@ -327,13 +327,6 @@ function ReadinessPanel({ worker, node, diagnostics, now }) {
   </TableCard.Root>;
 }
 
-function ControlIcon({ type }) {
-  if (type === 'activate') return <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m6 4 9 6-9 6z" fill="currentColor"/></svg>;
-  if (type === 'drain') return <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M6 4v12m8-12v12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>;
-  if (type === 'deactivate') return <svg aria-hidden="true" viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="2" fill="currentColor"/></svg>;
-  return <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M4 6h12m-10 0 1 10h6l1-10M7 4h6m-5 5v4m4-4v4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-}
-
 function ControlRail({ administration }) {
   useLanguage();
   const actions = administration?.actions ?? [
@@ -341,12 +334,12 @@ function ControlRail({ administration }) {
     { key: 'Disabled', label: t('shared.deactivate') }, { key: 'revoke-api', label: t('shared.revokeWorkerAPIToken') }
   ].map(action => ({ ...action, reason: t('shared.currentAdministrationUnavailable') }));
   const mainActions = actions.filter(action => ['Enabled', 'Draining', 'Disabled', 'revoke-api'].includes(action.key));
-  const appearance = { Enabled: ['primary', 'activate', 'poc-control-primary'], Draining: ['secondary', 'drain', ''], Disabled: ['secondary-destructive', 'deactivate', 'poc-control-danger'], 'revoke-api': ['tertiary-destructive', 'revoke', 'poc-control-revoke'] };
+  const appearance = { Enabled: ['primary', Play], Draining: ['secondary', PauseCircle], Disabled: ['secondary-destructive', Stop], 'revoke-api': ['tertiary-destructive', Trash01] };
   function actionButton(action) {
-    const [color, icon, extra] = appearance[action.key] ?? ['secondary', 'revoke', ''];
+    const [color, iconLeading] = appearance[action.key] ?? ['secondary', Trash01];
     return <div key={action.key} className={`poc-control-action ${action.key === 'revoke-api' ? 'poc-revoke-action' : ''}`}>
-      <Button color={color} className={`poc-control-button ${extra}`} isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`poc-action-${action.key}`} onPress={() => administration?.onAction(action.key)}>
-        <ControlIcon type={icon} /><span>{action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}</span>
+      <Button color={color} size="md" className="w-full justify-start" iconLeading={iconLeading} isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`poc-action-${action.key}`} onPress={() => administration?.onAction(action.key)}>
+        {action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
       </Button>
       <p className="sr-only" id={`poc-action-${action.key}`}>{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
     </div>;
@@ -358,8 +351,11 @@ function ControlRail({ administration }) {
       <div className="poc-danger-controls">{mainActions.filter(action => action.key === 'revoke-api').map(actionButton)}</div>
       <div className="poc-activation-note">
         <span aria-hidden="true">i</span>
-        <div><p>{t('workers.activationPrerequisite')}</p>{administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}</div>
-        <Button color="tertiary" size="sm" className="poc-refresh-button" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>{t('shared.refreshAuthoritativeState')}</Button>
+        <div>
+          <p>{t('workers.activationPrerequisite')}</p>
+          {administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
+          <Button color="tertiary" size="sm" className="poc-refresh-button" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>{t('shared.refreshAuthoritativeState')}</Button>
+        </div>
       </div>
     </div>
   </TableCard.Root>;
@@ -370,8 +366,8 @@ function DeliveryControl({ administration }) {
   const action = administration?.actions?.find(item => item.key === 'revoke-delivery');
   if (!action) return null;
   return <div className="poc-extra-control">
-    <Button color="tertiary-destructive" className="poc-control-button poc-control-revoke" isDisabled={!!action.reason || !administration?.onAction} aria-describedby="poc-delivery-action-reason" onPress={() => administration?.onAction('revoke-delivery')}>
-      <ControlIcon type="revoke" /><span>{localizeText(action.label)}</span>
+    <Button color="tertiary-destructive" size="md" className="w-full justify-start" iconLeading={Trash01} isDisabled={!!action.reason || !administration?.onAction} aria-describedby="poc-delivery-action-reason" onPress={() => administration?.onAction('revoke-delivery')}>
+      {localizeText(action.label)}
     </Button>
     <p id="poc-delivery-action-reason" className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
   </div>;

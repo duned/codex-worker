@@ -50,6 +50,14 @@ test('Stale, missing, failed reads and absent resources remain understandable',(
  assert.ok(render({observations:null,loading:true}).includes('Loading current Worker observations'));
  assert.ok(render({executions:[]}).includes('Worker reports active work'));
 });
+test('Current execution empty state reflects reported activity without reserving a timeline',()=>{
+ const terminalOnly=[completed];
+ const active=render({executions:terminalOnly});
+ assert.ok(active.includes('Worker reports active work, but its execution is unavailable in this view.'));
+ const idle=render({executions:terminalOnly,observations:[{...worker,activeAssignments:0,activeExecutions:0}]});
+ assert.ok(idle.includes('No current execution is reported in the latest 50 requests.'));
+ assert.ok(!idle.includes('Worker reports active work'));
+});
 test('Capabilities expose pending and failed operations without provisioning mutation controls or raw diagnostics',()=>{
  const request={nodeId:'worker-a',capabilityId:'codex-cli',action:'CheckAuthentication'};
  const html=render({nodeCommands:[{id:'pending',request,status:'Pending',createdAtUtc:'2026-01-01',diagnostic:'Pending'},{id:'failed',request,status:'Failed',createdAtUtc:'2025-12-31',diagnostic:'Denied',failureDetail:{description:'raw private detail'}}],nodes:[{...node,capabilities:[{...capability,state:{...capability.state,operation:{state:'Failed',action:'checkauthentication',diagnosticCode:'authentication-required'}}}]}]});

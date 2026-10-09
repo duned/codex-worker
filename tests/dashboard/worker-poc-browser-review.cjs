@@ -25,11 +25,12 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
         } }), { headers: { 'Content-Type': 'text/event-stream' } });
       };
     });
-    let signedIn = true, canActivate = true, loseResponse = false, empty = false;
+    let signedIn = true, canActivate = true, loseResponse = false, empty = false, noActiveExecution = false;
     let policy = 'Disabled', releaseWrite, writeStarted;
     const writing = new Promise(resolve => { writeStarted = resolve; });
     const commands = [{ id: 'fixture-command', createdAtUtc: '2026-01-01T00:02:00Z', status: 'Pending', request: { nodeId: 'worker-a', capabilityId: 'codex-cli', action: 'CheckAuthentication' } }];
-    const registry = () => ({ ...props.observations[0], schedulingPolicy: policy, authenticationCredentialStatus: 'active' });
+    const registry = () => ({ ...props.observations[0], activeAssignments: noActiveExecution ? 0 : props.observations[0].activeAssignments,
+      activeExecutions: noActiveExecution ? 0 : props.observations[0].activeExecutions, schedulingPolicy: policy, authenticationCredentialStatus: 'active' });
     await page.route('https://worker.test/**', async route => {
       const request = route.request(), endpoint = new URL(request.url()).pathname;
       if (endpoint.startsWith('/dashboard-assets/preview/')) return route.fulfill({ path: path.join(assets, 'preview', endpoint.slice('/dashboard-assets/preview/'.length)), contentType: endpoint.endsWith('.js') ? 'text/javascript' : 'text/css' });
@@ -48,15 +49,16 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
         if (loseResponse) { writeStarted(); await new Promise(resolve => { releaseWrite = resolve; }); }
         return route.fulfill({ status: loseResponse ? 503 : 200, json: registry() });
       }
+      const executions = noActiveExecution ? [props.executions.find(item => item.state === 'Completed')] : props.executions;
       const fixtures = { '/api/v1/workers/worker-a/credential-access': { status: 'active' }, '/api/v1/provisioning': [], '/api/v1/workers': empty ? [] : [registry()], '/api/v1/workers/worker-a': registry(),
         '/api/v1/workers/worker-a/diagnostics': { ...props.diagnostics, canActivate, activationBlockingReasons: canActivate ? [] : ['Current readiness unavailable'] },
-        '/api/v1/nodes/worker-a/commands': commands, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects, '/api/v1/executions': empty ? [] : props.executions };
+        '/api/v1/nodes/worker-a/commands': commands, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects, '/api/v1/executions': empty ? [] : executions };
       assert.ok(Object.hasOwn(fixtures, endpoint), `Unexpected API: ${endpoint}`);
       return route.fulfill({ json: fixtures[endpoint] });
     });
     const url = 'https://worker.test/workers/worker-a?step=preparation&project=project-a';
-    for (const theme of ['dark', 'light']) for (const width of [1280, 375, 640]) {
-      await page.setViewportSize({ width, height: 900 }); await page.goto(url);
+    for (const theme of ['dark', 'light']) for (const width of [1440, 1024, 768, 375]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 1040 : 900 }); await page.goto(url);
       await page.evaluate(theme => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme } })), theme);
       await page.reload();
       assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), theme === 'dark');
@@ -68,7 +70,8 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       assert.equal(await page.evaluate(() => !!window.codexWorkerPoc), false);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       const main = await page.locator('.poc-main').boundingBox(), rail = await page.locator('.poc-control-rail').boundingBox();
-      assert.ok(width > 1000 ? rail.x >= main.x + main.width : rail.y >= main.y + main.height);
+      assert.ok(width > 1250 ? rail.x >= main.x + main.width : rail.y >= main.y + main.height);
+      if (width === 1440) assert.ok((await page.locator('.poc-current-panel').boundingBox()).height > 200, 'An active execution keeps its reported timeline visible.');
       await page.getByRole('button', { name: 'Activate scheduling' }).click();
       const dialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Activate scheduling' }) });
       await dialog.waitFor();
@@ -84,6 +87,15 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       assert.equal(await page.getByRole('button', { name: 'Activate scheduling' }).evaluate(element => element === document.activeElement), true, 'Focus restores to trigger.');
       await page.screenshot({ path: path.join(output, `worker-detail-${theme}-${width}.png`), fullPage: true });
     }
+    noActiveExecution = true;
+    await page.setViewportSize({ width: 1440, height: 1040 });
+    await page.evaluate(() => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme: 'dark' } })));
+    await page.reload();
+    await page.getByText('No current execution is reported in the latest 50 requests.', { exact: true }).waitFor();
+    assert.ok((await page.locator('.poc-current-panel').boundingBox()).height < 140, 'The empty state does not reserve timeline space.');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({ path: path.join(output, 'worker-detail-empty-current-dark-1440.png'), fullPage: true });
+    noActiveExecution = false;
     await page.evaluate(() => localStorage.removeItem('codex-dashboard-preferences')); await page.reload();
     await page.setViewportSize({ width: 1280, height: 900 });
     // Cache says activation is possible; the uncached current check refuses it.
