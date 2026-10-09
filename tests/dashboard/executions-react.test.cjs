@@ -6,7 +6,8 @@ const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const directory = mkdtempSync(join(tmpdir(), 'executions-react-'));
 buildSync({ entryPoints: [resolve('src/CodexServer/worker-poc/src/features/executions/model.ts')], bundle: true, platform: 'node', format: 'cjs', outfile: join(directory, 'model.cjs') });
-const { execution, executionList, reconciliation, cancellationResult, reconciliationResult, query, offset, canReconcile, presentation, validEvidence } = require(join(directory, 'model.cjs'));
+const { execution, executionList, reconciliation, cancellationResult, reconciliationResult, query, offset, canReconcile, presentation, validEvidence,
+  attentionAssessment, maintenanceScope, maintenanceInventoryScope, archiveApplyAllowed, maintenanceCommand, maintenanceCommands, maintenanceDetail, lastActivity, timeSince } = require(join(directory, 'model.cjs'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const queued = { id: 'request', projectId: 'project', state: 'Queued', createdAtUtc: '2026-01-01T00:00:00Z', workReference: { type: 'github-issue', id: '7' }, attemptNumber: 1 };
 const uncertain = { ...queued, state: 'Failed', recoveryState: 'LeaseExpiredUncertain', lease: { executionId: 'request', workerId: 'worker', generation: 2, acquiredAtUtc: queued.createdAtUtc, expiresAtUtc: queued.createdAtUtc, state: 'Expired' } };
@@ -53,4 +54,79 @@ test('mutation results must establish the exact execution and reconciliation out
   assert.deepEqual(reconciliationResult(queued.id, 'NotIntegrated')({ execution: source, retry }), { execution: source, retry });
   assert.throws(() => reconciliationResult(queued.id, 'NotIntegrated')({ execution: source }));
   assert.throws(() => reconciliationResult(queued.id, 'NotIntegrated')({ execution: source, retry: { ...retry, retryOfExecutionId: 'another' } }));
+});
+
+const executionId = '11111111111111111111111111111111', workerId = '22222222222222222222222222222222';
+const assignmentId = '33333333333333333333333333333333', workerExecutionId = '44444444444444444444444444444444';
+const managed = { ...queued, id: executionId, state: 'Running', assignedWorkerId: workerId, assignmentId, workerExecutionId,
+  lease: { executionId, workerId, generation: 3, acquiredAtUtc: queued.createdAtUtc, expiresAtUtc: '2026-01-08T00:00:00Z', state: 'Active' } };
+const capableWorker = { workerId, availability: 'online', schedulingPolicy: 'Active', activeAssignments: 1,
+  capabilities: [{ type: 'protocol', name: 'execution-maintenance-v1' }] };
+const currentNode = { id: workerId, kind: 'worker', connectivity: 'connected', executionReadiness: 'ready', observationsStale: false, capabilities: [] };
+test('attention view classifies stale lease, offline or stale Worker data, age and missing provenance from bounded Server records', () => {
+  const now = Date.parse('2026-01-10T00:00:00Z');
+  const staleLease = { ...managed, state: 'Failed', recoveryState: 'LeaseExpiredUncertain', lease: { ...managed.lease, state: 'Expired', expiresAtUtc: '2026-01-01T00:00:00Z' } };
+  assert.equal(attentionAssessment(staleLease, capableWorker, currentNode, now).classification, 'stale-lease');
+  assert.equal(attentionAssessment(managed, { ...capableWorker, availability: 'offline' }, currentNode, now).classification, 'worker-offline');
+  assert.equal(attentionAssessment(managed, capableWorker, { ...currentNode, observationsStale: true }, now).classification, 'worker-data-outdated');
+  assert.equal(attentionAssessment(managed, undefined, currentNode, now, 'loading').reason, 'attention.workerStateLoading');
+  assert.equal(attentionAssessment(managed, undefined, currentNode, now, 'unavailable').reason, 'attention.workerStateUnavailable');
+  assert.equal(attentionAssessment({ ...managed, startedAtUtc: '2025-12-31T00:00:00Z' }, capableWorker, currentNode, now).classification, 'stale');
+  assert.equal(attentionAssessment({ ...managed, workerExecutionId: undefined }, capableWorker, currentNode, now).classification, 'provenance-uncertain');
+  assert.equal(attentionAssessment({ ...managed, assignedWorkerId: undefined }, undefined, currentNode, now).classification, 'provenance-uncertain');
+  assert.equal(attentionAssessment({ ...managed, state: 'Completed', recoverable: false, recoveryState: 'OperatorCleaned' }, undefined, currentNode, now), undefined);
+  assert.equal(attentionAssessment(managed, capableWorker, currentNode, now), undefined);
+  assert.equal(lastActivity({ ...managed, completedAtUtc: '2026-01-04T00:00:00Z' }), '2026-01-04T00:00:00Z');
+  assert.equal(timeSince('2026-01-09T22:00:00Z', now), '2h');
+});
+test('managed maintenance action matrix uses exact provenance, current Worker capability, lease, drain and archive retention', () => {
+  const now = Date.parse('2026-02-10T00:00:00Z');
+  const terminal = { ...managed, state: 'Completed', completedAtUtc: '2026-01-01T00:00:00Z', recoverable: false,
+    lease: { ...managed.lease, state: 'Released' } };
+  assert.equal(maintenanceScope(managed, 'inspect', false, capableWorker, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope(managed, 'inspect', false, { ...capableWorker, availability: 'offline' }, currentNode, now).reason, 'maintenance.workerOffline');
+  assert.equal(maintenanceScope(managed, 'inspect', false, { ...capableWorker, capabilities: [] }, currentNode, now).reason, 'maintenance.protocolUnavailable');
+  assert.equal(maintenanceScope(managed, 'inspect', false, capableWorker, { ...currentNode, observationsStale: true }, now).reason, 'maintenance.workerDataOutdated');
+  assert.equal(maintenanceScope({ ...managed, assignmentId: undefined }, 'inspect', false, capableWorker, currentNode, now).reason, 'maintenance.missingProvenance');
+  assert.equal(maintenanceScope(terminal, 'cleanup', false, capableWorker, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope(terminal, 'cleanup', true, capableWorker, currentNode, now).reason, 'maintenance.drainRequired');
+  const drained = { ...capableWorker, schedulingPolicy: 'Draining', activeAssignments: 0 };
+  assert.equal(maintenanceScope(terminal, 'cleanup', true, drained, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope(terminal, 'archive', false, capableWorker, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope({ ...terminal, recoverable: true }, 'archive', false, capableWorker, currentNode, now).allowed, true, 'Worker preview resolves current local resource eligibility');
+  assert.equal(maintenanceScope(terminal, 'archive', true, drained, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope({ ...terminal, completedAtUtc: '2026-02-01T00:00:00Z' }, 'archive', false, capableWorker, currentNode, now).reason, 'maintenance.archiveRetentionRequired');
+  assert.equal(maintenanceScope({ ...managed, state: 'Assigned' }, 'retry-report', false, capableWorker, currentNode, now).allowed, true);
+  assert.equal(maintenanceScope({ ...managed, state: 'Assigned' }, 'retry-report', true, capableWorker, currentNode, now).reason, 'maintenance.reportRetryUnavailable');
+  assert.equal(maintenanceScope({ ...managed, state: 'Assigned' }, 'retry-report', true, { ...capableWorker, schedulingPolicy: 'Draining' }, currentNode, now).allowed, true);
+  assert.equal(maintenanceInventoryScope({ ...managed, workerExecutionId: undefined }, capableWorker, currentNode).allowed, true);
+  assert.equal(maintenanceInventoryScope({ ...managed, assignedWorkerId: undefined }, capableWorker, currentNode).reason, 'maintenance.missingWorkerProvenance');
+});
+test('maintenance audit contracts validate exact identities and surface per-record outcomes', () => {
+  const command = { request: { operationId: '55555555555555555555555555555555', workerId, serverExecutionId: executionId,
+    workerExecutionId, assignmentId, generation: 3, action: 'cleanup', apply: false, timeoutSeconds: 60, limit: 1, offset: 0 },
+  status: 'succeeded', createdAtUtc: '2026-01-01T00:00:00Z', authorizedBy: 'server-management:test',
+  report: { outcome: 'succeeded', reason: 'integrated', observations: [{ executionId: workerExecutionId, serverExecutionId: executionId,
+    assignmentId, generation: 3, state: 'Completed', recoveryState: 'recoverable', reportingStatus: 'none', project: 'project', issueNumber: 7, archived: false }] } };
+  const parsedCommand = maintenanceCommand(command);
+  assert.equal(parsedCommand.request.operationId, command.request.operationId);
+  assert.equal(parsedCommand.report.reason, 'integrated');
+  assert.equal(maintenanceCommands([command])[0].request.action, 'cleanup');
+  const detail = { operation: command, execution: { ...managed, state: 'Completed' }, workerStatus: 'online', status: 'succeeded',
+    observations: [{ observation: command.report.observations[0], execution: { ...managed, state: 'Completed' }, status: 'potentially-recoverable' }] };
+  const parsedDetail = maintenanceDetail(detail);
+  assert.equal(parsedDetail.operation.request.operationId, command.request.operationId);
+  assert.equal(parsedDetail.observations[0].status, 'potentially-recoverable');
+  assert.equal(parsedDetail.execution.state, 'Completed');
+  const archivePreview = { ...command, request: { ...command.request, action: 'archive', apply: false },
+    report: { outcome: 'succeeded', reason: 'already-clean', observations: [{ ...command.report.observations[0], recoveryState: 'operator-cleaned' }] } };
+  const archiveDetail = { ...detail, operation: archivePreview,
+    observations: [{ observation: archivePreview.report.observations[0], status: 'confirmed' }] };
+  assert.equal(archiveApplyAllowed(archiveDetail), true);
+  assert.equal(archiveApplyAllowed({ ...archiveDetail, observations: [{ ...archiveDetail.observations[0], observation: { ...archivePreview.report.observations[0], archived: true } }] }), false);
+  assert.equal(archiveApplyAllowed({ ...archiveDetail, observations: [{ ...archiveDetail.observations[0], observation: { ...archivePreview.report.observations[0], reportingStatus: 'pending' } }] }), false);
+  assert.throws(() => maintenanceCommand({ ...command, request: { ...command.request, action: 'purge' } }));
+  assert.throws(() => maintenanceDetail({ ...detail, observations: [{ observation: { ...command.report.observations[0], executionId: 'bad' }, status: 'confirmed' }] }));
+  const inventory = maintenanceCommand({ ...command, request: { operationId: '66666666666666666666666666666666', workerId, action: 'inventory', apply: false, timeoutSeconds: 60, limit: 50, offset: 0 }, report: { outcome: 'succeeded', reason: 'inventory-observed', observations: [] } });
+  assert.equal(inventory.request.action, 'inventory');
 });

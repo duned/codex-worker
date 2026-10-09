@@ -15,6 +15,25 @@ export interface ExecutionSummary {
   completionSummary?: string;
   workReference?: { type: string; id: string; url?: string };
 }
+export interface ExecutionMaintenanceRequest {
+  operationId: string; workerId: string; serverExecutionId?: string | null; workerExecutionId?: string | null;
+  assignmentId?: string | null; generation?: number | null; action: 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report';
+  apply: boolean; timeoutSeconds: number; limit: number; offset: number;
+}
+export interface ExecutionMaintenanceObservation {
+  executionId: string; serverExecutionId?: string; assignmentId?: string; generation?: number;
+  state: string; recoveryState: string; reportingStatus: string; project: string; issueNumber: number; archived: boolean;
+}
+export interface ExecutionMaintenanceReport { outcome: string; reason: string; observations: ExecutionMaintenanceObservation[] }
+export interface ExecutionMaintenanceCommand {
+  request: ExecutionMaintenanceRequest; status: string; createdAtUtc: string; authorizedBy: string;
+  deadlineUtc?: string; report?: ExecutionMaintenanceReport; completedAtUtc?: string;
+}
+export interface ExecutionMaintenanceDetail {
+  operation: ExecutionMaintenanceCommand; execution?: ExecutionSummary | null; workerStatus: string;
+  observations: { observation: ExecutionMaintenanceObservation; execution?: ExecutionSummary | null; status: string }[];
+  status: string;
+}
 export interface Capability {
   definition: { id: string; displayName: string; requiresAuthentication: boolean; requiresConfiguration: boolean };
   state: { installation: string; health: string; authentication?: string; configuration?: string; update?: string;
