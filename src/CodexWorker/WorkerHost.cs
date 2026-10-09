@@ -10,6 +10,7 @@ public sealed class WorkerHost
     private readonly WorkerConsole _output;
     private readonly TimeProvider _timeProvider;
     private readonly Action<string> _operationalLog;
+    private readonly Action<string>? _executionOperationalLog;
     private readonly ProcessRunner _runner = new();
     private readonly WorkerRegistrationClient _registration;
     private readonly IAgentAuthenticationProvider? _agentAuthentication;
@@ -29,6 +30,7 @@ public sealed class WorkerHost
         _output = output ?? new WorkerConsole();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _operationalLog = operationalLog ?? (_ => { });
+        _executionOperationalLog = operationalLog;
     }
 
     private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null,
@@ -1193,7 +1195,7 @@ public sealed class WorkerHost
         var validation = new ValidationRunner(_runner, config.Validation.TimeoutSeconds, config.Environment.Variables);
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
-            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _operationalLog, shutdownToken,
+            new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _executionOperationalLog, shutdownToken,
                 registrationClient: _registration, timeProvider: _timeProvider), codex, github, repositoryGate);
     }
 

@@ -14,9 +14,27 @@ public sealed class WorkerV011Tests
         h.Codex.QuotaReader = new ThrowingQuotaReader();
         h.Codex.InitialOutcome = new(status, "task outcome", [], false, null);
         Assert.Equal(expected, (await h.ProcessOneAsync())?.Kind);
-        Assert.Contains(h.OperationalMessages, message => message.Contains("Codex quota start", StringComparison.Ordinal));
-        Assert.Contains(h.OperationalMessages, message => message.Contains("Codex quota end", StringComparison.Ordinal));
+        Assert.Equal(2, h.OperationalMessages.Count(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
+        Assert.DoesNotContain("↳ Limits", h.Output.ToString());
         Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("private quota error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task QuotaObservationsDoNotSendExtraTelegramMessages()
+    {
+        using var h = new Harness(telegramEnabled: true);
+        h.Codex.QuotaReader = new AvailableQuotaReader();
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Single(h.TelegramMessages, message => message.Contains("TAREA COMPLETADA", StringComparison.Ordinal));
+        Assert.Single(h.TelegramMessages, message => message.Contains("Codex account quota: 5h 80% left", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("↳ Limits", StringComparison.Ordinal));
+        Assert.Equal(2, h.OperationalMessages.Count(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
+    }
+
+    private sealed class AvailableQuotaReader : ICodexQuotaReader
+    {
+        public Task<CodexQuotaObservation> ReadAsync(CancellationToken ct) =>
+            Task.FromResult(new CodexQuotaObservation(DateTimeOffset.UtcNow, "available", [new(300, 80, null)]));
     }
 
     private sealed class ThrowingQuotaReader : ICodexQuotaReader

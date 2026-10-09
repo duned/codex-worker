@@ -116,12 +116,10 @@ public sealed class CodexQuotaTests
             new GitSettings { BaseBranch = "main", FeaturePrefix = "feature/" }, new GitHubIssue(17, "task", "", now));
         using var writer = new StringWriter();
         new WorkerConsole(writer, interactive: false).Quota(execution, "end", observation);
-        Assert.Contains($"execution [{execution.ExecutionId}]", writer.ToString());
-        Assert.Contains(observation.ObservedAtUtc.ToString("O"), writer.ToString());
-        Assert.Contains("sample #17", writer.ToString());
+        Assert.Equal($"↳ Limits · [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · 5h 80% left · Weekly unavailable{Environment.NewLine}", writer.ToString());
         Assert.DoesNotContain("private", writer.ToString());
         var report = new IssueExecutionReport("done", [], QuotaAtEnd: observation);
-        Assert.Contains("5h: 80% remaining", Worker.QuotaNotification(report));
+        Assert.Contains("5h 80% left", Worker.QuotaNotification(report));
         Assert.Equal("", Worker.QuotaNotification(report with { QuotaAtEnd = new(now, "query failed", []) }));
     }
 
@@ -136,6 +134,44 @@ public sealed class CodexQuotaTests
         using var input = new StreamWriter(requests);
         var error = await Assert.ThrowsAsync<IOException>(() => CodexQuotaTransport.QueryAsync(input, output, CancellationToken.None));
         Assert.DoesNotContain("private", error.Message);
+    }
+
+    [Fact]
+    public void OperationalSinkSharingStdoutEmitsOnceForInterleavedExecutions()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var first = WorkerExecution.Create(new ProjectSettings { Name = "sample", Repository = "owner/repo" },
+            new GitSettings { BaseBranch = "main" }, new GitHubIssue(1, "first", "", now));
+        var second = WorkerExecution.Create(new ProjectSettings { Name = "sample", Repository = "owner/repo" },
+            new GitSettings { BaseBranch = "main" }, new GitHubIssue(2, "second", "", now));
+        var observation = new CodexQuotaObservation(now, "available", [new(300, 100, now.AddHours(5)), new(10080, 38, null)]);
+        using var writer = new StringWriter();
+        var output = new WorkerConsole(writer, interactive: false);
+        var events = new List<string>();
+        void Log(string message) { events.Add(message); writer.WriteLine(message); }
+        output.IssueStarted("sample", new GitHubIssue(1, "first", "", now), first);
+        var capacity = new SchedulerCapacityLog(2, Log);
+        capacity.Report(1, [("sample", 1, 2)]);
+        output.Quota(first, "start", observation, Log);
+        output.Quota(second, "start", observation, Log);
+        output.Quota(first, "end", observation, Log);
+        output.Quota(second, "end", observation, Log);
+        Assert.Equal(5, events.Count);
+        var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(events, lines.TakeLast(5));
+        Assert.StartsWith("Scheduler · global 1/2", events[0]);
+        Assert.Equal($"↳ Limits · [{ExecutionFormatting.ShortId(first.ExecutionId)}] · 5h 100% left · Weekly 38% left", events[1]);
+        Assert.Contains(ExecutionFormatting.ShortId(second.ExecutionId), events[2]);
+    }
+
+    [Fact]
+    public void CompactFormattingPreservesUnknownAndStaleLimits()
+    {
+        var now = DateTimeOffset.UtcNow;
+        Assert.Equal("unavailable", CodexQuotaFormatting.Compact(new(now, "query failed", []), now));
+        Assert.Equal("unavailable", CodexQuotaFormatting.Compact(new(now.AddMinutes(-3), "available", [new(300, 100, null)]), now));
+        Assert.Equal("5h unavailable · Weekly unavailable", CodexQuotaFormatting.Compact(new(now, "available", []), now));
+        Assert.Equal("5h unavailable · Weekly 37.5% left", CodexQuotaFormatting.Compact(new(now, "available", [new(10080, 37.5, null)]), now));
     }
 
     private sealed class ControlledTransport : ICodexQuotaTransport

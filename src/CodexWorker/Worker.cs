@@ -801,7 +801,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, operationalLog: _operationalLog);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, operationalLog: operationalLog);
         return runner.RunAsync(context, ct);
     }
 
@@ -999,7 +999,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
 
     internal static string QuotaNotification(IssueExecutionReport report) =>
         report.QuotaAtEnd is { Status: "available" } quota && DateTimeOffset.UtcNow - quota.ObservedAtUtc <= TimeSpan.FromMinutes(2)
-            ? "\n\nCodex account quota: " + quota.Summary(DateTimeOffset.UtcNow) : "";
+            ? "\n\nCodex account quota: " + CodexQuotaFormatting.Compact(quota, DateTimeOffset.UtcNow) : "";
 
     private static string TelegramCompletion(IssueExecutionReport report)
     {

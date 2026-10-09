@@ -89,6 +89,12 @@ public sealed class TelegramNotifier : IDisposable
         AddMatch(lines, summary, @"Local feature branch: `([^`]+)`", "Rama completada local");
         AddMatch(lines, summary, @"Integration repair succeeded after (\d+) attempt\(s\)", "Reparación de integración completada · intentos");
         if (summary.Contains("No code changes", StringComparison.OrdinalIgnoreCase)) lines.Add("Completada sin cambios de código");
+        var quotaSummary = Regex.Match(summary, @"(?:^|\n\n)(Codex account quota:[^\r\n]*)");
+        if (quotaSummary.Success)
+        {
+            lines.Add("");
+            lines.Add(quotaSummary.Groups[1].Value);
+        }
         var codexSummary = Regex.Match(summary, @"(?:^|\n\n)Codex summary:\s*(.*)$", RegexOptions.Singleline);
         if (codexSummary.Success && !string.IsNullOrWhiteSpace(codexSummary.Groups[1].Value))
         {

@@ -299,8 +299,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         catch (Exception ex) when (ex is not OutOfMemoryException)
         { observation = new(DateTimeOffset.UtcNow, "query failed", []); }
         if (phase == "end") execution.QuotaAtEnd = observation;
-        output.Quota(execution, phase, observation);
-        operationalLog?.Invoke(CodexQuotaFormatting.Journal(execution, phase, observation, (timeProvider ?? TimeProvider.System).GetUtcNow()));
+        output.Quota(execution, phase, observation, operationalLog);
     }
 
     private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, ICodexExecutor executionCodex, CancellationToken ct)

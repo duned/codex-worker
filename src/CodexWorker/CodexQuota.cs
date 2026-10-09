@@ -154,6 +154,18 @@ internal sealed class CodexQuotaTransport : ICodexQuotaTransport
 
 internal static class CodexQuotaFormatting
 {
+    internal static string Compact(CodexQuotaObservation observation, DateTimeOffset now)
+    {
+        if (observation.Status != "available" || now - observation.ObservedAtUtc > TimeSpan.FromMinutes(2))
+            return "unavailable";
+        return string.Join(" · ", new[] { (300, "5h"), (10080, "Weekly") }.Select(pair =>
+        {
+            var window = observation.Windows.SingleOrDefault(w => w.DurationMinutes == pair.Item1);
+            return pair.Item2 + (window?.RemainingPercent is { } remaining
+                ? " " + remaining.ToString("0.#", CultureInfo.InvariantCulture) + "% left" : " unavailable");
+        }));
+    }
+
     internal static string Journal(WorkerExecution execution, string phase, CodexQuotaObservation observation, DateTimeOffset now) =>
-        $"Codex quota {phase} · execution [{execution.ExecutionId}] · {execution.Project} #{execution.IssueNumber} · observed {observation.ObservedAtUtc:O} · {observation.Summary(now)}";
+        $"↳ Limits · [{ExecutionFormatting.ShortId(execution.ExecutionId)}] · {Compact(observation, now)}";
 }
