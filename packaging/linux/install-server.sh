@@ -138,8 +138,8 @@ fi
 if [[ ${1:-} == update ]]; then
   exec /opt/codex-server/current/CodexServer "$@"
 fi
-if [[ ${1:-} != worker-token && ${1:-} != worker && ${1:-} != status && ${1:-} != diagnostics && ${1:-} != config && ${1:-} != projects && ${1:-} != executions && ${1:-} != github && ${1:-} != credential && ${1:-} != provision && ${1:-} != backup ]]; then
-  echo 'Usage: sudo codex-server <update|status|diagnostics|config|projects|executions|github|credential|provision|backup|worker-token|worker> [arguments]' >&2
+if [[ ${1:-} != worker-token && ${1:-} != worker && ${1:-} != status && ${1:-} != diagnostics && ${1:-} != config && ${1:-} != projects && ${1:-} != executions && ${1:-} != maintenance && ${1:-} != github && ${1:-} != credential && ${1:-} != provision && ${1:-} != backup ]]; then
+  echo 'Usage: sudo codex-server <update|status|diagnostics|config|projects|executions|maintenance|github|credential|provision|backup|worker-token|worker> [arguments]' >&2
   exit 2
 fi
 # Only this allowlisted mutation runs as root so it can preserve the installed

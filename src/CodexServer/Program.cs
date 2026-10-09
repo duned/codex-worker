@@ -14,6 +14,7 @@ public static class Program
           status, diagnostics  Inspect local Server readiness and aggregate state
           config               Show, validate or update installed configuration
           projects             Manage project definitions and revisions
+          maintenance          HTTP execution inventory, preview and safe maintenance
           executions           Inspect, cancel or reconcile execution requests
           github               Inspect project Issues and manage eligibility/relationships
           credential           Manage protected credentials and Worker assignments
@@ -31,6 +32,8 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "maintenance")
+            return await CodexProvisioning.ExecutionMaintenanceCli.RunAsync(true, args[1..]);
         // Deployment probes must not initialize configuration, persistence or hosting.
         if (args is ["--dashboard-override-capability"])
         {

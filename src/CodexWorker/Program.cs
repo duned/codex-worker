@@ -7,6 +7,8 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "maintenance")
+            return await CodexProvisioning.ExecutionMaintenanceCli.RunAsync(false, args[1..]);
         if (args.Length > 0 && args[0] == "update")
             return await CodexProvisioning.SelfUpdateCommand.RunAsync(new("worker", "Codex Worker", ApplicationVersion.Display, "/opt/codex-worker/CodexWorker"), args[1..]);
         using var shutdown = new CancellationTokenSource();
