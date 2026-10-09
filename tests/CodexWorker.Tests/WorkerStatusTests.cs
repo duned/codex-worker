@@ -16,7 +16,7 @@ public sealed class WorkerStatusTests
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         var synchronizer = new ManagedConfigurationSynchronizer(identity + ".configuration.json",
             new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(fixture.DirectoryPath, "checkouts") });
-        synchronizer.Apply(new(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]));
+        synchronizer.Apply(new(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]));
         synchronizer.RecordProjectState(project, "ready");
 
         var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: InventoryDiscovery());

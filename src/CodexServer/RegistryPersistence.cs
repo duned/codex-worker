@@ -89,7 +89,7 @@ public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId,
     string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
 public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment,
-    IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null);
+    IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null, string? Reason = null);
 public sealed record WorkAssignment(string AssignmentId, string ServerExecutionId, CentralProject Project,
     WorkReference Work, string WorkerId, IReadOnlyDictionary<string, string> Metadata, ExecutionLease? Lease = null);
 
@@ -248,11 +248,11 @@ public static class ExecutionAdministrationValidation
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement>? Requirements = null, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null);
 public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
@@ -324,6 +324,7 @@ public static class CentralProjectValidation
     public static string? Error(CentralProjectDefinition? value)
     {
         if (value is null) return "Project definition is required.";
+        if (value.MaxParallelTasks is < 1 or > 8) return "maxParallelTasks must be null (Automatic) or 1 to 8.";
         if (string.IsNullOrWhiteSpace(value.Name) || value.Name.Length > 120) return "name must contain 1 to 120 characters.";
         if (!Regex.IsMatch(value.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$")) return "name contains unsupported characters.";
         if (string.IsNullOrWhiteSpace(value.Repository) || !Regex.IsMatch(value.Repository, "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\\.{1,2}$)[A-Za-z0-9_.-]+$")) return "repository must be a GitHub owner/repository identifier.";
@@ -951,14 +952,21 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
                 item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
-        if (!request.WorkerEnabled || request.AvailableCapacity == 0 || request.ProjectCapacities.Count == 0 || request.ProjectCapacities.All(p => p.Value == 0))
-            return NoAssignment(request.WorkerId, "worker-disabled-or-no-capacity");
+        if (!request.WorkerEnabled) return NoAssignment(request.WorkerId, "worker-disabled-or-no-capacity");
+        if (request.AvailableCapacity == 0) return NoAssignment(request.WorkerId, "worker-capacity");
+        if (request.ProjectCapacities.Count == 0 || request.ProjectCapacities.All(p => p.Value == 0))
+            return NoAssignment(request.WorkerId, "no-eligible-work");
 
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
+        // Serialize admission before reading project policy and fleet reservations, including other store instances.
+        command.CommandText = "UPDATE workers SET worker_id=worker_id WHERE worker_id=$worker;";
+        command.Parameters.AddWithValue("$worker", request.WorkerId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.Clear();
         command.CommandText = "SELECT heartbeat_json, last_seen_at_utc, scheduling_policy FROM workers WHERE worker_id = $worker AND registration_json IS NOT NULL;";
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         string? heartbeatJson;
@@ -982,7 +990,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
-            heartbeat.LifecycleState != "running" || heartbeat.MaximumCapacity - heartbeat.ActiveExecutions <= 0 ||
+            heartbeat.LifecycleState != "running" ||
             heartbeat.CapabilityInventory is { } inventory && !CapabilityCatalog.ExecutionReadiness(inventory).Available)
         {
             await transaction.CommitAsync(cancellationToken);
@@ -998,7 +1006,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (assigned >= Math.Min(request.AvailableCapacity, heartbeat.MaximumCapacity - heartbeat.ActiveExecutions))
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "capacity-reserved");
+            return NoAssignment(request.WorkerId, "worker-capacity");
         }
 
         var registration = await ReadWorkerRegistrationAsync(command, request.WorkerId, cancellationToken);
@@ -1039,6 +1047,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
         }
         await reader.DisposeAsync();
+        var projectCapacityBlocked = false;
         (string Id, string ProjectId, WorkReference Work, string Created)? candidate = null;
         IReadOnlyDictionary<string, string>? recoveryMetadata = null;
         foreach (var queuedItem in queued)
@@ -1078,20 +1087,21 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             if (!issueReservations.TryGetValue((queuedItem.ProjectId, canonicalWork.Type, canonicalWork.Id), out var reservationId) ||
                 reservationId != queuedItem.Id) continue;
             command.Parameters.Clear();
-            command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND assigned_worker_id = $worker AND state = 'Assigned';";
+            command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND (state IN ('Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain'));";
             command.Parameters.AddWithValue("$project", queuedItem.ProjectId);
-            command.Parameters.AddWithValue("$worker", request.WorkerId);
-            var currentProjectAssignments = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
-            if (currentProjectAssignments < request.ProjectCapacities[queuedItem.ProjectId])
+            var activeForProject = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture);
+            if (candidateProject.MaxParallelTasks is { } limit && activeForProject >= limit)
             {
-                candidate = (queuedItem.Id, queuedItem.ProjectId, canonicalWork, queuedItem.Created);
-                break;
+                projectCapacityBlocked = true;
+                continue;
             }
+            candidate = (queuedItem.Id, queuedItem.ProjectId, canonicalWork, queuedItem.Created);
+            break;
         }
         if (candidate is null)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "no-eligible-work", recoveryRejections);
+            return NoAssignment(request.WorkerId, projectCapacityBlocked ? "project-capacity" : "no-eligible-work", recoveryRejections);
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -1151,7 +1161,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         IReadOnlyDictionary<string, string>? recoveryRejections = null)
     {
         ServerOperationalDiagnostics.Write(_logger, LogLevel.Debug, "assignment", reason, workerId: workerId);
-        return new(false, null, recoveryRejections);
+        return new(false, null, recoveryRejections, reason);
     }
 
     private async Task<IReadOnlyDictionary<string, string>> QueueIntegrationRecoveriesAsync(SqliteCommand command, WorkerAssignmentRequest request,
@@ -1292,6 +1302,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await ExpireLeasesAsync(cancellationToken);
         var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
         var workers = await GetWorkersAsync(cancellationToken);
+        var projectActivity = await ReadProjectActivityAsync(cancellationToken);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -1302,7 +1313,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         {
             var execution = ReadExecution(reader);
             result.Add(execution.State == "Queued"
-                ? execution with { PendingReason = PendingReasonFor(execution, projects, workers),
+                ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity),
                     MissingRequirements = MissingFor(execution, projects, workers) }
                 : execution);
         }
@@ -1354,8 +1365,9 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (!executions.Any(execution => execution.State == "Queued")) return executions;
         var projects = (await GetProjectsAsync(cancellationToken)).ToDictionary(project => project.Id, StringComparer.Ordinal);
         var workers = await GetWorkersAsync(cancellationToken);
+        var projectActivity = await ReadProjectActivityAsync(cancellationToken);
         return executions.Select(execution => execution.State == "Queued"
-            ? execution with { PendingReason = PendingReasonFor(execution, projects, workers),
+            ? execution with { PendingReason = PendingReasonFor(execution, projects, workers, projectActivity),
                 MissingRequirements = MissingFor(execution, projects, workers) }
             : execution).ToArray();
     }
@@ -1533,16 +1545,32 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         return await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
     }
 
+    private async Task<IReadOnlyDictionary<string, int>> ReadProjectActivityAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT project_id, COUNT(*) FROM execution_requests WHERE state IN ('Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain') GROUP BY project_id;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken)) result.Add(reader.GetString(0), reader.GetInt32(1));
+        return result;
+    }
+
     private static string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
-        IReadOnlyList<WorkerRegistrationResponse> workers)
+        IReadOnlyList<WorkerRegistrationResponse> workers, IReadOnlyDictionary<string, int> projectActivity)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
         if (!project.Enabled) return "project is disabled";
+        if (execution.ManagedEligibilityState == "blocked") return "work is blocked by managed eligibility";
+        if (execution.ManagedEligibilityState == "unavailable") return "managed eligibility is unavailable";
         var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
         var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
         var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running").ToArray();
+        if (accepting.Length > 0 && project.MaxParallelTasks is { } limit && projectActivity.GetValueOrDefault(project.Id) >= limit)
+            return "project-capacity";
         if (accepting.Length == 0 || accepting.Any(worker => worker.AvailableCapacity > 0)) return "waiting for available worker";
         return "compatible workers currently at capacity";
     }
@@ -1972,7 +2000,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
             definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now,
-            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery);
+            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery, MaxParallelTasks: definition.MaxParallelTasks);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -1995,7 +2023,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
@@ -2003,6 +2031,7 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
         write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize((definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), ProjectJson));
         write.Parameters.AddWithValue("$readyLabel", (object?)NormalizeLabel(definition.IssueReadyLabel) ?? DBNull.Value);
         write.Parameters.AddWithValue("$blockedLabel", (object?)NormalizeLabel(definition.IssueBlockedLabel) ?? DBNull.Value);
+        write.Parameters.AddWithValue("$parallelism", (object?)definition.MaxParallelTasks ?? DBNull.Value);
         write.Parameters.AddWithValue("$discovery", JsonSerializer.Serialize(definition.AutomaticDiscovery, ProjectJson));
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         write.Parameters.AddWithValue("$updated", now.ToString("O"));

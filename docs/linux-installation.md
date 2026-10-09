@@ -277,3 +277,44 @@ The release installers (`install-server.sh` and `install-worker.sh`) and both un
 This path installs the binaries and starter configuration without enrolling or starting the Worker. Complete the manual enrollment and service steps above. For Server, use `sudo packaging/linux/install-server.sh PUBLISHED_DIRECTORY`; its local publish mode enables and starts the Server service. These are advanced build-based paths; use published releases for the normal clean-machine flow.
 
 See [secret delivery and operational output](secret-protection.md) for trusted TLS termination, API proxy cache/log exclusions, remote sentinel checks, and the complete node-compromise response.
+
+## Managed project concurrency upgrade
+
+Installed `worker.maxParallelTasks` remains the node's global capacity (1–8).
+Managed projects use the Server project definition's optional `maxParallelTasks`:
+missing/null means **Automatic**, with no additional project cap; 1–8 limits
+simultaneous executions across the entire fleet. Automatic still respects node
+capacity, eligibility, leases, health, drain and scheduling policies. Standalone
+local project `worker.maxParallelTasks` remains supported unchanged.
+
+The Server stores this field in the existing revisioned project JSON. Existing
+records without the field read as null, on both clean initialization and restart;
+no separate SQL column or destructive data migration is needed. CRUD updates
+retain optimistic revision checks. Lowering a cap does not cancel running work;
+it blocks new assignments until the active count is below the new cap. Assigned,
+running and expired-lease work awaiting uncertain-outcome reconciliation consume
+project capacity. Terminal/released safe work frees it. Assignment responses and
+queue diagnostics identify `project-capacity` separately from Worker capacity
+and eligibility blockers.
+
+Deploy the Server first, then update managed Workers normally, without uninstalling.
+The managed configuration snapshot contract is now version 2 and includes the
+policy in its content hash. Older Workers reject the new snapshot; new Workers
+reject an older Server's version-1 snapshot and cache. During this interval,
+configuration readiness fails closed: cached definitions never authorize new
+assignments. Drain Workers before deployment and allow running work to finish.
+Back up Server state using the existing backup procedure before upgrading; if
+rolling back, restore compatible binaries/state together rather than ignoring a
+stored project cap on an older Server.
+
+The packaged installer used by `codex-worker update`, and `update-worker.sh`,
+preserve the installed `/etc/codex-worker/worker.yml` on ordinary upgrades.
+The new runtime accepts and ignores only the obsolete
+`managedProjects.worker.maxParallelTasks` key. It is no longer emitted by the
+managed example or by serialization; other unknown YAML keys remain errors.
+This avoids rewriting operator YAML or altering its permissions, ownership,
+credentials, unrelated settings or global `worker.maxParallelTasks: 2`, and keeps
+binary rollback compatible with the previous file. Both absence of the legacy
+key (VM2's current configuration) and its presence are supported. Operators may
+remove the ignored key at their convenience; it never grants a local project
+limit. Use Server project CRUD to set the project policy.

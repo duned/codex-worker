@@ -632,7 +632,7 @@ public static partial class ServerApplication
             if (await store.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var version = ManagedConfigurationVersion(projects);
-            return Results.Ok(new ServerManagedConfigurationResponse(1, version, projects));
+            return Results.Ok(new ServerManagedConfigurationResponse(2, version, projects));
         });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -1058,6 +1058,7 @@ public static partial class ServerApplication
             Append(material, project.Repository);
             Append(material, project.DefaultBranch);
             Append(material, project.Description);
+            Append(material, project.MaxParallelTasks?.ToString(System.Globalization.CultureInfo.InvariantCulture));
             Append(material, project.Requirements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
             foreach (var requirement in project.Requirements.OrderBy(item => item.Type, StringComparer.Ordinal)
                          .ThenBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version, StringComparer.Ordinal)

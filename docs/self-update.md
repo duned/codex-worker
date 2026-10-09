@@ -48,3 +48,10 @@ through the manual installer, or invoke
 `sudo /opt/codex-server/current/CodexServer update` when the installed executable
 already supports the command. Existing Workers can use
 `sudo /opt/codex-worker/CodexWorker update` until the installer creates the alias.
+
+Managed project concurrency now comes from the Server project definition. Follow
+[the managed concurrency deployment order](linux-installation.md#managed-project-concurrency-upgrade)
+when updating across snapshot contract version 2. Worker self-update runs the
+packaged installer and preserves installed YAML; a legacy
+`managedProjects.worker.maxParallelTasks` entry is accepted but ignored by the
+new runtime. Global node capacity and standalone project limits are unchanged.

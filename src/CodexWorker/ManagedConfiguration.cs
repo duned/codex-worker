@@ -185,7 +185,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
 
     internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot)
     {
-        if (snapshot.ContractVersion != 1 || string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
+        if (snapshot.ContractVersion != 2 || string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
             snapshot.Projects is null || snapshot.Projects.Count > 1000)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");
         if (snapshot.Projects.Any(project => project is null || project.Revision < 1 || !ValidProject(project)))
@@ -205,6 +205,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         System.Text.RegularExpressions.Regex.IsMatch(project.Name, "^[\\p{L}\\p{N}][\\p{L}\\p{N} ._-]*$") &&
         !string.IsNullOrWhiteSpace(project.Repository) && System.Text.RegularExpressions.Regex.IsMatch(project.Repository, "^[^/\\s]+/[^/\\s]+$") &&
         !string.IsNullOrWhiteSpace(project.DefaultBranch) && project.DefaultBranch.Length <= 200 && !project.DefaultBranch.Any(char.IsControl) &&
+        project.MaxParallelTasks is not (< 1 or > 8) &&
         project.Description is not null && project.Description.Length <= 4000 &&
         project.Requirements is { Count: <= 64 } && project.Requirements.All(requirement =>
             requirement is not null && !string.IsNullOrWhiteSpace(requirement.Type) && requirement.Type.Length <= 40 && !requirement.Type.Any(char.IsControl) &&
@@ -224,6 +225,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Append(materialBuilder, project.Repository);
             Append(materialBuilder, project.DefaultBranch);
             Append(materialBuilder, project.Description);
+            Append(materialBuilder, project.MaxParallelTasks?.ToString(System.Globalization.CultureInfo.InvariantCulture));
             Append(materialBuilder, project.Requirements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
             foreach (var requirement in project.Requirements.OrderBy(item => item.Type, StringComparer.Ordinal)
                          .ThenBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version, StringComparer.Ordinal)
@@ -278,7 +280,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Worker = new WorkerSettings
             {
                 GitTimeoutSeconds = defaults.Worker.GitTimeoutSeconds, GitHubTimeoutSeconds = defaults.Worker.GitHubTimeoutSeconds,
-                MaxParallelTasks = defaults.Worker.MaxParallelTasks, RetryMode = defaults.Worker.RetryMode,
+                // Managed admission uses global node capacity and the Server policy, never a local project default.
+                MaxParallelTasks = 8, RetryMode = defaults.Worker.RetryMode,
                 RecoveryRetentionDays = defaults.Worker.RecoveryRetentionDays
             }
         };

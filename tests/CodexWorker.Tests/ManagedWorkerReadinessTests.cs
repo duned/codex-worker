@@ -119,7 +119,7 @@ public sealed class ManagedWorkerReadinessTests
             var path = request.RequestUri?.AbsolutePath ?? "";
             if (request.Method == HttpMethod.Put) registered++;
             if (path.EndsWith("/configuration", StringComparison.Ordinal))
-                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), [])) };
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([]), [])) };
             if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
             {
                 var heartbeat = await (request.Content ?? throw new InvalidDataException("Missing heartbeat")).ReadFromJsonAsync<WorkerHeartbeatContract>(token);
@@ -182,7 +182,7 @@ public sealed class ManagedWorkerReadinessTests
         using var output = new StopOnStartedWriter(stop);
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", missingCapability ? [new("runtime", "unavailable-runtime")] : [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
-        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
         await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
@@ -242,7 +242,7 @@ public sealed class ManagedWorkerReadinessTests
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         ServerProjectContract[] projects = hasProject ? [project] : [];
-        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
             IdentityFile = Path.Combine(temporary.Path, "identity") };
         await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
@@ -348,7 +348,7 @@ public sealed class ManagedWorkerReadinessTests
         };
         var project = new ServerProjectContract("central-id", "Central", "owner/repo", "main", "", [], 1,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
-        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
         new ManagedConfigurationSynchronizer(settings.IdentityFile + ".configuration.json", global.ManagedProjects).Apply(snapshot);
         var requests = 0;
         var cachedHeartbeat = false;
@@ -444,7 +444,7 @@ public sealed class ManagedWorkerReadinessTests
                 ServerProjectContract[] projects = assigned && scenario == "execution-duplicate-project" ? [current, current] : [current];
                 var version = assigned && scenario == "execution-invalid-version" ? "invalid" :
                     ManagedConfigurationSynchronizer.CalculateVersion(projects);
-                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(1,
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new ServerManagedConfigurationContract(2,
                     version, projects)) };
             }
             if (path.EndsWith("/assignments/request", StringComparison.Ordinal))
@@ -554,7 +554,7 @@ public sealed class ManagedWorkerReadinessTests
         await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
         var runtime = new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") };
         var cache = settings.IdentityFile + ".configuration.json";
-        var valid = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
+        var valid = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
         new ManagedConfigurationSynchronizer(cache, runtime).Apply(valid);
         if (corruptCache) await File.WriteAllTextAsync(cache, "{}");
         using var handler = new Handler((request, _) => Task.FromResult(

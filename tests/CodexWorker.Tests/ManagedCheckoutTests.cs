@@ -24,7 +24,7 @@ public sealed class ManagedCheckoutTests
         var project = new ServerProjectContract("central", "Central", "owner/repo", "main", "", [], 4, now, now);
         var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(fixture.Root, "snapshot.json"),
             new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(fixture.Root, "derived") });
-        var configuration = Assert.Single(synchronizer.Apply(new(1,
+        var configuration = Assert.Single(synchronizer.Apply(new(2,
             ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]))).Configuration;
         Assert.Equal("not-materialized", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
         Assert.False(Directory.Exists(configuration.Project.Directory));
@@ -153,7 +153,7 @@ public sealed class ManagedCheckoutTests
         ServerManagedConfigurationContract Snapshot(params CodexServer.CentralProject[] projects)
         {
             var contracts = projects.Select(Contract).ToArray();
-            return new(1, ManagedConfigurationSynchronizer.CalculateVersion(contracts), contracts);
+            return new(2, ManagedConfigurationSynchronizer.CalculateVersion(contracts), contracts);
         }
         var synchronizer = new ManagedConfigurationSynchronizer(cache, runtime);
         var configurations = synchronizer.Apply(Snapshot(central, incompatible));

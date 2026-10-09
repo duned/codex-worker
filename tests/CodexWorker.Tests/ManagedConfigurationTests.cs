@@ -5,6 +5,37 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagedConfigurationTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1)]
+    [InlineData(8)]
+    public void ProjectConcurrencyIsDeliveredAndCachedWithoutLocalThrottle(int? limit)
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        var project = fixture.Project(1) with { MaxParallelTasks = limit };
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        Assert.Equal(8, Assert.Single(synchronizer.Apply(snapshot)).Configuration.Worker.MaxParallelTasks);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        restarted.LoadLastValid();
+        Assert.Equal(limit, Assert.Single(restarted.AppliedProjects).MaxParallelTasks);
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { ContractVersion = 1 }));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void InvalidServerProjectConcurrencyRetainsLastValidSnapshot(int limit)
+    {
+        using var fixture = new Fixture();
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        synchronizer.Apply(fixture.Snapshot(1));
+        var project = fixture.Project(2) with { MaxParallelTasks = limit };
+        var invalid = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(invalid));
+        Assert.Null(Assert.Single(synchronizer.AppliedProjects).MaxParallelTasks);
+    }
+
     [Fact]
     public async Task SuccessfulRetrievalWithLocalMismatchReportsSynchronizationFailureAndProjectRevision()
     {
@@ -117,7 +148,7 @@ public sealed class ManagedConfigurationTests
     {
         using var fixture = new Fixture();
         var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(Path.GetDirectoryName(fixture.CachePath)!, "empty-configuration.json"), fixture.Runtime);
-        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
 
         var configured = synchronizer.Apply(snapshot);
 
@@ -187,7 +218,7 @@ public sealed class ManagedConfigurationTests
     {
         using var fixture = new Fixture();
         var project = fixture.Project(1) with { Requirements = [new("runtime", "dotnet", ">=10")] };
-        var desired = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var desired = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         synchronizer.Apply(desired);
 
@@ -252,7 +283,7 @@ public sealed class ManagedConfigurationTests
     {
         using var fixture = new Fixture();
         var disabledProject = fixture.Project(2) with { Enabled = false };
-        var snapshot = new ServerManagedConfigurationContract(1,
+        var snapshot = new ServerManagedConfigurationContract(2,
             ManagedConfigurationSynchronizer.CalculateVersion([disabledProject]), [disabledProject]);
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -271,7 +302,7 @@ public sealed class ManagedConfigurationTests
     public void ColdStartAcceptsServerProjectWithoutYamlCheckoutOrInstructions()
     {
         using var fixture = new Fixture();
-        fixture.Runtime.Worker.MaxParallelTasks = 3;
+        fixture.Runtime.Worker.LegacyMaxParallelTasks = 3;
         fixture.Runtime.Validation.Commands = ["dotnet test"];
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
 
@@ -279,7 +310,7 @@ public sealed class ManagedConfigurationTests
 
         Assert.Equal("Repository", applied.Configuration.Project.Name);
         Assert.Equal("owner/repository", applied.Configuration.Project.Repository);
-        Assert.Equal(3, applied.Configuration.Worker.MaxParallelTasks);
+        Assert.Equal(8, applied.Configuration.Worker.MaxParallelTasks);
         Assert.Equal(["dotnet test"], applied.Configuration.Validation.Commands);
         Assert.Equal(Path.Combine(applied.Configuration.Project.Directory, "AGENTS.md"), applied.Configuration.Codex.InstructionsFile);
         Assert.False(Directory.Exists(applied.Configuration.Project.Directory));
@@ -295,7 +326,7 @@ public sealed class ManagedConfigurationTests
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var initial = Assert.Single(synchronizer.Apply(fixture.Snapshot(1)));
         var project = fixture.Project(2) with { Name = "Renamed", Enabled = false, Requirements = [new("runtime", "dotnet", ">=10")] };
-        var snapshot = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
 
         var updated = Assert.Single(synchronizer.Apply(snapshot));
 
@@ -315,7 +346,7 @@ public sealed class ManagedConfigurationTests
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         synchronizer.Apply(fixture.Snapshot(1));
         var projects = new[] { fixture.Project(2), fixture.Project(2) with { Name = "Another", Repository = "owner/another" } };
-        var invalid = new ServerManagedConfigurationContract(1, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
+        var invalid = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
 
         Assert.Throws<InvalidDataException>(() => synchronizer.Apply(invalid));
         Assert.Single(synchronizer.LoadLastValid());
@@ -335,7 +366,7 @@ public sealed class ManagedConfigurationTests
         public ServerManagedConfigurationContract Snapshot(long revision)
         {
             var projects = new[] { Project(revision) };
-            return new(1, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
+            return new(2, ManagedConfigurationSynchronizer.CalculateVersion(projects), projects);
         }
 
         public ServerProjectContract Project(long revision) => new("repository", "Repository", "owner/repository", "main",

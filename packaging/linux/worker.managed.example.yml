@@ -20,8 +20,6 @@ managedProjects:
     instructionsFile: AGENTS.md
   validation:
     commands: []
-  worker:
-    maxParallelTasks: 1
 
 telegram:
   enabled: false

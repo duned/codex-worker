@@ -291,7 +291,7 @@ Verify each host is clear before reinstalling: `systemctl show codex-server.serv
 
 **Steps**
 
-1. Set global Worker `worker.maxParallelTasks: 2` and the test project's local `worker.maxParallelTasks: 2`. Restart/reload as the documented configuration path requires and verify effective capacity in Worker and Server views.
+1. Set global Worker `worker.maxParallelTasks: 2`. For managed ownership leave the Server project's `maxParallelTasks` null (Automatic); for standalone ownership set the local project's `worker.maxParallelTasks: 2`. Restart/reload as the documented configuration path requires and verify effective capacity in Worker and Server views.
 2. Queue at least three distinct eligible Issues. Make two changes independently runnable; make the third a visible harmless marker or delayed test Issue.
 3. Observe that two distinct Issues become active concurrently. Record each ExecutionId, branch, worktree, Issue, and timestamps. Confirm the same Issue is not assigned twice.
 4. While both slots are occupied, verify the third waits. Allow one execution to complete and check that exactly one slot becomes available and the waiting Issue can start.

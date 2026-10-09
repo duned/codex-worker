@@ -38,10 +38,26 @@ public sealed class MultiProjectConfigurationTests
         File.WriteAllText(path, "managedProjects:\n  checkoutDirectory: ./runtime\n  worker:\n    maxParallelTasks: 2\n  validation:\n    commands: [dotnet test]\n");
         var global = GlobalWorkerConfiguration.Load(path);
         Assert.Equal(Path.Combine(fixture.Root, "runtime"), global.ManagedProjects.CheckoutDirectory);
-        Assert.Equal(2, global.ManagedProjects.Worker.MaxParallelTasks);
+        Assert.Null(global.ManagedProjects.Worker.LegacyMaxParallelTasks);
         Assert.Equal(["dotnet test"], global.ManagedProjects.Validation.Commands);
         File.WriteAllText(path, "managedProjects:\n  repository: owner/repo\n");
         Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  worker:\n    maxParallelTasks: 1\n")]
+    public void InstalledManagedYamlUpgradePreservesGlobalCapacityAndIgnoresLegacyLimit(string legacy)
+    {
+        using var fixture = new Fixture();
+        var path = Path.Combine(fixture.Root, "worker.yml");
+        var yaml = "worker:\n  maxParallelTasks: 2\n  provisioning:\n    enabled: false\nprojects:\n  ownership: managed\nmanagedProjects:\n  checkoutDirectory: ./runtime\n" + legacy + "server:\n  enabled: true\n  url: https://server.example\ntelegram:\n  enabled: false\n";
+        File.WriteAllText(path, yaml);
+        var global = GlobalWorkerConfiguration.Load(path);
+        Assert.Equal(2, global.Worker.MaxParallelTasks);
+        Assert.False(global.Worker.Provisioning.Enabled);
+        Assert.Null(global.ManagedProjects.Worker.LegacyMaxParallelTasks);
+        Assert.Equal(yaml, File.ReadAllText(path));
     }
 
     [Theory]

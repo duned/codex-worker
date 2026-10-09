@@ -188,6 +188,25 @@ public sealed class ProjectsSettings
     public string Ownership { get; set; } = "standalone";
 }
 
+/// <summary>Node-local execution settings; managed project admission belongs to the Server.</summary>
+public sealed class ManagedWorkerSettings
+{
+    public int GitTimeoutSeconds { get; set; } = 120;
+    [YamlMember(Alias = "githubTimeoutSeconds")]
+    public int GitHubTimeoutSeconds { get; set; } = 60;
+    // Supported installed YAML migration: consume the obsolete key without applying or emitting it.
+    [YamlMember(Alias = "maxParallelTasks", DefaultValuesHandling = DefaultValuesHandling.OmitNull)]
+    public int? LegacyMaxParallelTasks { get => null; set { } }
+    public string RetryMode { get; set; } = "restart";
+    public int RecoveryRetentionDays { get; set; } = 7;
+
+    internal WorkerSettings ToExecutionSettings() => new()
+    {
+        GitTimeoutSeconds = GitTimeoutSeconds, GitHubTimeoutSeconds = GitHubTimeoutSeconds,
+        MaxParallelTasks = 8, RetryMode = RetryMode, RecoveryRetentionDays = RecoveryRetentionDays
+    };
+}
+
 /// <summary>Machine/runtime defaults for all Server-managed projects; contains no project identity.</summary>
 public sealed class ManagedProjectRuntimeSettings
 {
@@ -202,12 +221,12 @@ public sealed class ManagedProjectRuntimeSettings
     public CodexSettings Codex { get; set; } = new();
     public ValidationSettings Validation { get; set; } = new();
     public ProjectEnvironmentSettings Environment { get; set; } = new();
-    public WorkerSettings Worker { get; set; } = new();
+    public ManagedWorkerSettings Worker { get; set; } = new();
 
     internal WorkerConfiguration CreateTemplate(string directory) => new()
     {
         Project = new ProjectSettings { Name = "runtime-defaults", Repository = "runtime/defaults", Directory = directory },
-        Git = Git, GitHub = GitHub, Codex = Codex, Validation = Validation, Environment = Environment, Worker = Worker
+        Git = Git, GitHub = GitHub, Codex = Codex, Validation = Validation, Environment = Environment, Worker = Worker.ToExecutionSettings()
     };
 
     internal void ResolveAndValidate(string configurationPath)

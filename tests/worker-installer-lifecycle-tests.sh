@@ -368,6 +368,25 @@ grep -Fxq "ExecStart=$LIFECYCLE_ROOT/opt/codex-worker/CodexWorker run --config $
   "$LIFECYCLE_ROOT/etc/systemd/system/codex-worker.service"
 grep -Fq 'NOPASSWD: CODEX_WORKER_PROVISIONING' "$LIFECYCLE_ROOT/etc/sudoers.d/codex-worker-provisioning"
 grep -Fq 'exec /usr/bin/env -i' "$LIFECYCLE_ROOT/usr/local/libexec/codex-provisioning-codex"
+# Normal packaged upgrade (also used by self-update) preserves VM2-shaped YAML,
+# including an ignored legacy key, comments, permissions and credential identity.
+for legacy in absent present; do
+  sed -i 's/^  maxParallelTasks: .*/  maxParallelTasks: 2/' "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"
+  if [[ $legacy == present ]]; then
+    cat >> "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml" <<'YAML'
+# Operator-owned runtime defaults
+managedProjects:
+  worker:
+    maxParallelTasks: 1
+YAML
+  fi
+  cp -p "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml" "$LIFECYCLE_ROOT/before-upgrade.yml"
+  config_metadata=$(stat -c '%a:%u:%g' "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml")
+  bash "$LIFECYCLE_ROOT/scripts/install-worker.sh" --version 1.2.3 > "$LIFECYCLE_ROOT/output" 2>&1
+  cmp "$LIFECYCLE_ROOT/before-upgrade.yml" "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml"
+  [[ $(stat -c '%a:%u:%g' "$LIFECYCLE_ROOT/etc/codex-worker/worker.yml") == "$config_metadata" ]]
+  [[ $(cat "$LIFECYCLE_ROOT/var/lib/codex-worker/.codex-worker/worker-id") == "$identity" ]]
+done
 # Explicit inputs are defaults for missing values, never upgrade overrides.
 [[ $(git config --file "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" --get user.name) == 'Worker Tests' ]]
 cp "$LIFECYCLE_ROOT/var/lib/codex-worker/.gitconfig" "$LIFECYCLE_ROOT/previous.gitconfig"

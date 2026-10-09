@@ -19,6 +19,166 @@ public sealed class ServerTokenEnvironmentCollection { }
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData(1)]
+    [InlineData(8)]
+    public void ManagedSnapshotHashIncludesServerProjectConcurrency(int? limit)
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var project = new CentralProject("project", "Project", "team/project", "main", "", [], 1, now, now,
+            MaxParallelTasks: limit);
+        var contract = new ServerProjectContract(project.Id, project.Name, project.Repository, project.DefaultBranch,
+            project.Description, [], project.Revision, now, now, MaxParallelTasks: limit);
+        Assert.Equal(ServerApplication.ManagedConfigurationVersion([project]),
+            ManagedConfigurationSynchronizer.CalculateVersion([contract]));
+        Assert.NotEqual(ServerApplication.ManagedConfigurationVersion([project]),
+            ServerApplication.ManagedConfigurationVersion([project with { MaxParallelTasks = limit == 1 ? 2 : 1 }]));
+    }
+
+    [Theory]
+    [InlineData(null, 2)]
+    [InlineData(1, 1)]
+    public async Task ServerProjectPolicyControlsAdmissionAndRoundTrips(int? limit, int expected)
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "project-capacity.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Capacity", "team/capacity", "main", "", MaxParallelTasks: limit);
+        var project = await store.CreateProjectAsync(definition);
+        var worker = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new(1, worker, "worker", "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        for (var issue = 1; issue <= 3; issue++)
+            await store.EnqueueExecutionAsync(new(project.Id, new("issue", issue.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        WorkerAssignmentRequest request = new(worker, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        for (var slot = 0; slot < expected; slot++)
+        {
+            var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(request)).Assignment);
+            var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+            await store.ReportExecutionAsync(assignment.ServerExecutionId, new(worker, assignment.AssignmentId,
+                "local-" + slot, "Running", "Codex", DateTimeOffset.UtcNow, Generation: lease.Generation));
+            await store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", slot + 1, 2, capabilities, []));
+            request = request with { AvailableCapacity = 2 - slot - 1 };
+        }
+        var noWork = await store.RequestAssignmentAsync(request);
+        Assert.False(noWork.HasWork);
+        Assert.Equal(limit == 1 ? "project-capacity" : "worker-capacity", noWork.Reason);
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.Equal(limit, (await restarted.GetProjectAsync(project.Id))?.MaxParallelTasks);
+        Assert.Equal(expected, (await restarted.GetExecutionsAsync()).Count(execution => execution.State == "Running"));
+        if (limit == 1)
+        {
+            var executions = await restarted.GetExecutionsAsync();
+            Assert.All(executions.Where(execution => execution.State == "Queued"),
+                execution => Assert.Equal("project-capacity", execution.PendingReason));
+            var running = Assert.Single(executions, execution => execution.State == "Running");
+            await restarted.ReportExecutionAsync(running.Id, new(worker, Assert.IsType<string>(running.AssignmentId),
+                Assert.IsType<string>(running.WorkerExecutionId), "Completed", CompletedAtUtc: DateTimeOffset.UtcNow,
+                Generation: Assert.IsType<ExecutionLease>(running.Lease).Generation));
+            await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 2, capabilities, []));
+            Assert.True((await restarted.RequestAssignmentAsync(request with { AvailableCapacity = 2 })).HasWork);
+        }
+    }
+
+    [Fact]
+    public async Task ProjectCapacityIsAtomicAcrossWorkersAndLimitChangesPreserveActiveWork()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "fleet-capacity.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Fleet", "team/fleet", "main", "", MaxParallelTasks: 3);
+        var project = await store.CreateProjectAsync(definition);
+        var workers = new[] { Guid.NewGuid().ToString("N"), Guid.NewGuid().ToString("N") };
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        foreach (var worker in workers)
+        {
+            await store.RegisterWorkerAsync(new(1, worker, "worker", "1.0", "test", 2, capabilities));
+            await store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        }
+        for (var issue = 1; issue <= 6; issue++)
+            await store.EnqueueExecutionAsync(new(project.Id, new("issue", issue.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requests = Enumerable.Range(0, 4).Select(index => Task.Run(async () =>
+        {
+            await ready.Task;
+            var otherStore = new SqliteRegistryStore(database);
+            return await otherStore.RequestAssignmentAsync(new(workers[index % 2], true, 2,
+                new Dictionary<string, int> { [project.Id] = 2 }));
+        })).ToArray();
+        ready.SetResult();
+        var responses = await Task.WhenAll(requests);
+        Assert.Equal(3, responses.Count(response => response.HasWork));
+        Assert.Equal(3, (await store.GetExecutionsAsync()).Count(execution => execution.State == "Assigned"));
+        var lowered = await store.UpdateProjectAsync(project.Id, definition with { MaxParallelTasks = 1 }, project.Revision);
+        Assert.NotNull(lowered);
+        foreach (var worker in workers)
+            Assert.False((await store.RequestAssignmentAsync(new(worker, true, 2,
+                new Dictionary<string, int> { [project.Id] = 2 }))).HasWork);
+        Assert.Equal(3, (await store.GetExecutionsAsync()).Count(execution => execution.State == "Assigned"));
+        await store.UpdateProjectAsync(project.Id, definition with { MaxParallelTasks = null }, lowered.Revision);
+        var availableWorker = workers.Single(worker => responses.Count(response => response.Assignment?.WorkerId == worker) == 1);
+        Assert.True((await store.RequestAssignmentAsync(new(availableWorker, true, 2,
+            new Dictionary<string, int> { [project.Id] = 2 }))).HasWork);
+    }
+
+    [Theory]
+    [InlineData("Codex", true)]
+    [InlineData("Integration", false)]
+    public async Task ExpiredProjectReservationIsReleasedOnlyWhenOutcomeIsSafe(string stage, bool safe)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-09-15T12:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "expired-capacity.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new("Expiry", "team/expiry", "main", "", MaxParallelTasks: 1));
+        var worker = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new(1, worker, "worker", "1.0", "test", 2, capabilities));
+        await store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "2")));
+        WorkerAssignmentRequest request = new(worker, true, 2, new Dictionary<string, int> { [project.Id] = 2 });
+        var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(request)).Assignment);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        await store.ReportExecutionAsync(assignment.ServerExecutionId, new(worker, assignment.AssignmentId,
+            "local", "Running", stage, clock.GetUtcNow(), Generation: lease.Generation));
+        clock.Advance(TimeSpan.FromMinutes(16));
+        await store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 2, capabilities, []));
+        await store.GetExecutionsAsync();
+        Assert.Equal(safe, (await store.RequestAssignmentAsync(request)).HasWork);
+    }
+
+    [Fact]
+    public async Task LegacyStoredProjectWithoutConcurrencyDefaultsToAutomatic()
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "legacy-policy.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new("Legacy", "team/legacy", "main", ""));
+        await using (var connection = new SqliteConnection($"Data Source={database}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE projects SET configuration_json=json_remove(configuration_json, '$.maxParallelTasks');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.Null((await restarted.GetProjectAsync(project.Id))?.MaxParallelTasks);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void ProjectConcurrencyRejectsInvalidLimits(int limit) =>
+        Assert.NotNull(CentralProjectValidation.Error(new("Capacity", "team/capacity", "main", "", MaxParallelTasks: limit)));
+
     private static async Task<bool> EnrollWorkerAsync(IRegistryStore store, string authorization, string workerId, string token)
     {
         var existing = await store.GetWorkerAsync(workerId);
@@ -2873,7 +3033,8 @@ public sealed class CodexServerTests
             await using var app = await ServerApplication.BuildAsync(Args(url, database), githubReadService: new AlwaysEligibleServerGitHubReadService());
             await app.StartAsync();
             var store = app.Services.GetRequiredService<IRegistryStore>();
-            var alpha = await store.CreateProjectAsync(new CentralProjectDefinition("Alpha", "team/alpha", "main", "", []));
+            var alphaDefinition = new CentralProjectDefinition("Alpha", "team/alpha", "main", "", [], MaxParallelTasks: 1);
+            var alpha = await store.CreateProjectAsync(alphaDefinition);
             var beta = await store.CreateProjectAsync(new CentralProjectDefinition("Beta", "team/beta", "main", "", []));
             WorkerCapability[] Capabilities(string id) => id == workerA
                 ? [new("tool", "git"), .. AuthenticationCapabilities("team/alpha"), .. AuthenticationCapabilities("team/beta")]
@@ -2929,7 +3090,7 @@ public sealed class CodexServerTests
                 Assert.NotEqual(first.Assignment.AssignmentId, first.Assignment.ServerExecutionId);
                 firstAssignmentId = first.Assignment.AssignmentId;
 
-                // A project with no remaining declared slot is skipped while other projects remain eligible.
+                // The Server-owned project cap skips Alpha while other projects remain eligible.
                 using var secondResponse = await Request(workerA, true, 2, new() { [alpha.Id] = 1, [beta.Id] = 1 });
                 var second = (await secondResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;
                 Assert.True(second.HasWork);
@@ -2946,6 +3107,7 @@ public sealed class CodexServerTests
                 Assert.Equal("Failed", reported!.State);
                 Assert.True(reported.Recoverable);
                 Assert.Equal("TaskFailure", reported.FailureClassification);
+                await store.UpdateProjectAsync(alpha.Id, alphaDefinition with { MaxParallelTasks = null }, alpha.Revision);
                 await Heartbeat(workerB, "running");
                 using var otherWorkerResponse = await Request(workerB, true, 2, new() { [alpha.Id] = 1 });
                 var otherWorkerAssignment = (await otherWorkerResponse.Content.ReadFromJsonAsync<WorkAssignmentResponse>())!;

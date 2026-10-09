@@ -83,8 +83,6 @@ validation:
   maxFixAttempts: 0
   commands:
     - test -f cold-start-proof.txt
-worker:
-  maxParallelTasks: 1
 ```
 
 Adapt the validation to both compatible Issues and ensure repository instructions

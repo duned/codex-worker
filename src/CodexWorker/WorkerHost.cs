@@ -591,12 +591,10 @@ public sealed class WorkerHost
                         foreach (var candidate in runtimes)
                         {
                             var name = candidate.Configuration.Project.Name;
-                            var activeForProject = active.Values.Count(value => string.Equals(value.Configuration.Project.Name, name, StringComparison.OrdinalIgnoreCase));
                             if (validatedConfigurations.Contains(candidate.Configuration) &&
-                                projectLifecycles.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled &&
-                                activeForProject < candidate.Configuration.Worker.MaxParallelTasks)
+                                projectLifecycles.TryGetValue(name, out var state) && state.State == ProjectLifecycleState.Enabled)
                             {
-                                if (!projectCapacities.TryAdd(ServerProjectId(name), candidate.Configuration.Worker.MaxParallelTasks - activeForProject))
+                                if (!projectCapacities.TryAdd(ServerProjectId(name), _global.Worker.MaxParallelTasks - active.Count))
                                     throw new WorkerInfrastructureException($"Managed project names produce a duplicate Server project identity near '{name}'.");
                             }
                         }
