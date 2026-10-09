@@ -352,6 +352,31 @@ public sealed class ManagedConfigurationTests
         Assert.Single(synchronizer.LoadLastValid());
     }
 
+    // Literal persisted v0.26.1 contract; its hash uses the old material format.
+    private const string LegacyCache = """
+        {"contractVersion":1,"version":"5c2a4f0fd442e98b7b518ff6390881296918bedbe6559a95e45847c98c25865e","projects":[{"id":"repository","name":"Repository","repository":"owner/repository","defaultBranch":"main","description":"generic project","requirements":[],"revision":1,"createdAtUtc":"1970-01-01T00:00:00+00:00","updatedAtUtc":"1970-01-02T00:00:00+00:00","enabled":true}]}
+        """;
+
+    [Fact]
+    public async Task LegacyCacheIsNeverAppliedAndFreshV2ReplacesItBeforeRestart()
+    {
+        using var fixture = new Fixture();
+        Directory.CreateDirectory(Path.GetDirectoryName(fixture.CachePath)!);
+        await File.WriteAllTextAsync(fixture.CachePath, LegacyCache);
+        var sync = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        var error = Assert.Throws<InvalidDataException>(() => sync.LoadLastValid());
+        Assert.Contains("Cached contract upgrade required", error.Message, StringComparison.Ordinal);
+        Assert.Empty(sync.AppliedProjects);
+        await Assert.ThrowsAsync<HttpRequestException>(() => sync.RetrieveAndApplyAsync(
+            _ => Task.FromException<ServerManagedConfigurationContract>(new HttpRequestException()), CancellationToken.None));
+        Assert.Equal(LegacyCache, await File.ReadAllTextAsync(fixture.CachePath));
+        await Assert.ThrowsAsync<InvalidDataException>(() => sync.RetrieveAndApplyAsync(
+            _ => Task.FromResult(fixture.Snapshot(1) with { Version = "bad" }), CancellationToken.None));
+        Assert.Equal(LegacyCache, await File.ReadAllTextAsync(fixture.CachePath));
+        await sync.RetrieveAndApplyAsync(_ => Task.FromResult(fixture.Snapshot(1)), CancellationToken.None);
+        Assert.Single(new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime).LoadLastValid());
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly TemporaryDirectory _temporary = new();

@@ -33,6 +33,11 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         if (!File.Exists(_cachePath)) throw new InvalidDataException("No previously applied Server configuration is available.");
         var snapshot = JsonSerializer.Deserialize<ServerManagedConfigurationContract>(File.ReadAllText(_cachePath), JsonOptions)
             ?? throw new InvalidDataException("The cached Server configuration is empty.");
+        if (snapshot.ContractVersion == 1)
+        {
+            ValidateSnapshot(snapshot, cachedLegacy: true);
+            throw new InvalidDataException("Cached contract upgrade required: expected contract version 2, received 1. Upgrade the Worker and retrieve authenticated Server configuration.");
+        }
         var result = Apply(snapshot, updateStatus: false);
         lock (_gate) _status = _status with
         {
@@ -78,13 +83,25 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             {
                 SynchronizationStatus = invalid ? "error" : "unavailable",
                 Error = invalid ? "Server configuration was retrieved but its contract is invalid." :
-                    unauthorized ? "Server rejected managed configuration authorization." : "Server configuration retrieval failed.",
+                    unauthorized ? "Server rejected managed configuration authorization." : "Server unavailable: managed configuration retrieval failed; execution requires authenticated synchronization.",
                 Diagnostics = Diagnostics with { Retrieval = invalid ? "retrieved" : unauthorized ? "unauthorized" : "unavailable",
                     Source = _status.AppliedVersion is null ? "none" : "cached",
                     Synchronization = invalid ? "error" : "unavailable", FailureStage = invalid ? "contract-validation" : "retrieval", DiagnosticCode = code,
                     FailedProjectId = null, FailedProjectRevision = null }
             };
         }
+    }
+
+    public void RecordCacheFailure(Exception exception)
+    {
+        // Cache diagnostics never imply that the freshly retrieved Server contract failed.
+        var detail = exception is InvalidDataException ? exception.Message : "Cached configuration is corrupt or unreadable.";
+        lock (_gate) _status = _status with
+        {
+            SynchronizationStatus = "error",
+            Error = (_status.Error is null ? "" : _status.Error + " ") + detail,
+            Diagnostics = Diagnostics with { Source = "none" }
+        };
     }
 
     public void RecordProjectState(ServerProjectContract project, string state, string? diagnosticCode = null)
@@ -157,7 +174,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             var code = stage == "contract-validation" ? "managed-contract-invalid" :
                 ex is ArgumentException or InvalidDataException ? "managed-local-configuration-invalid" : "managed-synchronization-failed";
             var context = preparing is null ? "" : $" Project '{preparing.Id}', revision {preparing.Revision}.";
-            var error = stage == "contract-validation" ? "Server configuration was retrieved but contract validation failed." :
+            var error = stage == "contract-validation" ? "Server configuration was retrieved but contract validation failed. " + (ex is InvalidDataException ? ex.Message : "Invalid contract payload.") :
                 "Server configuration was retrieved but local configuration synchronization failed.";
             lock (_gate) _status = _status with { DesiredVersion = desired.Version is { Length: <= 128 } version && !version.Any(char.IsControl) ? version : null,
                 SynchronizationStatus = "error", Error = error + context,
@@ -183,20 +200,22 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
     }
 
-    internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot)
+    internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot, bool cachedLegacy = false)
     {
-        if (snapshot.ContractVersion != 2 || string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
+        if (snapshot.ContractVersion != 2 && !(cachedLegacy && snapshot.ContractVersion == 1))
+            throw new InvalidDataException($"Unsupported contract version: expected 2, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
+        if (string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
             snapshot.Projects is null || snapshot.Projects.Count > 1000)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");
         if (snapshot.Projects.Any(project => project is null || project.Revision < 1 || !ValidProject(project)))
-            throw new InvalidDataException("Server returned an invalid managed project configuration.");
+            throw new InvalidDataException("Invalid project definition in Server managed configuration.");
         if (snapshot.Projects.Select(project => project.Id).Distinct(StringComparer.Ordinal).Count() != snapshot.Projects.Count)
             throw new InvalidDataException("Server returned duplicate managed project IDs.");
         var duplicate = snapshot.Projects.GroupBy(project => project.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
-        if (duplicate is not null) throw new InvalidDataException($"Server returned duplicate managed project '{duplicate.Key}'.");
-        var expected = CalculateVersion(snapshot.Projects);
+        if (duplicate is not null) throw new InvalidDataException("Server returned duplicate managed project names.");
+        var expected = CalculateVersion(snapshot.Projects, cachedLegacy);
         if (!string.Equals(expected, snapshot.Version, StringComparison.Ordinal))
-            throw new InvalidDataException("Server managed configuration version does not match its contents.");
+            throw new InvalidDataException("Snapshot version/hash mismatch: Server managed configuration version does not match its contents.");
     }
 
     private static bool ValidProject(ServerProjectContract project) =>
@@ -213,7 +232,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             (requirement.Version is null || (requirement.Version.Length <= 100 && !requirement.Version.Any(char.IsControl))) &&
             (requirement.Scope is null || (requirement.Scope.Length <= 200 && !requirement.Scope.Any(char.IsControl))));
 
-    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects)
+    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects, bool legacy = false)
     {
         var materialBuilder = new StringBuilder();
         foreach (var project in projects.OrderBy(project => project.Id, StringComparer.Ordinal))
@@ -225,7 +244,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Append(materialBuilder, project.Repository);
             Append(materialBuilder, project.DefaultBranch);
             Append(materialBuilder, project.Description);
-            Append(materialBuilder, project.MaxParallelTasks?.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            if (!legacy) Append(materialBuilder, project.MaxParallelTasks?.ToString(System.Globalization.CultureInfo.InvariantCulture));
             Append(materialBuilder, project.Requirements.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
             foreach (var requirement in project.Requirements.OrderBy(item => item.Type, StringComparer.Ordinal)
                          .ThenBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version, StringComparer.Ordinal)

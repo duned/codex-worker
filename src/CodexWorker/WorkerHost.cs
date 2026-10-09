@@ -129,11 +129,6 @@ public sealed class WorkerHost
         {
             discoveredCapabilities = await _registration.CapabilityDiscovery.GetCachedAsync(ct);
             heartbeatCapabilities = discoveredCapabilities;
-            if (managedConfiguration?.HasCachedSnapshot == true)
-            {
-                // Persisted state must be valid even when the Server can supply a fresh catalog.
-                _ = managedConfiguration.LoadLastValid();
-            }
             if (_global.Server.Enabled)
             {
                 var registration = _registration;
@@ -156,7 +151,7 @@ public sealed class WorkerHost
                         configuredProjects = await managedConfiguration.RetrieveAndApplyAsync(
                             token => registration.GetManagedConfigurationAsync(_global.Server, token), ct);
                     }
-                    catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) &&
+                    catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException) &&
                         (ex is not OperationCanceledException || !ct.IsCancellationRequested))
                     {
                         configuredProjects = LoadCachedManagedConfiguration(managedConfiguration, ex);
@@ -960,7 +955,9 @@ public sealed class WorkerHost
         }
         catch (Exception cacheError) when (cacheError is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
-            throw new WorkerStartupException($"{synchronizer.Status.Error} No valid cached configuration can be applied. Diagnostic: {synchronizer.Status.Diagnostics?.DiagnosticCode}.", cause);
+            synchronizer.RecordCacheFailure(cacheError);
+            _output.Warning($"{synchronizer.Status.Error} Managed execution remains disabled; retrying authenticated Server synchronization.");
+            return [];
         }
     }
 

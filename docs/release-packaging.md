@@ -63,3 +63,34 @@ The shared MSBuild `Version` property in `Directory.Build.props` is the authorit
 The current product version changes only through the explicit release/version process. Starting the next numbered roadmap or GitHub Issue series does not bump it; neither Issue numbering nor branch names determine a product version. While 16.x work is in progress before the v0.16 release, the intended current version remains `0.15.0`. Do not independently bump versions as part of unrelated feature Issues.
 
 Explicitly prepare the next source version in `Directory.Build.props` as part of its release. `packaging/release.sh VERSION` and `packaging/release-linux-x64.sh --set-version VERSION` continue to override the shared MSBuild version for the requested build, including published assemblies, archive names and archive `VERSION` files, without editing the source property.
+
+### Managed configuration contract upgrades
+
+The v0.26.1 managed snapshot contract was version 1. Version 2, introduced
+in v0.26.2, adds nullable Server-owned `maxParallelTasks` and includes it in
+snapshot hash material (including the null marker). The current Server and
+Worker use the same version 2 hash calculation. A running v0.26.1 Worker
+rejects a fresh version 2 response before hash validation: upgrade the Worker
+as well as the Server. Version skew does not authorize cached scheduling.
+A matching version 2 pair still rejects malformed project definitions and
+hash mismatches; these require correcting the authoritative Server state.
+
+Worker startup retrieves authenticated authoritative configuration before
+requiring the cache to validate. A recognized version 1 cache is never applied
+as version 2 or used for execution. If the Server is unavailable or supplies
+an invalid contract, the Worker retains durable state, remains non-execution-ready,
+and retries synchronization through its normal control loop. Successful refresh
+validates and atomically writes the cache before replacing applied configuration.
+
+The Linux `install-worker.sh` update path retains the service account, existing
+YAML, enrollment identity, credentials and data directories. Normal upgrades
+therefore repair the old cache automatically when the authenticated Server is
+reachable; reinstalling or deleting enrollment is unnecessary.
+
+For emergency cache recovery, stop `codex-worker`, back up only
+`<identityFile>.configuration.json` to a secure location outside the active cache
+path, then restart the service to fetch fresh configuration. Preserve ownership
+and restrictive permissions on the backup. Never delete the identity, tokens,
+credentials, execution history, checkouts or recovery worktrees. Confirm that
+configuration synchronization and execution readiness recover before expecting
+new assignments; a running service alone is not proof of readiness.

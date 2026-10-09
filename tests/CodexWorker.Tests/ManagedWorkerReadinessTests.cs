@@ -259,6 +259,12 @@ public sealed class ManagedWorkerReadinessTests
         };
         using var management = new HttpClient { BaseAddress = new Uri(global.Api.ListenUrl) };
 
+        // A literal v0.26.1 persisted snapshot must not fence authenticated startup.
+        await File.WriteAllTextAsync(settings.IdentityFile + ".configuration.json",
+            """
+            {"contractVersion":1,"version":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","projects":[]}
+            """);
+
         // Each run retains the identity and catalog but never creates a checkout or YAML.
         foreach (var offline in new[] { false, true, false })
         {
@@ -545,7 +551,7 @@ public sealed class ManagedWorkerReadinessTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task InvalidServerContractOrCorruptCacheStillFailsStartup(bool corruptCache)
+    public async Task InvalidServerContractOrCorruptCacheRemainsAliveWithoutDispatch(bool corruptCache)
     {
         using var temporary = new TemporaryDirectory();
         var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
@@ -557,6 +563,8 @@ public sealed class ManagedWorkerReadinessTests
         var valid = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([]), []);
         new ManagedConfigurationSynchronizer(cache, runtime).Apply(valid);
         if (corruptCache) await File.WriteAllTextAsync(cache, "{}");
+        using var stop = new CancellationTokenSource();
+        using var output = new StopOnStartedWriter(stop);
         using var handler = new Handler((request, _) => Task.FromResult(
             request.RequestUri?.AbsolutePath.EndsWith("/configuration", StringComparison.Ordinal) == true
                 ? new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(valid with { ContractVersion = 99 }) }
@@ -566,12 +574,14 @@ public sealed class ManagedWorkerReadinessTests
         {
             Server = settings, Projects = new() { Ownership = "managed" }, ManagedProjects = runtime,
             Api = new() { Enabled = false }
-        }, [], new WorkerConsole(new StringWriter(), interactive: false),
+        }, [], new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(client,
                 new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
                 new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))));
 
-        await Assert.ThrowsAsync<WorkerStartupException>(() => host.RunAsync(CancellationToken.None));
+        await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Contains("Unsupported contract version: expected 2, received 99", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(corruptCache ? "{}" : JsonSerializer.Serialize(valid, new JsonSerializerOptions(JsonSerializerDefaults.Web)), await File.ReadAllTextAsync(cache));
     }
 
     private sealed class StartedWriter : StringWriter
