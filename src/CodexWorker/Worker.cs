@@ -139,6 +139,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 _output.Warning($"Resuming execution {execution.ExecutionId} · interrupted execution {source.ExecutionId} · " +
                     (snapshot.SessionId is null ? "continuing preserved workspace with new Codex session" : $"attempting Codex session {snapshot.SessionId}"));
                 // ProcessClaimedAsync now owns the in-memory Issue claim until its finally block.
+                DisplayIssueStart(issue, execution);
                 handedOff = true;
                 return ProcessClaimedAsync(execution, issue, source, source.IssueNumber, ct);
             }
@@ -278,7 +279,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
             _operationalLog($"Integration recovery claimed · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {source.ExecutionId}");
-            _output.IssueStarted(config.Project.Name, issue, execution);
+            DisplayIssueStart(issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true);
         }
@@ -459,7 +460,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 if (issue.Labels?.Contains(staleLabel, StringComparer.OrdinalIgnoreCase) == true)
                     await github.RemoveLabelAsync(issue.Number, staleLabel, ct);
             _operationalLog($"Scheduler · {config.Project.Name} / #{issue.Number} claimed · execution [{ExecutionFormatting.ShortId(execution.ExecutionId)}]");
-            _output.IssueStarted(config.Project.Name, issue, execution);
+            DisplayIssueStart(issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
             return ProcessClaimedAsync(execution, issue, retryOf, issueKey, ct);
         }
@@ -508,6 +509,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
         int issueKey, CancellationToken ct, bool integrationRecovery = false)
     {
+        var finalQuotaDisplayed = false;
         try
         {
             if (retryOf?.RecoveryState == "codex-interrupted" && !integrationRecovery)
@@ -517,6 +519,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
                 await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct, recovered: true);
             }
+            await ReadQuotaAsync(final: false, ct);
             var timer = Stopwatch.StartNew();
             var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery), ct);
             timer.Stop();
@@ -542,7 +545,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     ExecutionCompletion.Read(pending) with { Report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray()) }, false, ct);
             try
             {
-                await ReportResultAsync(issue, reportedResult, ct);
+                report = await ReportResultAsync(issue, reportedResult, ct);
+                execution.QuotaAtEnd = report.QuotaAtEnd;
+                reportedResult = result with { Report = report };
+                finalQuotaDisplayed = true;
             }
             catch (GitHubOperationException)
             {
@@ -594,8 +600,36 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         }
         finally
         {
+            if (!finalQuotaDisplayed)
+            {
+                execution.QuotaAtEnd ??= await ReadQuotaAsync(final: true, CancellationToken.None);
+                _output.Quota(execution, "end", execution.QuotaAtEnd, operationalLog);
+            }
             _activeIssues.TryRemove(issueKey, out _);
         }
+    }
+
+    private void DisplayIssueStart(GitHubIssue issue, WorkerExecution execution)
+    {
+        var observation = codex.QuotaReader?.CachedObservation ?? new(_clock.GetUtcNow(), "not cached", []);
+        _output.Group(() =>
+        {
+            _output.IssueStarted(config.Project.Name, issue, execution, observation, operationalLog);
+        });
+    }
+
+    private async Task<CodexQuotaObservation> ReadQuotaAsync(bool final, CancellationToken ct)
+    {
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(8));
+            var reader = codex.QuotaReader;
+            return reader is null ? new(_clock.GetUtcNow(), "reader unavailable", []) :
+                await (final ? reader.ReadFinalAsync(deadline.Token) : reader.ReadAsync(deadline.Token)).WaitAsync(deadline.Token);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        { return new(_clock.GetUtcNow(), "query failed", []); }
     }
 
     private async Task ReportInterruptedExecutionAsync(WorkerExecution execution, GitHubIssue issue, string reason,
@@ -801,7 +835,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, operationalLog: operationalLog);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock);
         return runner.RunAsync(context, ct);
     }
 
@@ -928,8 +962,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         return match.Success ? match.Groups[1].Value : null;
     }
 
-    private async Task ReportResultAsync(GitHubIssue issue, IssueProcessingResult result, CancellationToken ct)
+    private async Task<IssueExecutionReport> ReportResultAsync(GitHubIssue issue, IssueProcessingResult result, CancellationToken ct)
     {
+        var executionId = result.Report.ExecutionId ?? throw new WorkerInfrastructureException("Report execution identity is unavailable.");
         // Any failed GitHub operation is infrastructure failure. Stop and leave the partial state for a human to reconcile.
         switch (result.Kind)
         {
@@ -938,46 +973,67 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     await history.ReadExecutionAsync(successId, ct) is { CompletionJson: not null } pending)
                 {
                     await ReportSuccessAsync(issue, ExecutionCompletion.Read(pending).Report, ExecutionCompletion.Read(pending), ct);
-                    break;
+                    var completed = await history.ReadExecutionAsync(successId, ct);
+                    return completed is null ? result.Report : ExecutionCompletion.Read(completed).Report;
                 }
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.DoneLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
                 await github.CloseAsync(issue.Number, ct);
+                result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.SuccessAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, TelegramCompletion(result.Report), ct);
-                _output.IssueCompleted(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
+                _output.Group(() =>
+                {
+                    _output.IssueCompleted(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
                     result.Report.AttemptNumber, result.Report.RetryOfExecutionId);
+                    if (result.Report.QuotaAtEnd is { } quota) _output.Quota(executionId, quota, operationalLog);
+                });
                 break;
             case IssueOutcomeKind.Blocked:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
+                result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.BlockedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact(
                         result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues) + QuotaNotification(result.Report), ct);
-                _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
+                _output.Group(() =>
+                {
+                    _output.IssueBlocked(issue, result.Report.Duration, result.Report.ExecutionId!.Value,
                     FailureDiagnosticRedactor.Redact(result.Report.HumanInput ?? "A required prerequisite is unavailable.", result.Report.SecretValues));
+                    if (result.Report.QuotaAtEnd is { } quota) _output.Quota(executionId, quota, operationalLog);
+                });
                 break;
             case IssueOutcomeKind.Failed:
                 var message = result.Summary;
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.FailedLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + message, ct);
+                result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, "See the Issue report for validation diagnostics and recovery details." + QuotaNotification(result.Report), ct);
                 var recoveryDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.RecoveryBranch is null ? " · workspace not preserved · retry/resume unavailable" :
                         $" · workspace preserved on {result.Report.RecoveryBranch} · retry/resume {(result.Report.RetryAvailable ? "available" : "unavailable")}");
-                _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, recoveryDetails);
+                _output.Group(() =>
+                {
+                    _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, recoveryDetails);
+                    if (result.Report.QuotaAtEnd is { } quota) _output.Quota(executionId, quota, operationalLog);
+                });
                 break;
             case IssueOutcomeKind.IntegrationConflict:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.IntegrationConflictLabel, ct);
                 await github.CommentAsync(issue.Number, IssueFormatting.ReportHeading(issue) + result.Summary, ct);
+                result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
                 await telegram.FailedAsync(config.Project.Name, config.Project.Repository, issue, result.Report.Duration,
                     result.Report.ExecutionId!.Value, FailureDiagnosticRedactor.Redact($"Integration recovery is required after {result.Report.ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s). " +
                         (result.Report.FinalValidationDiagnostics ?? result.Report.Failure ?? "See the Issue report."), result.Report.SecretValues) + QuotaNotification(result.Report), ct);
                 var conflictDetails = $"execution {ExecutionFormatting.Display(result.Report.ExecutionId!.Value)}" +
                     (result.Report.WorkspacePreserved ? $" · implementation workspace preserved on {result.Report.RecoveryBranch} · integration recovery available" :
                         " · implementation workspace preservation could not be verified");
-                _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, conflictDetails);
+                _output.Group(() =>
+                {
+                    _output.IssueFailed(issue, result.Report.Duration, result.Report.ExecutionId!.Value, conflictDetails);
+                    if (result.Report.QuotaAtEnd is { } quota) _output.Quota(executionId, quota, operationalLog);
+                });
                 break;
             case IssueOutcomeKind.Superseded:
                 await github.ReplaceLabelAsync(issue.Number, config.GitHub.WorkingLabel, config.GitHub.BlockedLabel, ct);
@@ -986,8 +1042,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     "### Recovery\n\n- Inspect the later execution or closed Issue before requesting another attempt.\n", ct);
                 _operationalLog($"Execution {result.Report.ExecutionId} · Issue #{issue.Number} · superseded; integration skipped and workspace retained.");
                 _output.Warning($"Execution {result.Report.ExecutionId} · Issue #{issue.Number} · superseded; integration skipped and workspace retained.");
+                result = result with { Report = result.Report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) } };
+                if (result.Report.QuotaAtEnd is { } supersededQuota) _output.Quota(executionId, supersededQuota, operationalLog);
                 break;
         }
+        return result.Report;
     }
 
     private async Task DelayAsync(CancellationToken ct)

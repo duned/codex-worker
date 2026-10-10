@@ -25,6 +25,8 @@ public sealed record CodexQuotaObservation(DateTimeOffset ObservedAtUtc, string 
 public interface ICodexQuotaReader
 {
     Task<CodexQuotaObservation> ReadAsync(CancellationToken ct);
+    CodexQuotaObservation? CachedObservation => null;
+    Task<CodexQuotaObservation> ReadFinalAsync(CancellationToken ct) => ReadAsync(ct);
 }
 
 internal interface ICodexQuotaTransport
@@ -40,7 +42,12 @@ internal sealed class CodexQuotaReader(ICodexQuotaTransport transport, TimeProvi
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private CodexQuotaObservation? _cached;
 
-    public async Task<CodexQuotaObservation> ReadAsync(CancellationToken ct)
+    public CodexQuotaObservation? CachedObservation => Volatile.Read(ref _cached);
+
+    public Task<CodexQuotaObservation> ReadAsync(CancellationToken ct) => ReadAsync(ct, false);
+    public Task<CodexQuotaObservation> ReadFinalAsync(CancellationToken ct) => ReadAsync(ct, true);
+
+    private async Task<CodexQuotaObservation> ReadAsync(CancellationToken ct, bool fresh)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(8));
@@ -49,7 +56,7 @@ internal sealed class CodexQuotaReader(ICodexQuotaTransport transport, TimeProvi
         {
             await _gate.WaitAsync(deadline.Token);
             entered = true;
-            if (_cached is { } cached && _clock.GetUtcNow() - cached.ObservedAtUtc < TimeSpan.FromSeconds(2)) return cached;
+            if (!fresh && _cached is { } cached && _clock.GetUtcNow() - cached.ObservedAtUtc < TimeSpan.FromSeconds(2)) return cached;
             _cached = Parse(await transport.ReadAsync(deadline.Token), _clock.GetUtcNow());
             return _cached;
         }

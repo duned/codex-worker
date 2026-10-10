@@ -53,13 +53,25 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void NoProjectsConfigured() => WriteLine("Managed Worker is healthy and idle · no projects configured", ConsoleColor.Cyan, "○");
     public void Shutdown(string message = "Worker stopped.") { _waiting = false; WriteLine(message, null, "■"); }
     public void InfrastructureFailure(string message) { _waiting = false; WriteLine(message, ConsoleColor.Red, "✗", _errorWriter); }
-    public void Quota(WorkerExecution execution, string phase, CodexQuotaObservation observation, Action<string>? operationalLog = null)
+    public void Quota(WorkerExecution execution, string phase, CodexQuotaObservation observation, Action<string>? operationalLog = null) =>
+        Quota(execution.ExecutionId, observation, operationalLog);
+
+    public void Quota(Guid executionId, CodexQuotaObservation observation, Action<string>? operationalLog = null)
     {
-        var message = CodexQuotaFormatting.Journal(execution, phase, observation, _timeProvider.GetUtcNow());
+        var message = $"↳ Limits · [{ExecutionFormatting.ShortId(executionId)}] · {CodexQuotaFormatting.Compact(observation, _timeProvider.GetUtcNow())}";
         // The operational sink also reaches service stdout; select one owner for human output.
         if (operationalLog is not null) operationalLog(message);
-        else WriteLine(message, null);
+        else
+        {
+            lock (_writer)
+            {
+                if (_interactive) _writer.Write("\u001b[0m");
+                WriteLine(message, null);
+            }
+        }
     }
+    public void Group(Action write) { lock (_writer) write(); }
+
     public void Warning(string message) => WriteLine(message, ConsoleColor.Yellow, "⚠");
     public void RecoveryCleanupCompleted(Guid executionId) =>
         WriteLine($"Recovery resources cleaned · execution {ExecutionFormatting.Display(executionId)}", ConsoleColor.Green, "✓");
@@ -131,11 +143,13 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine(IssueFormatting.OperationalIdentity(issue), ConsoleColor.Cyan, "▶");
     }
 
-    public void IssueStarted(string project, GitHubIssue issue, WorkerExecution execution)
+    public void IssueStarted(string project, GitHubIssue issue, WorkerExecution execution,
+        CodexQuotaObservation? quota = null, Action<string>? operationalLog = null)
     {
         _waiting = false;
         WriteLine(ExecutionFormatting.OperationalIdentity(issue, execution.ExecutionId), ConsoleColor.Cyan, "▶");
         CodexProfile(execution);
+        if (quota is not null) Quota(execution, "start", quota, operationalLog);
         if (execution.AttemptNumber > 1 && execution.RetryOfExecutionId is { } previousId)
         {
             var mode = execution.Resumed ? "resume" : "restart";

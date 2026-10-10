@@ -218,6 +218,8 @@ public sealed partial class Worker
         await SaveAsync();
         if (!completion.NotificationAttempted)
         {
+            report = report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) };
+            completion = completion with { Report = report };
             // Telegram has no idempotency key or delivery query. Persist before sending: at most
             // one attempt, with possible omission if the Worker stops between checkpoint and send.
             completion = completion with { NotificationAttempted = true };
@@ -238,6 +240,10 @@ public sealed partial class Worker
         // Normal execution still uses its established terminal transition/history path.
         completion = completion with { Finished = true };
         await history.SaveCompletionAsync(executionId, completion, false, ct);
-        _output.IssueCompleted(issue, report.Duration, executionId, report.AttemptNumber, report.RetryOfExecutionId);
+        _output.Group(() =>
+        {
+            _output.IssueCompleted(issue, report.Duration, executionId, report.AttemptNumber, report.RetryOfExecutionId);
+            if (report.QuotaAtEnd is { } quota) _output.Quota(executionId, quota, operationalLog);
+        });
     }
 }

@@ -29,8 +29,9 @@ public sealed class WorkerHost
         _projects = projects;
         _output = output ?? new WorkerConsole();
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _operationalLog = operationalLog ?? (_ => { });
-        _executionOperationalLog = operationalLog;
+        _operationalLog = operationalLog is null ? _ => { } :
+            message => _output.Group(() => operationalLog(message));
+        _executionOperationalLog = operationalLog is null ? null : _operationalLog;
     }
 
     private void LogAssignment(WorkerAssignmentContract assignment, string message, WorkerConfiguration? configuration = null,
@@ -322,6 +323,7 @@ public sealed class WorkerHost
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
             var readiness = new ManagedCodexReadiness(agentAuthentication, _timeProvider);
             var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
+            if (agentReady) await CodexQuotaReader.Local.ReadAsync(ct);
             var executionDependenciesReady = false;
             IReadOnlyList<string> executionReadinessBlockers = [];
             async Task PublishReadinessAsync(CancellationToken token)

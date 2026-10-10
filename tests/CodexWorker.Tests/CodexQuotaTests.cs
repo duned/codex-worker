@@ -164,6 +164,39 @@ public sealed class CodexQuotaTests
         Assert.Contains(ExecutionFormatting.ShortId(second.ExecutionId), events[2]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LifecycleGroupsKeepLimitsAdjacentAndUseDefaultForeground(bool interactive)
+    {
+        var issue = new GitHubIssue(1, "first", "", DateTimeOffset.UtcNow);
+        var execution = WorkerExecution.Create(new ProjectSettings { Name = "sample", Repository = "owner/repo" },
+            new GitSettings { BaseBranch = "main" }, issue, codexSettings: new CodexSettings());
+        var observation = new CodexQuotaObservation(DateTimeOffset.UtcNow, "available", [new(300, 80, null)]);
+        using var writer = new StringWriter();
+        var output = new WorkerConsole(writer, interactive);
+        void Log(string message) => writer.WriteLine(message);
+        var capacity = new SchedulerCapacityLog(2, Log);
+        output.Group(() => output.IssueStarted("sample", issue, execution, observation, Log));
+        capacity.Report(1, [("sample", 1, 2)]);
+        output.Group(() =>
+        {
+            output.IssueCompleted(issue, TimeSpan.FromMinutes(5), execution.ExecutionId);
+            output.Quota(execution, "end", observation, Log);
+        });
+        capacity.Report(0, []);
+        var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains("Issue ·", lines[0]);
+        Assert.Contains("Codex · model", lines[1]);
+        Assert.StartsWith("↳ Limits ·", lines[2]);
+        Assert.StartsWith("Scheduler · global 1/2", lines[3]);
+        Assert.Contains(" · completed · ", lines[4]);
+        Assert.StartsWith("↳ Limits ·", lines[5]);
+        Assert.StartsWith("Scheduler · global 0/2", lines[6]);
+        Assert.DoesNotContain("\u001b[90m", lines[2]);
+        Assert.DoesNotContain("\u001b[90m", lines[5]);
+    }
+
     [Fact]
     public void CompactFormattingPreservesUnknownAndStaleLimits()
     {

@@ -31,6 +31,53 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, h.OperationalMessages.Count(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failed")]
+    public async Task TerminalQuotaIsReadAfterRepairsIntegrationAndReporting(string status)
+    {
+        using var h = new Harness();
+        h.Codex.InitialOutcome = new(status, "task outcome", [], false, null);
+        if (status == "success")
+        {
+            h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+            h.Codex.Repairs.Enqueue(Success("repaired"));
+            h.Validation.Results.Enqueue(ValidationResult.Success);
+        }
+        var reader = new LifecycleQuotaReader(() =>
+        {
+            if (status == "success")
+            {
+                Assert.True(h.Validation.Calls >= 2);
+                Assert.Equal(1, Assert.Single(h.Codex.RepairAttempts));
+                Assert.True(h.Git.Integrations > 0);
+                Assert.Equal(1, h.GitHub.CloseCalls);
+            }
+            Assert.DoesNotContain(" · completed · ", h.Output.ToString());
+        });
+        h.Codex.QuotaReader = reader;
+        var result = await h.ProcessOneAsync();
+        Assert.NotNull(result);
+        Assert.Equal(37d, Assert.Single(Assert.IsType<CodexQuotaObservation>(result.Report.QuotaAtEnd).Windows).RemainingPercent);
+        Assert.Equal(1, reader.FinalReads);
+        Assert.Equal(2, h.OperationalMessages.Count(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
+        Assert.Contains("5h 80% left", h.OperationalMessages.First(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
+        Assert.Contains("5h 37% left", h.OperationalMessages.Last(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
+    }
+
+    private sealed class LifecycleQuotaReader(Action onFinal) : ICodexQuotaReader
+    {
+        public int FinalReads { get; private set; }
+        public CodexQuotaObservation CachedObservation => new(DateTimeOffset.UtcNow, "available", [new(300, 80, null)]);
+        public Task<CodexQuotaObservation> ReadAsync(CancellationToken ct) => Task.FromResult(CachedObservation);
+        public Task<CodexQuotaObservation> ReadFinalAsync(CancellationToken ct)
+        {
+            FinalReads++;
+            onFinal();
+            return Task.FromResult(new CodexQuotaObservation(DateTimeOffset.UtcNow, "available", [new(300, 37, null)]));
+        }
+    }
+
     private sealed class AvailableQuotaReader : ICodexQuotaReader
     {
         public Task<CodexQuotaObservation> ReadAsync(CancellationToken ct) =>
