@@ -77,8 +77,20 @@ public sealed partial class GitRepository
         return new(exists, branchExists);
     }
 
-    public async Task<ExecutionCleanupInspection> InspectCleanupAsync(ExecutionHistoryEntry entry,
+    public Task<ExecutionCleanupInspection> InspectCleanupAsync(ExecutionHistoryEntry entry,
+        IReadOnlyList<ExecutionHistoryEntry> history, CancellationToken ct) => InspectCleanupCoreAsync(entry, history, false, ct);
+
+    internal async Task<ExecutionCleanupInspection> InspectAcknowledgedCleanupAsync(ExecutionHistoryEntry entry,
         IReadOnlyList<ExecutionHistoryEntry> history, CancellationToken ct)
+    {
+        var inspection = await InspectCleanupCoreAsync(entry, history, true, ct);
+        return inspection.Decision == "safe" && inspection.ReasonCode != "already-clean"
+            ? inspection with { Decision = "review", ReasonCode = "acknowledged-resources-remain", Message = "Acknowledgment retains resources; use the existing recovery protocol before cleanup." }
+            : inspection;
+    }
+
+    private async Task<ExecutionCleanupInspection> InspectCleanupCoreAsync(ExecutionHistoryEntry entry,
+        IReadOnlyList<ExecutionHistoryEntry> history, bool acknowledged, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var related = history.Where(e => e.Repository == entry.Repository && e.Project == entry.Project && e.IssueNumber == entry.IssueNumber).ToArray();
@@ -103,7 +115,7 @@ public sealed partial class GitRepository
             return Result("review", "lineage-inconsistent", "Attempt lineage is missing or inconsistent.");
         if (entry.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
             return Result("keep", "codex-interruption-recovery", "Codex interruption resources are retained for continuation or inspection; automatic cleanup is not authorized.");
-        if (entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
+        if (!(acknowledged && entry.RecoveryState == "operator-acknowledged") && entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
             "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
@@ -112,7 +124,7 @@ public sealed partial class GitRepository
             if (ownership.Error is { } error) return Result("review", error.Code, error.Message);
             if (!ownership.DirectoryExists && !ownership.BranchExists)
             {
-                if (entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
+                if (acknowledged && entry.RecoveryState == "operator-acknowledged" || ExecutionCompletion.IsSettled(entry) || entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
                     "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "cleanup-pending" or "operator-cleaned")
                     return Result("safe", "already-clean", "No managed workspace, Git registration or feature branch remains.");
                 return Result("review", "missing-recovery-resources", "History still requires recovery resources that no longer exist.");

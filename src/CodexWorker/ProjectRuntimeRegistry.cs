@@ -171,6 +171,38 @@ public sealed class ProjectRuntimeRegistry
         }
     }
 
+    internal IDisposable? TryBeginDrainingMaintenance()
+    {
+        lock (_gate)
+        {
+            if (_maintenance || _projects.Values.Any(e => e.Removing)) return null;
+            var prior = Lifecycle.Snapshot;
+            DrainWorker();
+            _maintenance = true;
+            return new DrainingMaintenanceReservation(this, prior);
+        }
+    }
+
+    private sealed class DrainingMaintenanceReservation(ProjectRuntimeRegistry registry, WorkerLifecycleSnapshot prior) : IDisposable
+    {
+        private bool _disposed;
+        public void Dispose()
+        {
+            lock (registry._gate)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                registry._maintenance = false;
+                if (!prior.DrainRequested)
+                {
+                    registry.Lifecycle.RestoreMaintenanceDrain(prior, registry.WorkerActive);
+                    registry._events?.Publish("worker.drain.cancelled", "Maintenance restored prior scheduling state.");
+                    registry.SignalChanged();
+                }
+            }
+        }
+    }
+
     /// <summary>Holds a completed drain until maintenance finishes, including durable recording.</summary>
     public IDisposable? TryBeginMaintenance()
         => TryBeginMaintenanceCore(serverDrain: false);

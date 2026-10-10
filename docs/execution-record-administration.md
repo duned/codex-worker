@@ -112,3 +112,21 @@ accepted/read success, 2 for invalid arguments, 3 for API/authority rejection,
 4 for unavailable service or timeout, and 5 for refused/failed report results.
 Always inspect asynchronous Server completion and individual results for partial
 success before retrying.
+
+### Installed standalone batch maintenance
+
+`codex-worker maintenance clean-executions` previews a bounded pass through the
+running standalone Worker's Management API. Add `--apply --confirm` to reserve maintenance,
+drain without interrupting current work, clean only resources accepted by existing
+ownership/integration checks, and archive eligible old resource-free history.
+Scheduling returns to its prior drain state on exit. `--json`, `--limit` (1–100,
+default 20), `--offset` (0–10000), and `--config` are supported. Review/refusal
+results remain visible with exact execution IDs and reasons; history is retained.
+See [execution maintenance](execution-maintenance.md#installed-standalone-batch-command).
+This installed command is separate from repo-local `cw` and Server managed
+maintenance. It does not replace offline `executions acknowledge` verification.
+
+Legacy reconstruction failures now have a durable diagnostic at
+`GET /api/executions/<id>/legacy-review` and in `executions show`. Startup emits
+aggregate counts and rechecks evidence rather than repeating every old warning.
+These dispositions do not change execution outcomes or authorize cleanup.

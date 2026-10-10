@@ -254,3 +254,41 @@ failure or timeout requires fresh inspection before a new operation ID is used.
 An out-of-date or disconnected Worker cannot apply commands; queued audit remains
 visible until it reconnects. Archive receipts, execution lineage and provenance
 remain retained; permanent purge and remote Issue maintenance are not supported.
+
+## Installed standalone batch command
+
+Use the installed Worker tool against its running local Management API:
+
+```sh
+sudo codex-worker maintenance clean-executions --limit 20
+sudo codex-worker maintenance clean-executions --limit 20 --apply --confirm --json
+```
+
+Preview is the default. `--apply --confirm` is the explicit mutation opt-in, matching the installed
+maintenance confirmation policy; no manual drain is required. `--config` selects the installed Worker
+configuration and API address. This command is independent of the repo-local `cw`
+client and refuses managed Worker configuration. Managed rows remain refused by
+the cleanup service, including rows with only an ownership generation.
+
+A pass visits at most 100 records (default 20), oldest first with execution ID as
+the tie breaker. `--offset` selects a further page (0–10000). Apply reserves
+maintenance before waiting for active executions to finish; work is never
+interrupted. Concurrent maintenance and drain cancellation are excluded. The
+prior Worker drain state is restored on exit, including timeout or cancellation.
+The request has a five-minute deadline. Each item uses existing cleanup proof,
+then attempts receipt-based archive with the existing 30-day retention policy.
+Recent settled records remain visible with their archive eligibility reason.
+Counts and exact IDs/reasons distinguish cleaned resources, archived history,
+already archived records and remaining review. A review result exits nonzero;
+earlier successful mutations remain durable and can be inspected before retry.
+No execution rows are purged and no Issue mutations are performed.
+
+Startup legacy reconstruction now records a separate durable review diagnostic
+and emits one aggregate warning per project instead of a warning for every old
+execution. Every startup still rechecks reconstruction, so changed workspace,
+configuration, session or sibling evidence can enable valid recovery. The review
+is neither acknowledgment nor reconciliation and grants no deletion authority.
+Read the retained reason at `GET /api/executions/<id>/legacy-review` or with
+`codex-worker executions show <id>`. Original outcomes and recovery metadata remain
+intact; uncertain integrations and retained recoverable sessions require their
+existing recovery protocols.

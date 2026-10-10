@@ -30,7 +30,7 @@ public static class ExecutionMaintenanceClassifier
             return authority == "managed" && entry.ReportingFailure is not null
                 ? Assessment("reconciliation-required", "managed-report-unconfirmed", "The Server report is unconfirmed; reconcile Server authority and reporting.")
                 : Assessment("reconciliation-required", "github-report-unconfirmed", "GitHub mutation or reporting is unconfirmed; verify remote state and delivery.");
-        if (entry.CompletionJson is not null)
+        if (entry.CompletionJson is not null && !ExecutionCompletion.IsSettled(entry))
             return Assessment("reconciliation-required", "completion-pending", "A durable completion remains pending; reconcile completion and reporting before cleanup.");
         if (entry.IntegrationRecoveryClaim is not null)
             return Assessment("retained-review", "recovery-claimed", "An integration recovery claim remains; verify the owning attempt and integration result.");

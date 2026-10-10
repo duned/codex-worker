@@ -121,12 +121,15 @@ public sealed class WorkerRuntimeReadModel
         Events = new RuntimeEventLog(global.Api.EventHistoryLimit);
         _registry = new ProjectRuntimeRegistry(projects, Events, _lifecycle);
         CompletedBranchMaintenance = new CompletedBranchMaintenanceService(_registry, history);
+        StandaloneMaintenance = new(history, _registry, ExecutionCleanup, global.Server.Enabled || global.Projects.Ownership == "managed");
     }
 
+    internal StandaloneExecutionMaintenance StandaloneMaintenance { get; }
     public CompletedBranchMaintenanceService CompletedBranchMaintenance { get; }
     public RuntimeEventLog Events { get; }
     public ProjectRuntimeRegistry Registry => _registry;
     public WorkerLifecycle Lifecycle => _lifecycle;
+    public Task<string?> LegacyReviewAsync(Guid id, CancellationToken ct) => _history.ReadLegacyReviewAsync(id, ct);
     public Task<string?> ArchiveAuditAsync(Guid id, CancellationToken ct) => _history.ReadArchiveAuditAsync(id, ct);
 
     public ExecutionCleanupService ExecutionCleanup => new(_history, _registry, repositoryGates: _repositoryGates);
@@ -393,6 +396,16 @@ public static class ManagementApi
         {
             var inspection = await model.InspectExecutionCleanupAsync(executionId, context.RequestAborted);
             return inspection is null ? (IResult)Results.NotFound() : Results.Ok(inspection);
+        });
+        app.MapGet("/api/executions/{executionId:guid}/legacy-review", async (Guid executionId, WorkerRuntimeReadModel model, HttpContext context) =>
+            Results.Ok(new { diagnostic = await model.LegacyReviewAsync(executionId, context.RequestAborted) }));
+        app.MapPost("/api/maintenance/clean-executions", async (StandaloneExecutionMaintenanceRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, app.Lifetime.ApplicationStopping);
+            deadline.CancelAfter(TimeSpan.FromMinutes(5));
+            try { return (IResult)Results.Ok(await model.StandaloneMaintenance.RunAsync(request, deadline.Token)); }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         app.MapPost("/api/executions/cleanup", async (ExecutionCleanupRequest request, WorkerRuntimeReadModel model, HttpContext context) =>
         {

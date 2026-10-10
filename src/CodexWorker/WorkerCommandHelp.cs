@@ -30,6 +30,10 @@ public static class WorkerCommandHelp
         var configOption = "[--config <path>]";
         switch (command)
         {
+            case "maintenance":
+                writer.WriteLine(StandaloneMaintenanceCli.Help);
+                writer.WriteLine(CodexProvisioning.ExecutionMaintenanceCli.Help);
+                break;
             case "executions":
                 writer.WriteLine(ExecutionAdministrationCli.Help);
                 break;

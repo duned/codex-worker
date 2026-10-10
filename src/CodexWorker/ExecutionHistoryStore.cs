@@ -47,7 +47,7 @@ public sealed record ExecutionHistoryEntry(
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed partial class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 16;
+    private const int CurrentSchemaVersion = 17;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -330,6 +330,13 @@ public sealed partial class ExecutionHistoryStore : IDisposable
 
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadAllAsync(CancellationToken ct = default) =>
         ReadAsync(" ORDER BY started_at_utc", null, null, ct);
+
+    internal Task<IReadOnlyList<ExecutionHistoryEntry>> ReadMaintenancePageAsync(int limit, int offset, CancellationToken ct)
+    {
+        if (limit is < 1 or > 100 || offset is < 0 or > 10000) throw new ArgumentException("Invalid maintenance page bounds.");
+        return ReadAsync(" ORDER BY started_at_utc, execution_id LIMIT $limit OFFSET $offset", null, null, ct,
+            ("$limit", limit), ("$offset", offset));
+    }
 
     public Task<IReadOnlyList<ExecutionHistoryEntry>> ReadRecentAsync(int limit, CancellationToken ct = default) =>
         ReadAsync(" WHERE execution_id NOT IN (SELECT execution_id FROM execution_archives) ORDER BY started_at_utc DESC, execution_id LIMIT $value", "$value", Math.Clamp(limit, 1, 500), ct);
@@ -627,6 +634,14 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 migration.CommandText = "CREATE TABLE execution_maintenance_receipts (id TEXT PRIMARY KEY, endpoint TEXT NOT NULL, acknowledged INTEGER NOT NULL, body TEXT NOT NULL); PRAGMA user_version = 16;";
                 migration.ExecuteNonQuery();
             }
+            if (schemaVersion < 17)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE execution_legacy_reviews (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), checked_at_utc TEXT NOT NULL, reason TEXT NOT NULL, evidence TEXT NULL); PRAGMA user_version = 17;";
+                migration.ExecuteNonQuery();
+            }
+
             transaction.Commit();
         }
         catch (WorkerInfrastructureException) { throw; }

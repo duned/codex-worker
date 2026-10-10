@@ -7,7 +7,7 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "maintenance")
+        if (args.Length > 1 && args[0] == "maintenance" && args[1] is not ("clean-executions" or "--help" or "-h"))
             return await CodexProvisioning.ExecutionMaintenanceCli.RunAsync(false, args[1..]);
         if (args.Length > 0 && args[0] == "update")
             return await CodexProvisioning.SelfUpdateCommand.RunAsync(new("worker", "Codex Worker", ApplicationVersion.Display, "/opt/codex-worker/CodexWorker"), args[1..]);
@@ -89,6 +89,8 @@ public static class Program
                 FailureDiagnosticRedactor.Redact(ex.Message));
             return ProcessExitCodes.StartupFailure;
         }
+        if (commandLine.Command == "maintenance")
+            return await StandaloneMaintenanceCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "executions")
             return await ExecutionAdministrationCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "register")

@@ -146,6 +146,103 @@ public sealed class GitWorktreeTests
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task StandaloneBatchArchivesVerifiedCleanCompletionAndIsRepeatable(bool historicalAcknowledgement, bool reconciled)
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings());
+        await git.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var info = Assert.IsType<GitRecoveryInfo>(await git.InspectExecutionWorkspaceAsync(CancellationToken.None));
+        var started = DateTimeOffset.UtcNow.AddDays(-40);
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            info.Branch, "main", started, started.AddMinutes(1), historicalAcknowledgement ? "InfrastructureFailure" : "Completed", 1, "retained", "passed", 0, [],
+            info.BaseCommit, "main", null, null, "operator-cleaned", info.BaseCommit);
+        if (reconciled)
+        {
+            var report = new IssueExecutionReport("retained", [], Integration: new(true, "integrated", info.BaseCommit, "main",
+                ResourceExecutionId: id, ResourceAttemptNumber: 1), ExecutionId: id);
+            entry = entry with { RecoveryState = "completion-reconciled", CompletionJson = JsonSerializer.Serialize(
+                new ExecutionCompletion(report, "intent", "policy", RemoteConfirmed: true, LabelsReported: true,
+                    CommentReported: true, IssueClosed: true, NotificationAttempted: true, CleanupCompleted: true, Finished: true)) };
+        }
+        await git.CleanupRecoveryWorkspaceAsync(entry with { RecoveryState = "cleanup-pending" }, CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../batch-history.db"));
+        await history.CreateAsync(entry);
+        var config = new WorkerConfiguration { Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout } };
+        config.GitHub = new() { DoneLabel = "done", ReadyLabel = "ready", WorkingLabel = "working", FailedLabel = "failed", BlockedLabel = "blocked" };
+        if (historicalAcknowledgement)
+        {
+            var proof = await ExecutionAdministrationCli.VerifyResolutionAsync(entry, config,
+                new GitHubIssueState(false, [config.GitHub.DoneLabel]), git.VerifyRemoteIntegrationAsync, CancellationToken.None);
+            await history.AcknowledgeAsync(entry, proof, false, CancellationToken.None);
+        }
+        var registry = new ProjectRuntimeRegistry([("sample.yml", config)]);
+        var cleanup = new ExecutionCleanupService(history, registry, c => fixture.CreateRepository(c.Git));
+        var service = new StandaloneExecutionMaintenance(history, registry, cleanup, false);
+        var preview = await service.RunAsync(new(), CancellationToken.None);
+        Assert.Equal(0, preview.Archived);
+        Assert.Null(await history.ReadArchiveAuditAsync(id));
+        Assert.False(registry.WorkerDraining);
+        var applied = await service.RunAsync(new(Apply: true), CancellationToken.None);
+        Assert.Equal(1, applied.Archived);
+        Assert.Equal(0, applied.NeedsReview);
+        Assert.False(registry.WorkerDraining);
+        Assert.Equal(entry.State, (await history.ReadExecutionAsync(id))?.State);
+        var repeated = await service.RunAsync(new(Apply: true), CancellationToken.None);
+        Assert.Equal(1, repeated.AlreadyResolved);
+        Assert.Equal(0, repeated.Archived);
+        Assert.NotNull(await history.ReadArchiveAuditAsync(id));
+    }
+
+    [Fact]
+    public async Task LegacyReviewRestartAggregatesWarningsAndRetainsOriginalHistory()
+    {
+        using var fixture = await RepositoryFixture.CreateAsync();
+        var database = Path.Combine(fixture.Checkout, "../legacy-review.db");
+        var config = new WorkerConfiguration
+        {
+            Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout }
+        };
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var missingIntent = LegacyCodexSessionTests.Source() with { OriginalIssueBody = null };
+        var progressed = LegacyCodexSessionTests.Source() with { ImplementationSummary = "Retained implementation", IssueNumber = 18 };
+        var missingWorkspace = LegacyCodexSessionTests.Source() with { IssueNumber = 19 };
+        using var gate = new SemaphoreSlim(1, 1);
+        using (var history = new ExecutionHistoryStore(database))
+        {
+            await history.CreateAsync(missingIntent);
+            await history.CreateAsync(progressed);
+            await history.CreateAsync(missingWorkspace);
+            using var logs = new StringWriter();
+            await new CodexRecoveryCoordinator(config, git, history, gate, new WorkerConsole(logs, false), TimeProvider.System)
+                .ReconcileAsync(CancellationToken.None);
+            Assert.Contains("3 executions (3 new or changed diagnostics)", logs.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("Legacy recovery unavailable", logs.ToString(), StringComparison.Ordinal);
+        }
+        using var reopened = new ExecutionHistoryStore(database);
+        using var restartLogs = new StringWriter();
+        await new CodexRecoveryCoordinator(config, git, reopened, gate, new WorkerConsole(restartLogs, false), TimeProvider.System)
+            .ReconcileAsync(CancellationToken.None);
+        Assert.Contains("3 executions (0 new or changed diagnostics)", restartLogs.ToString(), StringComparison.Ordinal);
+        Assert.Equal("uncertain", (await reopened.ReadExecutionAsync(progressed.ExecutionId))?.RecoveryState);
+        Assert.Contains("original Issue intent is missing", await reopened.ReadLegacyReviewAsync(missingIntent.ExecutionId, CancellationToken.None));
+        Assert.Contains("progressed beyond", await reopened.ReadLegacyReviewAsync(progressed.ExecutionId, CancellationToken.None));
+        Assert.Contains("worktree missing", await reopened.ReadLegacyReviewAsync(missingWorkspace.ExecutionId, CancellationToken.None));
+        await reopened.CreateAsync(progressed with { ExecutionId = Guid.NewGuid(), State = "Failed", RecoveryState = null,
+            AttemptNumber = 2, RetryOfExecutionId = progressed.ExecutionId });
+        using var changedLogs = new StringWriter();
+        await new CodexRecoveryCoordinator(config, git, reopened, gate, new WorkerConsole(changedLogs, false), TimeProvider.System)
+            .ReconcileAsync(CancellationToken.None);
+        Assert.Contains("3 executions (1 new or changed diagnostics)", changedLogs.ToString(), StringComparison.Ordinal);
+        Assert.Null(await reopened.ReadArchiveAuditAsync(progressed.ExecutionId));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task LegacyReconstructionPreservesDirtyDeltaAndResumesOnceWithAuthoritativeValidation(bool advanceMain)

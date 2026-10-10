@@ -83,6 +83,7 @@ internal static class ExecutionAdministrationCli
                         entry.CompletedAtUtc, entry.RecoveryState, entry.ValidationOutcome, entry.CommitSha,
                         entry.IntegrationBranch,
                         acknowledgment = await history.ReadAcknowledgementAsync(entry.ExecutionId, ct),
+                        legacyReview = await history.ReadLegacyReviewAsync(entry.ExecutionId, ct),
                         eligibility = Ineligible(entry, entries) ?? "Remote verification and exclusive checkout lock required",
                         cleanup = entry.CodexRecovery is null && entry.RecoveryBaseCommit is null && entry.RecoveryStatus is null ? "Prompt only; all history and resources retained" : "Recovery evidence retained; pruning refused"
                     }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));

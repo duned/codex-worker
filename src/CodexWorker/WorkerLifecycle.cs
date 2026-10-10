@@ -40,6 +40,12 @@ public sealed class WorkerLifecycle
         }
     }
 
+    internal void RestoreMaintenanceDrain(WorkerLifecycleSnapshot prior, int activeExecutions)
+    {
+        lock (_gate)
+            _snapshot = _snapshot with { State = prior.State, DrainRequested = prior.DrainRequested, ActiveExecutions = activeExecutions };
+    }
+
     public void SetDrained(int activeExecutions)
     {
         if (activeExecutions < 0) throw new ArgumentOutOfRangeException(nameof(activeExecutions));

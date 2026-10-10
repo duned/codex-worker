@@ -54,6 +54,9 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
             }
             output.Warning($"Execution {entry.ExecutionId} · " + (reason is null ? "preserved for Codex recovery after restart" : "recovery requires inspection; see execution history"));
         }
+        var unavailable = 0;
+        var changed = 0;
+        var newDiagnostics = new List<string>();
         foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
                      entry.CodexRecovery is null && entry.State is "InfrastructureFailure" or "Cancelled" && entry.RecoveryState == "uncertain"))
         {
@@ -61,8 +64,28 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
             if (reconstructed is not null && await history.TryReconstructCodexRecoveryAsync(reconstructed, ct))
                 output.Warning($"Legacy interruption reconstructed · execution {entry.ExecutionId} · Codex session {reconstructed.CodexRecovery?.SessionId} · awaiting execution readiness");
             else
-                output.Warning($"Legacy recovery unavailable · execution {entry.ExecutionId} · {reason ?? "another execution owns this Issue"}");
+            {
+                unavailable++;
+                var diagnostic = reason ?? "another execution owns this Issue";
+                var evidence = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        entry,
+                        configuration = CodexInterruptionRecovery.Fingerprint(config),
+                        siblings = entries.Where(e => e.Repository == entry.Repository && e.IssueNumber == entry.IssueNumber)
+                            .Select(e => new { e.ExecutionId, e.State, e.RecoveryState, e.CompletedAtUtc }).OrderBy(e => e.ExecutionId)
+                    }))));
+                if (entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null &&
+                    await history.RecordLegacyReviewAsync(entry.ExecutionId, diagnostic, clock.GetUtcNow(), ct, evidence))
+                {
+                    changed++;
+                    if (newDiagnostics.Count < 5) newDiagnostics.Add($"{entry.ExecutionId}: {diagnostic}");
+                }
+            }
         }
+        if (unavailable > 0)
+            output.Warning($"Legacy recovery requires review · {unavailable} executions ({changed} new or changed diagnostics); inspect execution legacy-review diagnostics. Resources and outcomes retained." +
+                (newDiagnostics.Count == 0 ? "" : " New diagnostics: " + string.Join("; ", newDiagnostics)));
     }
 
     private async Task<(ExecutionHistoryEntry? Entry, string? Reason)> ReconstructAsync(ExecutionHistoryEntry source,

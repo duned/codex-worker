@@ -14,20 +14,23 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
     public Task<IReadOnlyList<ExecutionCleanupResult>> RunAsync(ExecutionCleanupRequest request, CancellationToken ct) =>
         RunCoreAsync(request, null, null, ct);
 
+    internal Task<IReadOnlyList<ExecutionCleanupResult>> RunReservedAsync(ExecutionCleanupRequest request, CancellationToken ct) =>
+        RunCoreAsync(request, null, null, ct, reserved: true);
+
     internal Task<IReadOnlyList<ExecutionCleanupResult>> RunManagedAsync(CodexProvisioning.ExecutionMaintenanceCommand command,
         Func<CancellationToken, Task<bool>> authorize, CancellationToken ct) =>
         RunCoreAsync(new(ExecutionId: command.Request.WorkerExecutionId, Apply: command.Request.Apply,
             Action: command.Request.Action), command, authorize, ct);
 
     private async Task<IReadOnlyList<ExecutionCleanupResult>> RunCoreAsync(ExecutionCleanupRequest request,
-        CodexProvisioning.ExecutionMaintenanceCommand? authority, Func<CancellationToken, Task<bool>>? authorize, CancellationToken ct)
+        CodexProvisioning.ExecutionMaintenanceCommand? authority, Func<CancellationToken, Task<bool>>? authorize, CancellationToken ct, bool reserved = false)
     {
         if ((request.ExecutionId.HasValue ? 1 : 0) + (request.IssueNumber.HasValue ? 1 : 0) + (request.Stale ? 1 : 0) != 1 ||
             request.Action is not ("inspect" or "cleanup" or "archive" or "purge" or "reconcile") ||
             request.ExecutionId == Guid.Empty || request.IssueNumber is <= 0 || request.Limit is < 1 or > 100)
             throw new ArgumentException("Select one execution, one positive Issue number, or stale executions; limit must be 1 through 100.");
-        using var maintenance = request.Apply ? authority is null ? registry.TryBeginMaintenance() : registry.TryBeginServerMaintenance() : null;
-        if (request.Apply && maintenance is null)
+        using var maintenance = request.Apply && !reserved ? authority is null ? registry.TryBeginMaintenance() : registry.TryBeginServerMaintenance() : null;
+        if (request.Apply && !reserved && maintenance is null)
             throw new InvalidOperationException("Cleanup requires a completed Worker drain with no active executions or other maintenance. Drain the Worker and retry.");
         var initial = await history.ReadAllAsync(ct);
         var cutoff = DateTimeOffset.UtcNow.AddDays(-7);
@@ -62,6 +65,11 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                     continue;
                 }
                 var assessment = ExecutionMaintenanceClassifier.Classify(entry, DateTimeOffset.UtcNow, true);
+                var acknowledged = entry.RecoveryState == "operator-acknowledged" && entry.CodexRecovery is null &&
+                    entry.CompletionJson is null && entry.ReportingFailure is null && entry.IntegrationRecoveryClaim is null &&
+                    await history.ReadAcknowledgementAsync(id, ct) is not null;
+                if (acknowledged && entry.CompletedAtUtc is not null)
+                    assessment = assessment with { Status = "terminal-clean" };
                 string? refusal = authority is null && (entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null)
                     ? "server-authority-required" : request.Action == "purge" ? "purge-proof-retention-required" :
                     request.Action == "reconcile" ? "recovery-protocol-required" :
@@ -77,7 +85,9 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                     config.Project.Repository, config.Git, config.Worker);
                 try
                 {
-                    var inspection = request.Apply && request.Action == "cleanup"
+                    var inspection = acknowledged
+                        ? await git.InspectAcknowledgedCleanupAsync(entry, current, ct)
+                        : request.Apply && request.Action == "cleanup"
                         ? await git.CleanupStaleExecutionAsync(entry, current, ct)
                         : await git.InspectOperatorCleanupAsync(entry, current, ct);
                     if (request.Action == "archive" && inspection.Decision == "safe" && inspection.ReasonCode != "already-clean")
@@ -89,7 +99,7 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                         results.Add(new(inspection, archived ? "already-archived" : "archived"));
                         continue;
                     }
-                    if (request.Apply && request.Action == "cleanup" && inspection.Decision == "safe")
+                    if (request.Apply && request.Action == "cleanup" && inspection.Decision == "safe" && !acknowledged && !ExecutionCompletion.IsSettled(entry))
                     {
                         // Git succeeded. Finish this single durable write even if the HTTP client disconnects.
                         await history.UpdateRecoveryAsync(id, "operator-cleaned", CancellationToken.None);

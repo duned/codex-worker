@@ -4,6 +4,27 @@ namespace CodexWorker.Tests;
 
 public sealed class ProjectRuntimeRegistryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DrainingMaintenanceRestoresPriorDrainAndDoesNotInterruptWork(bool previouslyDrained)
+    {
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha"))]);
+        Assert.True(registry.TryReserve("alpha"));
+        if (previouslyDrained) registry.DrainWorker();
+        using (var reservation = registry.TryBeginDrainingMaintenance())
+        {
+            Assert.NotNull(reservation);
+            Assert.False(registry.WorkerDrainComplete);
+            Assert.False(registry.TryReserve("alpha"));
+            Assert.Null(registry.TryBeginDrainingMaintenance());
+            Assert.False(registry.CancelWorkerDrain());
+        }
+        Assert.Equal(previouslyDrained, registry.WorkerDraining);
+        Assert.Equal(1, registry.Lifecycle.Snapshot.ActiveExecutions);
+        registry.Release("alpha");
+    }
+
     [Fact]
     public void LifecycleTransitionsAreIdempotentAndDrainCompletesWhenLastExecutionReleases()
     {
