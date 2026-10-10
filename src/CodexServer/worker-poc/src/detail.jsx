@@ -7,7 +7,8 @@ import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
-import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions } from './model.js';
+import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness } from './model.js';
+import { WorkerConnectionBadge } from './features/workers/WorkerConnectionBadge';
 
 const executionStages = [
   { id: 'claimed', label: 'Claimed' },
@@ -52,15 +53,6 @@ function relativeAge(value, now) {
   return t('workers.hoursAgo', { count: Math.floor(seconds / 3600) });
 }
 
-function workerConnection(worker, node) {
-  const connectivity = node?.connectivity?.toLowerCase();
-  if (connectivity === 'connected') return t('workers.connected');
-  if (connectivity === 'disconnected') return statusLabel('disconnected');
-  const availability = worker.availability.toLowerCase();
-  if (availability === 'online' || availability === 'draining') return t('workers.connected');
-  return statusLabel(availability);
-}
-
 function heartbeatFreshness(worker) {
   if (!Number.isFinite(Date.parse(worker.lastHeartbeatAtUtc ?? ''))) return { value: t('shared.unknown'), tone: 'gray' };
   const availability = worker.availability.toLowerCase();
@@ -90,8 +82,7 @@ function CopyWorkerId({ id }) {
 
 function WorkerHeading({ worker, node, now, readOnly, administrationHref, workersHref }) {
   useLanguage();
-  const connection = workerConnection(worker, node);
-  const readinessValue = !node ? t('shared.unknown') : node.observationsStale ? 'Stale' : node.executionReadiness;
+  const readinessValue = currentWorkerExecutionReadiness(worker, node);
   const readiness = localizeText(readinessValue);
   const freshness = heartbeatFreshness(worker);
   const slots = worker.activeExecutions == null || (worker.maximumCapacity ?? worker.capacity) == null
@@ -107,7 +98,8 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
       <div className="poc-worker-meta">
         <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />{worker.workerVersion && <span>{t('workers.workerVersion')} {worker.workerVersion}</span>}
         <div className="poc-worker-statuses" aria-label={t('workers.workerStatus')}>
-          <Status value={connection} tone={connection === t('workers.connected') ? 'success' : statusTone(node?.connectivity ?? worker.availability)} active={isActiveExecutionState(worker.availability)} />
+          <span className="sr-only">{t('workers.connection')}</span><WorkerConnectionBadge worker={worker} node={node} />
+          <span className="sr-only">{t('workers.currentExecutionReadiness')}</span>
           <Status value={readiness} tone={statusTone(readinessValue)} />
           <Status value={freshness.value} tone={freshness.tone} />
         </div>
@@ -238,16 +230,20 @@ const serviceTiles = [
   { id: 'dotnet-sdk', type: 'dotnet-sdk', name: '.NET SDK', detail: 'sdk' }
 ];
 
-function capabilityStatus(capability, stale, id) {
+function capabilityStatus(capability, id) {
   if (!capability) return t('shared.unknown');
-  if (stale) return 'Stale';
   const { definition, state } = capability;
+  if (!state.detectedAtUtc) return t('shared.unknown');
   const installed = state.installation?.toLowerCase() === 'installed';
   const healthy = state.health?.toLowerCase() === 'healthy';
   const authenticated = !definition.requiresAuthentication || state.authentication?.toLowerCase() === 'satisfied';
   const configured = !definition.requiresConfiguration || state.configuration?.toLowerCase() === 'satisfied';
   if (installed && healthy && authenticated && configured) return id === 'dotnet-sdk' ? t('workers.available') : t('workers.ready');
-  return state.health || state.installation || t('shared.unknown');
+  if (!installed) return state.installation || t('shared.unknown');
+  if (!healthy) return state.health || t('shared.unknown');
+  if (!authenticated) return state.authentication || t('shared.unknown');
+  if (!configured) return state.configuration || t('shared.unknown');
+  return t('shared.unknown');
 }
 
 function capabilityDetail(tile, capability) {
@@ -275,18 +271,21 @@ function capabilitySupportingText(tile, capability) {
   return t('workers.runtimeVersion');
 }
 
-function CapabilityTile({ tile, capability, stale }) {
+function CapabilityTile({ tile, capability }) {
   useLanguage();
   const name = localizeText(tile.name);
-  const status = capabilityStatus(capability, stale, tile.id);
+  const status = capabilityStatus(capability, tile.id);
   const tone = status === t('workers.ready') || status === t('workers.available') ? 'success' : statusTone(status);
+  const lastReported = capability?.state.detectedAtUtc
+    ? `${t('workers.lastReported')} ${timestamp(capability.state.detectedAtUtc)}`
+    : t('workers.notChecked');
   return <article className="poc-service-tile" aria-label={`${name}: ${localizeText(status)}`}>
     <div className="poc-service-top">
       <ServiceMark type={tile.type} />
       <div className="poc-service-heading"><h3>{name}</h3><Status value={status} tone={tone} /></div>
     </div>
     <p className="poc-service-detail">{capabilityDetail(tile, capability)}</p>
-    <p className="poc-service-support">{capabilitySupportingText(tile, capability)}</p>
+    <p className="poc-service-support">{capabilitySupportingText(tile, capability)} · {lastReported}</p>
   </article>;
 }
 
@@ -295,7 +294,7 @@ function CapabilitiesPanel({ node }) {
   const capabilityById = new Map((node?.capabilities ?? []).map(capability => [capability.definition.id, capability]));
   return <TableCard.Root className="poc-dashboard-panel poc-capabilities-panel">
     <PanelHeading id="poc-capabilities-heading" title={t('shared.capabilitiesAndProvisioning')} />
-    {node ? <div className="poc-service-grid">{serviceTiles.map(tile => <CapabilityTile key={tile.id} tile={tile} capability={capabilityById.get(tile.id)} stale={node.observationsStale} />)}</div>
+    {node ? <div className="poc-service-grid">{serviceTiles.map(tile => <CapabilityTile key={tile.id} tile={tile} capability={capabilityById.get(tile.id)} />)}</div>
       : <p className="poc-empty-panel">{t('shared.capabilityObservationsUnavailableRefreshProvisioningState')}</p>}
   </TableCard.Root>;
 }
@@ -310,20 +309,23 @@ function ReadinessRow({ icon, title, detail, value, tone }) {
 
 function ReadinessPanel({ worker, node, diagnostics, now }) {
   useLanguage();
-  const readinessStale = !!node?.observationsStale || diagnostics?.capabilityObservationsCurrent === false;
-  const preflight = !diagnostics ? t('shared.unknown') : readinessStale ? 'Stale' : diagnostics.aiAgentReady ? t('workers.ready') : t('workers.notReady');
+  const hasReportedChecks = !!worker.lastHeartbeatAtUtc;
+  const preflight = !diagnostics || !hasReportedChecks ? t('shared.unknown') : diagnostics.aiAgentReady ? t('workers.ready') : t('workers.notReady');
   const eligibleCount = diagnostics?.projects?.filter(project => project.isEligible).length;
-  const eligibilityStatus = eligibleCount == null ? t('shared.unknown') : readinessStale ? 'Stale' : eligibleCount > 0 ? t('workers.ready') : t('workers.notReady');
-  const eligible = eligibleCount == null ? t('shared.unknown') : t('workers.eligibleProjects', { count: eligibleCount });
+  const eligibilityStatus = eligibleCount == null || !hasReportedChecks ? t('shared.unknown') : eligibleCount > 0 ? t('workers.ready') : t('workers.notReady');
+  const eligible = eligibilityStatus === t('shared.unknown') ? t('workers.notChecked') : t('workers.eligibleProjects', { count: eligibleCount });
   const heartbeat = worker.lastHeartbeatAtUtc ? relativeAge(worker.lastHeartbeatAtUtc, now) : t('workers.heartbeatUnavailable');
   const freshness = heartbeatFreshness(worker);
   const preflightTone = preflight === t('workers.ready') ? 'success' : statusTone(preflight);
-  const projectTone = readinessStale ? 'warning' : eligibleCount > 0 ? 'success' : eligibleCount === 0 ? 'warning' : 'gray';
+  const projectTone = statusTone(eligibilityStatus);
+  const readinessValue = localizeText(currentWorkerExecutionReadiness(worker, node));
+  const reportedAt = worker.lastHeartbeatAtUtc ? timestamp(worker.lastHeartbeatAtUtc) : t('workers.notChecked');
   return <TableCard.Root className="poc-dashboard-panel poc-readiness-panel">
     <PanelHeading id="poc-readiness-heading" title={t('workers.readinessChecks')} />
     <div className="poc-readiness-list">
-      <ReadinessRow icon={<Shield01 />} title={t('workers.executionPreflightTitle')} detail={!diagnostics ? t('workers.notReported') : readinessStale ? t('workers.preflightStale') : diagnostics.aiAgentReady ? t('workers.environmentAndToolsReady') : t('workers.preflightNotReady')} value={preflight} tone={preflightTone} />
-      <ReadinessRow icon={<span className="poc-project-readiness-icon"><i/><i/></span>} title={t('workers.projectEligibility')} detail={eligible} value={eligibilityStatus} tone={projectTone} />
+      <ReadinessRow icon={<Shield01 />} title={t('workers.lastReportedExecutionPreflight')} detail={preflight === t('shared.unknown') ? t('workers.notChecked') : `${diagnostics.aiAgentReady ? t('workers.environmentAndToolsReady') : t('workers.preflightNotReady')} · ${t('workers.lastReported')} ${reportedAt}`} value={preflight} tone={preflightTone} />
+      <ReadinessRow icon={<span className="poc-project-readiness-icon"><i/><i/></span>} title={t('workers.lastReportedProjectEligibility')} detail={eligibilityStatus === t('shared.unknown') ? eligible : `${eligible} · ${t('workers.lastReported')} ${reportedAt}`} value={eligibilityStatus} tone={projectTone} />
+      <ReadinessRow icon={<Activity />} title={t('workers.currentExecutionReadiness')} detail={!node ? t('workers.readinessUnavailable') : node.connectivity === 'disconnected' ? t('workers.disconnectedBlocksReadiness') : node.observationsStale ? t('workers.observationIsStale') : t('workers.currentServerReadiness')} value={readinessValue} tone={statusTone(readinessValue)} />
       <ReadinessRow icon={<Activity />} title={t('workers.heartbeatFreshness')} detail={`${t('workers.lastHeartbeat')}: ${heartbeat}`} value={freshness.value} tone={freshness.tone} />
     </div>
   </TableCard.Root>;
@@ -378,18 +380,19 @@ function DeliveryControl({ administration }) {
 export function CapabilityCard({ capability, commands, children }) {
   useLanguage();
   const { definition, state, availableActions } = capability;
+  const observed = !!state.detectedAtUtc;
   const matching = commands?.filter(command => command.request.capabilityId === definition.id)
     .sort((a, b) => Date.parse(b.createdAtUtc) - Date.parse(a.createdAtUtc));
   const pending = matching?.filter(command => ['Pending', 'Running'].includes(command.status)) ?? [];
   const latest = matching?.[0];
   return <TableCard.Root className="poc-capability"><TableCard.Header title={definition.displayName} /><div className="p-4">
     <dl className="poc-facts">
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.installation')}</dt><dd className="text-sm text-secondary"><Status value={state.installation} /> · {state.detectedVersion || t('shared.versionUnknown')}</dd></div>
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.health')}</dt><dd className="text-sm text-secondary"><Status value={state.health} /></dd></div>
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.authentication')}</dt><dd className="text-sm text-secondary"><Status value={state.authentication ?? (definition.requiresAuthentication ? 'Unknown' : t('shared.notApplicable'))} /></dd></div>
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.configuration')}</dt><dd className="text-sm text-secondary"><Status value={state.configuration ?? (definition.requiresConfiguration ? 'Unknown' : t('shared.notApplicable'))} /></dd></div>
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.update')}</dt><dd className="text-sm text-secondary"><Status value={state.update} /></dd></div>
-      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.detected')}</dt><dd className="text-sm text-secondary">{timestamp(state.detectedAtUtc)}</dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.installation')}</dt><dd className="text-sm text-secondary"><Status value={observed ? state.installation : t('shared.unknown')} /> · {state.detectedVersion || t('shared.versionUnknown')}</dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.health')}</dt><dd className="text-sm text-secondary"><Status value={observed ? state.health : t('shared.unknown')} /></dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.authentication')}</dt><dd className="text-sm text-secondary"><Status value={observed ? state.authentication ?? (definition.requiresAuthentication ? 'Unknown' : t('shared.notApplicable')) : t('shared.unknown')} /></dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.configuration')}</dt><dd className="text-sm text-secondary"><Status value={observed ? state.configuration ?? (definition.requiresConfiguration ? 'Unknown' : t('shared.notApplicable')) : t('shared.unknown')} /></dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.update')}</dt><dd className="text-sm text-secondary"><Status value={observed ? state.update ?? 'Unknown' : t('shared.unknown')} /></dd></div>
+      <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.detected')}</dt><dd className="text-sm text-secondary">{state.detectedAtUtc ? timestamp(state.detectedAtUtc) : t('workers.notChecked')}</dd></div>
       <div className="poc-fact"><dt className="mb-1 text-sm text-tertiary">{t('shared.operation')}</dt><dd className="text-sm text-secondary"><Status value={state.operation?.state} /> {localizeText(state.operation?.action)}</dd></div>
     </dl>
     {pending.map(command => <p key={command.id}><Status value={command.status} /> {localizeText(command.request.action)}</p>)}
@@ -418,7 +421,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />
           <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
           <CapabilitiesPanel node={node} />
-          <WorkerResources worker={worker} now={now} />
+          <WorkerResources worker={worker} node={node} now={now} />
         </div>
         {!readOnly && <aside className="poc-worker-rail poc-secondary-rail" aria-label={t('workers.workerControlsAndReadiness')}>
           <ControlRail administration={administration} />
@@ -427,7 +430,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
       </div>
       <div className="poc-worker-extra">
         {diagnostics && <AdvancedDisclosure title={t('shared.readinessEvidence')}>
-          <p>{t('shared.reportedReadinessEvidenceCodexPreflight')} {diagnostics.aiAgentReady ? t('shared.yes') : t('shared.no')} · {t('shared.gitHubAccess')} {diagnostics.gitHubReady ? t('shared.yes') : t('shared.no')} · {t('shared.gitAccess')} {diagnostics.gitReady ? t('shared.yes') : t('shared.no')}</p>
+          <p>{t('shared.reportedReadinessEvidenceCodexPreflight')} {worker.lastHeartbeatAtUtc ? diagnostics.aiAgentReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')} · {t('shared.gitHubAccess')} {worker.lastHeartbeatAtUtc ? diagnostics.gitHubReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')} · {t('shared.gitAccess')} {worker.lastHeartbeatAtUtc ? diagnostics.gitReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')}</p>
           <p>{t('shared.configurationSynchronization')} {localizeText(diagnostics.configurationSynchronization)}</p>
           {diagnostics.latestProvisioningOperation && <p>{localizeText(diagnostics.latestProvisioningOperation.action)} · {localizeText(diagnostics.latestProvisioningOperation.status)}</p>}
         </AdvancedDisclosure>}

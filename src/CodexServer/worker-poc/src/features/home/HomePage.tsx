@@ -12,6 +12,7 @@ import { issueLink, timestamp, duration, statusColor, isActiveExecutionState } f
 import { presentation } from '../executions/model';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { GuidDisplay } from '../../shared/GuidDisplay';
+import { WorkerConnectionBadge } from '../workers/WorkerConnectionBadge';
 
 export function HomePage() {
   useLanguage();
@@ -19,6 +20,7 @@ export function HomePage() {
   const catalog = useApiRead('/api/v1/projects', projects);
   const activity = useApiRead('/api/v1/executions?limit=50&offset=0', executions);
   const readiness = useServerReadiness();
+  const nodeInventory = readiness.inventory;
   const [filter, setFilter] = useState('All');
   const current = activity.data?.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state)) ?? [];
   const completed = completedExecutions(activity.data ?? [], filter);
@@ -61,9 +63,9 @@ export function HomePage() {
           const occupied = worker.activeExecutions;
           const usage = capacity != null && capacity > 0 && occupied != null ? Math.min(100, Math.max(0, occupied / capacity * 100)) : undefined;
           const processingExecution = activity.data?.some(item => item.assignedWorkerId === worker.workerId && isActiveExecutionState(item.state)) ?? false;
-          const availabilityTone = worker.availability === 'online' ? 'success' : worker.availability === 'busy' ? 'warning' : worker.availability === 'idle' ? 'info' : statusColor(worker.availability);
+          const node = nodeInventory.data?.find(item => item.id === worker.workerId && item.kind === 'worker');
           return <Link key={worker.workerId} className="block min-w-0 rounded-xl border border-secondary bg-primary p-3 hover:bg-secondary" to={`/workers/${encodeURIComponent(worker.workerId)}`}>
-          <span className="flex min-w-0 items-center justify-between gap-2"><span className="truncate font-medium text-primary">{worker.displayName ?? t("home.workerNameUnavailable")}{worker.workerVersion && <span className="ml-2 text-xs font-normal text-tertiary">{worker.workerVersion}</span>}</span><StatusBadge compact tone={processingExecution ? 'info' : availabilityTone} active={processingExecution}>{localizeText(worker.availability)}</StatusBadge></span><span className="mt-3 block text-xs text-tertiary">{t("home.slotsOccupied")}: {occupied ?? t("home.unknown")} / {capacity ?? t("home.unknown")}</span><span className="mt-2 block h-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true"><span className="block h-full rounded-full bg-brand-solid" style={{ width: `${usage ?? 0}%` }} /></span>
+          <span className="flex min-w-0 items-center justify-between gap-2"><span className="truncate font-medium text-primary">{worker.displayName ?? t("home.workerNameUnavailable")}{worker.workerVersion && <span className="ml-2 text-xs font-normal text-tertiary">{worker.workerVersion}</span>}</span><span className="flex items-center gap-2"><WorkerConnectionBadge worker={worker} node={node} />{processingExecution && <span className="text-xs font-medium text-utility-blue-500">{t('workers.working')}</span>}</span></span><span className="mt-3 block text-xs text-tertiary">{t("home.slotsOccupied")}: {occupied ?? t("home.unknown")} / {capacity ?? t("home.unknown")}</span><span className="mt-2 block h-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true"><span className="block h-full rounded-full bg-brand-solid" style={{ width: `${usage ?? 0}%` }} /></span>
         </Link>;
         })}</div>{readiness.inventory.error && <Notice error>{t("home.readinessUnavailableRefreshSystemStateToRetry")}</Notice>}</section>
       <section aria-labelledby="home-projects"><div className="mb-3 flex items-center justify-between"><h2 id="home-projects" className="text-lg font-semibold text-primary">{t("home.recentlyActiveProjects")}</h2><Button href="/projects" color="link-color">{t("home.allProjects")}</Button></div><div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(catalog, t("home.noProjectsRegisteredCreateAProjectToGetStarted"))}

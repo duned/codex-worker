@@ -47,15 +47,37 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  for(const state of ['offline','disconnected'])assert.equal(statusColor(state),'error');
 });
 
-test('Worker list projection keeps connectivity, freshness, readiness and scheduling independent', async () => {
- const { workerListSignals } = await model;
+test('Worker connection summary uses disconnected, stale, connected precedence and rejects uncertain evidence', async () => {
+ const { workerConnectionStatus } = await model;
+ const worker = { availability: 'online' };
+ const cases = [
+  [{ availability: 'stale' }, { connectivity: 'disconnected', observationsStale: true }, { state: 'Disconnected', tone: 'error' }],
+  [{ availability: 'offline' }, { connectivity: 'disconnected', observationsStale: false }, { state: 'Disconnected', tone: 'error' }],
+  [worker, { connectivity: 'connected', observationsStale: true }, { state: 'Stale', tone: 'warning' }],
+  [worker, { connectivity: 'connected', observationsStale: false }, { state: 'Connected', tone: 'success' }],
+  [worker, null, { state: 'Unknown', tone: 'gray' }],
+  [{ availability: 'stale' }, null, { state: 'Unknown', tone: 'gray' }],
+  [{}, { connectivity: 'connected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
+  [{ availability: 'offline' }, { connectivity: 'connected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
+  [worker, { connectivity: 'disconnected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
+  [worker, { connectivity: 'connected' }, { state: 'Unknown', tone: 'gray' }]
+ ];
+ for (const [observation, node, expected] of cases) assert.deepEqual(workerConnectionStatus(observation, node), expected);
+});
+
+test('Worker list projection keeps summary, freshness, readiness and scheduling independent', async () => {
+ const { workerListSignals, currentWorkerExecutionReadiness } = await model;
  const worker = { availability: 'Connected', lifecycleState: 'Registered', schedulingPolicy: 'Draining', activeExecutions: 1, maximumCapacity: 3, activeProjects: ['project-a'] };
- assert.deepEqual(workerListSignals(worker, { observationsStale: true, executionReadiness: 'NotReady' }), {
-  connection: 'Connected', freshness: 'Stale', readiness: 'NotReady', scheduling: 'Draining', occupiedSlots: 1, totalSlots: 3, projects: ['project-a']
+ assert.deepEqual(workerListSignals(worker, { connectivity: 'connected', observationsStale: true, executionReadiness: 'NotReady' }), {
+  connection: 'Stale', connectionTone: 'warning', freshness: 'Stale', readiness: 'not-ready', scheduling: 'Draining', occupiedSlots: 1, totalSlots: 3, projects: ['project-a']
  });
  assert.deepEqual(workerListSignals({ availability: 'Disconnected', capacity: 2 }, null), {
-  connection: 'Disconnected', freshness: 'Unknown', readiness: 'Unknown', scheduling: 'Unknown', occupiedSlots: undefined, totalSlots: 2, projects: []
+  connection: 'Disconnected', connectionTone: 'error', freshness: 'Unknown', readiness: 'Unknown', scheduling: 'Unknown', occupiedSlots: undefined, totalSlots: 2, projects: []
  });
+ assert.equal(currentWorkerExecutionReadiness({ availability: 'offline' }, { connectivity: 'disconnected', observationsStale: true, executionReadiness: 'ready' }), 'not-ready');
+ assert.equal(currentWorkerExecutionReadiness({ availability: 'online' }, { connectivity: 'connected', observationsStale: true, executionReadiness: 'ready' }), 'not-ready');
+ assert.equal(currentWorkerExecutionReadiness({ availability: 'online' }, { connectivity: 'connected', observationsStale: false, executionReadiness: 'ready' }), 'ready');
+ assert.equal(currentWorkerExecutionReadiness({ availability: 'online' }, null), 'Unknown');
 });
 
 test('timestamps use padded day/month/year and browser-local time including seconds', async () => {

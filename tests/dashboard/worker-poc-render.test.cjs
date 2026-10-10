@@ -38,17 +38,46 @@ test('Capability tiles use each reported service version and authentication fiel
  for(const mark of ['poc-service-mark','poc-service-mark-github','poc-service-mark-terminal','poc-service-mark-dotnet'])assert.ok(html.includes(mark),mark);
 });
 test('Stale, missing, failed reads and absent resources remain understandable',()=>{
- const stale=render({observations:[{...worker,availability:'stale'}],nodes:[{...node,observationsStale:true,executionReadiness:'not-ready'}]});
- assert.ok(stale.includes('Stale'));assert.ok(stale.includes('not-ready'));
- const staleHeartbeat=render({observations:[{...worker,availability:'stale'}],nodes:[{...node,connectivity:'disconnected',observationsStale:false}]});
- assert.ok(staleHeartbeat.includes('Stale'));assert.ok(!staleHeartbeat.includes('>Fresh<'));assert.ok(!staleHeartbeat.includes('>Connected<'));
+ const stale=render({observations:[worker],nodes:[{...node,observationsStale:true,executionReadiness:'not-ready'}]});
+ assert.ok(stale.includes('Stale'));assert.ok(stale.includes('not-ready'));assert.ok(stale.includes('Ready'));
+ const staleHeartbeat=render({observations:[{...worker,availability:'offline'}],nodes:[{...node,connectivity:'disconnected',observationsStale:true,executionReadiness:'not-ready'}]});
+ assert.ok(staleHeartbeat.includes('Disconnected'));assert.ok(!staleHeartbeat.includes('>Connected<'));
  const stopped=render({observations:[{...worker,availability:'offline'}],nodes:null});
- assert.ok(stopped.includes('>offline<'));assert.ok(stopped.includes('>Fresh<'));
+ assert.ok(stopped.includes('Disconnected'));assert.ok(stopped.includes('>Fresh<'));
+ const missingNode=render({nodes:null});
+ assert.ok(missingNode.includes('Unknown'));assert.ok(!missingNode.includes('>Connected<'));
  const unavailable=render({executions:null,nodes:null,diagnostics:null});
  for(const text of ['Unknown','Unavailable','Current execution data unavailable','Execution history unavailable','Capability observations unavailable'])assert.ok(unavailable.includes(text),text);
  assert.ok(render({observations:[]}).includes('Worker unavailable or deleted'));
  assert.ok(render({observations:null,loading:true}).includes('Loading current Worker observations'));
  assert.ok(render({executions:[]}).includes('Worker reports active work'));
+});
+
+test('Last reported checks survive disconnect while current execution readiness stays blocked',()=>{
+ const offlineWorker={...worker,availability:'offline',platform:'Linux',hostResources:{measuredAtUtc:'2026-01-01T00:02:00Z',logicalCpuCount:8,totalMemoryBytes:16*1024**3,usedMemoryBytes:8*1024**3,diskTotalBytes:128*1024**3,diskAvailableBytes:64*1024**3,cpuUsagePercent:25,memoryUsagePercent:50,sampleSeconds:1}};
+ const disconnectedNode={...node,connectivity:'disconnected',observationsStale:true,executionReadiness:'ready'};
+ const passed=render({observations:[offlineWorker],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,projects:[{projectId:'project-a',projectName:'Sample project',isEligible:true,missingRequirements:[],observationStatus:'worker-reported-current-revision'}]}});
+ assert.ok(passed.includes('Disconnected'));
+ assert.ok(passed.includes('Last reported execution preflight'));
+ assert.ok(passed.includes('>Ready<'));
+ assert.ok(passed.includes('Last reported project eligibility'));
+ assert.ok(passed.includes('Current execution readiness'));
+ assert.ok(passed.includes('not-ready'));
+ for(const fact of ['Linux','8','16.0 GiB','128.0 GiB','Unavailable'])assert.ok(passed.includes(fact),fact);
+ for(const liveValue of ['25.0%','50.0%','8.0 GiB','64.0 GiB'])assert.ok(!passed.includes(liveValue),liveValue);
+
+ const failedCapability={...capability,state:{...capability.state,health:'Failed',authentication:'Missing'}};
+ const failed=render({observations:[offlineWorker],nodes:[{...disconnectedNode,capabilities:[failedCapability]}]});
+ assert.ok(failed.includes('Failed'));assert.ok(failed.includes('Missing'));
+ const failedReadiness=render({observations:[offlineWorker],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,aiAgentReady:false,projects:[],capabilityObservationsCurrent:false}});
+ assert.ok(failedReadiness.includes('Last reported execution preflight'));assert.ok(failedReadiness.includes('Not ready'));
+ const noHistory=render({observations:[{...offlineWorker,lastHeartbeatAtUtc:undefined}],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,aiAgentReady:false,projects:[]}});
+ assert.ok(noHistory.includes('Not checked'));
+
+ const reconnected=render({observations:[{...offlineWorker,availability:'online'}],nodes:[{...node,observationsStale:false}]});
+ for(const liveValue of ['25.0%','50.0%','8.0 GiB','64.0 GiB'])assert.ok(reconnected.includes(liveValue),liveValue);
+ const connectedButStale=render({observations:[{...offlineWorker,availability:'online'}],nodes:[{...node,observationsStale:true,executionReadiness:'not-ready'}]});
+ assert.ok(connectedButStale.includes('Stale'));assert.ok(connectedButStale.includes('last sample'));assert.ok(connectedButStale.includes('25.0%'));
 });
 test('Current execution empty state reflects reported activity without reserving a timeline',()=>{
  const terminalOnly=[completed];

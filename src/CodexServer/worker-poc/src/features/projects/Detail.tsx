@@ -7,7 +7,7 @@ import { ExternalLink } from '../../shared/Actions';
 import { useApiRead } from '../../shared/api/session';
 import { executions as executionList } from '../../shared/api/validation';
 import type { ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
-import { timestamp, workerListSignals, statusColor, isActiveExecutionState } from '../../model.js';
+import { timestamp, workerListSignals, statusColor, isActiveExecutionState, currentWorkerExecutionReadiness } from '../../model.js';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Dropdown } from '../../untitled/components/base/dropdown/dropdown';
 import { TableCard } from '../../untitled/components/application/table/table';
@@ -15,6 +15,7 @@ import { Notice, StatusBadge, ViewState } from '../../shared/Presentation';
 import { nodes, workers } from '../../shared/api/validation';
 import type { Project } from './contracts';
 import { IssueTitle, projectRepositoryUrl } from './IssueTitle';
+import { WorkerConnectionBadge } from '../workers/WorkerConnectionBadge';
 
 type ProjectAction = (project: Project, enabled?: boolean) => void;
 
@@ -152,13 +153,13 @@ function WorkerAvailability({ worker, project, node }: { worker: WorkerObservati
   const total = signals.totalSlots, occupied = signals.occupiedSlots;
   const capacityKnown = Number.isFinite(total) && Number(total) > 0 && Number.isFinite(occupied) && Number(occupied) >= 0;
   const percentage = capacityKnown ? Math.min(100, Math.round((Number(occupied) / Number(total)) * 100)) : undefined;
-  const readiness = node ? node.observationsStale ? statusLabel('Stale') : localizeText(node.executionReadiness) : t('shared.notReported');
-  const readinessTone = node?.observationsStale ? 'warning' : node ? toneOf(node.executionReadiness) : 'gray';
+  const readinessValue = node ? currentWorkerExecutionReadiness(worker, node) : 'Unknown';
+  const readiness = node ? localizeText(readinessValue) : t('shared.notReported');
+  const readinessTone = node ? toneOf(readinessValue) : 'gray';
   return <article className="space-y-3 border-b border-secondary pb-4 last:border-0 last:pb-0">
     <Link to={`/workers/${encodeURIComponent(worker.workerId)}?step=preparation&project=${encodeURIComponent(project.id)}`} className="font-semibold text-primary hover:text-brand-secondary">{worker.displayName ?? worker.workerId}</Link>
     <div className="flex flex-wrap items-center gap-2 text-sm text-secondary">
-      <span aria-hidden="true" className={`size-2 rounded-full ${toneDot(worker.availability)}`} />
-      <span>{t('projects.connection')} · {localizeText(worker.availability)}</span>
+      <span>{t('projects.connection')}</span><WorkerConnectionBadge worker={worker} node={node} />
       <StatusBadge compact tone={readinessTone}>{t('projects.executionReadiness')} · {readiness}</StatusBadge>
     </div>
     <div>
@@ -230,9 +231,4 @@ function concurrencyLabel(limit: number | null) {
 function toneOf(value: string) {
   const tone = statusColor(value);
   return tone === 'success' || tone === 'warning' || tone === 'error' || tone === 'info' ? tone : 'gray';
-}
-
-function toneDot(value: string) {
-  const tone = toneOf(value);
-  return tone === 'success' ? 'bg-success-solid' : tone === 'warning' ? 'bg-warning-solid' : tone === 'error' ? 'bg-error-solid' : tone === 'info' ? 'bg-utility-blue-500' : 'bg-secondary-solid';
 }

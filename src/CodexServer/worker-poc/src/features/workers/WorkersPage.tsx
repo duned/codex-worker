@@ -9,6 +9,7 @@ import { useApiRead } from '../../shared/api/session';
 import { workers, nodes } from '../../shared/api/validation';
 import { statusColor, workerListSignals } from '../../model.js';
 import { EnrollmentDialog } from './EnrollmentDialog';
+import { WorkerConnectionBadge } from './WorkerConnectionBadge';
 
 const dotTone = (value: string) => {
   const tone = statusColor(value);
@@ -55,13 +56,13 @@ export function WorkersPage() {
               const signals = workerListSignals(worker, node);
               const readinessDetail = !node ? t('workers.readinessUnavailable') : node.observationsStale ? t('workers.observationIsStale') : signals.scheduling === 'DrainRequested' || signals.scheduling === 'Draining' ? t('workers.drainingNoNewWork') : t('workers.schedulingPolicyDetail', { policy: localizeText(signals.scheduling) });
               const projects = signals.projects;
-              const workerTone = worker.availability === 'online' ? 'text-success-primary' : worker.availability === 'offline' ? 'text-error-primary' : 'text-fg-quaternary';
+              const workerTone = signals.connectionTone === 'success' ? 'text-success-primary' : signals.connectionTone === 'error' ? 'text-error-primary' : signals.connectionTone === 'warning' ? 'text-warning-primary' : 'text-fg-quaternary';
               return <tr key={worker.workerId} className="h-[87px]">
                 <td className="px-5"><Link href={`/workers/${encodeURIComponent(worker.workerId)}`} className="flex min-w-0 items-center gap-3 rounded focus-visible:outline-2 focus-visible:outline-focus-ring">
-                  <span aria-hidden="true" className={`flex size-[38px] shrink-0 items-center justify-center rounded-full ${workerTone === 'text-success-primary' ? 'bg-success-secondary' : workerTone === 'text-error-primary' ? 'bg-error-secondary' : 'bg-tertiary'} ${workerTone}`}><svg viewBox="0 0 24 24" className="size-[19px]" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v4m-5 0h10"/></svg></span>
+                  <span aria-hidden="true" className={`flex size-[38px] shrink-0 items-center justify-center rounded-full ${signals.connectionTone === 'success' ? 'bg-success-secondary' : signals.connectionTone === 'warning' ? 'bg-warning-secondary' : signals.connectionTone === 'error' ? 'bg-error-secondary' : 'bg-tertiary'} ${workerTone}`}><svg viewBox="0 0 24 24" className="size-[19px]" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v4m-5 0h10"/></svg></span>
                   <span className="min-w-0"><span className="block truncate text-sm font-semibold text-primary">{worker.displayName || t('workers.worker')}{worker.workerVersion && <span className="ml-2 text-xs font-normal text-tertiary">{worker.workerVersion}</span>}</span><span className="block truncate text-xs text-tertiary"><GuidDisplay value={worker.workerId} /></span></span>
                 </Link></td>
-                <td className="px-5"><div className="flex items-center gap-2 text-sm text-secondary"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dotTone(signals.connection)}`}/>{localizeText(signals.connection)}</div><div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-tertiary">
+                <td className="px-5"><WorkerConnectionBadge worker={worker} node={node} /><div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-tertiary">
                   <span className={`rounded-full px-2 py-0.5 font-semibold ${signals.freshness === 'Current' ? 'bg-success-secondary text-success-primary' : signals.freshness === 'Stale' ? 'bg-warning-secondary text-warning-primary' : 'bg-tertiary text-tertiary'}`}>{localizeText(signals.freshness)}</span><span>· {heartbeatDetail(worker.lastHeartbeatAtUtc)}</span>
                 </div></td>
                 <td className="px-5"><div className="flex items-center gap-2 text-sm text-secondary"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dotTone(signals.readiness)}`}/>{localizeText(signals.readiness)}</div><span className="mt-1.5 block truncate text-xs text-tertiary">{readinessDetail}</span></td>

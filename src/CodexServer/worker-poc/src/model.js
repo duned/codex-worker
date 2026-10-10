@@ -2,12 +2,48 @@ import { t } from './shared/i18n';
 import { isActiveExecutionState, statusColor } from './shared/status-model.mjs';
 // Presentation only: scheduling and readiness remain Server-owned.
 export { isActiveExecutionState, statusColor };
+const connectedAvailability = new Set(['online', 'draining', 'connected']);
+const disconnectedAvailability = new Set(['offline', 'disconnected']);
+
+/** Resolve the prominent connection summary from both Server observations.
+ * Missing or contradictory evidence stays unknown; this is presentation only.
+ * @returns {{ state: 'Disconnected' | 'Stale' | 'Connected' | 'Unknown', tone: 'error' | 'warning' | 'success' | 'gray' }} */
+export function workerConnectionStatus(worker, node) {
+  const availability = typeof worker?.availability === 'string' ? worker.availability.toLowerCase() : '';
+  const connectivity = typeof node?.connectivity === 'string' ? node.connectivity.toLowerCase() : '';
+  const availabilityConnected = connectedAvailability.has(availability);
+  const availabilityDisconnected = disconnectedAvailability.has(availability);
+  const nodeConnected = connectivity === 'connected';
+  const nodeDisconnected = connectivity === 'disconnected';
+
+  if ((availabilityConnected && nodeDisconnected) || (availabilityDisconnected && nodeConnected)) {
+    return { state: 'Unknown', tone: 'gray' };
+  }
+  if (availabilityDisconnected || nodeDisconnected) return { state: 'Disconnected', tone: 'error' };
+  if (!availabilityConnected || !nodeConnected || typeof node?.observationsStale !== 'boolean') {
+    return { state: 'Unknown', tone: 'gray' };
+  }
+  return node.observationsStale
+    ? { state: 'Stale', tone: 'warning' }
+    : { state: 'Connected', tone: 'success' };
+}
+
+/** Presentation can only downgrade readiness when connection evidence is not current. */
+export function currentWorkerExecutionReadiness(worker, node) {
+  const connection = workerConnectionStatus(worker, node);
+  if (connection.state === 'Disconnected' || connection.state === 'Stale') return 'not-ready';
+  if (connection.state !== 'Connected') return 'Unknown';
+  return node?.executionReadiness ?? 'Unknown';
+}
+
 /** Keep independent Worker observations separate; missing node data stays unknown. */
 export function workerListSignals(worker, node) {
+  const connection = workerConnectionStatus(worker, node);
   return {
-    connection: worker.availability,
-    freshness: node ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown',
-    readiness: node ? node.executionReadiness : 'Unknown',
+    connection: connection.state,
+    connectionTone: connection.tone,
+    freshness: node && typeof node.observationsStale === 'boolean' ? node.observationsStale ? 'Stale' : 'Current' : 'Unknown',
+    readiness: currentWorkerExecutionReadiness(worker, node),
     scheduling: worker.schedulingPolicy ?? 'Unknown',
     occupiedSlots: worker.activeExecutions,
     totalSlots: worker.maximumCapacity ?? worker.capacity,
