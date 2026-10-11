@@ -3,17 +3,19 @@ import { GuidDisplay } from '../../shared/GuidDisplay';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { Dialog, DialogTrigger, Heading, Popover } from 'react-aria-components';
+import { InfoCircle } from '@untitledui/icons';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
 import { ApiError } from '../../shared/api/client';
 import { nodes, projects, worker as validateWorker, workers } from '../../shared/api/validation';
 import { queryKeys } from '../../shared/api/runtime';
 import { PageHeading, ViewState, Notice, StatusBadge } from '../../shared/Presentation';
 import { ConfirmationDialog, ActionDialog } from '../../shared/Dialogs';
-import type { ExecutionMaintenanceDetail, WorkerObservation } from '../../shared/api/contracts';
+import type { ExecutionMaintenanceDetail, ProjectSummary, WorkerObservation } from '../../shared/api/contracts';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
 import { TableCard } from '../../untitled/components/application/table/table';
-import { timestamp, duration, statusColor, isActiveExecutionState } from '../../model';
+import { timestamp, statusColor, isActiveExecutionState } from '../../model';
 import { archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceReason, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, presentation, canReconcile, validEvidence, type Execution } from './model';
 import { IssueTitle } from '../projects/IssueTitle';
 import { ExecutionMaintenancePage } from './ExecutionMaintenancePage';
@@ -25,14 +27,37 @@ export function ExecutionsPage() {
   return resourceId ? <ExecutionDetail key={resourceId} id={resourceId} search={location.search} />
     : new URLSearchParams(location.search).get('view') === 'maintenance' ? <ExecutionMaintenancePage /> : <ExecutionList />;
 }
-function Timing({ item }: { item: Execution }) {
-  useLanguage();
-  return <div className="text-sm text-tertiary"><p>{t("executions.created")}{' '}{timestamp(item.createdAtUtc)}</p>{item.assignedAtUtc && <p>{t("executions.assigned")}{' '}{timestamp(item.assignedAtUtc)}</p>}{item.startedAtUtc && <p>{t("executions.started")}{' '}{timestamp(item.startedAtUtc)}</p>}{item.completedAtUtc && <p>{t("executions.completed")}{' '}{timestamp(item.completedAtUtc)}</p>}<p>{duration(item, Date.now())}</p></div>;
-}
-function State({ item }: { item: Execution }) {
-  useLanguage(); const state = presentation(item); return <StatusBadge tone={state.tone} active={state.active}>{state.text}</StatusBadge>; }
 function ExecutionStatus({ item }: { item: Execution }) {
   useLanguage(); return <StatusBadge tone={stateTone(item.state)} active={isActiveExecutionState(item.state)}>{statusLabel(item.state)}</StatusBadge>;
+}
+function StateCell({ item }: { item: Execution }) {
+  useLanguage();
+  const state = presentation(item);
+  const notes = [
+    item.currentStage ? { label: t('executions.reportedStage'), value: localizeText(item.currentStage) } : undefined,
+    item.pendingReason ? { label: t('executions.pendingReason'), value: localizeText(item.pendingReason) } : undefined,
+    item.completionSummary ? { label: t('executions.completionSummary'), value: localizeText(item.completionSummary) } : undefined,
+    item.recoveryReason ? { label: t('executions.recoveryReason'), value: localizeText(item.recoveryReason) } : undefined,
+    item.recoveryState ? { label: t('executions.recoveryStatus'), value: statusLabel(item.recoveryState) } : undefined,
+    item.failureClassification ? { label: t('executions.failureClassification'), value: statusLabel(item.failureClassification) } : undefined
+  ].filter((note): note is { label: string; value: string } => !!note);
+  return <div className="flex items-center gap-1">
+    <StatusBadge tone={state.tone} active={state.active}>{statusLabel(item.state)}</StatusBadge>
+    {notes.length > 0 && <DialogTrigger>
+      <Button color="tertiary" size="sm" iconLeading={InfoCircle} aria-label={t('executions.viewStateDetailsFor', { id: item.id })} />
+      <Popover placement="bottom end" className="z-50 max-w-sm rounded-xl border border-secondary bg-primary p-4 shadow-lg">
+        <Dialog className="max-h-[min(70vh,28rem)] overflow-y-auto outline-none">
+          <Heading slot="title" className="mb-3 text-sm font-semibold text-primary">{t('executions.stateDetails')}</Heading>
+          <dl className="space-y-3">
+            {notes.map(note => <div key={note.label}>
+              <dt className="text-xs font-semibold text-tertiary">{note.label}</dt>
+              <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-secondary">{note.value}</dd>
+            </div>)}
+          </dl>
+        </Dialog>
+      </Popover>
+    </DialogTrigger>}
+  </div>;
 }
 function ExecutionList() {
   useLanguage();
@@ -58,9 +83,50 @@ function ExecutionList() {
       <label className="flex min-h-10 items-center gap-2 rounded-lg border border-secondary px-3 text-sm text-secondary"><input type="checkbox" checked={attentionOnly} onChange={event => change('attention', event.target.checked ? 'needed' : '')} />{t('maintenance.attentionNeeded')}</label>
     </div></TableCard.Root>
     <p className="mb-4 text-sm text-tertiary">{attentionOnly ? t('maintenance.attentionPageBound') : t("executions.upTo50RequestsPerPageTotalHistoryCountIsUnavailableExecution")}</p>
-    {!read.data ? <ViewState title={read.error ? t("executions.executionsUnavailableRefreshToRetrieveCurrentData") : t("executions.loadingExecutions")} error={!!read.error} /> : !read.data.length ? <ViewState title={t("executions.noMatchingExecutionRequests")} /> : attentionOnly && !attentionEntries.length ? <ViewState title={t('maintenance.noAttentionOnPage')} /> : attentionOnly ? <AttentionList entries={attentionEntries} search={search} projects={p.data ?? []} workers={workerRead.data ?? []} /> : <TableCard.Root><div className="overflow-x-auto"><table className="w-full min-w-[1080px] table-fixed text-left"><colgroup><col className="w-[28%]"/><col className="w-[19%]"/><col className="w-[20%]"/><col className="w-[15%]"/><col className="w-[18%]"/></colgroup><thead className="bg-secondary text-xs uppercase tracking-wide text-tertiary"><tr><th className="px-5 py-4 font-semibold">{t("executions.execution")}</th><th className="px-5 py-4 font-semibold">{t("executions.project")}</th><th className="px-5 py-4 font-semibold">{t("executions.state")}</th><th className="px-5 py-4 font-semibold">{t("workers.worker")}</th><th className="px-5 py-4 font-semibold">{t("executions.created")}</th></tr></thead><tbody className="divide-y divide-secondary">{read.data.map(item => { const project = p.data?.find(value => value.id === item.projectId), worker = workerRead.data?.find(value => value.workerId === item.assignedWorkerId); return <tr key={item.id} className="align-top"><td className="px-5 py-5"><Link className="font-medium text-primary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}${search}`}>{item.workReference ? `${item.workReference.type === 'github-issue' ? '#' : `${item.workReference.type} `}${item.workReference.id}` : <GuidDisplay value={item.id} />}</Link><Link className="mt-1 block break-all text-xs text-tertiary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}${search}`}><GuidDisplay value={item.id} /></Link></td><td className="px-5 py-5"><Link className="text-sm text-primary hover:text-brand-secondary" to={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</Link></td><td className="px-5 py-5"><State item={item} />{item.currentStage && <p className="mt-2 text-xs text-tertiary">{t("executions.reportedStage")}{' '}{localizeText(item.currentStage)}</p>}<p className="mt-2 line-clamp-2 text-xs text-secondary">{item.pendingReason || item.completionSummary || item.recoveryReason || t("executions.noAdditionalResultReported")}</p></td><td className="px-5 py-5 text-sm text-secondary">{item.assignedWorkerId ? <Link className="hover:text-brand-secondary" to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{worker?.displayName ?? item.assignedWorkerId}</Link> : t("executions.workerUnassigned")}</td><td className="px-5 py-5"><Timing item={item} /></td></tr>; })}</tbody></table></div></TableCard.Root>}
+    {!read.data ? <ViewState title={read.error ? t("executions.executionsUnavailableRefreshToRetrieveCurrentData") : t("executions.loadingExecutions")} error={!!read.error} /> : !read.data.length ? <ViewState title={t("executions.noMatchingExecutionRequests")} /> : attentionOnly && !attentionEntries.length ? <ViewState title={t('maintenance.noAttentionOnPage')} /> : attentionOnly ? <AttentionList entries={attentionEntries} search={search} projects={p.data ?? []} workers={workerRead.data ?? []} /> : <ExecutionTable items={read.data} search={search} projects={p.data ?? []} workers={workerRead.data ?? []} />}
     <div className="mt-4 flex flex-wrap gap-3"><Button color="secondary" isDisabled={offset(search) === 0 || read.loading} onPress={() => page(Math.max(0, offset(search) - 50))}>{t("executions.previousPage")}</Button><Button color="secondary" isDisabled={!read.data || read.data.length < 50 || offset(search) >= 10000} onPress={() => page(Math.min(10000, offset(search) + 50))}>{t("executions.nextPage")}</Button><span className="text-sm text-tertiary">{t("executions.offset")}{' '}{offset(search)}</span></div>
   </>;
+}
+function ExecutionTable({ items, search, projects: projectItems, workers: workerItems }: {
+  items: Execution[]; search: string; projects: ProjectSummary[]; workers: WorkerObservation[];
+}) {
+  useLanguage();
+  return <TableCard.Root>
+    <div className="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2" role="region" aria-label={t('executions.executionTable')} tabIndex={0}>
+      <table className="w-full min-w-[1200px] table-fixed text-left">
+        <colgroup>
+          <col className="w-[9%]" /><col className="w-[17%]" /><col className="w-[24%]" />
+          <col className="w-[14%]" /><col className="w-[10%]" /><col className="w-[14%]" /><col className="w-[12%]" />
+        </colgroup>
+        <thead className="bg-secondary text-xs uppercase tracking-wide text-tertiary">
+          <tr>
+            <th className="px-4 py-4 font-semibold">{t('executions.executionId')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.project')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.githubIssueColumn')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.created')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.state')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.completed')}</th>
+            <th className="px-4 py-4 font-semibold">{t('workers.worker')}</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-secondary">
+          {items.map(item => {
+            const project = projectItems.find(value => value.id === item.projectId);
+            const worker = workerItems.find(value => value.workerId === item.assignedWorkerId);
+            return <tr key={item.id} className="align-middle">
+              <td className="px-4 py-4"><Link className="font-medium text-primary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}${search}`}><GuidDisplay value={item.id} /></Link></td>
+              <td className="px-4 py-4"><Link className="block break-words text-sm text-primary hover:text-brand-secondary" to={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</Link></td>
+              <td className="px-4 py-4"><IssueTitle projectId={item.projectId} repository={project?.repository} workReference={item.workReference} className="break-words text-sm text-primary hover:text-brand-secondary" /></td>
+              <td className="whitespace-nowrap px-4 py-4 text-xs text-secondary"><time dateTime={item.createdAtUtc}>{timestamp(item.createdAtUtc)}</time></td>
+              <td className="px-4 py-4"><StateCell item={item} /></td>
+              <td className="whitespace-nowrap px-4 py-4 text-xs text-secondary">{item.completedAtUtc && <time dateTime={item.completedAtUtc}>{timestamp(item.completedAtUtc)}</time>}</td>
+              <td className="px-4 py-4 text-sm text-secondary">{item.assignedWorkerId ? <Link className="block truncate hover:text-brand-secondary" to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{worker?.displayName ?? <GuidDisplay value={item.assignedWorkerId} />}</Link> : t('executions.workerUnassigned')}</td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+    </div>
+  </TableCard.Root>;
 }
 function AttentionList({ entries, search, projects: projectItems, workers: workerItems }: {
   entries: { item: Execution; assessment: NonNullable<ReturnType<typeof attentionAssessment>> }[];

@@ -7,8 +7,10 @@ const assets = path.resolve(process.argv[2] || 'src/CodexServer/obj/worker-poc/p
 const output = path.resolve(process.argv[3] || '/tmp/executions-browser-review');
 const createdAtUtc = '2026-01-01T00:00:00Z';
 const queued = { id: 'queued', projectId: 'project', state: 'Queued', createdAtUtc, workReference: { type: 'github-issue', id: '7', url: 'https://github.com/example/repository/issues/7' }, attemptNumber: 1 };
-const running = { ...queued, id: 'running', state: 'Running', assignedWorkerId: 'worker', currentStage: 'Validation', startedAtUtc: createdAtUtc, assignmentId: 'assignment', workerExecutionId: 'local', lease: { executionId: 'running', workerId: 'worker', generation: 2, acquiredAtUtc: createdAtUtc, expiresAtUtc: '2026-01-01T00:10:00Z', state: 'Active' } };
+const running = { ...queued, id: 'running', state: 'Running', assignedWorkerId: 'worker', currentStage: 'Validation', pendingReason: 'Waiting for the validation result to be reported.', startedAtUtc: createdAtUtc, assignmentId: 'assignment', workerExecutionId: 'local', lease: { executionId: 'running', workerId: 'worker', generation: 2, acquiredAtUtc: createdAtUtc, expiresAtUtc: '2026-01-01T00:10:00Z', state: 'Active' } };
 const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState: 'LeaseExpiredUncertain', recoveryReason: 'Check authoritative repository evidence', retryOfExecutionId: 'previous', attemptNumber: 2, integrationResult: 'Unknown', lease: { ...running.lease, state: 'Expired' } };
+const missingRelated = { ...queued, id: 'missing-related', projectId: 'missing-project', assignedWorkerId: 'missing-worker', workReference: { type: 'github-issue', id: '8' } };
+const unassigned = { ...queued, id: 'unassigned', assignedWorkerId: undefined, workReference: undefined };
 const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open', url: 'https://github.com/example/repository/issues/7', labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] };
 (async () => {
   fs.mkdirSync(output, { recursive: true });
@@ -36,25 +38,86 @@ const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open'
       }
       if (endpoint === '/api/v1/projects') return route.fulfill({ json: [{ id: 'project', name: 'Example project', repository: 'example/repository' }] });
       if (endpoint === '/api/v1/projects/project/github/issues/7') return route.fulfill({ json: issue });
+      if (endpoint.startsWith('/api/v1/projects/') && endpoint.includes('/github/issues/')) return route.fulfill({ status: 404 });
       if (endpoint === '/api/v1/workers') return route.fulfill({ json: [{ workerId: 'worker', displayName: 'Build machine', availability: 'offline' }] });
       if (endpoint === '/api/v1/executions') {
         if (mode === 'stale') return route.fulfill({ status: 503 });
-        const records = url.searchParams.get('offset') === '50' ? [] : [queued, running, { ...running, id: 'integrating', currentStage: 'Integration' }, { ...running, id: 'implementing', currentStage: 'Implementation' }, { ...queued, id: 'completed', state: 'Completed', durationMilliseconds: 2000 }, { ...queued, id: 'failed', state: 'Failed', failureClassification: 'Task' }, { ...queued, id: 'cancelled', state: 'Cancelled' }, uncertain];
+        const records = url.searchParams.get('offset') === '50' ? [] : [queued, running, { ...running, id: 'integrating', currentStage: 'Integration' }, { ...running, id: 'implementing', currentStage: 'Implementation' }, { ...queued, id: 'completed', state: 'Completed', startedAtUtc: createdAtUtc, completedAtUtc: '2026-01-01T00:04:00Z', completionSummary: 'Validation completed successfully.', durationMilliseconds: 2000 }, { ...queued, id: 'failed', state: 'Failed', failureClassification: 'Task' }, { ...queued, id: 'cancelled', state: 'Cancelled' }, uncertain, missingRelated, unassigned];
         while (records.length && records.length < 50) records.push({ ...queued, id: `extra-${records.length}` });
         return route.fulfill({ json: records });
       }
       if (endpoint.startsWith('/api/v1/executions/')) return mode === 'missing' || mode === 'stale' ? route.fulfill({ status: mode === 'missing' ? 404 : 503 }) : route.fulfill({ json: current });
       return route.fulfill({ json: [] });
     });
+    for (const theme of ['dark', 'light']) for (const width of [1440, 375]) {
+      await page.setViewportSize({ width, height: 1000 });
+      mode = 'normal';
+      await page.goto('https://dashboard.test/executions?project=project&state=Running&issue=7&offset=0');
+      await page.evaluate(theme => localStorage.setItem('codex-dashboard-preferences', JSON.stringify({ version: 1, state: { theme, language: 'en' } })), theme);
+      await page.reload();
+      const table = page.getByRole('table');
+      await table.waitFor();
+      await page.getByRole('link', { name: /#7 · Fix request parsing/ }).waitFor();
+      assert.deepEqual(await table.locator('thead th').allTextContents(), ['Execution ID', 'Project', 'GitHub Issue', 'Created', 'State', 'Completed', 'Worker']);
+      assert.equal(await table.locator('thead th').count(), 7);
+      const widths = await table.locator('thead th').evaluateAll(cells => cells.map(cell => cell.getBoundingClientRect().width));
+      assert.ok(widths[0] < widths[1] && widths[2] > widths[3]);
+      assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), theme === 'dark');
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      const scrollRegion = page.getByRole('region', { name: 'Executions table' });
+      if (width < 500) assert.ok(await scrollRegion.evaluate(element => element.scrollWidth > element.clientWidth));
+      await page.screenshot({ path: path.join(output, `list-${theme}-${width}.png`), fullPage: true, animations: 'disabled' });
+      if (await scrollRegion.evaluate(element => element.scrollWidth > element.clientWidth)) {
+        await scrollRegion.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+        await page.screenshot({ path: path.join(output, `list-${theme}-${width}-end.png`), fullPage: true, animations: 'disabled' });
+        await scrollRegion.evaluate(element => { element.scrollLeft = 0; });
+      }
+    }
     for (const { width, height } of [{ width: 1440, height: 1040 }, { width: 1280, height: 1000 }, { width: 375, height: 1000 }]) {
       await page.setViewportSize({ width, height });
       mode = 'normal';
       await page.goto('https://dashboard.test/executions?project=project&state=Running&issue=7&offset=0');
-      await page.getByText('Running · Validation', { exact: true }).waitFor({ timeout: 10000 }).catch(async error => { console.log(await page.locator('body').innerText()); throw error; });
-      await page.getByText('Running · Integration', { exact: true }).waitFor();
-      await page.getByText('Execution failed', { exact: true }).waitFor();
-      await page.getByText('Integration uncertain · review evidence', { exact: true }).waitFor();
-      assert.ok(await page.getByRole('link', { name: 'GitHub Issue #7' }).count());
+      await page.getByRole('table').waitFor({ timeout: 10000 }).catch(async error => { console.log(await page.locator('body').innerText()); throw error; });
+      const runningRow = page.locator('tr:has(a[href^="/executions/running?"])');
+      const queuedRow = page.locator('tr:has(a[href^="/executions/queued?"])');
+      const completedRow = page.locator('tr:has(a[href^="/executions/completed?"])');
+      const missingRelatedRow = page.locator('tr:has(a[href^="/executions/missing-related?"])');
+      const unassignedRow = page.locator('tr:has(a[href^="/executions/unassigned?"])');
+      assert.equal(await runningRow.locator('td').count(), 7);
+      assert.equal(await runningRow.locator('td').nth(4).innerText(), 'Running');
+      assert.doesNotMatch(await runningRow.innerText(), /Validation|Waiting for the validation result/);
+      assert.equal(await runningRow.locator('td').nth(3).locator('time').getAttribute('datetime'), createdAtUtc);
+      assert.equal(await runningRow.locator('td').nth(5).innerText(), '');
+      assert.equal(await queuedRow.getByRole('button', { name: 'View state details for execution queued' }).count(), 0);
+      const createdTime = await completedRow.locator('td').nth(3).locator('time').getAttribute('datetime');
+      const completedTime = await completedRow.locator('td').nth(5).locator('time').getAttribute('datetime');
+      assert.equal(createdTime, createdAtUtc);
+      assert.equal(completedTime, '2026-01-01T00:04:00Z');
+      const executionLink = runningRow.getByRole('link', { name: /GUID running/ });
+      assert.equal(new URL(await executionLink.getAttribute('href'), 'https://dashboard.test').pathname, '/executions/running');
+      assert.equal(await runningRow.getByRole('link', { name: 'Example project' }).getAttribute('href'), '/projects/project');
+      assert.equal(await runningRow.getByRole('link', { name: 'Build machine' }).getAttribute('href'), '/workers/worker');
+      const issueLink = page.getByRole('link', { name: /#7 · Fix request parsing/ }).first();
+      assert.equal(await issueLink.getAttribute('href'), 'https://github.com/example/repository/issues/7');
+      assert.equal(await issueLink.getAttribute('target'), '_blank');
+      assert.ok(await issueLink.locator('svg[aria-hidden="true"]').count());
+      assert.equal(await missingRelatedRow.getByRole('link', { name: 'missing-project' }).getAttribute('href'), '/projects/missing-project');
+      assert.equal(await missingRelatedRow.locator('td').nth(2).locator('a[href^="https://github.com/"]').count(), 0);
+      assert.equal(await missingRelatedRow.getByRole('link', { name: /missing-worker/ }).getAttribute('href'), '/workers/missing-worker');
+      assert.equal(await unassignedRow.getByRole('link', { name: /workers/ }).count(), 0);
+      assert.equal(await unassignedRow.getByText('Worker unassigned').count(), 1);
+      const notesButton = runningRow.getByRole('button', { name: 'View state details for execution running' });
+      await notesButton.focus();
+      await page.keyboard.press('Enter');
+      const notes = page.getByRole('dialog', { name: 'State details' });
+      await notes.waitFor();
+      await notes.getByText('Reported stage:').waitFor();
+      await notes.getByText('Validation', { exact: true }).waitFor();
+      await notes.getByText('Pending reason').waitFor();
+      await notes.getByText('Waiting for the validation result to be reported.', { exact: true }).waitFor();
+      await page.keyboard.press('Escape');
+      await notes.waitFor({ state: 'detached' });
+      assert.equal(await notesButton.evaluate(element => element === document.activeElement), true);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(output, `list-${width}.png`), fullPage: true });
       await page.getByRole('button', { name: 'Next page' }).click();
@@ -149,6 +212,6 @@ const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open'
     }
     assert.equal(writes.length, 6);
     assert.deepEqual(errors, []);
-    console.log('Execution browser review passed: desktop/mobile states, pagination/context/reload, stale/missing, cancellation/pending locks, evidence reconciliation/lost response/explicit refresh.');
+    console.log('Execution browser review passed: seven-column links and timestamps, optional related data, keyboard state notes, desktop/mobile themes, pagination/context/reload, stale/missing, cancellation/pending locks, evidence reconciliation/lost response/explicit refresh.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
