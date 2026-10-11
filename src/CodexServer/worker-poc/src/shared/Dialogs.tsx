@@ -10,27 +10,36 @@ interface DialogProps {
   onClose(): void;
   children: ReactNode;
   pending?: boolean;
-  variant?: 'default' | 'enqueue';
+  variant?: 'default' | 'enqueue' | 'side-panel';
   projectName?: string;
+  headerActions?: ReactNode;
 }
 /** React Aria owns focus containment/restoration, Escape and outside dismissal. */
-export function FormDialog({ isOpen, title, description, onClose, children, pending = false, variant = 'default', projectName }: DialogProps) {
+export function FormDialog({ isOpen, title, description, onClose, children, pending = false, variant = 'default', projectName, headerActions }: DialogProps) {
   useLanguage();
   const descriptionId = useId();
   const isEnqueue = variant === 'enqueue';
+  const isSidePanel = variant === 'side-panel';
   return <ModalOverlay isOpen={isOpen} onOpenChange={open => { if (!open && !pending) onClose(); }}
     isDismissable={!pending} isKeyboardDismissDisabled={pending}
-    className={isEnqueue ? 'enqueue-dialog-overlay' : 'fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
-    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
-      <Dialog aria-describedby={descriptionId} className={isEnqueue ? 'enqueue-dialog' : 'flex flex-col gap-4 outline-none'}>
+    className={isEnqueue ? 'enqueue-dialog-overlay' : isSidePanel ? 'fixed inset-0 z-50 flex justify-end bg-overlay/70' : 'fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
+    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : isSidePanel ? 'flex h-dvh w-full flex-col overflow-hidden bg-primary shadow-xl ring-1 ring-secondary md:w-[60vw] md:max-w-5xl' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
+      <Dialog aria-describedby={descriptionId} className={isEnqueue ? 'enqueue-dialog' : isSidePanel ? 'flex h-full min-h-0 flex-col outline-none' : 'flex flex-col gap-4 outline-none'}>
         {isEnqueue && <Button color="tertiary" className="enqueue-dialog-close" aria-label={t('shared.closeDialog')} isDisabled={pending} onPress={onClose}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" /></svg>
         </Button>}
-        <div className={isEnqueue ? 'enqueue-dialog-copy' : 'contents'}>
+        {isSidePanel && <div className="flex shrink-0 flex-col gap-4 border-b border-secondary px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-8 sm:py-6">
+          <div className="min-w-0">
+            <Heading slot="title" className="text-lg font-semibold text-primary">{localizeText(title)}</Heading>
+            <p id={descriptionId} className="mt-1 text-sm text-secondary">{localizeText(description)}</p>
+          </div>
+          {headerActions}
+        </div>}
+        {!isSidePanel && <div className={isEnqueue ? 'enqueue-dialog-copy' : 'contents'}>
           <Heading slot="title" className={isEnqueue ? 'enqueue-dialog-title' : 'text-lg font-semibold text-primary'}>{localizeText(title)}</Heading>
           {isEnqueue && projectName && <h2 className="enqueue-dialog-project">{projectName}</h2>}
           <p id={descriptionId} className={isEnqueue ? 'enqueue-dialog-description' : 'text-sm text-secondary'}>{localizeText(description)}</p>
-        </div>
+        </div>}
         {children}
       </Dialog>
     </Modal>

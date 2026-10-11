@@ -7,6 +7,7 @@ import { cx } from "@/utils/cx";
 
 interface ToggleBaseProps {
     size?: "sm" | "md";
+    accent?: "brand" | "success";
     slim?: boolean;
     className?: string;
     isHovered?: boolean;
@@ -15,7 +16,7 @@ interface ToggleBaseProps {
     isDisabled?: boolean;
 }
 
-export const ToggleBase = ({ className, isHovered, isDisabled, isFocusVisible, isSelected, slim, size = "sm" }: ToggleBaseProps) => {
+export const ToggleBase = ({ className, isHovered, isDisabled, isFocusVisible, isSelected, slim, size = "sm", accent = "brand" }: ToggleBaseProps) => {
     const styles = {
         default: {
             sm: {
@@ -45,8 +46,8 @@ export const ToggleBase = ({ className, isHovered, isDisabled, isFocusVisible, i
         <div
             className={cx(
                 "cursor-pointer rounded-full bg-tertiary ring-[0.5px] ring-secondary outline-focus-ring transition duration-150 ease-linear ring-inset",
-                isSelected && "bg-brand-solid",
-                isSelected && isHovered && "bg-brand-solid_hover",
+                isSelected && (accent === "success" ? "bg-success-solid" : "bg-brand-solid"),
+                isSelected && isHovered && (accent === "success" ? "bg-green-700" : "bg-brand-solid_hover"),
                 isDisabled && "cursor-not-allowed opacity-50",
                 isFocusVisible && "outline-2 outline-offset-2",
 
@@ -92,12 +93,13 @@ const styles = {
 
 interface ToggleProps extends AriaSwitchProps {
     size?: "sm" | "md";
+    accent?: "brand" | "success";
     label?: string;
     hint?: ReactNode;
     slim?: boolean;
 }
 
-export const Toggle = ({ label, hint, className, size = "sm", slim, ...ariaSwitchProps }: ToggleProps) => {
+export const Toggle = ({ label, hint, className, size = "sm", slim, accent = "brand", ...ariaSwitchProps }: ToggleProps) => {
     return (
         <AriaSwitch
             {...ariaSwitchProps}
@@ -115,6 +117,7 @@ export const Toggle = ({ label, hint, className, size = "sm", slim, ...ariaSwitc
                     <ToggleBase
                         slim={slim}
                         size={size}
+                        accent={accent}
                         isHovered={isHovered}
                         isDisabled={isDisabled}
                         isFocusVisible={isFocusVisible}

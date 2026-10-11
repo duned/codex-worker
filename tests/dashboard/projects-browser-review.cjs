@@ -100,6 +100,13 @@ const clone = value => structuredClone(value);
       await page.getByRole('columnheader', { name: 'Issue / execution', exact: true }).waitFor();
       await page.getByRole('link', { name: '#27 · Repair parser', exact: true }).waitFor();
       await page.getByRole('heading', { name: '#27 · Repair parser' }).waitFor();
+      if (width === 1440) {
+        await page.getByRole('button', { name: 'Edit project', exact: true }).click(); const editor = page.getByRole('dialog', { name: 'Edit project', exact: true });
+        const editorBounds = await editor.boundingBox(); assert.deepEqual({ x: editorBounds.x, width: editorBounds.width, height: editorBounds.height }, { x: 576, width: 864, height: 1040 });
+        await editor.getByRole('button', { name: 'Save changes', exact: true }).waitFor();
+        await page.screenshot({ path: path.join(output, 'project-editor-dark.png') });
+        await page.keyboard.press('Escape'); await editor.waitFor({ state: 'hidden' });
+      }
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No overflow at ${width}`);
       assert.equal(effects.length, 0);
       await page.getByRole('button', { name: 'Check repository access' }).click();
@@ -119,8 +126,16 @@ const clone = value => structuredClone(value);
       await page.reload(); await page.getByRole('heading', { name: '#27 · Repair parser' }).waitFor(); assert.equal(new URL(page.url()).search, new URL(detail).search);
       if (width === 375) {
         await page.getByRole('button', { name: 'Edit project', exact: true }).click(); const mobileDialog = page.getByRole('dialog', { name: 'Edit project', exact: true });
-        await mobileDialog.getByRole('button', { name: 'Next', exact: true }).click(); assert.equal(await mobileDialog.getByLabel('Project concurrency').inputValue(), ''); await mobileDialog.getByLabel('Project concurrency').selectOption('2'); await mobileDialog.getByLabel('Description').fill('Mobile draft');
+        const mobileBounds = await mobileDialog.boundingBox(); assert.deepEqual({ x: mobileBounds.x, width: mobileBounds.width, height: mobileBounds.height }, { x: 0, width: 375, height: 1000 });
+        await mobileDialog.getByRole('heading', { name: 'General', exact: true }).waitFor(); await mobileDialog.getByRole('heading', { name: 'Execution & discovery', exact: true }).waitFor(); await mobileDialog.getByRole('heading', { name: 'Requirements', exact: true }).waitFor();
+        const mobileBody = mobileDialog.locator('fieldset'); assert.equal(await mobileBody.evaluate(element => getComputedStyle(element).overflowY), 'auto'); assert.ok(await mobileBody.evaluate(element => element.scrollHeight > element.clientHeight));
+        await mobileDialog.getByRole('button', { name: 'Discover repositories', exact: true }).click(); await mobileDialog.getByLabel('Accessible repository').selectOption('owner/new'); assert.equal(await mobileDialog.getByLabel('Repository (owner/repository)').inputValue(), 'owner/new');
+        assert.equal(await mobileDialog.getByLabel('Project concurrency').inputValue(), ''); await mobileDialog.getByLabel('Project concurrency').selectOption('2'); await mobileDialog.getByLabel('Description').fill('Mobile draft');
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({ path: path.join(output, 'project-form-mobile.png'), fullPage: true });
+        await page.keyboard.press('Escape'); await mobileDialog.waitFor({ state: 'hidden' });
+        assert.equal(await page.getByRole('button', { name: 'Edit project', exact: true }).evaluate(element => element === document.activeElement), true);
+        await page.getByRole('button', { name: 'Edit project', exact: true }).click();
+        assert.equal(await mobileDialog.getByLabel('Description').inputValue(), 'Mobile draft');
         await mobileDialog.getByRole('button', { name: 'Discard draft', exact: true }).click(); await page.getByRole('dialog', { name: 'Discard project draft?' }).getByRole('button', { name: 'Discard draft', exact: true }).click();
         assert.equal(effects.length, 0);
       }
@@ -128,9 +143,12 @@ const clone = value => structuredClone(value);
     await page.setViewportSize({ width: 1280, height: 1000 });
     await page.getByRole('button', { name: 'Use light mode' }).click(); await page.reload();
     await page.getByRole('button', { name: 'Use dark mode' }).waitFor();
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); let dialog = page.getByRole('dialog', { name: 'Edit project', exact: true });
+    await dialog.getByRole('heading', { name: 'General', exact: true }).waitFor(); await page.screenshot({ path: path.join(output, 'project-editor-light.png') });
+    await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
     // Edit preview, lost response and explicit reconciliation, with exactly one durable write.
     await page.getByRole('button', { name: 'Edit title/body' }).click();
-    let dialog = page.getByRole('dialog', { name: 'Edit Issue #27' });
+    dialog = page.getByRole('dialog', { name: 'Edit Issue #27' });
     await dialog.getByLabel('Issue title').fill('Parser repaired');
     await dialog.getByRole('button', { name: 'Preview changes' }).click(); await dialog.getByRole('heading', { name: 'Server preview' }).waitFor();
     assert.equal(effects.length, 0); await page.screenshot({ path: path.join(output, 'issue-preview-light.png'), fullPage: true }); loseIssue = true;
@@ -154,23 +172,26 @@ const clone = value => structuredClone(value);
     // Create response loss requires explicit identity; never infer absence from a bounded Issue list.
     loseIssue = true; await page.getByRole('button', { name: 'Create Issue' }).click(); dialog = page.getByRole('dialog', { name: 'Create Issue' }); await dialog.getByLabel('Issue title').fill('Created task'); await dialog.getByLabel('Issue body').fill('Transient body'); await dialog.getByRole('button', { name: 'Preview changes' }).click(); await dialog.getByRole('button', { name: 'Apply previewed changes' }).click(); await dialog.getByText(/Result uncertain/).waitFor(); await dialog.getByRole('button', { name: 'Close', exact: true }).click(); await page.getByLabel('Created Issue number (inspect GitHub)').fill('30'); await page.getByRole('button', { name: 'Reconcile authoritative state' }).click(); await page.getByText('Desired Issue state confirmed.').waitFor();
     // Same-project edits resume contextually; no global draft control appears above the detail.
-    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); await dialog.getByLabel('Description').fill('Retained project edit');
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click(); assert.equal(await page.getByRole('button', { name: 'Resume project draft', exact: true }).count(), 0);
-    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); assert.equal(await dialog.getByLabel('Description').inputValue(), 'Retained project edit');
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByLabel('Description').fill('Retained project edit');
+    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click(); assert.equal(await page.getByRole('button', { name: 'Resume project draft', exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); assert.equal(await dialog.getByLabel('Description').inputValue(), 'Retained project edit');
     await dialog.getByRole('button', { name: 'Discard draft', exact: true }).click(); await page.getByRole('dialog', { name: 'Discard project draft?' }).getByRole('button', { name: 'Discard draft', exact: true }).click();
     // Project save verification failure and revision conflict retain the same draft.
-    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByRole('button', { name: 'Next', exact: true }).click();
-    failVerify = true; await dialog.getByRole('button', { name: 'Verify and review' }).click(); await dialog.getByText(/Operation unavailable/).waitFor(); assert.equal(await dialog.getByRole('button', { name: 'Save reviewed project' }).count(), 0);
-    failVerify = false; await dialog.getByRole('button', { name: 'Verify and review' }).click(); await dialog.getByRole('button', { name: 'Save reviewed project' }).waitFor();
-    projects[0] = { ...projects[0], revision: 2, description: 'Concurrent edit' }; await dialog.getByRole('button', { name: 'Save reviewed project' }).click(); await dialog.getByRole('button', { name: 'Load current definition' }).waitFor(); await dialog.getByRole('button', { name: 'Load current definition' }).click(); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); assert.equal(await dialog.getByLabel('Description').inputValue(), 'Concurrent edit');
-    await dialog.getByText('Enable automatic Issue discovery', { exact: true }).click();
-    assert.equal(await dialog.getByRole('checkbox', { name: 'Enable automatic Issue discovery' }).isChecked(), true); await dialog.getByText('Advanced · discovery and execution requirements', { exact: true }).click(); await dialog.getByLabel('Discovery interval (seconds)').fill('600'); await dialog.getByLabel('Maximum discovery page size').fill('10'); await dialog.getByLabel('Cycle deadline (seconds)').fill('30'); await dialog.getByLabel('Project concurrency').selectOption('2');
-    await dialog.getByRole('button', { name: 'Verify and review' }).click(); loseSave = true; await dialog.getByRole('button', { name: 'Save reviewed project' }).click(); await dialog.getByText(/Save result uncertain/).waitFor(); await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true });
+    failVerify = true; await dialog.getByRole('button', { name: 'Save changes', exact: true }).click(); await dialog.getByText(/Operation unavailable/).waitFor(); assert.equal(effects.length, 0);
+    failVerify = false; projects[0] = { ...projects[0], revision: 2, description: 'Concurrent edit' }; await dialog.getByRole('button', { name: 'Save changes', exact: true }).click(); await dialog.getByRole('button', { name: 'Load current definition' }).waitFor(); await dialog.getByRole('button', { name: 'Load current definition' }).click(); assert.equal(await dialog.getByLabel('Description').inputValue(), 'Concurrent edit');
+    await dialog.getByRole('switch', { name: 'Automatic discovery' }).click();
+    assert.equal(await dialog.getByRole('switch', { name: 'Automatic discovery' }).getAttribute('aria-checked'), 'true'); await page.mouse.move(10, 10); assert.match(await dialog.getByRole('switch', { name: 'Automatic discovery' }).locator('div').first().getAttribute('class'), /bg-success-solid/);
+    await dialog.getByLabel('Discovery interval (seconds)').fill('600'); await dialog.getByLabel('Maximum discovery page size').fill('10'); await dialog.getByLabel('Cycle deadline (seconds)').fill('30'); await dialog.getByLabel('Project concurrency').selectOption('2');
+    await dialog.getByRole('button', { name: 'Add a requirement' }).click(); const requirement = dialog.locator('section[aria-labelledby="project-requirements-heading"]');
+    await requirement.getByLabel('Requirement 1 type').fill('tool'); await requirement.getByLabel('Requirement 1 name').fill('Builder'); await requirement.getByLabel('Requirement 1 version').fill('2.1'); await requirement.getByLabel('Requirement 1 scope').fill('owner/repo');
+    await dialog.getByRole('button', { name: 'Add a requirement' }).click(); await dialog.getByRole('button', { name: 'Remove requirement 2' }).click();
+    loseSave = true; await dialog.getByRole('button', { name: 'Save changes', exact: true }).click(); await dialog.getByText(/Save result uncertain/).waitFor(); await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await page.getByRole('button', { name: 'Check saved definition' }).click(); await page.getByText(/The Server project limit is now 2 executions/).waitFor(); assert.deepEqual(projects[0].automaticDiscovery, { enabled: true, intervalSeconds: 600, pageSize: 10, deadlineSeconds: 30 });
-    assert.equal(projects[0].maxParallelTasks, 2); await page.getByText('2 executions', { exact: true }).waitFor(); await page.getByText(/Managed Workers receive updates during synchronization/).waitFor(); await page.getByText(/Running executions continue/).waitFor();
-    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); await dialog.getByLabel('Project concurrency').selectOption('1'); await dialog.getByRole('button', { name: 'Verify and review' }).click(); await dialog.getByRole('button', { name: 'Save reviewed project' }).click(); await dialog.waitFor({ state: 'hidden' });
+    assert.equal(projects[0].maxParallelTasks, 2); assert.deepEqual(projects[0].requirements, [{ type: 'tool', name: 'Builder', version: '2.1', scope: 'owner/repo' }]); await page.getByText('2 executions', { exact: true }).waitFor(); await page.getByText(/Managed Workers receive updates during synchronization/).waitFor(); await page.getByText(/Running executions continue/).waitFor();
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByLabel('Project concurrency').selectOption('1'); await dialog.getByRole('button', { name: 'Save changes', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
     assert.equal(projects[0].maxParallelTasks, 1); await page.getByText('1 execution', { exact: true }).waitFor(); await page.getByText(/Running executions continue/).waitFor();
-    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByRole('button', { name: 'Next', exact: true }).click(); await dialog.getByLabel('Project concurrency').selectOption(''); await dialog.getByRole('button', { name: 'Verify and review' }).click(); await dialog.getByRole('button', { name: 'Save reviewed project' }).click(); await dialog.waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Edit project', exact: true }).click(); dialog = page.getByRole('dialog', { name: 'Edit project', exact: true }); await dialog.getByLabel('Project concurrency').selectOption(''); await dialog.getByRole('button', { name: 'Save changes', exact: true }).click(); await dialog.waitFor({ state: 'hidden' });
     assert.equal(projects[0].maxParallelTasks, null); await page.getByText('Automatic', { exact: true }).waitFor();
     // URL Back/filter and transient form navigation, with no effects on refresh.
     const count = effects.length; await page.getByLabel('Filter by label').fill('blocked'); await page.getByRole('button', { name: 'Load Issues' }).click(); assert.equal(new URL(page.url()).searchParams.get('step'), 'preparation'); await page.goBack(); await page.getByRole('heading', { name: '#27 · Parser repaired' }).waitFor(); assert.equal(new URL(page.url()).search, new URL(detail).search); assert.equal(effects.length, count);
