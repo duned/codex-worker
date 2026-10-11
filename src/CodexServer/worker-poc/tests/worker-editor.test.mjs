@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { compareSemanticVersions, workerConfiguration, workerVersionState } from '../src/features/workers/worker-editor-model.mjs';
+import { compareSemanticVersions, workerConfiguration, workerVersionState, workerUpdateBlockReason } from '../src/features/workers/worker-editor-model.mjs';
 
 const sourceRoot = new URL('../src/', import.meta.url);
 const read = path => readFileSync(new URL(path, sourceRoot), 'utf8');
@@ -92,3 +92,24 @@ test('configured slots are independent from assignment limit and occupancy', () 
     workerExecutionSlots: 4, maximumCapacity: 2, activeExecutions: 2 }),
   { displayName: 'Node', maximumParallelExecutions: '1', workerExecutionSlots: '4' });
 });
+
+const updateWorker = overrides => freshWorker({ lifecycleState: 'not-ready',
+  configurationSynchronization: 'error', managedDiagnostics: { diagnosticCode: 'managed-contract-invalid' },
+  capabilities: [{ type: 'protocol', name: 'worker-self-update-v1' }], ...overrides });
+
+test('invalid managed configuration does not hide or block an available controlled update', () => {
+  assert.equal(workerVersionState(updateWorker(), '0.15.0').state, 'available');
+  assert.equal(workerUpdateBlockReason(updateWorker()), undefined);
+  assert.equal(workerVersionState(updateWorker({ workerVersion: '0.15.0' }), '0.15.0').state, 'current');
+  assert.equal(workerVersionState(updateWorker({ workerVersion: '0.16.0' }), '0.15.0').state, 'ahead');
+});
+
+for (const [flag, reason] of Object.entries({ busy: 'busy', pending: 'pending', loading: 'loading', error: 'status-error', failed: 'failed', locked: 'locked' })) {
+  test(`update explains ${reason} and has localized recovery text`, () => {
+    assert.equal(workerUpdateBlockReason(updateWorker(), { [flag]: true }), reason);
+    for (const language of ['en', 'es']) assert.ok(read(`shared/locales/${language}.ts`).includes(`"workers.editorUpdateBlock.${reason}"`));
+  });
+}
+for (const [overrides, reason] of [[{ availability: 'offline' }, 'offline'], [{ capabilities: [] }, 'unsupported'], [{ lifecycleState: 'stopped' }, 'lifecycle']]) {
+  test(`update safely blocks ${reason}`, () => assert.equal(workerUpdateBlockReason(updateWorker(overrides)), reason));
+}

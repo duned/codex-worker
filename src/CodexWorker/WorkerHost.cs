@@ -537,7 +537,9 @@ public sealed class WorkerHost
                 }
 
                 var foundWork = false;
-                if (managed && active.Count == 0 && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&
+                // Recovery updates use local policy and Server authorization, not the invalid managed snapshot.
+                // The Server also verifies idle executions/leases and holds scheduling drained until readiness returns.
+                if (managed && active.Count == 0 &&
                     await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, executionToken))
                     continue;
                 if (managed && active.Count == 0 && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&

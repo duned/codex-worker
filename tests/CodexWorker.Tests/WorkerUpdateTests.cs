@@ -31,6 +31,53 @@ public sealed class WorkerUpdateTests
     }
 
     [Fact]
+    public async Task InvalidManagedContractCanUpdateAfterDrainingButCannotRestoreSchedulingUntilSynchronized()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        Task InvalidBeat(int active, string version = "1.0.0") => store.HeartbeatWorkerAsync(new(2, worker,
+            version, "not-ready", active, 2, Capabilities, [], ConfigurationSynchronization: "error",
+            ManagedDiagnostics: new("retrieved", "error", "server-retrieved", null, null,
+                "contract-validation", "managed-contract-invalid", [])));
+        await InvalidBeat(1);
+        var id = Guid.NewGuid().ToString("N");
+        Assert.Equal("waiting-for-idle", (await store.RequestWorkerUpdateAsync(worker, id)).State);
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.AdvanceWorkerUpdateAsync(worker, id, "1.1.0"));
+        await InvalidBeat(0);
+        Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));
+        Assert.Equal("updating", (await store.AdvanceWorkerUpdateAsync(worker, id, "1.1.0"))?.State);
+        await store.AdvanceWorkerUpdateAsync(worker, id, verified: true);
+        clock.Now += TimeSpan.FromSeconds(1);
+        await InvalidBeat(0, "1.1.0");
+        Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        var project = await store.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        Assert.False((await store.RequestAssignmentAsync(new(worker, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).HasWork);
+        await Beat(store, worker, "1.1.0");
+        Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
+    [Theory]
+    [InlineData("stopped", true)]
+    [InlineData("running", false)]
+    public async Task UnsafeLifecycleOrMissingUpdateCapabilityRejectsRequest(string lifecycle, bool supported)
+    {
+        using var temporary = new TemporaryDirectory();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), new Clock());
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", lifecycle, 0, 2,
+            supported ? Capabilities : [], [], ConfigurationSynchronization: "error"));
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N")));
+        Assert.Equal("worker-update-unavailable", failure.Message);
+        Assert.Null(await store.GetWorkerUpdateAsync(worker));
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
+    [Fact]
     public async Task ActiveWorkWaitsAndAdmissionStopsEvenAfterOperatorEnablesScheduling()
     {
         using var temporary = new TemporaryDirectory();

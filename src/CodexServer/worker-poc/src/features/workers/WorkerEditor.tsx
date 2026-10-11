@@ -13,7 +13,7 @@ import { statusColor } from '../../shared/status-model.mjs';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { saveWorkerSettings } from './worker-settings';
 import { workerUpdate } from './worker-update';
-import { workerConfiguration, workerVersionState } from './worker-editor-model.mjs';
+import { workerConfiguration, workerVersionState, workerUpdateBlockReason } from './worker-editor-model.mjs';
 
 interface WorkerEditorProps {
   worker: WorkerAdministration;
@@ -60,6 +60,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const updateRead = useApiRead(`${path}/update`, workerUpdate);
   const update = updateRead.data;
   const updatePending = update?.state === 'waiting-for-idle' || update?.state === 'updating' || update?.state === 'reconnecting';
+  const updateBlock = workerUpdateBlockReason(worker, { busy: updateBusy || busy, pending: updatePending, loading: updateRead.loading, error: updateRead.hasError, failed: update?.state === 'failed', locked: runtime.locked(`${path}/update`) });
   const guard = useRef(false);
   const body = useRef<HTMLFieldSetElement | null>(null);
   const locked = runtime.locked(resource);
@@ -124,7 +125,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   }
 
   async function requestUpdate() {
-    if (updateGuard.current || updatePending || updateRead.loading || updateRead.hasError) return;
+    if (updateGuard.current || updateBlock || version.state !== 'available') return;
     updateGuard.current = true;
     setUpdateBusy(true);
     setUpdateMessage('');
@@ -132,7 +133,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
       const current = await runtime.mutate(`${path}/update`, `${path}/update`, 'POST', { operationId: updateId.current }, workerUpdate,
         async signal => {
           const currentWorker = await runtime.read(path, signal, validateWorker);
-          if (currentWorker.workerId !== worker.workerId || !['online', 'draining'].includes(currentWorker.availability))
+          if (currentWorker.workerId !== worker.workerId || workerUpdateBlockReason(currentWorker))
             throw new ApiError(t('workers.editorUpdateUnavailable'));
         });
       if (!current || current.workerId !== worker.workerId) throw new Error('Unexpected Worker update.');
@@ -233,8 +234,8 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
             </div>
             {version.state === 'available' && <>
               <Notice>{t('workers.editorUpdateAvailableHelp')}</Notice>
-              <Button color="primary" className="bg-success-solid hover:bg-green-700" isDisabled={updateBusy || updatePending || updateRead.loading || updateRead.hasError || update?.state === 'failed' || runtime.locked(`${path}/update`)} onPress={() => { void requestUpdate(); }}>{t('workers.editorUpdateWorker')}</Button>
-              <p className="worker-editor-help">{t('workers.editorRemoteUpdateHelp')}</p>
+              <Button color="primary" className="bg-success-solid hover:bg-green-700" aria-describedby="worker-update-help" isDisabled={Boolean(updateBlock)} onPress={() => { void requestUpdate(); }}>{t('workers.editorUpdateWorker')}</Button>
+              <p id="worker-update-help" role="status" className="worker-editor-help">{updateBlock ? t(`workers.editorUpdateBlock.${updateBlock}`) : t('workers.editorUpdateRecoveryHelp')}</p>
             </>}
             {update && <Notice error={update.state === 'failed'}><span role="status">{update.state === 'succeeded' && update.diagnostic === 'already-current'
               ? t('workers.editorRemoteUpdate.alreadyCurrent') : t(`workers.editorRemoteUpdate.${update.state}`)}</span></Notice>}

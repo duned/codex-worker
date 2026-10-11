@@ -15,7 +15,7 @@ const workerId = 'a'.repeat(32);
     await page.clock.install({ time: props.now });
     page.on('pageerror', error => errors.push(error.message));
     let operation = null, loseResponse = false;
-    const worker = { ...props.observations[0], workerId, workerVersion: '0.14.0', configurationRevision: 1 };
+    const worker = { ...props.observations[0], workerId, workerVersion: '0.14.0', configurationRevision: 1, availability: 'online', lifecycleState: 'not-ready', configurationSynchronization: 'error', managedDiagnostics: { retrieval: 'retrieved', synchronization: 'error', source: 'server-retrieved', failureStage: 'contract-validation', diagnosticCode: 'managed-contract-invalid', projects: [] }, capabilities: [{ type: 'protocol', name: 'worker-self-update-v1' }] };
     const endpoint = `/api/v1/workers/${workerId}`;
     await page.route('https://dashboard.test/**', async route => {
       const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
@@ -47,6 +47,7 @@ const workerId = 'a'.repeat(32);
     await page.goto(`https://dashboard.test/workers/${workerId}`);
     await page.getByRole('button', { name: 'Edit worker', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Edit worker' });
+    await dialog.getByText(/controlled update can proceed even when managed configuration is invalid/).waitFor();
     await dialog.getByRole('button', { name: 'Update worker', exact: true }).click();
     await dialog.getByText('Update requested. Waiting for active executions to finish.', { exact: true }).waitFor();
     assert.equal(writes.length, 1);

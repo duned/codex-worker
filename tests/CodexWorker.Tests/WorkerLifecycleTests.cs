@@ -5,6 +5,23 @@ namespace CodexWorker.Tests;
 public sealed class WorkerLifecycleTests
 {
     [Fact]
+    public void InvalidManagedConfigurationCanDrainForUpdateWithoutBecomingExecutionReady()
+    {
+        var lifecycle = new WorkerLifecycle();
+        lifecycle.SetExecutionReadiness(false, "managed-contract-invalid");
+        lifecycle.SetActiveExecutions(1);
+        lifecycle.RequestDrain();
+        Assert.Throws<InvalidOperationException>(lifecycle.BeginUpdate);
+        lifecycle.SetExecutionReadiness(false, "managed-contract-invalid");
+        Assert.Equal("drain-requested", lifecycle.Snapshot.State);
+        lifecycle.SetActiveExecutions(0);
+        lifecycle.BeginUpdate();
+        Assert.Equal("updating", lifecycle.Snapshot.State);
+        Assert.True(lifecycle.Snapshot.DrainRequested);
+        Assert.Equal("managed-contract-invalid", lifecycle.Snapshot.ReconnectReadinessResult);
+    }
+
+    [Fact]
     public void ReadinessTransitionsDoNotCancelAnOperatorDrain()
     {
         var lifecycle = new WorkerLifecycle();
