@@ -488,6 +488,23 @@ public static partial class ServerApplication
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
+        app.MapPut("/api/v1/workers/{workerId}/settings", async (string workerId, WorkerConfigurationUpdateRequest request,
+            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (request is null || string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Length > 200 || request.DisplayName.Trim().Length > 200 ||
+                request.DisplayName.Any(char.IsControl) || request.MaximumParallelExecutions is < 1 or > 8 || request.ExpectedRevision < 1)
+                return Results.BadRequest(new { error = "Display name must contain 1..200 printable characters, maximum parallel executions must be 1..8, and expectedRevision must be positive." });
+            var current = await store.GetWorkerAsync(workerId, context.RequestAborted);
+            if (current is null) return Results.NotFound();
+            if (current.ConfigurationRevision != request.ExpectedRevision)
+                return Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
+            var updated = await store.UpdateWorkerConfigurationAsync(workerId, request.DisplayName.Trim(),
+                request.MaximumParallelExecutions, request.ExpectedRevision, context.RequestAborted);
+            if (updated is not null) return Results.Ok(updated);
+            current = await store.GetWorkerAsync(workerId, context.RequestAborted);
+            return current is null ? Results.NotFound() : Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
+        });
         app.MapPost("/api/v1/workers/{workerId}/authentication/revoke", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {

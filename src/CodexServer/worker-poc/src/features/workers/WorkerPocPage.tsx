@@ -4,8 +4,9 @@ import { queryKeys } from '../../shared/api/runtime';
 import { useState } from 'react';
 import { ConfirmationDialog } from '../../shared/Dialogs';
 import { WorkerDetailPage } from './WorkerDetailPage';
+import { WorkerEditor } from './WorkerEditor';
 import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
-import { worker, diagnostics, deliveryAuthorization } from '../../shared/api/validation';
+import { worker, diagnostics, deliveryAuthorization, version as validateVersion } from '../../shared/api/validation';
 import type { WorkerAdministration, WorkerReadiness, DeliveryAuthorization } from '../../shared/api/contracts';
 import { ApiError } from '../../shared/api/client';
 const actions = [
@@ -24,6 +25,7 @@ function reason(key: string, registry?: WorkerAdministration, readiness?: Worker
 export interface AdministrationPresentation {
   worker?: WorkerAdministration; delivery?: DeliveryAuthorization; pending: boolean; needsRefresh: boolean; message: string;
   actions: { key: string; label: string; reason: string }[];
+  onEdit(): void;
   onAction(key: string): void; onRefresh(): void;
 }
 export function WorkerPocPage({ id }: { id: string }) {
@@ -31,8 +33,10 @@ export function WorkerPocPage({ id }: { id: string }) {
   const runtime = useRuntime(), session = useSession();
   const base = `/api/v1/workers/${encodeURIComponent(id)}`, resource = base;
   const registry = useApiRead(base, worker), readiness = useApiRead(`${base}/diagnostics`, diagnostics);
+  const serverVersion = useApiRead('/api/version', validateVersion);
   const delivery = useApiRead(`${base}/credential-access`, deliveryAuthorization);
   const [selected, setSelected] = useState<string>(), [pending, setPending] = useState(false), [message, setMessage] = useState('');
+  const [editing, setEditing] = useState(false);
   const locked = runtime.locked(resource);
   const refresh = async () => {
     if (pending) return;
@@ -78,12 +82,16 @@ export function WorkerPocPage({ id }: { id: string }) {
   };
   const administration: AdministrationPresentation = {
     worker: registry.data, delivery: delivery.data, pending, needsRefresh: locked, message,
+    onEdit: () => { if (registry.data && !pending && !locked) setEditing(true); },
     actions: actions.map(action => ({ ...action, reason: pending ? t("workers.anAdministrationOperationIsPending") : locked
       ? t("workers.refreshAuthoritativeStateBeforeAnotherActionThePreviousOperationWillNotBe") : reason(action.key, registry.data, readiness.data, delivery.data) })),
     onAction: key => { if (actions.some(action => action.key === key) && !pending && !locked && !reason(key, registry.data, readiness.data, delivery.data)) setSelected(key); },
     onRefresh: () => { void refresh(); }
   };
   return <><WorkerDetailPage workerId={id} administration={administration} />
+    {editing && registry.data && <WorkerEditor key={id} worker={registry.data} diagnostics={readiness.data}
+      diagnosticsLoading={readiness.loading} diagnosticsError={!!readiness.error}
+      serverVersion={serverVersion.data?.version} serverVersionLoading={serverVersion.loading || serverVersion.fetching} onClose={() => setEditing(false)} />}
     <ConfirmationDialog key={selected ?? 'closed'} isOpen={!!selected} onClose={() => setSelected(undefined)}
       title={actions.find(action => action.key === selected)?.label ?? t("workers.confirmAction")} actionLabel={t("workers.confirm")}
       destructive={selected === 'revoke-api' || selected === 'revoke-delivery' || selected === 'Disabled'} disabled={pending || locked}

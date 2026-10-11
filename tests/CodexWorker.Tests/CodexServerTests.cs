@@ -85,6 +85,38 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task WorkerConfigurationCapacityLimitsNewServerAssignmentsWithoutChangingWorkerReportedCapacity()
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "worker-capacity.db"));
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Worker capacity", "team/worker-capacity", "main", ""));
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new(2, workerId, "Worker", "1.0.0", "linux-x64", 3, capabilities));
+        await store.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 3, capabilities, []));
+        for (var issue = 1; issue <= 3; issue++)
+            await store.EnqueueExecutionAsync(new(project.Id, new("issue", issue.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        var configured = await store.UpdateWorkerConfigurationAsync(workerId, "Worker", 1, 1);
+        Assert.NotNull(configured);
+        Assert.Equal(3, configured.MaximumCapacity);
+        Assert.Equal(1, configured.ConfiguredMaximumCapacity);
+        var request = new WorkerAssignmentRequest(workerId, true, 3, new Dictionary<string, int> { [project.Id] = 3 });
+
+        Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+        var firstLimit = await store.RequestAssignmentAsync(request);
+        Assert.False(firstLimit.HasWork);
+        Assert.Equal("worker-capacity", firstLimit.Reason);
+
+        var increased = await store.UpdateWorkerConfigurationAsync(workerId, "Worker", 2, 2);
+        Assert.NotNull(increased);
+        Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+        var secondLimit = await store.RequestAssignmentAsync(request);
+        Assert.False(secondLimit.HasWork);
+        Assert.Equal("worker-capacity", secondLimit.Reason);
+    }
+
+    [Fact]
     public async Task ProjectCapacityIsAtomicAcrossWorkersAndLimitChangesPreserveActiveWork()
     {
         using var temporary = new TemporaryDirectory();
@@ -838,6 +870,54 @@ public sealed class CodexServerTests
             Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement);
             Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", priorRegistration);
         }
+    }
+
+    [Fact]
+    public async Task WorkerConfigurationApiSavesRevisionCheckedSettingsAndPreservesReportedCapacity()
+    {
+        using var temporary = new TemporaryDirectory();
+        var priorManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "worker-editor-management-token");
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "worker-editor-api.db")));
+            await app.StartAsync();
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "worker-editor-management-token");
+            var workerId = Guid.NewGuid().ToString("N");
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            await registry.RegisterWorkerAsync(new(2, workerId, "Original name", "1.0.0", "linux-x64", 2, []));
+            await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 1, 3, [], []));
+
+            using var savedResponse = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                new WorkerConfigurationUpdateRequest("Operations worker", 1, 1));
+            Assert.Equal(HttpStatusCode.OK, savedResponse.StatusCode);
+            var saved = await savedResponse.Content.ReadFromJsonAsync<WorkerRegistrationResponse>();
+            Assert.NotNull(saved);
+            Assert.Equal("Operations worker", saved.DisplayName);
+            Assert.Equal(1, saved.ConfiguredMaximumCapacity);
+            Assert.Equal(3, saved.MaximumCapacity);
+            Assert.Equal(1, saved.ActiveExecutions);
+            Assert.Equal(2, saved.ConfigurationRevision);
+
+            await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 3, [], []));
+            var afterHeartbeat = await registry.GetWorkerAsync(workerId);
+            Assert.NotNull(afterHeartbeat);
+            Assert.Equal("Operations worker", afterHeartbeat.DisplayName);
+            Assert.Equal(1, afterHeartbeat.ConfiguredMaximumCapacity);
+            Assert.Equal(3, afterHeartbeat.MaximumCapacity);
+
+            using var staleResponse = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                new WorkerConfigurationUpdateRequest("Stale name", 2, 1));
+            Assert.Equal(HttpStatusCode.Conflict, staleResponse.StatusCode);
+            using var invalidResponse = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                new WorkerConfigurationUpdateRequest("Operations worker", 9, 2));
+            Assert.Equal(HttpStatusCode.BadRequest, invalidResponse.StatusCode);
+            Assert.Equal("Operations worker", (await registry.GetWorkerAsync(workerId))?.DisplayName);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
     [Fact]
@@ -2634,7 +2714,7 @@ public sealed class CodexServerTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE workers DROP COLUMN configured_display_name; ALTER TABLE workers DROP COLUMN configured_maximum_capacity; ALTER TABLE workers DROP COLUMN configuration_revision; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -2642,6 +2722,8 @@ public sealed class CodexServerTests
         await upgraded.InitializeAsync();
         var worker = await upgraded.GetWorkerAsync(workerId);
         Assert.Equal(WorkerSchedulingPolicy.Enabled, worker!.SchedulingPolicy);
+        Assert.Equal(1, worker.ConfigurationRevision);
+        Assert.Null(worker.ConfiguredMaximumCapacity);
         Assert.Equal("eligible", (await upgraded.GetExecutionAsync(execution.Id))!.ManagedEligibilityState);
     }
 

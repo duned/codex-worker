@@ -80,7 +80,7 @@ function CopyWorkerId({ id }) {
   </>;
 }
 
-function WorkerHeading({ worker, node, now, readOnly, administrationHref, workersHref }) {
+function WorkerHeading({ worker, node, now, readOnly, administrationHref, workersHref, administration }) {
   useLanguage();
   const readinessValue = currentWorkerExecutionReadiness(worker, node);
   const readiness = localizeText(readinessValue);
@@ -106,15 +106,18 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
         {readOnly && <a className="poc-readonly-link" href={administrationHref ?? `/workers/${encodeURIComponent(worker.workerId)}`}>{t('shared.openWorkerDetailAndAdministration')}</a>}
       </div>
     </div>
-    <div className="poc-worker-metrics" aria-label={t('workers.workerSummary')}>
-      <div className="poc-summary-metric">
-        <Database01 aria-hidden="true" />
-        <div><span>{t('workers.workSlots')}</span><strong>{slots}</strong></div>
+    <div className="poc-worker-heading-actions">
+      <div className="poc-worker-metrics" aria-label={t('workers.workerSummary')}>
+        <div className="poc-summary-metric">
+          <Database01 aria-hidden="true" />
+          <div><span>{t('workers.workSlots')}</span><strong>{slots}</strong></div>
+        </div>
+        <div className="poc-summary-metric">
+          <Activity aria-hidden="true" />
+          <div><span>{t('workers.lastHeartbeat')}</span><strong>{relativeAge(worker.lastHeartbeatAtUtc, now)}</strong></div>
+        </div>
       </div>
-      <div className="poc-summary-metric">
-        <Activity aria-hidden="true" />
-        <div><span>{t('workers.lastHeartbeat')}</span><strong>{relativeAge(worker.lastHeartbeatAtUtc, now)}</strong></div>
-      </div>
+      {administration?.worker && administration?.onEdit && <Button color="secondary" isDisabled={administration.pending || administration.needsRefresh} onPress={() => administration.onEdit()}>{t('workers.editWorker')}</Button>}
     </div>
   </header>;
 }
@@ -415,7 +418,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
     {!worker ? <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div> : <>
-      <WorkerHeading worker={worker} node={node} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} />
+      <WorkerHeading worker={worker} node={node} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
       <div className={readOnly ? 'poc-worker-layout poc-worker-read-only' : 'poc-worker-layout'}>
         <div className="poc-worker-main poc-main">
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />

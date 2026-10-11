@@ -14,7 +14,9 @@ function optional(item: Record<string, unknown>, strings: string[] = [], boolean
 function validateWorker(value: unknown) {
   const item = fields(value, ['workerId', 'availability']);
   optional(item, ['workerVersion', 'displayName', 'lifecycleState', 'schedulingPolicy', 'lastHeartbeatAtUtc', 'authenticationCredentialStatus', 'authenticationCredentialRevokedAtUtc', 'platform', 'firstRegisteredAtUtc'], [],
-    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments']);
+    ['capacity', 'maximumCapacity', 'activeExecutions', 'availableCapacity', 'activeAssignments', 'configuredMaximumCapacity', 'configurationRevision']);
+  if (item.configuredMaximumCapacity != null && (!Number.isSafeInteger(item.configuredMaximumCapacity) || Number(item.configuredMaximumCapacity) < 1 || Number(item.configuredMaximumCapacity) > 8)) throw new Error('Invalid configured Worker capacity.');
+  if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid Worker configuration revision.');
   if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version']); }); }
   if (item.hostResources != null) {
     const resources = fields(item.hostResources, ['measuredAtUtc']);
