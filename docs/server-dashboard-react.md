@@ -459,7 +459,12 @@ boundary. Collection cancellation propagates through the heartbeat lifecycle.
 
 A successful `sudo codex-server update` retires the validated `current` and
 `previous` dashboard generations deployed by `cw dd`. The restarted Server uses
-its release-bundled React assets. The override directory, unrelated files, and
+its release-bundled React assets. New deployments contain only `index.html`,
+`assets.json`, and the assets listed there; unused `.vite` build metadata is not
+copied. Updates also accept legacy `.vite/manifest.json` metadata after validating
+its schema and references to hash-validated assets. Unknown content, symlinks,
+invalid manifests and unsafe roots still prevent retirement before release selection
+changes. The override directory, unrelated files, and
 systemd drop-in remain intact. Activation failure restores the generations before
 restarting the previous release. Run `cw dd` again to explicitly deploy a local
 development bundle after updating. Worker updates do not reset this override.

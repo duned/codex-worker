@@ -140,6 +140,9 @@ class DeploymentTests(unittest.TestCase):
             repo.mkdir()
             target.mkdir()
             assets(repo / 'src/CodexServer/obj/worker-poc/preview')
+            metadata = repo / 'src/CodexServer/obj/worker-poc/preview/.vite'
+            metadata.mkdir()
+            (metadata / 'manifest.json').write_text('{"index.html":{"file":"assets/app.js","isEntry":true,"css":["assets/app.css"]}}')
             assets(target / 'current', 'old')
             executable = base / 'CodexServer'
             executable.touch()
@@ -165,6 +168,7 @@ class DeploymentTests(unittest.TestCase):
                 if success:
                     deploy.deploy(repo)
                     verify.assert_called_once_with(target / 'current', 'http://127.0.0.1:5090')
+                    self.assertFalse((target / 'current/.vite').exists())
                 else:
                     with self.assertRaisesRegex(ValueError, 'restored' if supported else 'upgrade.*once'):
                         deploy.deploy(repo)

@@ -400,6 +400,14 @@ PYTHON
   flock -n "$dashboard_lock" || return 1
   python3 - "$dashboard_root" <<'PYTHON'
 import hashlib, json, pathlib, re, sys
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('Duplicate manifest key')
+        result[key] = value
+    return result
+
 root = pathlib.Path(sys.argv[1])
 for name in ('current', 'previous'):
     generation = root / name
@@ -409,18 +417,53 @@ for name in ('current', 'previous'):
         raise ValueError('Invalid dashboard generation')
     if any(entry.is_symlink() for entry in generation.rglob('*')):
         raise ValueError('Symbolic dashboard content')
-    manifest = json.loads((generation / 'assets.json').read_text())
+    if not all((generation / path).is_file() for path in ('index.html', 'assets.json')):
+        raise ValueError('Missing generation files')
+    manifest = json.loads((generation / 'assets.json').read_text(), object_pairs_hook=unique_object)
+    if not isinstance(manifest, list) or not manifest:
+        raise ValueError('Invalid asset manifest')
     allowed = {'index.html', 'assets.json'}
     for item in manifest:
+        if not isinstance(item, dict) or set(item) != {'path', 'sha256'} or not isinstance(item['path'], str) or not isinstance(item['sha256'], str):
+            raise ValueError('Invalid asset manifest entry')
         path = item['path']
         if not re.fullmatch(r'assets/[A-Za-z0-9/_.-]+', path) or '..' in path or path in allowed:
             raise ValueError('Invalid asset path')
         allowed.add(path)
+        if not (generation / path).is_file():
+            raise ValueError('Invalid asset type')
         if hashlib.sha256((generation / path).read_bytes()).hexdigest() != item['sha256']:
             raise ValueError('Invalid asset hash')
+    # Older cw dd copied Vite's build-only metadata. Accept only its known
+    # schema, with output references constrained to hash-validated assets.
+    vite = generation / '.vite/manifest.json'
+    if vite.exists():
+        if not vite.is_file():
+            raise ValueError('Invalid Vite manifest type')
+        metadata = json.loads(vite.read_text(), object_pairs_hook=unique_object)
+        if not isinstance(metadata, dict) or not metadata:
+            raise ValueError('Invalid Vite manifest')
+        for key, chunk in metadata.items():
+            if not isinstance(chunk, dict) or 'file' not in chunk or set(chunk) - {'file', 'src', 'name', 'isEntry', 'isDynamicEntry', 'css', 'assets', 'imports', 'dynamicImports'}:
+                raise ValueError('Invalid Vite chunk')
+            if not isinstance(chunk['file'], str) or chunk['file'] not in allowed - {'index.html', 'assets.json'}:
+                raise ValueError('Invalid Vite output')
+            for field in ('src', 'name'):
+                if field in chunk and not isinstance(chunk[field], str):
+                    raise ValueError('Invalid Vite string')
+            for field in ('isEntry', 'isDynamicEntry'):
+                if field in chunk and not isinstance(chunk[field], bool):
+                    raise ValueError('Invalid Vite flag')
+            for field in ('css', 'assets', 'imports', 'dynamicImports'):
+                if field in chunk:
+                    values = chunk[field]
+                    targets = metadata if field in ('imports', 'dynamicImports') else allowed - {'index.html', 'assets.json'}
+                    if not isinstance(values, list) or any(not isinstance(value, str) or value not in targets for value in values):
+                        raise ValueError('Invalid Vite references')
+        allowed.add('.vite/manifest.json')
     for entry in generation.rglob('*'):
         relative = entry.relative_to(generation).as_posix()
-        if entry.is_symlink() or (entry.is_file() and relative not in allowed) or (entry.is_dir() and not any(path.startswith(relative + '/') for path in allowed)):
+        if (not entry.is_file() and not entry.is_dir()) or entry.is_symlink() or (entry.is_file() and relative not in allowed) or (entry.is_dir() and not any(path.startswith(relative + '/') for path in allowed)):
             raise ValueError('Unmanaged generation content')
 PYTHON
   [[ $? == 0 ]] || return 1
