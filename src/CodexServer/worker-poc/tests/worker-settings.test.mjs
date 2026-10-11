@@ -27,7 +27,7 @@ async function fixture(t, mode = 'success') {
       const request = JSON.parse(options.body);
       writes.push(request);
       if (mode === 'conflict') return json({}, 409);
-      current = { ...current, displayName: request.displayName, configuredMaximumCapacity: request.maximumParallelExecutions, configurationRevision: 2 };
+      current = { ...current, displayName: request.displayName, configuredMaximumCapacity: request.maximumParallelExecutions, configurationRevision: 2, ...(request.workerExecutionSlots === undefined ? {} : { workerExecutionSlots: request.workerExecutionSlots }) };
       if (mode === 'lost-response') throw new TypeError('Connection lost');
       return json(current);
     }
@@ -65,3 +65,15 @@ for (const mode of ['conflict', 'preflight-conflict', 'lost-response']) {
     assert.equal(runtime.locked(path), false);
   });
 }
+
+test('slot save refreshes desired slots without changing applied capacity', async t => {
+  const { runtime, generation, writes } = await fixture(t);
+  const saved = await saveWorkerSettings(runtime, 'worker-1', 'Original', 2, 1, 5);
+  assert.equal(writes[0].workerExecutionSlots, 5);
+  assert.equal(saved.workerExecutionSlots, 5);
+  assert.equal(saved.configuredMaximumCapacity, 2);
+  assert.equal(saved.maximumCapacity, 3);
+  assert.deepEqual(runtime.queries.getQueryData(queryKeys.read(generation, path)), saved);
+  assert.deepEqual(runtime.queries.getQueryData(queryKeys.read(generation, '/api/v1/workers'))[0], saved);
+  assert.deepEqual(await runtime.read(path, new AbortController().signal, value => value), saved);
+});

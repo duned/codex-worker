@@ -1,4 +1,4 @@
-import { useLanguage } from '../../shared/i18n';
+import { t, useLanguage } from '../../shared/i18n';
 import { useParams, useLocation } from 'react-router-dom';
 import { WorkerDetail } from '../../detail.jsx';
 import { useApiRead } from '../../shared/api/session';
@@ -24,6 +24,7 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
   const observation = observations.data?.find(item => item.workerId === resourceId);
   const projectId = new URLSearchParams(location.search).get('project');
   return <div className="poc-worker-detail-page">
+    {observation?.workerExecutionSlots != null && observation.workerExecutionSlots !== observation.maximumCapacity && <Notice>{t('workers.editorSlotsPending')}</Notice>}
     {observations.error && <Notice error>{observations.error}</Notice>}
     <WorkerDetail workersHref={workerId ? '/workers' : '/workers'} administrationHref={workerId ? `/workers/${encodeURIComponent(workerId)}${location.search}` : canonicalPath(location.pathname, location.search)} id={resourceId} observations={observations.data ?? null} nodes={nodes.data ?? null}
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}

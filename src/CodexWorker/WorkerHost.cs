@@ -161,11 +161,13 @@ public sealed class WorkerHost
                     }
                 }
             }
+            if (managedConfiguration?.AppliedWorkerExecutionSlots is { } initialSlots)
+                _global.Worker.MaxParallelTasks = initialSlots;
             if (_global.Server.Enabled)
             {
                 heartbeat = new WorkerHeartbeatLoop(_global.Server, _global.Worker.MaxParallelTasks, CurrentHeartbeatStatus,
                     message => _output.Warning(message), () => Volatile.Read(ref heartbeatCapabilities),
-                    () => managedConfiguration?.Status, _registration);
+                    () => managedConfiguration?.Status, _registration, () => _global.Worker.MaxParallelTasks);
                 heartbeat.Start();
             }
             history = new ExecutionHistoryStore(_executionHistoryPath);
@@ -475,6 +477,10 @@ public sealed class WorkerHost
                         if (retryRuntimeSynchronization || !string.Equals(previousVersion, managedConfiguration.Status.AppliedVersion, StringComparison.Ordinal))
                         {
                             runtimeReadModel.Registry.ReplaceConfiguration(replacement, validateExecutionResources: false);
+                            if (managedConfiguration.AppliedWorkerExecutionSlots is { } slots)
+                                _global.Worker.MaxParallelTasks = slots;
+                            capacityLog.Reconfigure(_global.Worker.MaxParallelTasks);
+                            ReportCapacity();
                             runtimeReadModel.Events.Publish("configuration.synchronized", "Server-managed configuration was applied.");
                         }
                     }

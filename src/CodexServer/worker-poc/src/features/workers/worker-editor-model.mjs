@@ -32,7 +32,9 @@ export function compareSemanticVersions(left, right) {
 
 export function workerConfiguration(worker) {
   const candidate = worker?.configuredMaximumCapacity ?? worker?.maximumCapacity ?? worker?.capacity;
+  const slots = worker?.workerExecutionSlots ?? worker?.maximumCapacity ?? worker?.capacity;
   return {
+    workerExecutionSlots: Number.isInteger(slots) && slots >= 1 && slots <= 8 ? String(slots) : '',
     displayName: typeof worker?.displayName === 'string' ? worker.displayName : '',
     maximumParallelExecutions: Number.isInteger(candidate) && candidate >= 1 && candidate <= 8 ? String(candidate) : ''
   };

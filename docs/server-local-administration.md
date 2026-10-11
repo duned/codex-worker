@@ -231,3 +231,9 @@ The TLS proxy's fixed upstream Host must match the origin's authority while the
 listener remains loopback HTTP. Existing settings, token and state are preserved.
 See [HTTPS login recovery and safe diagnostics](remote-https-deployment.md#upgrade-recovery-and-bounded-rejection-diagnostics)
 for network/configuration rejection, existing-token retrieval and deployed checks.
+
+### Worker execution capacity
+
+The Worker editor separates **Server assignment limit** (`maximumParallelExecutions` in the existing settings API) from **Worker execution slots** (`workerExecutionSlots`, optional for existing API clients). Both accept 1–8 and share the revision-checked settings save. Omitting slots preserves the stored setting; before any central slot setting, the Worker uses its local `worker.maxParallelTasks`. Occupancy and heartbeat-reported capacity remain observations, not settings.
+
+Managed Workers receive slots in their authenticated, validated configuration snapshot. Slot changes wait for the existing idle synchronization; the Server pauses new assignments while requested slots differ from heartbeat-reported capacity, allowing active work to finish without interruption. The Worker then applies the local scheduler limit and reports it on subsequent heartbeats. The dashboard shows pending slots separately until that report arrives. Offline or older Workers may leave the setting pending; saving does not establish that it was applied. Assignment limits remain independent and continue to cap admission within applied Worker capacity.

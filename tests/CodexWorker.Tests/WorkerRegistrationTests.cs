@@ -583,6 +583,36 @@ public sealed class WorkerRegistrationTests
         finally { await loop.StopAsync(); }
     }
 
+    [Fact]
+    public async Task HeartbeatUsesCurrentAppliedCapacityIncludingFinalReport()
+    {
+        using var temporary = new TemporaryDirectory();
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example", IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await WorkerIdentity.LoadOrCreateAsync(settings.IdentityFile);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile);
+        var handler = new CaptureHandler(HttpStatusCode.BadRequest);
+        using var client = new HttpClient(handler);
+        var reported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var applied = 4;
+        var loop = new WorkerHeartbeatLoop(settings, 2, () => new(0, [], "running"),
+            _ => reported.TrySetResult(), client: new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()),
+            currentCapacity: () => applied);
+        loop.Start();
+        try
+        {
+            await reported.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            using var initial = JsonDocument.Parse(handler.Body ?? throw new InvalidOperationException("No heartbeat."));
+            Assert.Equal(4, initial.RootElement.GetProperty("maximumCapacity").GetInt32());
+        }
+        finally
+        {
+            applied = 1;
+            await loop.StopAsync();
+        }
+        using var final = JsonDocument.Parse(handler.Body ?? throw new InvalidOperationException("No final heartbeat."));
+        Assert.Equal(1, final.RootElement.GetProperty("maximumCapacity").GetInt32());
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode;

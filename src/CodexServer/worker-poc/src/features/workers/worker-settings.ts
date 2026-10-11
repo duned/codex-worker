@@ -6,17 +6,19 @@ import { t } from '../../shared/i18n';
 
 /** Persist Server assignment settings and publish the authoritative revision to both views. */
 export async function saveWorkerSettings(runtime: DashboardRuntime, workerId: string, displayName: string,
-  maximumParallelExecutions: number, revision: number) {
+  maximumParallelExecutions: number, revision: number, workerExecutionSlots?: number) {
   const path = `/api/v1/workers/${encodeURIComponent(workerId)}`, resource = path;
   const generation = runtime.snapshot().generation;
   const saved = await runtime.mutate(resource, `${path}/settings`, 'PUT', {
     displayName,
     maximumParallelExecutions,
+    ...(workerExecutionSlots === undefined ? {} : { workerExecutionSlots }),
     expectedRevision: revision
   }, value => {
     const result = validateWorker(value);
     if (result.workerId !== workerId || result.displayName !== displayName ||
-        result.configuredMaximumCapacity !== maximumParallelExecutions || result.configurationRevision !== revision + 1)
+        result.configuredMaximumCapacity !== maximumParallelExecutions || result.configurationRevision !== revision + 1 ||
+        (workerExecutionSlots !== undefined && result.workerExecutionSlots !== workerExecutionSlots))
       throw new Error('Unexpected Worker configuration response.');
     return result;
   }, async signal => {

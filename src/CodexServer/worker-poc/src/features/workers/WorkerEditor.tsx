@@ -47,6 +47,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const [baseline, setBaseline] = useState(() => workerConfiguration(worker));
   const [displayName, setDisplayName] = useState(baseline.displayName);
   const [capacity, setCapacity] = useState(baseline.maximumParallelExecutions);
+  const [slots, setSlots] = useState(baseline.workerExecutionSlots);
   const [revision, setRevision] = useState(worker.configurationRevision ?? 1);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -67,17 +68,18 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const currentName = displayName.trim();
   const currentCapacity = Number(capacity);
   const validCapacity = Number.isInteger(currentCapacity) && currentCapacity >= 1 && currentCapacity <= 8;
-  const dirty = currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
+  const validSlots = Number.isInteger(Number(slots)) && Number(slots) >= 1 && Number(slots) <= 8;
+  const dirty = slots !== baseline.workerExecutionSlots || currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
   const canSubmit = dirty && !busy && !locked && !refreshRequired && !refreshing;
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (guard.current || !canSubmit || !currentName || currentName.length > 200 || !validCapacity) return;
+    if (guard.current || !canSubmit || !currentName || currentName.length > 200 || !validCapacity || !validSlots) return;
     guard.current = true;
     setBusy(true);
     setError('');
     try {
-      await saveWorkerSettings(runtime, worker.workerId, currentName, currentCapacity, revision);
+      await saveWorkerSettings(runtime, worker.workerId, currentName, currentCapacity, revision, Number(slots));
       onClose();
     } catch (failure) {
       const preflightConflict = failure instanceof ApiError && (failure.status === 409 || failure.message === t('workers.editorRevisionConflict'));
@@ -110,6 +112,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
       const form = workerConfiguration(current);
       setDisplayName(form.displayName);
       setCapacity(form.maximumParallelExecutions);
+      setSlots(form.workerExecutionSlots);
       setBaseline(form);
       setRevision(current.configurationRevision ?? 1);
       setRefreshRequired(false);
@@ -192,6 +195,11 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
             <div className="worker-editor-capacity-input">
               <NumberInput label={t('workers.editorMaximumParallelExecutions')} value={capacity} min={1} max={8} isRequired onChange={setCapacity} />
               <p className="worker-editor-help">{t('workers.editorCapacityHelp')}</p>
+            </div>
+            <div className="worker-editor-capacity-input">
+              <NumberInput label={t('workers.editorExecutionSlots')} value={slots} min={1} max={8} isRequired onChange={setSlots} />
+              <p className="worker-editor-help">{t('workers.editorSlotsHelp')}</p>
+              {worker.workerExecutionSlots != null && worker.workerExecutionSlots !== worker.maximumCapacity && <p role="status">{t('workers.editorSlotsPending')}</p>}
             </div>
             <dl className="worker-editor-context">
               <div><dt>{t('workers.editorCurrentOccupancy')}</dt><dd>{workerOccupancy}</dd></div>

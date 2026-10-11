@@ -757,7 +757,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
 public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capacity,
     Func<WorkerHeartbeatStatus> snapshot, Action<string>? report = null,
     Func<IReadOnlyList<WorkerCapabilityContract>>? capabilities = null,
-    Func<WorkerConfigurationSyncStatus?>? configurationSync = null, WorkerRegistrationClient? client = null)
+    Func<WorkerConfigurationSyncStatus?>? configurationSync = null, WorkerRegistrationClient? client = null, Func<int>? currentCapacity = null)
 {
     private readonly CancellationTokenSource _stop = new();
     private Task? _run;
@@ -774,7 +774,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
             try
             {
                 var current = snapshot();
-                await _client.HeartbeatAsync(settings, capacity, current.ActiveExecutions, current.Projects, current.State,
+                await _client.HeartbeatAsync(settings, currentCapacity?.Invoke() ?? capacity, current.ActiveExecutions, current.Projects, current.State,
                     _stop.Token, capabilities?.Invoke(), configurationSync?.Invoke());
                 if (_degraded) report?.Invoke("Codex Server heartbeat connectivity recovered.");
                 _degraded = false;
@@ -801,7 +801,7 @@ public sealed class WorkerHeartbeatLoop(WorkerServerSettings settings, int capac
     {
         _stop.Cancel();
         if (_run is not null) try { await _run.ConfigureAwait(false); } catch (OperationCanceledException) { }
-        try { await _client.HeartbeatAsync(settings, capacity, 0, Array.Empty<string>(), WorkerLifecycleStates.Stopped, CancellationToken.None,
+        try { await _client.HeartbeatAsync(settings, currentCapacity?.Invoke() ?? capacity, 0, Array.Empty<string>(), WorkerLifecycleStates.Stopped, CancellationToken.None,
             capabilities?.Invoke(), configurationSync?.Invoke()); }
         catch (Exception ex) { if (!_degraded) report?.Invoke($"Codex Server final heartbeat failed ({FailureCategory(ex)}); check Server connectivity and enrolled Worker API authorization."); }
         _stop.Dispose();

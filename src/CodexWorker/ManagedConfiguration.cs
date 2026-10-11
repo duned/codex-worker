@@ -7,7 +7,7 @@ namespace CodexWorker;
 
 /// <summary>Server-owned orchestration snapshot. Machine paths and credentials are deliberately absent.</summary>
 public sealed record ServerManagedConfigurationContract(int ContractVersion, string Version,
-    IReadOnlyList<ServerProjectContract> Projects);
+    IReadOnlyList<ServerProjectContract> Projects, int? WorkerExecutionSlots = null);
 
 public sealed record WorkerConfigurationSyncStatus(string? DesiredVersion, string? AppliedVersion,
     string SynchronizationStatus, DateTimeOffset? LastSuccessfulUpdateUtc, string? Error,
@@ -26,6 +26,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
     public IReadOnlyList<ServerProjectContract> AppliedProjects { get { lock (_gate) return _appliedProjects; } }
 
     public WorkerConfigurationSyncStatus Status { get { lock (_gate) return _status; } }
+    private int? _appliedWorkerExecutionSlots;
+    public int? AppliedWorkerExecutionSlots { get { lock (_gate) return _appliedWorkerExecutionSlots; } }
     public bool HasCachedSnapshot => File.Exists(_cachePath);
 
     public IReadOnlyList<(string Path, WorkerConfiguration Configuration)> LoadLastValid()
@@ -158,6 +160,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                     var unchanged = string.Equals(_status.AppliedVersion, desired.Version, StringComparison.Ordinal) && File.Exists(_cachePath);
                     if (!unchanged) PersistAtomically(desired);
                     _appliedProjects = desired.Projects.ToArray();
+                    _appliedWorkerExecutionSlots = desired.WorkerExecutionSlots;
                     _status = new(desired.Version, desired.Version, "synchronized",
                         unchanged ? _status.LastSuccessfulUpdateUtc : DateTimeOffset.UtcNow, null,
                         new("retrieved", "synchronized", "server-retrieved", desired.Version, desired.Version, null, null,
@@ -166,7 +169,11 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 }
             }
             if (!updateStatus)
-                lock (_gate) _appliedProjects = desired.Projects.ToArray();
+                lock (_gate)
+                {
+                    _appliedProjects = desired.Projects.ToArray();
+                    _appliedWorkerExecutionSlots = desired.WorkerExecutionSlots;
+                }
             return applied;
         }
         catch (Exception ex) when (updateStatus)
@@ -205,7 +212,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         if (snapshot.ContractVersion != 2 && !(cachedLegacy && snapshot.ContractVersion == 1))
             throw new InvalidDataException($"Unsupported contract version: expected 2, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
         if (string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
-            snapshot.Projects is null || snapshot.Projects.Count > 1000)
+            snapshot.WorkerExecutionSlots is < 1 or > 8 || snapshot.Projects is null || snapshot.Projects.Count > 1000)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");
         if (snapshot.Projects.Any(project => project is null || project.Revision < 1 || !ValidProject(project)))
             throw new InvalidDataException("Invalid project definition in Server managed configuration.");
@@ -213,7 +220,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             throw new InvalidDataException("Server returned duplicate managed project IDs.");
         var duplicate = snapshot.Projects.GroupBy(project => project.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null) throw new InvalidDataException("Server returned duplicate managed project names.");
-        var expected = CalculateVersion(snapshot.Projects, cachedLegacy);
+        var expected = CalculateVersion(snapshot.Projects, cachedLegacy, snapshot.WorkerExecutionSlots);
         if (!string.Equals(expected, snapshot.Version, StringComparison.Ordinal))
             throw new InvalidDataException("Snapshot version/hash mismatch: Server managed configuration version does not match its contents.");
     }
@@ -232,7 +239,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             (requirement.Version is null || (requirement.Version.Length <= 100 && !requirement.Version.Any(char.IsControl))) &&
             (requirement.Scope is null || (requirement.Scope.Length <= 200 && !requirement.Scope.Any(char.IsControl))));
 
-    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects, bool legacy = false)
+    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects, bool legacy = false, int? workerExecutionSlots = null)
     {
         var materialBuilder = new StringBuilder();
         foreach (var project in projects.OrderBy(project => project.Id, StringComparer.Ordinal))
@@ -257,6 +264,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             }
             Append(materialBuilder, "end-project");
         }
+        if (workerExecutionSlots is { } slots) Append(materialBuilder, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));
         var material = materialBuilder.ToString();
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
     }

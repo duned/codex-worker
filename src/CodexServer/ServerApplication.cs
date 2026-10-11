@@ -478,7 +478,7 @@ public static partial class ServerApplication
                     if (current is null) return Results.NotFound();
                     var projects = await store.GetProjectsAsync(context.RequestAborted);
                     var diagnostics = WorkerDiagnosticsDerivation.Derive(current, projects,
-                        await store.GetProvisioningPlansAsync(context.RequestAborted), ManagedConfigurationVersion(projects),
+                        await store.GetProvisioningPlansAsync(context.RequestAborted), ManagedConfigurationVersion(projects, current.WorkerExecutionSlots),
                         await commands.ListNodeAsync(workerId, context.RequestAborted), clock.GetUtcNow());
                     if (!diagnostics.CanActivate)
                         return Results.Conflict(new { error = "Worker activation is blocked by current preparation evidence.", reasons = diagnostics.ActivationBlockingReasons });
@@ -493,14 +493,14 @@ public static partial class ServerApplication
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Length > 200 || request.DisplayName.Trim().Length > 200 ||
-                request.DisplayName.Any(char.IsControl) || request.MaximumParallelExecutions is < 1 or > 8 || request.ExpectedRevision < 1)
-                return Results.BadRequest(new { error = "Display name must contain 1..200 printable characters, maximum parallel executions must be 1..8, and expectedRevision must be positive." });
+                request.DisplayName.Any(char.IsControl) || request.MaximumParallelExecutions is < 1 or > 8 || request.WorkerExecutionSlots is < 1 or > 8 || request.ExpectedRevision < 1)
+                return Results.BadRequest(new { error = "Display name must contain 1..200 printable characters, Server assignment limit and optional Worker execution slots must be 1..8, and expectedRevision must be positive." });
             var current = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (current is null) return Results.NotFound();
             if (current.ConfigurationRevision != request.ExpectedRevision)
                 return Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
             var updated = await store.UpdateWorkerConfigurationAsync(workerId, request.DisplayName.Trim(),
-                request.MaximumParallelExecutions, request.ExpectedRevision, context.RequestAborted);
+                request.MaximumParallelExecutions, request.ExpectedRevision, context.RequestAborted, request.WorkerExecutionSlots);
             if (updated is not null) return Results.Ok(updated);
             current = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return current is null ? Results.NotFound() : Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
@@ -640,16 +640,17 @@ public static partial class ServerApplication
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
             var typedCommands = await commands.ListNodeAsync(workerId, context.RequestAborted);
             return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans,
-                ManagedConfigurationVersion(projects), typedCommands, clock.GetUtcNow()));
+                ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots), typedCommands, clock.GetUtcNow()));
         });
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!await AuthorizedWorkerAsync(context, store, workerId)) return WorkerUnauthorized();
-            if (await store.GetWorkerAsync(workerId, context.RequestAborted) is null) return Results.NotFound();
+            var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
+            if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
-            var version = ManagedConfigurationVersion(projects);
-            return Results.Ok(new ServerManagedConfigurationResponse(2, version, projects));
+            var version = ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots);
+            return Results.Ok(new ServerManagedConfigurationResponse(2, version, projects, worker.WorkerExecutionSlots));
         });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -1064,7 +1065,7 @@ public static partial class ServerApplication
 
     private static bool ValidCapability(WorkerCapability value) => WorkerRegistrationRequest.ValidCapability(value);
 
-    internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects)
+    internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects, int? workerExecutionSlots = null)
     {
         var material = new StringBuilder();
         foreach (var project in projects.OrderBy(item => item.Id, StringComparer.Ordinal))
@@ -1089,6 +1090,7 @@ public static partial class ServerApplication
             }
             Append(material, "end-project");
         }
+        if (workerExecutionSlots is { } slots) Append(material, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
     }
 
@@ -1099,7 +1101,7 @@ public static partial class ServerApplication
     }
 
     private sealed record ServerManagedConfigurationResponse(int ContractVersion, string Version,
-        IReadOnlyList<CentralProject> Projects);
+        IReadOnlyList<CentralProject> Projects, int? WorkerExecutionSlots = null);
 
     public static string DisplayVersion => CodexProvisioning.ProductVersion.Display(Assembly.GetExecutingAssembly());
 }

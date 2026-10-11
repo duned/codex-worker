@@ -41,9 +41,9 @@ test('reported Worker update progress and failures take precedence over version 
 });
 
 test('Worker editor keeps absent capacity unknown and prefers the saved Server limit', () => {
-  assert.deepEqual(workerConfiguration({ displayName: 'Node' }), { displayName: 'Node', maximumParallelExecutions: '' });
-  assert.deepEqual(workerConfiguration({ displayName: 'Node', maximumCapacity: 3 }), { displayName: 'Node', maximumParallelExecutions: '3' });
-  assert.deepEqual(workerConfiguration({ displayName: 'Node', maximumCapacity: 3, configuredMaximumCapacity: 2 }), { displayName: 'Node', maximumParallelExecutions: '2' });
+  assert.deepEqual(workerConfiguration({ displayName: 'Node' }), { displayName: 'Node', maximumParallelExecutions: '', workerExecutionSlots: '' });
+  assert.deepEqual(workerConfiguration({ displayName: 'Node', maximumCapacity: 3 }), { displayName: 'Node', maximumParallelExecutions: '3', workerExecutionSlots: '3' });
+  assert.deepEqual(workerConfiguration({ displayName: 'Node', maximumCapacity: 3, configuredMaximumCapacity: 2 }), { displayName: 'Node', maximumParallelExecutions: '2', workerExecutionSlots: '3' });
   assert.equal(workerConfiguration({ capacity: 0 }).maximumParallelExecutions, '');
 });
 
@@ -85,4 +85,10 @@ test('Worker editor copy is complete in English and Spanish', () => {
   const spanish = read('shared/locales/es.ts');
   const keys = source => [...source.matchAll(/"(workers\.editor[^"]+)":/g)].map(match => match[1]).sort();
   assert.deepEqual(keys(spanish), keys(english));
+});
+
+test('configured slots are independent from assignment limit and occupancy', () => {
+  assert.deepEqual(workerConfiguration({ displayName: 'Node', configuredMaximumCapacity: 1,
+    workerExecutionSlots: 4, maximumCapacity: 2, activeExecutions: 2 }),
+  { displayName: 'Node', maximumParallelExecutions: '1', workerExecutionSlots: '4' });
 });
