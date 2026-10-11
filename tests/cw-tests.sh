@@ -505,6 +505,61 @@ RELEASE
   export CW_REPO_DIR="$repo"
 }
 
+# Combined version/release orchestration uses the same isolated fixtures.
+for selection in 9.9.0 + ++ +++; do
+  case $selection in
+    9.9.0) expected=9.9.0; name=explicit ;;
+    +) expected=9.8.8; name=patch ;;
+    ++) expected=9.9.0; name=minor ;;
+    +++) expected=10.0.0; name=major ;;
+  esac
+  setup_version_repo "vr-$name"
+  combined_repo="$test_root/vr-$name"
+  rm -f "$test_root/release.args"
+  "$combined_repo/cw" vr "$selection" > "$test_root/vr.out" 2>&1
+  [[ $(cat "$test_root/release.args") == $'1\n'"$expected" ]]
+  [[ $(git --git-dir="$test_root/vr-$name-origin.git" log -1 --format=%s main) == "[V] $expected" ]]
+  python3 - "$test_root/vr.out" "$expected" <<'PYTHON'
+import sys
+output = open(sys.argv[1]).read()
+assert output.index("Pushed ") < output.index("Publishing Worker " + sys.argv[2])
+PYTHON
+done
+setup_version_repo vr-failure
+combined_repo="$test_root/vr-failure"
+for arguments in '9.8.7' '9.8.6' '++++' '9.8' '1.2.3-beta' 'list' '+ extra'; do
+  rm -f "$test_root/release.args"
+  read -r -a combined_arguments <<< "$arguments"
+  if "$combined_repo/cw" vr "${combined_arguments[@]}" > "$test_root/vr-failure.out" 2>&1; then
+    echo "combined command unexpectedly accepted $arguments" >&2; exit 1
+  fi
+  [[ ! -f $test_root/release.args ]]
+done
+grep -Fq 'Usage: cw vr' "$test_root/vr-failure.out"
+touch "$combined_repo/untracked"
+if "$combined_repo/cw" vr + > "$test_root/vr-dirty.out" 2>&1; then exit 1; fi
+grep -Fq 'clean working tree' "$test_root/vr-dirty.out"
+[[ ! -f $test_root/release.args ]]
+rm "$combined_repo/untracked"
+printf '7\n' > "$test_root/fail-release"
+combined_code=0
+"$combined_repo/cw" vr + > "$test_root/vr-publication.out" 2>&1 || combined_code=$?
+[[ $combined_code == 7 ]]
+grep -Fq 'already committed/pushed' "$test_root/vr-publication.out"
+grep -Fq 'uncertain outcome' "$test_root/vr-publication.out"
+[[ $(git --git-dir="$test_root/vr-failure-origin.git" log -1 --format=%s main) == '[V] 9.8.8' ]]
+[[ $(cat "$test_root/release.args") == $'1\n9.8.8' ]]
+rm "$test_root/fail-release" "$test_root/release.args"
+# Inspection remains read-only and delegates to the existing release query.
+git -C "$combined_repo" remote set-url origin https://github.com/owner/inspection.git
+combined_head=$(git -C "$combined_repo" rev-parse HEAD)
+"$combined_repo/cw" vr > "$test_root/vr-inspection.out"
+grep -Fq 'Product version 9.8.8' "$test_root/vr-inspection.out"
+grep -Fq 'v9.8.7' "$test_root/vr-inspection.out"
+[[ $(git -C "$combined_repo" rev-parse HEAD) == "$combined_head" ]]
+[[ -z $(git -C "$combined_repo" status --porcelain) ]]
+[[ ! -f $test_root/release.args ]]
+
 # Release publication validates prerequisites and delegates the exact version to
 # the existing script. These fixtures never create tags or contact GitHub.
 release_repo="$test_root/release-success"

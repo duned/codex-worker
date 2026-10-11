@@ -52,6 +52,10 @@ The thin client posts selectors to `POST /api/executions/cleanup` (`executionId`
 
 `cw version` and `cw release` use the same configured source checkout. GitHub release queries are pinned to that checkout's `origin` remote.
 
+`cw vr` shows the current product version and latest release using the existing read-only inspections. `cw vr 0.27.0` runs `cw v 0.27.0` first, then `cw r 0.27.0` only after the version commit and push succeed. `cw vr +`, `cw vr ++`, and `cw vr +++` select a patch, minor, or major increment from the current checkout version; minor resets patch, and major resets minor and patch (for example, `0.26.4` becomes `0.26.5`, `0.27.0`, or `1.0.0`). The selected version remains fixed through synchronization; existing version preflight checks can reject it.
+
+Any version failure stops before release publication. If publication fails, the version is already committed/pushed and remains intact; publication may have an uncertain outcome. Inspect GitHub release/tag state and follow the release workflow's recovery guidance before manually using `cw r VERSION`. The combined command never rolls back, deletes remote state, or automatically retries publication. This is a repository-local developer command, separate from installed Worker and WET commands.
+
 The production release workflow remains [`packaging/release.sh`](packaging/release.sh).
 
 ## Install Server + Worker

@@ -31,6 +31,7 @@ Developer and local Worker operations:
   execution cleanup ID | --issue NUMBER | --stale [--limit 1..100] [--apply] [--json]
                   Dry-run by default; apply requires a completed Worker drain
   version, v      Show or safely bump the product version
+  vr [version|+|++|+++]  Show version/releases, or bump, push and publish
   release, r      Publish the current product version or inspect releases
   help, -h, --help
 
@@ -485,6 +486,44 @@ release_command() {
   fi
 }
 
+version_release_command() {
+  local hint='Usage: cw vr [version|+|++|+++]'
+  (($# <= 1)) || { error "$hint"; return 2; }
+  if (($# == 0)); then
+    version_command || return $?
+    release_command
+    return $?
+  fi
+  local selected=$1 current
+  case $selected in
+    +|++|+++)
+      need_command python3 || return 1
+      current=$(read_version) || { error 'Directory.Build.props is missing, malformed, or has an ambiguous <Version> property'; return 1; }
+      valid_product_version "$current" || { error "unsupported product version in Directory.Build.props: $current"; return 1; }
+      selected=$(python3 - "$current" "$selected" <<'PYTHON'
+import sys
+parts = list(map(int, sys.argv[1].split(".")))
+index = 3 - len(sys.argv[2])
+parts[index] += 1
+parts[index + 1:] = [0] * (2 - index)
+print(".".join(map(str, parts)))
+PYTHON
+      ) || return $?
+      ;;
+    *) valid_product_version "$selected" || { error "invalid version '$selected'; $hint"; return 2; } ;;
+  esac
+  # Re-enter the existing commands in separate shells so their errexit checks
+  # remain active even while this orchestration captures a failure status.
+  bash "${BASH_SOURCE[0]}" v "$selected" || return $?
+  if bash "${BASH_SOURCE[0]}" r "$selected"; then
+    return 0
+  else
+    local result=$?
+    error "version $selected was already committed/pushed; release publication failed or may have an uncertain outcome; inspect GitHub release state before retrying 'cw r $selected'"
+    return "$result"
+  fi
+}
+
 # Exact launcher content identifies entries owned by cw, including an old tool path.
 wet_launcher() {
   printf '#!/usr/bin/env bash\n# cw managed development WET\n# target: %s\nexec %q "$@"\n' "$1" "$1"
@@ -917,7 +956,7 @@ main() {
   local command=$1; shift
   case $command in
     --help|-h|help|h) ;;
-    status|s|deploy|d|dashboard|dd|version|v|release|r|maintenance) validate_repository "$command" || return 1 ;;
+    status|s|deploy|d|dashboard|dd|version|v|vr|release|r|maintenance) validate_repository "$command" || return 1 ;;
   esac
   case $command in
     --help|-h|help|h) (($# == 0)) || { error 'help does not accept options'; help_hint; return 2; }; usage ;;
@@ -932,6 +971,7 @@ main() {
     execution) execution_command "$@" ;;
     maintenance) maintenance_command "$@" ;;
     version|v) version_command "$@" ;;
+    vr) version_release_command "$@" ;;
     release|r) release_command "$@" ;;
     *) error "unknown command: $command"; help_hint; return 2 ;;
   esac
