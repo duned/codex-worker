@@ -47,3 +47,28 @@ test('missing translator input falls back safely and failed detail retains optio
   assert.match(i18n, /\(key \? resources\[language\]\[key\] : undefined\) \?\? resources\[language\]\['shared\.unknown'\]/);
   assert.match(detail, /attention\.lastActivityAtUtc \? ` · \$\{timestamp\(attention\.lastActivityAtUtc\)\}` : ''/);
 });
+
+test('execution list keeps state details inside the badge and presents localized two-line timestamps', () => {
+  const detail = read('features/executions/ExecutionsPage.tsx');
+  const english = read('shared/locales/en.ts');
+  const spanish = read('shared/locales/es.ts');
+  const dateRenderer = detail.match(/function ExecutionListTimestamp\([\s\S]*?\n\}/)?.[0];
+
+  assert.ok(dateRenderer);
+  assert.doesNotMatch(dateRenderer, /getSeconds\(|getUTC/);
+  assert.match(detail, /<StatusBadge tone=\{state\.tone\} active=\{state\.active\}>[\s\S]*?\{statusLabel\(item\.state\)\}[\s\S]*?<DialogTrigger>[\s\S]*?aria-label=\{t\('executions\.viewStateDetailsFor', \{ id: item\.id \}\)\}[\s\S]*?<\/StatusBadge>/);
+  assert.match(detail, /function ExecutionListTimestamp\([\s\S]*?getDate\(\)[\s\S]*?getMonth\(\)[\s\S]*?getFullYear\(\)[\s\S]*?getHours\(\)[\s\S]*?getMinutes\(\)[\s\S]*?aria-label=\{t\(accessibleLabel, \{ date: dateText, time: timeText \}\)\}/);
+  assert.match(detail, /<span className="block">\{dateText\}<\/span>\s*<span className="block">\{timeText\}<\/span>/);
+  assert.match(detail, /<ExecutionListTimestamp value=\{item\.createdAtUtc\} accessibleLabel="executions\.createdAtAccessible" \/>/);
+  assert.match(detail, /<ExecutionListTimestamp value=\{item\.completedAtUtc\} accessibleLabel="executions\.finishedAtAccessible" \/>/);
+  assert.match(detail, /t\('executions\.executionIdShort'\)/);
+  assert.match(detail, /t\('executions\.finished'\)/);
+  assert.match(english, /"executions\.executionIdShort": "Exec\. ID"/);
+  assert.match(spanish, /"executions\.executionIdShort": "ID de ejec\."/);
+  assert.match(english, /"executions\.finished": "Finished"/);
+  assert.match(spanish, /"executions\.finished": "Finalizada"/);
+  assert.match(english, /"executions\.createdAtAccessible": "Created \{date\} at \{time\}"/);
+  assert.match(spanish, /"executions\.createdAtAccessible": "Creada el \{date\} a las \{time\}"/);
+  assert.match(english, /"executions\.finishedAtAccessible": "Finished \{date\} at \{time\}"/);
+  assert.match(spanish, /"executions\.finishedAtAccessible": "Finalizada el \{date\} a las \{time\}"/);
+});

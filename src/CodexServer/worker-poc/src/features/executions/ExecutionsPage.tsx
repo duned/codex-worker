@@ -41,10 +41,10 @@ function StateCell({ item }: { item: Execution }) {
     item.recoveryState ? { label: t('executions.recoveryStatus'), value: statusLabel(item.recoveryState) } : undefined,
     item.failureClassification ? { label: t('executions.failureClassification'), value: statusLabel(item.failureClassification) } : undefined
   ].filter((note): note is { label: string; value: string } => !!note);
-  return <div className="flex items-center gap-1">
-    <StatusBadge tone={state.tone} active={state.active}>{statusLabel(item.state)}</StatusBadge>
+  return <StatusBadge tone={state.tone} active={state.active}>
+    {statusLabel(item.state)}
     {notes.length > 0 && <DialogTrigger>
-      <Button color="tertiary" size="sm" iconLeading={InfoCircle} aria-label={t('executions.viewStateDetailsFor', { id: item.id })} />
+      <Button color="tertiary" size="xs" className="!p-1 text-current" iconLeading={InfoCircle} aria-label={t('executions.viewStateDetailsFor', { id: item.id })} />
       <Popover placement="bottom end" className="z-50 max-w-sm rounded-xl border border-secondary bg-primary p-4 shadow-lg">
         <Dialog className="max-h-[min(70vh,28rem)] overflow-y-auto outline-none">
           <Heading slot="title" className="mb-3 text-sm font-semibold text-primary">{t('executions.stateDetails')}</Heading>
@@ -57,7 +57,20 @@ function StateCell({ item }: { item: Execution }) {
         </Dialog>
       </Popover>
     </DialogTrigger>}
-  </div>;
+  </StatusBadge>;
+}
+
+function ExecutionListTimestamp({ value, accessibleLabel }: { value: string; accessibleLabel: TranslationKey }) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return <time dateTime={value}>{timestamp(value)}</time>;
+
+  const date = new Date(parsed), pad = (number: number) => String(number).padStart(2, '0');
+  const dateText = `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
+  const timeText = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return <time dateTime={value} aria-label={t(accessibleLabel, { date: dateText, time: timeText })}>
+    <span className="block">{dateText}</span>
+    <span className="block">{timeText}</span>
+  </time>;
 }
 function ExecutionList() {
   useLanguage();
@@ -100,12 +113,12 @@ function ExecutionTable({ items, search, projects: projectItems, workers: worker
         </colgroup>
         <thead className="bg-secondary text-xs uppercase tracking-wide text-tertiary">
           <tr>
-            <th className="px-4 py-4 font-semibold">{t('executions.executionId')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.executionIdShort')}</th>
             <th className="px-4 py-4 font-semibold">{t('executions.project')}</th>
             <th className="px-4 py-4 font-semibold">{t('executions.githubIssueColumn')}</th>
             <th className="px-4 py-4 font-semibold">{t('executions.created')}</th>
             <th className="px-4 py-4 font-semibold">{t('executions.state')}</th>
-            <th className="px-4 py-4 font-semibold">{t('executions.completed')}</th>
+            <th className="px-4 py-4 font-semibold">{t('executions.finished')}</th>
             <th className="px-4 py-4 font-semibold">{t('workers.worker')}</th>
           </tr>
         </thead>
@@ -117,9 +130,9 @@ function ExecutionTable({ items, search, projects: projectItems, workers: worker
               <td className="px-4 py-4"><Link className="font-medium text-primary hover:text-brand-secondary" to={`/executions/${encodeURIComponent(item.id)}${search}`}><GuidDisplay value={item.id} /></Link></td>
               <td className="px-4 py-4"><Link className="block break-words text-sm text-primary hover:text-brand-secondary" to={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</Link></td>
               <td className="px-4 py-4"><IssueTitle projectId={item.projectId} repository={project?.repository} workReference={item.workReference} className="break-words text-sm text-primary hover:text-brand-secondary" /></td>
-              <td className="whitespace-nowrap px-4 py-4 text-xs text-secondary"><time dateTime={item.createdAtUtc}>{timestamp(item.createdAtUtc)}</time></td>
+              <td className="px-4 py-4 text-xs text-secondary"><ExecutionListTimestamp value={item.createdAtUtc} accessibleLabel="executions.createdAtAccessible" /></td>
               <td className="px-4 py-4"><StateCell item={item} /></td>
-              <td className="whitespace-nowrap px-4 py-4 text-xs text-secondary">{item.completedAtUtc && <time dateTime={item.completedAtUtc}>{timestamp(item.completedAtUtc)}</time>}</td>
+              <td className="px-4 py-4 text-xs text-secondary">{item.completedAtUtc && <ExecutionListTimestamp value={item.completedAtUtc} accessibleLabel="executions.finishedAtAccessible" />}</td>
               <td className="px-4 py-4 text-sm text-secondary">{item.assignedWorkerId ? <Link className="block truncate hover:text-brand-secondary" to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`}>{worker?.displayName ?? <GuidDisplay value={item.assignedWorkerId} />}</Link> : t('executions.workerUnassigned')}</td>
             </tr>;
           })}
