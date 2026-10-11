@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1000" viewBox="0 0 1440 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Edit worker · dark reference</title>
+  <desc id="desc">A full-height right-side Edit worker dialog over the dimmed Worker detail page. It contains General, Execution capacity, Provisioning, and Worker version sections. The example shows an outdated Worker and an available update.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-10%" width="150%" height="130%">
+      <feDropShadow dx="-12" dy="0" stdDeviation="24" flood-color="#000000" flood-opacity=".42"/>
+    </filter>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .primary { fill: #f0f2f6; }
+      .body { fill: #d9dde5; }
+      .muted { fill: #a0a7b4; }
+      .subtle { fill: #788190; }
+      .tiny { font-size: 11px; }
+      .small { font-size: 12px; }
+      .medium { font-size: 13px; }
+      .section { font-size: 14px; font-weight: 600; fill: #e7eaf0; }
+      .label { font-size: 12px; font-weight: 500; fill: #d8dce5; }
+      .line { stroke: #303540; }
+      .icon { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <!-- Dashboard behind the open drawer -->
+  <rect width="1440" height="1000" rx="18" fill="#111318"/>
+  <rect x="0" y="0" width="216" height="1000" fill="#15171d"/>
+  <path d="M216 0v1000" stroke="#292d35"/>
+  <rect x="26" y="22" width="32" height="32" rx="9" fill="#252d3b" stroke="#485060"/>
+  <path d="M35 38h14M42 31v14" stroke="#dbe6ff" stroke-width="2" stroke-linecap="round"/>
+  <text x="69" y="43" class="primary" font-size="15" font-weight="600">Codex Server</text>
+  <text x="30" y="91" class="subtle tiny" font-weight="600" letter-spacing="1.2">WORKSPACE</text>
+  <g class="muted small">
+    <text x="60" y="133">Home</text>
+    <text x="60" y="178" fill="#edf2fc">Workers</text>
+    <text x="60" y="223">Projects</text>
+    <text x="60" y="268">Executions</text>
+    <text x="60" y="313">Settings</text>
+  </g>
+  <g fill="none" stroke="#9da5b3" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="30" y="116" width="16" height="13" rx="2"/><path d="M30 121h16M35 116v13M41 116v13"/>
+    <rect x="30" y="161" width="16" height="14" rx="3"/><path d="M34 158v3M42 158v3M35 168h6"/>
+    <path d="M31 211h5l2-3h8v12H31z"/><path d="M31 211v9"/>
+    <rect x="30" y="252" width="16" height="15" rx="2"/><path d="M34 257h8M34 261h8"/>
+    <circle cx="38" cy="307" r="7"/><path d="M38 303v5M38 311h.01"/>
+  </g>
+  <rect x="22" y="148" width="172" height="36" rx="8" fill="#292e39"/>
+  <rect x="22" y="148" width="2" height="36" rx="1" fill="#76a8ff"/>
+  <path d="M26 975h164" stroke="#292d35"/>
+  <circle cx="34" cy="941" r="4" fill="#40c878"/>
+  <text x="47" y="945" class="muted small">Server online</text>
+  <text x="30" y="966" class="subtle tiny">Updated 11/10/2026, 16:48</text>
+
+  <text x="252" y="53" class="muted small">Workers</text>
+  <path d="M300 49l4 4-4 4" fill="none" stroke="#788190" stroke-width="1.4"/>
+  <text x="315" y="53" class="muted small">codex2-vm</text>
+  <text x="252" y="102" class="primary" font-size="25" font-weight="600">codex2-vm</text>
+  <text x="252" y="126" class="muted small">Worker · wrk-03 · Linux x64</text>
+  <rect x="252" y="151" width="316" height="64" rx="10" fill="#191c23" stroke="#272b34"/>
+  <circle cx="272" cy="175" r="4" fill="#40c878"/>
+  <text x="284" y="179" class="body small" font-weight="500">Connected</text>
+  <text x="382" y="179" class="muted small">Ready for work</text>
+  <text x="272" y="198" class="muted tiny">2 / 4 slots occupied</text>
+  <text x="396" y="198" class="subtle tiny">Seen 11/10/2026, 16:48</text>
+  <text x="252" y="263" class="primary" font-size="15" font-weight="600">Current execution</text>
+  <text x="534" y="263" class="subtle tiny">1 active</text>
+  <path d="M252 279h326" stroke="#272b34"/>
+  <circle cx="266" cy="304" r="6" fill="none" stroke="#a0a7b4" stroke-width="1.4"/>
+  <path d="M264 301l5 3-5 3z" fill="#a0a7b4"/>
+  <text x="281" y="308" class="muted small">26.37 · Improve executions list</text>
+  <rect x="505" y="291" width="66" height="23" rx="12" fill="#182c22" stroke="#28533c"/>
+  <circle cx="516" cy="302" r="3" fill="#40c878"/>
+  <text x="524" y="306" fill="#91e0b0" class="tiny">Working</text>
+  <path d="M252 328h326" stroke="#272b34"/>
+  <text x="252" y="371" class="primary" font-size="15" font-weight="600">Recent executions</text>
+  <text x="252" y="407" class="muted small">26.36 · Refine project editor</text>
+  <text x="252" y="430" class="subtle tiny">Completed · 10/10/2026</text>
+  <path d="M252 445h326" stroke="#272b34"/>
+  <text x="252" y="478" class="muted small">26.35 · Highlight active executions</text>
+  <text x="252" y="501" class="subtle tiny">Completed · 10/10/2026</text>
+  <text x="252" y="552" class="primary" font-size="15" font-weight="600">Capabilities &amp; provisioning</text>
+  <path d="M252 570h326" stroke="#272b34"/>
+  <text x="252" y="598" class="muted small">Provisioning</text>
+  <text x="504" y="598" class="muted small">Ready</text>
+  <path d="M252 615h326" stroke="#272b34"/>
+  <text x="252" y="643" class="muted small">Host resources</text>
+  <text x="482" y="643" class="muted small">4 vCPU · 8 GB</text>
+
+  <!-- Dim the existing detail page while retaining context -->
+  <rect x="0" y="0" width="1440" height="1000" fill="#05070b" fill-opacity=".64"/>
+
+  <!-- Full-height editor drawer -->
+  <g filter="url(#shadow)">
+    <rect x="600" y="0" width="840" height="1000" fill="#1a1d24"/>
+    <path d="M600 0v1000" stroke="#383d48"/>
+  </g>
+  <rect x="600" y="0" width="840" height="88" fill="#1a1d24"/>
+  <path d="M600 88h840" stroke="#303540"/>
+  <text x="632" y="37" class="primary" font-size="18" font-weight="600">Edit worker</text>
+  <text x="632" y="60" class="muted small">Update worker settings and review provisioning status.</text>
+
+  <!-- Header actions -->
+  <rect x="1109" y="25" width="38" height="36" rx="8" fill="transparent" stroke="#383d48"/>
+  <path d="M1122 37l12 12M1134 37l-12 12" stroke="#b7beca" stroke-width="1.7" stroke-linecap="round"/>
+  <rect x="1157" y="25" width="83" height="36" rx="8" fill="#1a1d24" stroke="#383d48"/>
+  <text x="1177" y="48" class="body small">Cancel</text>
+  <rect x="1250" y="25" width="160" height="36" rx="8" fill="#49cd82"/>
+  <path d="M1266 43l4 4 8-9" fill="none" stroke="#102016" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1285" y="48" fill="#102016" class="small" font-weight="600">Save changes</text>
+
+  <!-- Scrollable form body -->
+  <text x="632" y="119" class="section">General</text>
+  <rect x="632" y="134" width="776" height="111" rx="11" fill="#1d2028" stroke="#303540"/>
+  <text x="650" y="160" class="label">Worker name</text>
+  <rect x="650" y="171" width="740" height="39" rx="7" fill="#14171d" stroke="#414754"/>
+  <text x="662" y="196" class="primary medium">codex2-vm</text>
+  <text x="650" y="230" class="muted tiny">Shown in the Workers list and execution history.</text>
+
+  <text x="632" y="278" class="section">Execution capacity</text>
+  <text x="632" y="297" class="muted tiny">Set how many executions this Worker can run at the same time.</text>
+  <rect x="632" y="310" width="776" height="109" rx="11" fill="#1d2028" stroke="#303540"/>
+  <text x="650" y="337" class="label">Maximum parallel executions</text>
+  <rect x="650" y="348" width="530" height="39" rx="7" fill="#14171d" stroke="#414754"/>
+  <text x="662" y="373" class="primary medium">4</text>
+  <path d="M1150 348v39" stroke="#414754"/>
+  <path d="M1165 364l5-5 5 5M1165 373l5 5 5-5" fill="none" stroke="#aeb6c4" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="650" y="405" class="muted tiny">Configured total slots for this Worker.</text>
+  <circle cx="1222" cy="367" r="7" fill="none" stroke="#78aaff" stroke-width="1.5"/>
+  <path d="M1222 363v5M1222 371h.01" stroke="#78aaff" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="1237" y="372" class="muted tiny">2 currently occupied</text>
+
+  <text x="632" y="451" class="section">Provisioning</text>
+  <rect x="632" y="466" width="776" height="96" rx="11" fill="#1d2028" stroke="#303540"/>
+  <text x="650" y="492" class="subtle tiny" letter-spacing=".8">CURRENT STATE</text>
+  <text x="650" y="515" class="primary medium" font-weight="500">Provisioned</text>
+  <text x="650" y="537" class="muted tiny">Linux x64 · Ubuntu 24.04 · Standard worker profile</text>
+  <rect x="1311" y="488" width="77" height="25" rx="13" fill="#182c22" stroke="#28533c"/>
+  <circle cx="1323" cy="500" r="3.5" fill="#40c878"/>
+  <text x="1332" y="504" fill="#91e0b0" class="tiny">Ready</text>
+  <text x="632" y="581" class="muted tiny">Provisioning details and operation history remain on the Worker detail page.</text>
+
+  <text x="632" y="623" class="section">Worker version</text>
+  <rect x="632" y="638" width="776" height="245" rx="11" fill="#1d2028" stroke="#303540"/>
+  <text x="650" y="665" class="subtle tiny" letter-spacing=".8">VERSION COMPARISON</text>
+  <text x="650" y="687" class="muted tiny">The Worker is behind the Server release.</text>
+  <rect x="1301" y="651" width="90" height="25" rx="13" fill="#3a301d" stroke="#6a5527"/>
+  <path d="M1317 658v10m-4-4 4 4 4-4" fill="none" stroke="#f0ce78" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1326" y="668" fill="#f0ce78" class="tiny" font-weight="500">Update available</text>
+  <rect x="650" y="701" width="319" height="60" rx="8" fill="#171a20" stroke="#272b34"/>
+  <text x="664" y="720" class="subtle tiny" letter-spacing=".6">THIS WORKER</text>
+  <text x="664" y="741" class="primary medium" font-weight="500">0.14.2</text>
+  <text x="720" y="741" class="muted tiny">Installed</text>
+  <path d="M989 730h27m-6-6 6 6-6 6" fill="none" stroke="#788190" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="1036" y="701" width="354" height="60" rx="8" fill="#171a20" stroke="#272b34"/>
+  <text x="1050" y="720" class="subtle tiny" letter-spacing=".6">SERVER</text>
+  <text x="1050" y="741" class="primary medium" font-weight="500">0.15.0</text>
+  <text x="1105" y="741" class="muted tiny">Available</text>
+  <rect x="650" y="774" width="740" height="43" rx="8" fill="#292419" stroke="#4b3c20"/>
+  <path d="M667 786l7 13h-14z" fill="none" stroke="#e9b84a" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M667 790v4m0 2h.01" stroke="#e9b84a" stroke-width="1.3" stroke-linecap="round"/>
+  <text x="684" y="795" fill="#dccb9d" class="tiny">An update is available for this Worker.</text>
+  <rect x="650" y="829" width="151" height="35" rx="7" fill="#49cd82"/>
+  <path d="M667 843v8m-4-4 4 4 4-4M663 840h8" fill="none" stroke="#102016" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="680" y="851" fill="#102016" class="small" font-weight="600">Update worker</text>
+  <text x="650" y="876" class="subtle tiny">Updating the Worker is separate from saving name and capacity changes.</text>
+
+  <!-- Footer stays available while the form body scrolls -->
+  <rect x="600" y="915" width="840" height="85" fill="#1a1d24"/>
+  <path d="M600 915h840" stroke="#303540"/>
+  <text x="632" y="955" class="muted tiny">Unsaved changes are discarded if you cancel.</text>
+  <rect x="1157" y="936" width="83" height="38" rx="8" fill="transparent" stroke="#383d48"/>
+  <text x="1177" y="960" class="body small">Cancel</text>
+  <rect x="1250" y="936" width="158" height="38" rx="8" fill="#49cd82"/>
+  <text x="1276" y="960" fill="#102016" class="small" font-weight="600">Save changes</text>
+</svg>
