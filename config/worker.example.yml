@@ -8,6 +8,7 @@ worker:
     allowNonPrivileged: false
     allowCredentials: false
     # Keys use type:name:operation, for example tool:git:install.
+    # Add worker:self-update to permit dashboard updates on a packaged Linux node.
     allowedPrivilegedActions: []
     deniedActions: []
 

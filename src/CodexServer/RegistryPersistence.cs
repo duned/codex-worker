@@ -28,6 +28,10 @@ public interface IRegistryStore
     Task<WorkerRegistrationResponse?> GetWorkerAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> UpdateWorkerConfigurationAsync(string workerId, string displayName, int maximumParallelExecutions,
         long expectedRevision, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
     Task<CentralProject?> GetProjectAsync(string projectId, CancellationToken cancellationToken = default);
@@ -507,7 +511,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
 }
 
 /// <summary>Creates the server's durable registry schema without coupling APIs to SQLite.</summary>
-public sealed class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null,
+public sealed partial class SqliteRegistryStore(string databasePath, int staleAfterSeconds = 90, TimeProvider? timeProvider = null,
     int leaseDurationSeconds = 900, int leaseRenewalIntervalSeconds = 60, ILogger<SqliteRegistryStore>? logger = null) : IRegistryStore
 {
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
@@ -769,6 +773,8 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_execution_requests_active_work ON execution_requests (project_id, work_type, work_id) WHERE state IN ('Queued', 'Assigned', 'Running');
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
+            command.CommandText = "CREATE TABLE IF NOT EXISTS worker_updates (operation_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(worker_id), operation_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ix_worker_updates_worker ON worker_updates(worker_id);";
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
     }
@@ -998,7 +1004,12 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             schedulingPolicy = workerReader.GetString(2);
             configuredMaximumCapacity = workerReader.IsDBNull(3) ? null : workerReader.GetInt32(3);
         }
-        if (schedulingPolicy != WorkerSchedulingPolicy.Enabled)
+        command.Parameters.Clear();
+        command.CommandText = "SELECT operation_json FROM worker_updates WHERE worker_id=$worker ORDER BY rowid DESC LIMIT 1;";
+        command.Parameters.AddWithValue("$worker", request.WorkerId);
+        var updateJson = await command.ExecuteScalarAsync(cancellationToken) as string;
+        var updating = updateJson is not null && JsonSerializer.Deserialize<WorkerUpdateOperation>(updateJson)?.State != "succeeded";
+        if (updating || schedulingPolicy != WorkerSchedulingPolicy.Enabled)
         {
             await transaction.CommitAsync(cancellationToken);
             return NoAssignment(request.WorkerId, "scheduling-paused");
@@ -2276,11 +2287,15 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             throw new InvalidDataException("Worker identity or scheduling policy is invalid.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE workers SET scheduling_policy=$policy WHERE worker_id=$worker AND registration_json IS NOT NULL;";
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE workers SET scheduling_policy=$policy WHERE worker_id=$worker AND registration_json IS NOT NULL; UPDATE worker_updates SET operation_json=json_set(operation_json, '$.OwnsDrain', json('false')) WHERE worker_id=$worker;";
         command.Parameters.AddWithValue("$policy", policy);
         command.Parameters.AddWithValue("$worker", workerId);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0) return null;
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        if (affected == 0) return null;
         return await GetWorkerAsync(workerId, cancellationToken);
     }
 

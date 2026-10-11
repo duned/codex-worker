@@ -989,6 +989,7 @@ public static partial class ServerApplication
             catch (ExecutionRequestReconciliationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
         MapExecutionMaintenance(app);
+        MapWorkerUpdates(app);
         return app;
     }
 

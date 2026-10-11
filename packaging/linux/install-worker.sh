@@ -214,6 +214,28 @@ fi
 EOF
 }
 
+write_worker_update_helper() {
+  cat <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 0 && $EUID == 0 ]] || exit 2
+/usr/bin/install -d -o root -g root -m 0700 /run/codex-worker-self-update
+exec 9>/run/codex-worker-self-update/lock
+/usr/bin/flock -n 9 || exit 1
+# Independent of codex-worker.service: replacing that service cannot kill its installer.
+# Fixed command, unit, deadline and clean environment; no caller arguments are accepted.
+state=$(/usr/bin/systemctl show codex-worker-self-update.service --property=SubState --value 2>/dev/null || true)
+case "$state" in running|start*|stop*) exit 1 ;; esac
+/usr/bin/systemctl stop codex-worker-self-update.service >/dev/null 2>&1 || true
+/usr/bin/systemctl reset-failed codex-worker-self-update.service >/dev/null 2>&1 || true
+exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+  /usr/bin/systemd-run --quiet --unit=codex-worker-self-update \
+  --property=RuntimeMaxSec=1080 --property=UMask=0077 --property=RemainAfterExit=yes \
+  /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+  /opt/codex-worker/CodexWorker update --yes --json
+EOF
+}
+
 write_provisioning_sudoers() {
   cat <<'EOF'
 # Managed by the Codex Worker installer. No arbitrary commands.
@@ -232,23 +254,26 @@ Cmnd_Alias CODEX_WORKER_PROVISIONING = \
     /usr/bin/apt-get remove -y docker.io, \
     /usr/local/libexec/codex-provisioning-codex install, \
     /usr/local/libexec/codex-provisioning-codex uninstall, \
-    /usr/local/libexec/codex-provisioning-docker configure
+    /usr/local/libexec/codex-provisioning-docker configure, \
+    /usr/local/libexec/codex-worker-self-update ""
 codex-worker ALL=(root) NOPASSWD: CODEX_WORKER_PROVISIONING
 EOF
 }
 
 install_provisioning_sudoers() {
   command -v visudo >/dev/null 2>&1 || fail 'visudo is required to validate provisioning policy (install sudo).'
-  local temporary_policy temporary_helper temporary_docker_helper
+  local temporary_policy temporary_helper temporary_docker_helper temporary_update_helper
   temporary_policy=$(mktemp /etc/sudoers.d/.codex-worker-provisioning.XXXXXX)
   temporary_helper=$(mktemp "$temporary_dir/codex-helper.XXXXXX")
   write_provisioning_sudoers > "$temporary_policy"
   write_codex_provisioning_helper > "$temporary_helper"
   temporary_docker_helper=$(mktemp "$temporary_dir/docker-helper.XXXXXX")
   write_docker_provisioning_helper > "$temporary_docker_helper"
+  temporary_update_helper=$(mktemp "$temporary_dir/update-helper.XXXXXX")
+  write_worker_update_helper > "$temporary_update_helper"
   chown root:root "$temporary_policy"
   chmod 0440 "$temporary_policy"
-  if ! visudo -cf "$temporary_policy" >/dev/null || ! bash -n "$temporary_helper" || ! bash -n "$temporary_docker_helper"; then
+  if ! visudo -cf "$temporary_policy" >/dev/null || ! bash -n "$temporary_helper" || ! bash -n "$temporary_docker_helper" || ! bash -n "$temporary_update_helper"; then
     rm -f -- "$temporary_policy"
     fail 'Generated provisioning policy/helper failed validation.'
   fi
@@ -256,12 +281,15 @@ install_provisioning_sudoers() {
   [[ ! -e $provisioning_sudoers ]] || cp -a "$provisioning_sudoers" "$temporary_dir/previous.provisioning"
   [[ ! -e /usr/local/libexec/codex-provisioning-codex ]] || cp -a /usr/local/libexec/codex-provisioning-codex "$temporary_dir/previous.codex-helper"
   [[ ! -e /usr/local/libexec/codex-provisioning-docker ]] || cp -a /usr/local/libexec/codex-provisioning-docker "$temporary_dir/previous.docker-helper"
+  [[ ! -e /usr/local/libexec/codex-worker-self-update ]] || cp -a /usr/local/libexec/codex-worker-self-update "$temporary_dir/previous.update-helper"
   provisioning_changed=true
   install -d -o root -g root -m 0755 /usr/local/libexec
   install -o root -g root -m 0755 "$temporary_helper" /usr/local/libexec/.codex-provisioning-codex.next
   mv -f /usr/local/libexec/.codex-provisioning-codex.next /usr/local/libexec/codex-provisioning-codex
   install -o root -g root -m 0755 "$temporary_docker_helper" /usr/local/libexec/.codex-provisioning-docker.next
   mv -f /usr/local/libexec/.codex-provisioning-docker.next /usr/local/libexec/codex-provisioning-docker
+  install -o root -g root -m 0755 "$temporary_update_helper" /usr/local/libexec/.codex-worker-self-update.next
+  mv -f /usr/local/libexec/.codex-worker-self-update.next /usr/local/libexec/codex-worker-self-update
   mv -f "$temporary_policy" "$provisioning_sudoers"
   visudo -c >/dev/null || fail 'Installed sudoers configuration failed validation.'
 }
@@ -367,6 +395,8 @@ cleanup() {
   if ((status != 0)) && [[ $provisioning_changed == true ]]; then
     if [[ -e $temporary_dir/previous.provisioning ]]; then cp -a --remove-destination "$temporary_dir/previous.provisioning" "$provisioning_sudoers";
     else rm -f "$provisioning_sudoers"; fi
+    if [[ -e $temporary_dir/previous.update-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.update-helper" /usr/local/libexec/codex-worker-self-update;
+    else rm -f /usr/local/libexec/codex-worker-self-update; fi
     if [[ -e $temporary_dir/previous.docker-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.docker-helper" /usr/local/libexec/codex-provisioning-docker;
     else rm -f /usr/local/libexec/codex-provisioning-docker; fi
     if [[ -e $temporary_dir/previous.codex-helper ]]; then cp -a --remove-destination "$temporary_dir/previous.codex-helper" /usr/local/libexec/codex-provisioning-codex;

@@ -436,7 +436,10 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             WithMaintenanceCapability(await CapabilityDiscovery.GetCachedAsync(cancellationToken)), await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken));
 
     private static IReadOnlyList<WorkerCapabilityContract> WithMaintenanceCapability(IReadOnlyList<WorkerCapabilityContract> capabilities) =>
-        capabilities.Append(new("protocol", ExecutionMaintenanceProtocol.Capability)).Distinct().ToArray();
+        capabilities.Append(new("protocol", ExecutionMaintenanceProtocol.Capability))
+            .Concat(SelfUpdateSupported
+                ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.Capability)] : [])
+            .Distinct().ToArray();
 
     private async Task<bool> TryVerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
     {

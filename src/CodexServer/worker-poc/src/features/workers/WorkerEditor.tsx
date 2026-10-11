@@ -3,7 +3,7 @@ import { ApiError } from '../../shared/api/client';
 import { worker as validateWorker } from '../../shared/api/validation';
 import type { WorkerAdministration, WorkerReadiness } from '../../shared/api/contracts';
 import { queryKeys } from '../../shared/api/runtime';
-import { useRuntime, useSession } from '../../shared/api/session';
+import { useApiRead, useRuntime, useSession } from '../../shared/api/session';
 import { FormDialog } from '../../shared/Dialogs';
 import { Input } from '../../shared/Input';
 import { NumberInput } from '../../shared/NumberInput';
@@ -12,6 +12,7 @@ import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { statusColor } from '../../shared/status-model.mjs';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { saveWorkerSettings } from './worker-settings';
+import { workerUpdate } from './worker-update';
 import { workerConfiguration, workerVersionState } from './worker-editor-model.mjs';
 
 interface WorkerEditorProps {
@@ -52,7 +53,12 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const [refreshRequired, setRefreshRequired] = useState(false);
   const [error, setError] = useState('');
   const [updateMessage, setUpdateMessage] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const updateGuard = useRef(false);
+  const updateId = useRef(crypto.randomUUID().replaceAll('-', ''));
+  const updateRead = useApiRead(`${path}/update`, workerUpdate);
+  const update = updateRead.data;
+  const updatePending = update?.state === 'waiting-for-idle' || update?.state === 'updating' || update?.state === 'reconnecting';
   const guard = useRef(false);
   const body = useRef<HTMLFieldSetElement | null>(null);
   const locked = runtime.locked(resource);
@@ -114,15 +120,34 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
     } finally { setRefreshing(false); }
   }
 
-  async function copyUpdateCommand() {
+  async function requestUpdate() {
+    if (updateGuard.current || updatePending || updateRead.loading || updateRead.hasError) return;
+    updateGuard.current = true;
+    setUpdateBusy(true);
+    setUpdateMessage('');
     try {
-      await navigator.clipboard.writeText('sudo codex-worker update');
-      setCopied(true);
-      setUpdateMessage(t('workers.editorUpdateCommandCopied'));
+      const current = await runtime.mutate(`${path}/update`, `${path}/update`, 'POST', { operationId: updateId.current }, workerUpdate,
+        async signal => {
+          const currentWorker = await runtime.read(path, signal, validateWorker);
+          if (currentWorker.workerId !== worker.workerId || !['online', 'draining'].includes(currentWorker.availability))
+            throw new ApiError(t('workers.editorUpdateUnavailable'));
+        });
+      if (!current || current.workerId !== worker.workerId) throw new Error('Unexpected Worker update.');
+      runtime.queries.setQueryData(queryKeys.read(session.generation, `${path}/update`), current);
     } catch {
-      setCopied(false);
-      setUpdateMessage(t('workers.editorUpdateCommandCopyFailed'));
-    }
+      setUpdateMessage(t('workers.editorUpdateRequestFailed'));
+    } finally { updateGuard.current = false; setUpdateBusy(false); }
+  }
+
+  async function refreshUpdate() {
+    try {
+      await runtime.reconcile(`${path}/update`, async signal => {
+        const current = await runtime.read(`${path}/update`, signal, workerUpdate);
+        if (current && current.workerId !== worker.workerId) throw new Error('Unexpected Worker update.');
+        runtime.queries.setQueryData(queryKeys.read(session.generation, `${path}/update`), current);
+      });
+      setUpdateMessage('');
+    } catch { setUpdateMessage(t('workers.editorUpdateRequestFailed')); }
   }
 
   const close = () => { if (!busy) onClose(); };
@@ -200,12 +225,13 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
             </div>
             {version.state === 'available' && <>
               <Notice>{t('workers.editorUpdateAvailableHelp')}</Notice>
-              <Button color="primary" className="bg-success-solid hover:bg-green-700" onPress={() => { void copyUpdateCommand(); }}>{t('workers.editorUpdateWorker')}</Button>
-              <p className="worker-editor-help">{t('workers.editorManualUpdateHelp')}</p>
-              {updateMessage && <p role="status" className="worker-editor-help">{updateMessage}</p>}
-              {copied && <code className="worker-editor-command">sudo codex-worker update</code>}
+              <Button color="primary" className="bg-success-solid hover:bg-green-700" isDisabled={updateBusy || updatePending || updateRead.loading || updateRead.hasError || update?.state === 'failed' || runtime.locked(`${path}/update`)} onPress={() => { void requestUpdate(); }}>{t('workers.editorUpdateWorker')}</Button>
+              <p className="worker-editor-help">{t('workers.editorRemoteUpdateHelp')}</p>
             </>}
-            {version.state === 'in-progress' && <Notice>{t('workers.editorUpdateProgressHelp', { state: localizeText(version.lifecycle) })}</Notice>}
+            {update && <Notice error={update.state === 'failed'}><span role="status">{update.state === 'succeeded' && update.diagnostic === 'already-current'
+              ? t('workers.editorRemoteUpdate.alreadyCurrent') : t(`workers.editorRemoteUpdate.${update.state}`)}</span></Notice>}
+            {(updateMessage || updateRead.hasError) && <Notice error>{updateMessage || t('workers.editorUpdateUnavailable')}<Button color="secondary" onPress={() => { void refreshUpdate(); }}>{t('workers.editorRefreshCurrent')}</Button></Notice>}
+            {version.state === 'in-progress'  && <Notice>{t('workers.editorUpdateProgressHelp', { state: localizeText(version.lifecycle) })}</Notice>}
             {version.state === 'failed' && <Notice error>{t('workers.editorUpdateFailureHelp')}</Notice>}
             {version.state === 'ahead' && <Notice>{t('workers.editorWorkerAheadHelp')}</Notice>}
             {version.state === 'loading' && <Notice>{t('workers.editorVersionLoadingHelp')}</Notice>}

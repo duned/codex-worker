@@ -67,7 +67,7 @@ test('Worker editor uses revision-checked persistence, native form validation an
   assert.match(dialog, /isKeyboardDismissDisabled=\{pending\}/);
 });
 
-test('only an available Worker version exposes the separate manual update action', () => {
+test('only an available Worker version exposes the Server update action', () => {
   const editor = read('features/workers/WorkerEditor.tsx');
   const english = read('shared/locales/en.ts');
   assert.match(editor, /version\.state === 'available'[\s\S]*?editorUpdateWorker/);
@@ -75,8 +75,9 @@ test('only an available Worker version exposes the separate manual update action
   assert.match(editor, /version\.state === 'failed'/);
   assert.match(editor, /version\.state === 'ahead'/);
   assert.match(editor, /version\.state === 'unavailable'/);
-  assert.match(editor, /sudo codex-worker update/);
-  assert.match(english, /cannot start or monitor a remote Worker update/);
+  assert.doesNotMatch(editor, /navigator\.clipboard|sudo codex-worker update/);
+  assert.match(editor, /runtime\.mutate\(`\$\{path\}\/update`/);
+  assert.match(english, /waits for active executions to finish/);
 });
 
 test('Worker editor copy is complete in English and Spanish', () => {
