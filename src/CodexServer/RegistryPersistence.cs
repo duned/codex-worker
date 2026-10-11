@@ -2226,7 +2226,14 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        return await ReadWorkerAsync(connection, null, workerId, cancellationToken);
+    }
+
+    private async Task<WorkerRegistrationResponse?> ReadWorkerAsync(SqliteConnection connection, SqliteTransaction? transaction,
+        string workerId, CancellationToken cancellationToken)
+    {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc, w.configured_display_name, w.configured_maximum_capacity, w.configuration_revision FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.worker_id = $id AND w.registration_json IS NOT NULL;";
         command.Parameters.AddWithValue("$id", workerId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2248,14 +2255,18 @@ public sealed class SqliteRegistryStore(string databasePath, int staleAfterSecon
             throw new InvalidDataException("Worker configuration is invalid.");
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "UPDATE workers SET configured_display_name=$name, configured_maximum_capacity=$capacity, configuration_revision=configuration_revision+1 WHERE worker_id=$worker AND registration_json IS NOT NULL AND configuration_revision=$revision;";
         command.Parameters.AddWithValue("$name", displayName);
         command.Parameters.AddWithValue("$capacity", maximumParallelExecutions);
         command.Parameters.AddWithValue("$worker", workerId);
         command.Parameters.AddWithValue("$revision", expectedRevision);
         if (await command.ExecuteNonQueryAsync(cancellationToken) == 0) return null;
-        return await GetWorkerAsync(workerId, cancellationToken);
+        var updated = await ReadWorkerAsync(connection, transaction, workerId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return updated;
     }
 
     public async Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy,

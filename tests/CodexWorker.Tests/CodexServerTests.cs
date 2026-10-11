@@ -881,7 +881,9 @@ public sealed class CodexServerTests
         var url = $"http://127.0.0.1:{ReservePort()}";
         try
         {
-            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "worker-editor-api.db")));
+            await using var app = await ServerApplication.BuildAsync([
+                .. Args(url, Path.Combine(temporary.Path, "worker-editor-api.db")),
+                $"--Server:AdministrationOrigin={url}"]);
             await app.StartAsync();
             using var management = new HttpClient { BaseAddress = new Uri(url) };
             management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "worker-editor-management-token");
@@ -889,6 +891,23 @@ public sealed class CodexServerTests
             var registry = app.Services.GetRequiredService<IRegistryStore>();
             await registry.RegisterWorkerAsync(new(2, workerId, "Original name", "1.0.0", "linux-x64", 2, []));
             await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 1, 3, [], []));
+
+            using var anonymous = new HttpClient { BaseAddress = new Uri(url) };
+            using var denied = await anonymous.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                new WorkerConfigurationUpdateRequest("Unauthorized", 2, 1));
+            Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+
+            // Exercise the same cookie session and CSRF boundary as the editor.
+            management.DefaultRequestHeaders.Add("Origin", url);
+            using var login = await management.PostAsync("/api/v1/administration/session", null);
+            Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+            using var session = JsonDocument.Parse(await login.Content.ReadAsStringAsync());
+            management.DefaultRequestHeaders.Authorization = null;
+            management.DefaultRequestHeaders.Add("Cookie", Assert.Single(login.Headers.GetValues("Set-Cookie")).Split(';')[0]);
+            using var missingCsrf = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                new WorkerConfigurationUpdateRequest("No CSRF", 2, 1));
+            Assert.Equal(HttpStatusCode.Unauthorized, missingCsrf.StatusCode);
+            management.DefaultRequestHeaders.Add("X-Codex-CSRF", session.RootElement.GetProperty("csrfToken").GetString());
 
             using var savedResponse = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
                 new WorkerConfigurationUpdateRequest("Operations worker", 1, 1));
@@ -900,6 +919,17 @@ public sealed class CodexServerTests
             Assert.Equal(3, saved.MaximumCapacity);
             Assert.Equal(1, saved.ActiveExecutions);
             Assert.Equal(2, saved.ConfigurationRevision);
+
+            var readBack = await management.GetFromJsonAsync<WorkerRegistrationResponse>($"/api/v1/workers/{workerId}");
+            Assert.NotNull(readBack);
+            Assert.Equal(saved.DisplayName, readBack.DisplayName);
+            Assert.Equal(saved.ConfiguredMaximumCapacity, readBack.ConfiguredMaximumCapacity);
+            Assert.Equal(saved.ConfigurationRevision, readBack.ConfigurationRevision);
+            var persisted = await new SqliteRegistryStore(Path.Combine(temporary.Path, "worker-editor-api.db")).GetWorkerAsync(workerId);
+            Assert.NotNull(persisted);
+            Assert.Equal(saved.DisplayName, persisted.DisplayName);
+            Assert.Equal(saved.ConfiguredMaximumCapacity, persisted.ConfiguredMaximumCapacity);
+            Assert.Equal(saved.ConfigurationRevision, persisted.ConfigurationRevision);
 
             await registry.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 3, [], []));
             var afterHeartbeat = await registry.GetWorkerAsync(workerId);
@@ -915,6 +945,13 @@ public sealed class CodexServerTests
                 new WorkerConfigurationUpdateRequest("Operations worker", 9, 2));
             Assert.Equal(HttpStatusCode.BadRequest, invalidResponse.StatusCode);
             Assert.Equal("Operations worker", (await registry.GetWorkerAsync(workerId))?.DisplayName);
+            using var missingResponse = await management.PutAsJsonAsync($"/api/v1/workers/{Guid.NewGuid():N}/settings",
+                new WorkerConfigurationUpdateRequest("Missing", 1, 1));
+            Assert.Equal(HttpStatusCode.NotFound, missingResponse.StatusCode);
+            var unchanged = await management.GetFromJsonAsync<WorkerRegistrationResponse>($"/api/v1/workers/{workerId}");
+            Assert.NotNull(unchanged);
+            Assert.Equal(1, unchanged.ConfiguredMaximumCapacity);
+            Assert.Equal(2, unchanged.ConfigurationRevision);
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }

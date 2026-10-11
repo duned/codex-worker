@@ -54,8 +54,11 @@ test('Worker editor uses revision-checked persistence, native form validation an
   assert.match(editor, /const resource = path/);
   assert.match(editor, /aria-labelledby="worker-editor-general"/);
   assert.match(editor, /aria-labelledby="worker-editor-capacity"/);
-  assert.match(editor, /runtime\.mutate\(resource, `\$\{path\}\/settings`, 'PUT'/);
-  assert.match(editor, /expectedRevision: revision/);
+  const settings = read('features/workers/worker-settings.ts');
+  assert.match(settings, /runtime\.mutate\(resource, `\$\{path\}\/settings`, 'PUT'/);
+  assert.match(settings, /expectedRevision: revision/);
+  assert.match(editor, /!refreshRequired && !refreshing/);
+  assert.match(editor, /failure.status === 409/);
   assert.match(editor, /isRequired maxLength=\{200\}/);
   assert.match(editor, /min=\{1\} max=\{8\} isRequired/);
   assert.match(editor, /if \(guard\.current \|\| !canSubmit/);

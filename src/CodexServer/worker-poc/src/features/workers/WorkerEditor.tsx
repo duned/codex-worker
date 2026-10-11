@@ -11,6 +11,7 @@ import { Notice, StatusBadge } from '../../shared/Presentation';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { statusColor } from '../../shared/status-model.mjs';
 import { Button } from '../../untitled/components/base/buttons/button';
+import { saveWorkerSettings } from './worker-settings';
 import { workerConfiguration, workerVersionState } from './worker-editor-model.mjs';
 
 interface WorkerEditorProps {
@@ -61,7 +62,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const currentCapacity = Number(capacity);
   const validCapacity = Number.isInteger(currentCapacity) && currentCapacity >= 1 && currentCapacity <= 8;
   const dirty = currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
-  const canSubmit = dirty && !busy && !locked;
+  const canSubmit = dirty && !busy && !locked && !refreshRequired && !refreshing;
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -70,28 +71,18 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
     setBusy(true);
     setError('');
     try {
-      const saved = await runtime.mutate(resource, `${path}/settings`, 'PUT', {
-        displayName: currentName,
-        maximumParallelExecutions: currentCapacity,
-        expectedRevision: revision
-      }, value => {
-        const result = validateWorker(value);
-        if (result.workerId !== worker.workerId || result.displayName !== currentName ||
-            result.configuredMaximumCapacity !== currentCapacity || result.configurationRevision !== revision + 1)
-          throw new Error('Unexpected Worker configuration response.');
-        return result;
-      }, async signal => {
-        const current = await runtime.read(path, signal, validateWorker);
-        if (current.workerId !== worker.workerId) throw new ApiError(t('workers.editorWorkerIdentityChanged'));
-        if ((current.configurationRevision ?? 1) !== revision) throw new ApiError(t('workers.editorRevisionConflict'));
-      });
-      runtime.queries.setQueryData(queryKeys.read(session.generation, path), saved);
+      await saveWorkerSettings(runtime, worker.workerId, currentName, currentCapacity, revision);
       onClose();
     } catch (failure) {
-      const preflightConflict = failure instanceof ApiError && failure.message === t('workers.editorRevisionConflict');
+      const preflightConflict = failure instanceof ApiError && (failure.status === 409 || failure.message === t('workers.editorRevisionConflict'));
       const uncertain = runtime.locked(resource);
       setRefreshRequired(preflightConflict || uncertain);
-      setError(uncertain ? t('workers.editorSaveUnconfirmed') : preflightConflict ? t('workers.editorRevisionConflict') : t('workers.editorSaveFailed'));
+      const status = failure instanceof ApiError ? failure.status : undefined;
+      setError(preflightConflict ? t('workers.editorRevisionConflict')
+        : status === 400 ? t('workers.editorValidationFailed')
+          : status === 401 || status === 403 ? t('workers.editorAuthorizationFailed')
+            : status === 404 ? t('workers.editorWorkerMissing')
+              : uncertain ? t('workers.editorSaveUnconfirmed') : t('workers.editorSaveFailed'));
       if (body.current) body.current.scrollTo({ top: 0 });
     } finally {
       guard.current = false;
