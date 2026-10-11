@@ -298,8 +298,9 @@ queue diagnostics identify `project-capacity` separately from Worker capacity
 and eligibility blockers.
 
 Deploy the Server first, then update managed Workers normally, without uninstalling.
-The managed configuration snapshot contract is now version 2 and includes the
-policy in its content hash. Older Workers reject the new snapshot; new Workers
+Managed configuration contract 2 includes project policy in its content hash;
+slot-bearing snapshots use contract 3. See [slot snapshot recovery](server-local-administration.md#recovering-a-slot-snapshot-contract-failure)
+for upgrade and retry guidance. Older Workers reject the new snapshot; new Workers
 reject an older Server's version-1 snapshot and cache. During this interval,
 configuration readiness fails closed: cached definitions never authorize new
 assignments. Drain Workers before deployment and allow running work to finish.

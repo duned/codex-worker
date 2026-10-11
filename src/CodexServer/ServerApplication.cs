@@ -650,7 +650,8 @@ public static partial class ServerApplication
             if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
             var version = ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots);
-            return Results.Ok(new ServerManagedConfigurationResponse(2, version, projects, worker.WorkerExecutionSlots));
+            // Older contract-2 Workers hash projects alone and must reject slot-bearing snapshots explicitly.
+            return Results.Ok(new ServerManagedConfigurationResponse(worker.WorkerExecutionSlots is null ? 2 : 3, version, projects, worker.WorkerExecutionSlots));
         });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {

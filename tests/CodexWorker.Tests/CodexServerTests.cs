@@ -21,6 +21,78 @@ public sealed class CodexServerTests
 {
     [Theory]
     [InlineData(null)]
+    [InlineData(2)]
+    public async Task AuthenticatedSlotSettingsRoundTripThroughWorkerSynchronization(int? projectLimit)
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "slot-regression-management");
+        try
+        {
+            var url = $"http://127.0.0.1:{ReservePort()}";
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "slots.db")));
+            await app.StartAsync();
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            await registry.CreateProjectAsync(new("Slots", "team/slots", "main", "", MaxParallelTasks: projectLimit));
+            var workerId = Guid.NewGuid().ToString("N");
+            using var worker = new HttpClient { BaseAddress = new Uri(url) };
+            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
+            worker.DefaultRequestHeaders.Authorization = new("Bearer", bootstrap);
+            worker.DefaultRequestHeaders.Add("X-Codex-Worker-Token", "slot-regression-worker-token-for-authentication");
+            using var enrollment = await worker.PostAsJsonAsync("/api/v1/workers/register",
+                new WorkerRegistrationRequest(2, workerId, "Slots worker", "1.0", "test", 2, []));
+            Assert.Equal(HttpStatusCode.OK, enrollment.StatusCode);
+            worker.DefaultRequestHeaders.Remove("X-Codex-Worker-Token");
+            worker.DefaultRequestHeaders.Authorization = new("Bearer", "slot-regression-worker-token-for-authentication");
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            management.DefaultRequestHeaders.Authorization = new("Bearer", "slot-regression-management");
+            var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(temporary.Path, "snapshot.json"),
+                new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(temporary.Path, "checkouts") });
+            long revision = 1;
+            var appliedSlots = 2;
+            foreach (var slots in new[] { 2, 4, 2 })
+            {
+                using var saved = await management.PutAsJsonAsync($"/api/v1/workers/{workerId}/settings",
+                    new WorkerConfigurationUpdateRequest("Slots worker", 8, revision++, slots));
+                Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+                var readBack = await management.GetFromJsonAsync<WorkerRegistrationResponse>($"/api/v1/workers/{workerId}");
+                Assert.NotNull(readBack);
+                Assert.Equal(slots, readBack.WorkerExecutionSlots);
+                Assert.Equal(appliedSlots, readBack.MaximumCapacity);
+                // Deserialize the actual HTTP response using the Worker's wire contract.
+                var snapshot = await worker.GetFromJsonAsync<ServerManagedConfigurationContract>($"/api/v1/workers/{workerId}/configuration");
+                Assert.NotNull(snapshot);
+                Assert.Equal(3, snapshot.ContractVersion);
+                Assert.Equal(slots, snapshot.WorkerExecutionSlots);
+                Assert.Equal(projectLimit, Assert.Single(snapshot.Projects).MaxParallelTasks);
+                Assert.Equal(ManagedConfigurationSynchronizer.CalculateVersion(snapshot.Projects, workerExecutionSlots: slots), snapshot.Version);
+                // A pre-slots Worker hashes the projects alone: this is the exact incompatible input.
+                Assert.NotEqual(ManagedConfigurationSynchronizer.CalculateVersion(snapshot.Projects), snapshot.Version);
+                await synchronizer.RetrieveAndApplyAsync(_ => Task.FromResult(snapshot), CancellationToken.None);
+                Assert.Equal(slots, synchronizer.AppliedWorkerExecutionSlots);
+                Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
+                Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { ContractVersion = 2 }));
+                Assert.Equal("managed-contract-invalid", synchronizer.Status.Diagnostics?.DiagnosticCode);
+                Assert.Equal(slots, synchronizer.AppliedWorkerExecutionSlots);
+                await synchronizer.RetrieveAndApplyAsync(_ => Task.FromResult(snapshot), CancellationToken.None);
+                using var heartbeat = await worker.PostAsJsonAsync($"/api/v1/workers/{workerId}/heartbeat",
+                    new WorkerHeartbeatRequest(2, workerId, "1.0", "running", 0, slots, [], [],
+                        synchronizer.Status.SynchronizationStatus, synchronizer.Status.AppliedVersion));
+                Assert.Equal(HttpStatusCode.OK, heartbeat.StatusCode);
+                var reported = await management.GetFromJsonAsync<WorkerRegistrationResponse>($"/api/v1/workers/{workerId}");
+                Assert.NotNull(reported);
+                Assert.Equal(slots, reported.MaximumCapacity);
+                Assert.Equal(snapshot.Version, reported.ConfigurationVersion);
+                Assert.Equal("synchronized", reported.ConfigurationSynchronization);
+                appliedSlots = slots;
+            }
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
+    [Theory]
+    [InlineData(null)]
     [InlineData(1)]
     [InlineData(8)]
     public void ManagedSnapshotHashIncludesServerProjectConcurrency(int? limit)
@@ -152,6 +224,12 @@ public sealed class CodexServerTests
         Assert.Equal(3, (await store.GetWorkerAsync(workerId))?.ActiveExecutions);
         await store.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 1, 1, capabilities, []));
         Assert.Equal("worker-capacity", (await store.RequestAssignmentAsync(request)).Reason);
+        // Restoring slots remains a revision-checked save while work is occupied.
+        await store.UpdateWorkerConfigurationAsync(workerId, "Worker", 8, 4, workerExecutionSlots: 2);
+        Assert.Equal(1, (await store.GetWorkerAsync(workerId))?.MaximumCapacity);
+        Assert.Equal("worker-configuration-pending", (await store.RequestAssignmentAsync(request)).Reason);
+        await store.HeartbeatWorkerAsync(new(2, workerId, "1.0.0", "running", 0, 2, capabilities, []));
+        Assert.Equal(2, (await store.GetWorkerAsync(workerId))?.MaximumCapacity);
     }
 
     [Fact]

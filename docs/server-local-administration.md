@@ -237,3 +237,27 @@ for network/configuration rejection, existing-token retrieval and deployed check
 The Worker editor separates **Server assignment limit** (`maximumParallelExecutions` in the existing settings API) from **Worker execution slots** (`workerExecutionSlots`, optional for existing API clients). Both accept 1–8 and share the revision-checked settings save. Omitting slots preserves the stored setting; before any central slot setting, the Worker uses its local `worker.maxParallelTasks`. Occupancy and heartbeat-reported capacity remain observations, not settings.
 
 Managed Workers receive slots in their authenticated, validated configuration snapshot. Slot changes wait for the existing idle synchronization; the Server pauses new assignments while requested slots differ from heartbeat-reported capacity, allowing active work to finish without interruption. The Worker then applies the local scheduler limit and reports it on subsequent heartbeats. The dashboard shows pending slots separately until that report arrives. Offline or older Workers may leave the setting pending; saving does not establish that it was applied. Assignment limits remain independent and continue to cap admission within applied Worker capacity.
+
+### Recovering a slot snapshot contract failure
+
+If a slot save is followed by `managed-contract-invalid` and a version/hash mismatch,
+check the **installed** Server and Worker builds (including the service executable
+paths), rather than assuming an upgrade replaced both running binaries. Before the
+slot contract was distinguished, contract 2 could include slots in the Server hash
+while a pre-slots Worker calculated only the project hash. Restoring slots to 2
+still adds a slot hash input; it does not restore the original slotless snapshot.
+Current slot-bearing snapshots use managed configuration contract 3. Contract 2 is
+supported only without slots; unsupported contracts and altered hashes remain rejected.
+This protocol version is independent of the product release version.
+
+Drain the Worker and install matching builds supporting contract 3 on both sides.
+Use the manual node update procedure if the dashboard cannot authorize an update
+while configuration is invalid. Retain the Worker identity, credentials, YAML,
+checkouts, snapshot cache and execution history; no re-enrollment or purge is needed.
+The settings editor remains available during a synchronization failure: save the
+last known valid slot count (for example 2) or keep 4 and let the upgraded Worker
+retry its normal authenticated synchronization. With active work, application waits
+until idle. Confirm synchronized configuration and the heartbeat-reported capacity
+before activating; a successful settings save alone is not evidence of application.
+If matching current builds still report a hash mismatch, inspect the authenticated
+configuration response and installed build provenance; do not bypass validation.

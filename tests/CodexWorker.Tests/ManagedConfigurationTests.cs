@@ -11,7 +11,7 @@ public sealed class ManagedConfigurationTests
         using var fixture = new Fixture();
         var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
         var project = fixture.Project(1);
-        var snapshot = new ServerManagedConfigurationContract(2,
+        var snapshot = new ServerManagedConfigurationContract(3,
             ManagedConfigurationSynchronizer.CalculateVersion([project], workerExecutionSlots: 4), [project], 4);
         synchronizer.Apply(snapshot);
         Assert.Equal(4, synchronizer.AppliedWorkerExecutionSlots);
@@ -21,6 +21,8 @@ public sealed class ManagedConfigurationTests
         Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { WorkerExecutionSlots = 9 }));
         Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { WorkerExecutionSlots = 2 }));
         Assert.Equal(4, synchronizer.AppliedWorkerExecutionSlots);
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { ContractVersion = 2 }));
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { ContractVersion = 4 }));
         var lowered = snapshot with { WorkerExecutionSlots = 1,
             Version = ManagedConfigurationSynchronizer.CalculateVersion([project], workerExecutionSlots: 1) };
         synchronizer.Apply(lowered);

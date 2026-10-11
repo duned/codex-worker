@@ -209,8 +209,11 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
 
     internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot, bool cachedLegacy = false)
     {
-        if (snapshot.ContractVersion != 2 && !(cachedLegacy && snapshot.ContractVersion == 1))
-            throw new InvalidDataException($"Unsupported contract version: expected 2, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
+        // Contract 2 predates slot hashing. Never attach new hash inputs to that wire contract.
+        if (snapshot.ContractVersion is not (2 or 3) && !(cachedLegacy && snapshot.ContractVersion == 1))
+            throw new InvalidDataException($"Unsupported contract version: expected 2 (without slots) or 3, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
+        if (snapshot.ContractVersion < 3 && snapshot.WorkerExecutionSlots is not null)
+            throw new InvalidDataException("Worker execution slots require managed configuration contract version 3. Upgrade Worker and Server to matching supported contracts and retrieve configuration again.");
         if (string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
             snapshot.WorkerExecutionSlots is < 1 or > 8 || snapshot.Projects is null || snapshot.Projects.Count > 1000)
             throw new InvalidDataException("Server returned an unsupported or invalid managed configuration snapshot.");

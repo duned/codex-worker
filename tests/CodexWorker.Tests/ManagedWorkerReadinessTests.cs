@@ -580,7 +580,7 @@ public sealed class ManagedWorkerReadinessTests
                 new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))));
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
-        Assert.Contains("Unsupported contract version: expected 2, received 99", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Unsupported contract version: expected 2 (without slots) or 3, received 99", output.ToString(), StringComparison.Ordinal);
         Assert.Equal(corruptCache ? "{}" : JsonSerializer.Serialize(valid, new JsonSerializerOptions(JsonSerializerDefaults.Web)), await File.ReadAllTextAsync(cache));
     }
 
