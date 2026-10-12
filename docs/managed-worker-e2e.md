@@ -6,9 +6,7 @@ and checksums; the Issue series does not select or change the product version.
 This runbook describes acceptance steps, not a completed live campaign.
 For the separate-host transport setup, use the
 [HTTPS deployment recipe](remote-https-deployment.md). Record live secure remote
-acceptance through 23.6's runbook; isolated proxy checks do not establish that pass.
-See the [lifecycle integration review](managed-project-lifecycle-integration.md)
-for ownership boundaries and deterministic regression coverage across the child work.
+acceptance using that recipe and its deployed checks. See the [operator guide](operations.md) for ownership boundaries.
 
 ## Ownership and topology
 
@@ -155,5 +153,5 @@ they complement the executable live campaign and do not certify VM installation
 or first successful authenticated execution.
 
 For distinct Server/A/B machines, TLS faults, identity/delivery boundaries and
-redacted evidence, use the [23.6 acceptance campaign](remote-https-acceptance.md).
+redacted evidence, use the [HTTPS deployment checks](remote-https-deployment.md).
 A same-host harness run does not establish separate-host HTTPS acceptance.

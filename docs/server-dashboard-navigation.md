@@ -35,5 +35,4 @@ asset prefix is retained. Allow only that same-origin prefix in addition to the
 explicit dashboard routes; do not allow arbitrary filesystem/static resources or
 API fallback. Legacy `/dashboard-assets/worker-poc.js` and `.css` return 404.
 
-See [final integration checklist and evidence](server-dashboard-final-review.md) for parity and validation,
-and [React development/build guidance](server-dashboard-react.md).
+See [React development/build guidance](server-dashboard-react.md).

@@ -117,14 +117,6 @@ curl --fail-with-body -X POST "$worker_url/api/worker/drain/cancel"
 
 Never manually force-remove a workspace or delete an archive to bypass a refusal. Reconcile missing metadata, changed tips, active recovery, unavailable origin or unmerged work at their owning lifecycle boundary first.
 
-## Issue 210 integration validation evidence
-
-Local shell suites cover history/detail/lineage, inspection, cleanup selection, bounds, JSON output and failure diagnostics. Local-repository regression tests cover integrated and unmerged resources, uncertain/active attempts, ownership mismatches, ignored files, repeated cleanup, local-only/origin-only archives, origin tip races, drain reservations and deterministic bounded deletion. These tests do not use the development repository as a destructive fixture.
-
-A development Worker status read during implementation reported `running`, one active execution and no drain request. Subsequent project and bounded recovery dry-run requests could not connect to the loopback API. No real resources were classified or removed, and no manual-review inventory was established. The real dry-run/apply campaign remains deployment validation: run this procedure outside the Worker execution after deploying the changes, record one bounded cleanup's results, and retain every review/keep case. Draining or mutating the live development repository from this task would conflict with the task's Worker-owned Git lifecycle and active execution.
-
-.NET self-validation was unavailable: parallel MSBuild could not bind its named pipe in the sandbox, single-process build lacked restored assets, and single-process restore could not reach NuGet or find the required packages locally. The Worker's separately configured validation remains authoritative.
-
 ## Interrupted integration completion
 
 The Worker saves a validated integration handoff before updating the local base and

@@ -1,6 +1,6 @@
 # Linux installation reference
 
-Start with the [A–B–C clean-machine installation](../README.md#install-server--worker). This reference covers automation, manual enrollment, configuration, updates, removal, and troubleshooting.
+Start with the [operator guide](operations.md). This reference covers automation, manual enrollment, configuration, updates, removal, and troubleshooting.
 
 For separate Server and Worker machines, follow the supported
 [Ubuntu Nginx HTTPS deployment](remote-https-deployment.md), including VPN-restricted
@@ -24,7 +24,13 @@ The installer resolves the latest GitHub Release by default, downloads the match
 
 The clean-install flow can install GitHub CLI (`gh`) through the Server's typed provisioning queue. On an interactive install, the installer offers this option. For automation, pass `--bootstrap-github-cli --non-interactive`; without the explicit bootstrap option, non-interactive installs do not provision capabilities. During bootstrap the installer temporarily enables both local provisioning policy settings, queues and waits for the supported `server/github-cli/install` command, and restores the previous settings afterward. Pass `--keep-bootstrap-provisioning-policy` with `--bootstrap-github-cli` only when the operator intends both settings to remain enabled. The installer installs a root-owned sudoers drop-in limited to the exact apt, npm, and chmod command forms used by the product's typed provisioning plans. It never grants unrestricted sudo. Upgrades reconcile the same policy; uninstall removes it.
 
-Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-server/current` selects the active release. Configuration and secrets are in `/etc/codex-server/server.env`; SQLite state is in `/var/lib/codex-server`; the service log directory is `/var/log/codex-server` and service output is available in the systemd journal. The environment file is root-owned and readable by the Server account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the registration and management tokens described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. Temporary files use `/run/codex-server` and are not durable state.
+Executables are versioned under `/opt/codex-server/releases` and `/opt/codex-server/current` selects the active release. Configuration and secrets are in `/etc/codex-server/server.env`; SQLite state is in `/var/lib/codex-server`; the service log directory is `/var/log/codex-server` and service output is available in the systemd journal. The environment file is root-owned and readable by the Server account (mode `0640`); keep it out of source control. Set `ASPNETCORE_ENVIRONMENT=Production`, `Server__ListenUrl=http://127.0.0.1:5090`, and `Server__DataDirectory=/var/lib/codex-server` there, plus the management credential described below. Add `CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY` when using Server-managed credentials. Temporary files use `/run/codex-server` and are not durable state.
+
+To open the Server dashboard, retrieve the installed management token only in a protected operator terminal, then enter it in the dashboard token prompt. Do not record this terminal output or enable shell tracing:
+
+```sh
+sudo sed -n 's/^[[:space:]]*CODEX_SERVER_MANAGEMENT_TOKEN[[:space:]]*=[[:space:]]*//p' /etc/codex-server/server.env
+```
 
 Run `codex-server --help` (or `/opt/codex-server/current/CodexServer --help`) for CLI usage, and `codex-server --version` for the version. Both exit without starting a web host, reading service secrets, or creating persistent state, and work without sudo while the service is running. Invalid commands fail without starting a second Server.
 
@@ -54,7 +60,7 @@ sudo -u codex-worker /opt/codex-worker/CodexWorker register \
 sudo systemctl enable --now codex-worker
 ```
 
-The one-time token is accepted only for registration. Subsequent Worker requests use its durable per-Worker credential; the Server stores only hashes. Revoke an unused bootstrap token with `sudo codex-server worker-token revoke <token>`, or revoke a Worker credential with `sudo codex-server worker-token revoke-worker <worker-id>`. A new bootstrap registration for that same identity rotates its credential. Do not put either credential in service configuration or logs.
+The one-time token is accepted only for registration. Subsequent Worker requests use its durable per-Worker credential; the Server stores only hashes. Revoke an unused bootstrap token with `sudo codex-server worker-token revoke <token>`, or revoke a Worker credential with `sudo codex-server worker-token revoke-worker <worker-id>`. Existing identities require explicit operation-bound authorization; see [enrollment and rotation](worker-local-administration.md#enrollment-rotation-and-server-migration). Do not put either credential in service configuration or logs.
 
 Fresh installations explicitly set `Server__DataDirectory=/var/lib/codex-server`. Upgrades preserve the existing environment file and database selection. Older installations with no data-directory override use the service account's `/var/lib/codex-server/.local/share/codex-server/codex-server.db`; an explicit token command targeting `/var/lib/codex-server/codex-server.db` writes to a different database and cannot authorize that service. Use the helper to generate a fresh token against the configured database, then rerun Worker installation/registration with the same identity directory. Do not delete or relocate either database as a registration repair. Failed registration retains staged local credentials for safe retry, creates no Server Worker, and prevents `--start` from starting a fresh service.
 

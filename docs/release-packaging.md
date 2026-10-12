@@ -37,7 +37,7 @@ Any version failure stops before release publication. If publication fails, the 
 
 ## Installing published releases
 
-Operators installing Server or Worker should start with the [A–B–C Server + Worker installation](../README.md#install-server--worker). Those service installs need Ubuntu 24.04 x86_64 and systemd, but no source checkout or .NET installation.
+Operators installing Server or Worker should start with the [operator guide](operations.md). Those service installs need Ubuntu 24.04 x86_64 and systemd, but no source checkout or .NET installation.
 
 To install WET on Ubuntu 24.04 x86_64 from a published release, download and extract its archive, then place the standalone executable on `PATH` (replace `OWNER/REPOSITORY` and `VERSION`):
 

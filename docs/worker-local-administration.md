@@ -179,14 +179,7 @@ scheduling enable/drain/disable remains a Server operation. The existing
 `codex-worker update` command retains its own update/check/JSON conventions and
 installer activation/restart flow; see [self-update](self-update.md).
 
-The [19.9 local E2E report](worker-local-e2e-19.9.md) records the isolated
-executable campaign, recovery fixes, and remaining disposable-host acceptance
-checks. Run `tests/worker-local-e2e.py` against a built Worker apphost to repeat
-the campaign without modifying installed services or credentials.
-
-The [19.10 integration review](worker-administration-integration-review-19.10.md)
-records cross-provider consistency, integration fixes and the ownership contracts
-to preserve when adding secure remote transport.
+For an isolated local administration campaign, run `tests/worker-local-e2e.py` against a built Worker apphost without modifying installed services or credentials.
 
 ## Enrollment, rotation and Server migration
 

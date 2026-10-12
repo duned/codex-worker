@@ -1,4 +1,4 @@
-# Separate-host HTTPS deployment (23.5)
+# Separate-host HTTPS deployment
 
 This recipe supports Ubuntu 24.04 x64 with Nginx and Certbot on the **same machine
 as Server**, and one or more separate managed Worker machines. Workers initiate
@@ -7,13 +7,7 @@ responses. No inbound Worker port or remote Worker administration is required.
 Use a disposable deployment for acceptance; these instructions do not authorize
 changes to an existing operator VM.
 
-This is a reviewed deployment recipe, not evidence of a live separate-host pass.
-Run the remote acceptance campaign through [23.6's runbook](remote-https-acceptance.md) when hosts are
-available. Record artifact versions/checksums, OS/package versions, topology,
-redacted effective policy and each observation. The
-[managed Worker campaign](managed-worker-e2e.md) and
-[secret sentinel checks](secret-protection.md#remote-campaign-checks) supply
-application/lifecycle checks; neither substitutes for that remote campaign.
+Validate the deployed topology using the checks below, the [managed Worker campaign](managed-worker-e2e.md) and [secret sentinel checks](secret-protection.md#remote-campaign-checks). Record versions/checksums and redacted observations; local checks alone do not establish live deployment readiness.
 
 ## Topology and prerequisites
 
