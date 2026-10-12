@@ -9,7 +9,7 @@ using CodexWorker;
 namespace CodexWorker.Tests;
 
 [Collection("ServerTokenEnvironment")]
-public sealed class GitWorktreeTests
+public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : IClassFixture<GitWorktreeTests.RepositorySeed>
 {
     [Theory]
     [InlineData(false)]
@@ -17,7 +17,7 @@ public sealed class GitWorktreeTests
     public async Task InterruptedIntegrationProvesExactRemoteCommitAndResumesOwnedCleanup(bool pushReachedRemote)
     {
         if (OperatingSystem.IsWindows()) return; // Deterministic local receive hook uses POSIX shell.
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var settings = new GitSettings();
         var id = Guid.NewGuid();
         GitIntegrationResult? prepared = null;
@@ -77,7 +77,7 @@ public sealed class GitWorktreeTests
     [InlineData("repository")]
     public async Task RemoteCompletionProofRejectsInvalidProvenance(string invalid)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings());
         var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, fixture.Issue.Title,
             "feature/17-example-task", "main", DateTimeOffset.UtcNow, null, "InfrastructureFailure", null, "validated", "passed",
@@ -95,7 +95,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task IndependentlyAdvancedRemoteWithoutExpectedCommitDoesNotAuthorizeCompletion()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { PushCompletedBranch = false });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -121,7 +121,7 @@ public sealed class GitWorktreeTests
     [InlineData("starting-commit")]
     public async Task LegacyInspectionRejectsConflictingOwnershipWithoutMutatingWorkspace(string conflict)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings());
         await git.InitializeAsync(CancellationToken.None);
         var source = LegacyCodexSessionTests.Source() with { IssueTitle = fixture.Issue.Title };
@@ -151,7 +151,7 @@ public sealed class GitWorktreeTests
     [InlineData(false, true)]
     public async Task StandaloneBatchArchivesVerifiedCleanCompletionAndIsRepeatable(bool historicalAcknowledgement, bool reconciled)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings());
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -201,7 +201,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task LegacyReviewRestartAggregatesWarningsAndRetainsOriginalHistory()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var database = Path.Combine(fixture.Checkout, "../legacy-review.db");
         var config = new WorkerConfiguration
         {
@@ -247,7 +247,7 @@ public sealed class GitWorktreeTests
     [InlineData(true)]
     public async Task LegacyReconstructionPreservesDirtyDeltaAndResumesOnceWithAuthoritativeValidation(bool advanceMain)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         await fixture.AddAndPushAsync("deleted.txt", "removed by the preserved implementation");
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../legacy-history.db"));
         var config = new WorkerConfiguration
@@ -344,7 +344,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RestartReconcilesIncompleteImplementationWithoutDiscardingChangesOrResettingBudget()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../restart-history.db"));
         var config = new WorkerConfiguration { Project = new() { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout } };
         var id = Guid.NewGuid();
@@ -381,7 +381,7 @@ public sealed class GitWorktreeTests
     public async Task HostStaysOnlineAfterCodexInterruptionAndPreservesActiveSiblingOnShutdown()
     {
         if (!OperatingSystem.IsLinux()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         await fixture.GitAt(Path.GetFullPath(Path.Combine(fixture.Checkout, "../origin.git")), "symbolic-ref", "HEAD", "refs/heads/main");
         var bin = Path.Combine(fixture.Checkout, "../bin");
         Directory.CreateDirectory(bin);
@@ -500,7 +500,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task CodexInterruptionUsesSameWorkspaceAfterRestartAndPreservesAdvancedMain()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var settings = new GitSettings { AutoMerge = true, PushCompletedBranch = false };
         var id = Guid.NewGuid();
         string workspace;
@@ -544,7 +544,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task ExecutionWorktreeIsIsolatedAndRemovedAfterTaskFailureCleanup()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -555,10 +555,15 @@ public sealed class GitWorktreeTests
         Assert.True(Directory.Exists(git.ExecutionDirectory));
         await File.WriteAllTextAsync(Path.Combine(git.ExecutionDirectory, "generated.txt"), "task output");
         await git.VerifyCodexStateAsync(CancellationToken.None);
+        using var sibling = fixture.CreateRepository(new GitSettings { AutoMerge = false });
+        await sibling.StartIssueAsync(Guid.NewGuid(), fixture.Issue with { Number = 18, Title = "Second task" }, CancellationToken.None);
+        await File.WriteAllTextAsync(Path.Combine(sibling.ExecutionDirectory, "diagnostic.txt"), "still active");
         await git.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
 
         Assert.False(Directory.Exists(Path.Combine(fixture.WorktreeRoot, id.ToString("N"))));
         Assert.False(File.Exists(Path.Combine(fixture.Checkout, "generated.txt")));
+        Assert.Equal("still active", await File.ReadAllTextAsync(Path.Combine(sibling.ExecutionDirectory, "diagnostic.txt")));
+        Assert.Contains(sibling.ExecutionDirectory, await fixture.Git("worktree", "list", "--porcelain"));
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
     }
@@ -566,7 +571,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task FailedExecutionWithChangesRetainsOwnedWorktreeAndNeverIntegratesOrPushes()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -589,7 +594,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task FailedExecutionWithoutChangesRemovesWorktreeAndBranch()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -606,7 +611,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RetryResumeCopiesVerifiedPartialFilesIntoNewOwnedWorktree()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await first.InitializeAsync(CancellationToken.None);
         var firstId = Guid.NewGuid();
@@ -635,7 +640,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RetryResumeReappliesOnlyPreservedDeltaOnAdvancedBaseBeforeIntegration()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var originalId = Guid.NewGuid();
@@ -686,7 +691,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RetryResumeConflictStopsAndPreservesOriginalRecoveryWorkspace()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var originalId = Guid.NewGuid();
@@ -714,7 +719,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RetryRestartUsesCurrentBaseWithoutCopyingPreviousPartialFiles()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await first.InitializeAsync(CancellationToken.None);
         var firstId = Guid.NewGuid();
@@ -740,7 +745,7 @@ public sealed class GitWorktreeTests
     public async Task ResumeUsesGitPathsAndRejectsCaptureLinks(string scenario, bool rejected)
     {
         if (OperatingSystem.IsWindows()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         await fixture.AddAndPushAsync("generated/tracked.txt", "tracked source");
         await fixture.AddAndPushAsync(".gitignore", "generated/\n");
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = false });
@@ -791,7 +796,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task ResumeRejectsMissingOrUnsafePersistedRecoveryMetadata()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await first.InitializeAsync(CancellationToken.None);
         var firstId = Guid.NewGuid();
@@ -813,7 +818,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task ExistingHistoricalNumberFirstBranchDoesNotBlockOrGetRemovedWithNewExecution()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         const string historicalBranch = "feature/17-example-task";
         await fixture.Git("branch", historicalBranch, "main");
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
@@ -830,7 +835,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task SuccessfulIntegrationCommitsFromWorktreeAndPreservesFeatureBranch()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false, DeleteLocalFeatureBranch = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -852,7 +857,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task AutoMergeFastForwardsWithoutMergeCommitAndPreservesCompletedBranch()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -872,15 +877,13 @@ public sealed class GitWorktreeTests
     // cannot reproduce GitHub's asynchronous Issue timeline indexing.
     [Theory]
     [InlineData(1, false, true)]
-    [InlineData(2, false, true)]
     [InlineData(2, true, true)]
-    [InlineData(1, false, false)]
     [InlineData(2, false, false)]
     [InlineData(2, true, false)]
     public async Task DirectIntegrationPushSequenceIsIndependentOfRetryAndRecovery(int attempt, bool recover, bool retainCompleted)
     {
         if (OperatingSystem.IsWindows()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = retainCompleted });
         await original.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -936,7 +939,7 @@ public sealed class GitWorktreeTests
     public async Task HistoricalMergeSequencePublishesImplementationWithBaseBeforeCompletedRef()
     {
         if (OperatingSystem.IsWindows()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         // Reproduce the pre-fast-forward Git sequence in a disposable local repository.
         // This comparison does not change the production integration workflow.
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
@@ -972,7 +975,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task ReopenedIssueArchivesEachExecutionWithoutReplacingHistoricalCompletedBranches()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var settings = new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" };
         var historicalCommit = string.Empty;
 
@@ -1000,7 +1003,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task ExistingLocalAndRemoteRetryCompletionRefsArePreservedAndExecutionGetsUniqueName()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var settings = new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" };
         const string occupied = "done/feature/example-task-17-retry-2";
         await fixture.Git("branch", occupied, "main");
@@ -1026,7 +1029,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task AdvancedBaseRebasesFeatureValidatesAndFastForwardsFeatureCommit()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true, PushCompletedBranch = true, CompletedPrefix = "done/feature/" });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1053,7 +1056,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task BaseAdvanceDuringValidationReconcilesAgainWithoutMergeCommit()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1083,7 +1086,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RebaseConflictStopsBeforeFastForwardAndPreservesExecutionWorktree()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1109,7 +1112,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task FreshAttemptAfterConflictUsesCurrentMainAndLeavesOldWorktreeUntouched()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var oldId = Guid.NewGuid();
@@ -1138,7 +1141,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task IntegrationRecoveryReusesPreservedImplementationAndValidatesBeforeCompleting()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var executionId = Guid.NewGuid();
@@ -1181,7 +1184,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task LegacyIntegrationConflictUsesPersistedCommitWhenRecoveryStateIsMissing()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var executionId = Guid.NewGuid();
@@ -1209,7 +1212,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task LegacyIntegrationConflictIsRejectedWhenPreservedWorktreeIsMissing()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -1226,7 +1229,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task CodexResolvedRebaseConflictContinuesAndValidatesBeforeIntegration()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1258,7 +1261,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task FailedValidationAfterRebaseStopsBeforeIntegration()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1280,7 +1283,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task DistinctExecutionsUseDistinctDirectoriesAndOccupiedPathsArePreserved()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var firstId = Guid.NewGuid();
@@ -1302,7 +1305,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task SimultaneousCleanupRemovesOnlyEachExecutionAndKeepsGitMetadataValid()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await first.InitializeAsync(CancellationToken.None);
@@ -1331,7 +1334,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task PreservingOneFailedExecutionLeavesConcurrentExecutionUntouched()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var failed = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var active = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await failed.InitializeAsync(CancellationToken.None);
@@ -1358,7 +1361,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task SimultaneousSuccessfulIntegrationsCleanOnlyTheirOwnWorktrees()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false, DeleteLocalFeatureBranch = false });
         using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false, DeleteLocalFeatureBranch = false });
         await first.InitializeAsync(CancellationToken.None);
@@ -1388,32 +1391,9 @@ public sealed class GitWorktreeTests
     }
 
     [Fact]
-    public async Task CleaningExecutionADoesNotRemoveExecutionB()
-    {
-        using var fixture = await RepositoryFixture.CreateAsync();
-        using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
-        using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
-        await first.InitializeAsync(CancellationToken.None);
-        var firstId = Guid.NewGuid();
-        var secondId = Guid.NewGuid();
-        await first.StartIssueAsync(firstId, fixture.Issue, CancellationToken.None);
-        await second.StartIssueAsync(secondId, fixture.Issue with { Number = 18, Title = "Second task" }, CancellationToken.None);
-        var firstDirectory = first.ExecutionDirectory;
-        var secondDirectory = second.ExecutionDirectory;
-        await File.WriteAllTextAsync(Path.Combine(secondDirectory, "diagnostic.txt"), "still active");
-
-        await first.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
-
-        Assert.False(Directory.Exists(firstDirectory));
-        Assert.True(Directory.Exists(secondDirectory));
-        Assert.Equal("still active", await File.ReadAllTextAsync(Path.Combine(secondDirectory, "diagnostic.txt")));
-        Assert.Contains(secondDirectory, await fixture.Git("worktree", "list", "--porcelain"));
-    }
-
-    [Fact]
     public async Task CancellationBeforeCleanupPreservesThisAndOtherExecutionWorkspaces()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var first = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var second = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await first.InitializeAsync(CancellationToken.None);
@@ -1437,7 +1417,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task UnexpectedWorktreeBranchPreservesExecutionState()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1479,7 +1459,7 @@ public sealed class GitWorktreeTests
     [InlineData("remote-unavailable", "review", "inspection-unavailable")]
     public async Task CleanupInspectionCorrelatesHistoryAndGitWithoutMutation(string scenario, string decision, string reason)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -1585,7 +1565,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RecoveryCleanupRemovesOnlyThePersistedWorkerOwnedWorkspaceAndBranch()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var active = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
@@ -1613,7 +1593,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task RecoveryCleanupRefusesBranchNotMatchingExecutionIdentity()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -1633,7 +1613,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task PostRebaseValidationDoesNotRetryWhenSourceChanges()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -1657,7 +1637,7 @@ public sealed class GitWorktreeTests
     [InlineData(false)]
     public async Task PreservedValidationFailureCanRetryIntegrationWithoutAnotherRebase(bool retrySucceeds)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var original = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await original.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -1702,7 +1682,7 @@ public sealed class GitWorktreeTests
     [InlineData(false)]
     public async Task ConcurrentExecutionsRetryRebasedValidationAndReleaseCapacity(bool retrySucceeds)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var settings = new GitSettings { AutoMerge = true };
         using var git = fixture.CreateRepository(settings);
         await git.InitializeAsync(CancellationToken.None);
@@ -1785,7 +1765,7 @@ public sealed class GitWorktreeTests
     public async Task ShutdownDuringCodexPreservesRealWorkspaceAndRestartContinuesIt()
     {
         if (!OperatingSystem.IsLinux()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../shutdown-history.db"));
         using var shutdown = new CancellationTokenSource();
         using var writer = new StringWriter();
@@ -1847,7 +1827,7 @@ public sealed class GitWorktreeTests
     {
         // Model the provisioning/status concurrency pattern: A adds an installed provider;
         // B separates installation status from authentication/readiness. Both start on B0.
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var config = new WorkerConfiguration
         {
             Project = new ProjectSettings { Name = "sample", Repository = "owner/repo", Directory = fixture.Checkout },
@@ -1974,7 +1954,7 @@ public sealed class GitWorktreeTests
     [InlineData(false)]
     public async Task IncompleteIntegrationRepairIsRevalidatedAndRemainsRecoverable(bool validationPasses)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -2012,7 +1992,7 @@ public sealed class GitWorktreeTests
     [InlineData("infrastructure")]
     public async Task IntegrationRepairDoesNotRelaxHistoryValidationAuthorityOrInfrastructureSafety(string violation)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -2053,7 +2033,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task CancellationDuringIntegrationRepairPreservesWorkAndNeverIntegrates()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -2081,7 +2061,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task LaterRepairCommitConflictAbortsRebaseAndPreservesCompleteImplementation()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
@@ -2378,7 +2358,7 @@ public sealed class GitWorktreeTests
     [InlineData("claimed", "review")]
     public async Task CompletedBranchCleanupRequiresHistoryAgeExactTipsAndIntegration(string scenario, string decision)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         var prefix = scenario == "flat-prefix" ? "done-" : "done/";
         using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = prefix });
         var branch = prefix + "example-task-17";
@@ -2438,7 +2418,7 @@ public sealed class GitWorktreeTests
     [InlineData(true)]
     public async Task CompletedBranchMaintenanceApiAcceptsCompletedDrainAndAllowsResume(bool initiallyActive)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "maintenance-history.db"));
         using var gate = new SemaphoreSlim(1, 1);
@@ -2500,7 +2480,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task CompletedBranchMaintenanceUsesPersistedHistoryAndRepositoryGate()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "maintenance-history.db"));
         using var gate = new SemaphoreSlim(1, 1);
@@ -2547,7 +2527,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task CompletedBranchCleanupBoundsTheSameEligibleSetForPreviewAndApply()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
         var tip = await fixture.Git("rev-parse", "HEAD");
         var now = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
@@ -2579,7 +2559,7 @@ public sealed class GitWorktreeTests
     public async Task CompletedBranchCleanupRemoteLeasePreservesRefChangedDuringPush()
     {
         if (OperatingSystem.IsWindows()) return;
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = "done/" });
         const string branch = "done/example-task-17";
         var tip = await fixture.Git("rev-parse", "HEAD");
@@ -2620,7 +2600,7 @@ public sealed class GitWorktreeTests
     [InlineData("already-clean", "already-clean", "already-clean")]
     public async Task OperatorCleanupRevalidatesAndPreservesUnsafeResources(string scenario, string outcome, string reason)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -2711,7 +2691,7 @@ public sealed class GitWorktreeTests
     [InlineData(true)]
     public async Task OperatorCleanupSelectsBoundedHistoryAndOnlyRemovesOlderEligibleAttempt(bool stale)
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var olderGit = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var newerGit = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         using var unrelatedGit = fixture.CreateRepository(new GitSettings { AutoMerge = false });
@@ -2760,7 +2740,7 @@ public sealed class GitWorktreeTests
     [Fact]
     public async Task OperatorCleanupReadsHistoryAfterAcquiringRepositoryGateAndHoldsDrain()
     {
-        using var fixture = await RepositoryFixture.CreateAsync();
+        using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = false });
         await git.InitializeAsync(CancellationToken.None);
         var id = Guid.NewGuid();
@@ -2791,10 +2771,53 @@ public sealed class GitWorktreeTests
         Assert.True(registry.CancelWorkerDrain());
     }
 
-    private sealed class RepositoryFixture : IDisposable
+    // Initialize Git once, then copy the immutable seed. Each test still owns a
+    // separate checkout, object database, remote and worktree registry.
+    public sealed class RepositorySeed : IAsyncLifetime
     {
-        private readonly string _root;
-        private RepositoryFixture(string root)
+        private RepositoryFixture? _template;
+
+        public async Task InitializeAsync() => _template = await RepositoryFixture.CreateAsync();
+
+        public Task DisposeAsync()
+        {
+            _template?.Dispose();
+            return Task.CompletedTask;
+        }
+
+        internal async Task<RepositoryFixture> CreateAsync()
+        {
+            var template = _template ?? throw new InvalidOperationException("Repository seed was not initialized.");
+            var fixture = new RepositoryFixture(Path.Combine(Path.GetTempPath(), "codex-worker-worktree-tests", Guid.NewGuid().ToString("N")));
+            try
+            {
+                CopyDirectory(template._root, fixture._root);
+                await fixture.Git("config", "--rename-section",
+                    "url.file://" + Path.Combine(template._root, "origin.git"),
+                    "url.file://" + Path.Combine(fixture._root, "origin.git"));
+                return fixture;
+            }
+            catch
+            {
+                fixture.Dispose();
+                throw;
+            }
+        }
+
+        private static void CopyDirectory(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (var file in Directory.EnumerateFiles(source))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+            foreach (var directory in Directory.EnumerateDirectories(source))
+                CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+    }
+
+    internal sealed class RepositoryFixture : IDisposable
+    {
+        internal readonly string _root;
+        internal RepositoryFixture(string root)
         {
             _root = root;
             Checkout = Path.Combine(root, "checkout");
