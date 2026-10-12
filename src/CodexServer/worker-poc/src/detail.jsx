@@ -1,6 +1,6 @@
 import { WorkerResources } from './features/workers/WorkerResources';
 import { useState } from 'react';
-import { t, useLanguage, localizeText } from './shared/i18n';
+import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
 import { ExternalLink } from './shared/Actions';
 import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
@@ -24,6 +24,11 @@ function statusTone(value) {
   if ([t('workers.fresh'), t('workers.ready'), t('workers.available'), t('workers.connected')].includes(value)) return 'success';
   if (value === t('workers.notReady')) return 'warning';
   return statusColor(value);
+}
+
+function freshnessLabel(state) {
+  return state === 'Fresh' ? t('workers.fresh')
+    : state === 'Stale' ? t('workers.staleHeartbeat') : t('shared.unknown');
 }
 
 function Status({ value, tone, active = false }) {
@@ -98,8 +103,7 @@ function WorkerHeading({ worker, node, diagnostics, now, readOnly, administratio
   const statuses = workerDetailStatuses(worker, node, diagnostics);
   const connection = statuses.connection.state === 'Connected' ? t('workers.connected')
     : statuses.connection.state === 'Disconnected' ? t('workers.disconnected') : t('shared.unknown');
-  const freshness = statuses.freshness.state === 'Fresh' ? t('workers.fresh')
-    : statuses.freshness.state === 'Stale' ? t('workers.staleHeartbeat') : t('shared.unknown');
+  const freshness = freshnessLabel(statuses.freshness.state);
   const configuration = statuses.configuration.state === 'Ok' ? t('workers.configurationOk')
     : statuses.configuration.state === 'Ko' ? t('workers.configurationKo') : t('workers.configurationUnknown');
   const scheduling = statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
@@ -341,7 +345,7 @@ function ReadinessPanel({ worker, node, diagnostics, now }) {
   const eligibilityStatus = eligibleCount == null || !hasReportedChecks ? t('shared.unknown') : eligibleCount > 0 ? t('workers.ready') : t('workers.notReady');
   const eligible = eligibilityStatus === t('shared.unknown') ? t('workers.notChecked') : t('workers.eligibleProjects', { count: eligibleCount });
   const heartbeat = worker.lastHeartbeatAtUtc ? relativeAge(worker.lastHeartbeatAtUtc, now) : t('workers.heartbeatUnavailable');
-  const freshness = heartbeatFreshness(worker);
+  const freshness = workerDetailStatuses(worker, node, diagnostics).freshness;
   const preflightTone = preflight === t('workers.ready') ? 'success' : statusTone(preflight);
   const projectTone = statusTone(eligibilityStatus);
   const readinessValue = localizeText(currentWorkerExecutionReadiness(worker, node));
@@ -352,7 +356,7 @@ function ReadinessPanel({ worker, node, diagnostics, now }) {
       <ReadinessRow icon={<Shield01 />} title={t('workers.lastReportedExecutionPreflight')} detail={preflight === t('shared.unknown') ? t('workers.notChecked') : `${diagnostics.aiAgentReady ? t('workers.environmentAndToolsReady') : t('workers.preflightNotReady')} · ${t('workers.lastReported')} ${reportedAt}`} value={preflight} tone={preflightTone} />
       <ReadinessRow icon={<span className="poc-project-readiness-icon"><i/><i/></span>} title={t('workers.lastReportedProjectEligibility')} detail={eligibilityStatus === t('shared.unknown') ? eligible : `${eligible} · ${t('workers.lastReported')} ${reportedAt}`} value={eligibilityStatus} tone={projectTone} />
       <ReadinessRow icon={<Activity />} title={t('workers.currentExecutionReadiness')} detail={!node ? t('workers.readinessUnavailable') : node.connectivity === 'disconnected' ? t('workers.disconnectedBlocksReadiness') : node.observationsStale ? t('workers.observationIsStale') : t('workers.currentServerReadiness')} value={readinessValue} tone={statusTone(readinessValue)} />
-      <ReadinessRow icon={<Activity />} title={t('workers.heartbeatFreshness')} detail={`${t('workers.lastHeartbeat')}: ${heartbeat}`} value={freshness.value} tone={freshness.tone} />
+      <ReadinessRow icon={<Activity />} title={t('workers.heartbeatFreshness')} detail={`${t('workers.lastHeartbeat')}: ${heartbeat}`} value={freshnessLabel(freshness.state)} tone={freshness.tone} />
     </div>
   </TableCard.Root>;
 }

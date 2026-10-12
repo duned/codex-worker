@@ -4,6 +4,9 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const { props } = require('./worker-poc-fixtures.cjs');
 const assets = path.resolve('src/CodexServer/obj/worker-poc/preview');
+const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', secretReference: 'credential:credential-a', status: 'Ready', version: 1, createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-01T00:00:00Z' };
+const serverCapability = { ...props.nodes[0].capabilities[0], definition: { ...props.nodes[0].capabilities[0].definition, id: 'github-cli', displayName: 'GitHub CLI' }, availableActions: ['checkauthentication', 'refresh'] };
+const serverNode = { ...props.nodes[0], id: 'server', kind: 'server', displayName: 'Control Server', capabilities: [serverCapability] };
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
@@ -24,8 +27,8 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc/preview');
       const fixtures = {
         '/api/status': { state: 'running', version: 'fixture', startedAtUtc: '2026-01-01T00:00:00Z' },
         '/api/version': { version: '0.15.0' }, '/api/v1/workers': empty ? [] : [worker], '/api/v1/workers/worker-a': worker,
-        '/api/v1/nodes': props.nodes, '/api/v1/nodes/server/commands': [], '/api/v1/nodes/worker-a/commands': [], '/api/v1/provisioning': [],
-        '/api/v1/projects': empty ? [] : projects, '/api/v1/credentials': [],
+        '/api/v1/nodes': [...props.nodes, serverNode], '/api/v1/nodes/server/commands': [], '/api/v1/nodes/worker-a/commands': [], '/api/v1/provisioning': [],
+        '/api/v1/projects': empty ? [] : projects, '/api/v1/credentials': [metadata], '/api/v1/credentials/credential-a': metadata,
         '/api/v1/workers/worker-a/credential-access': { status: 'active' },
         '/api/v1/workers/worker-a/diagnostics': { ...props.diagnostics, canActivate: true, activationBlockingReasons: [], capabilityObservationsCurrent: true, projects: [] },
         '/api/v1/executions': empty ? [] : [...props.executions, { ...props.executions[0], id: 'future', state: 'FutureState', currentStage: 'FutureStage' }],
@@ -74,6 +77,11 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc/preview');
     await page.getByRole('button', { name: 'Actualizar ejecuciones' }).click();
     await page.getByText('No hay solicitudes de ejecución coincidentes.', { exact: true }).waitFor();
     await page.getByRole('link', { name: 'Ajustes', exact: true }).filter({ visible: true }).first().click();
+    await page.getByText('Contexto de diagnóstico', { exact: true }).click();
+    await page.getByText('Comprobar autenticación, actualizar observación').waitFor();
+    await page.getByRole('link', { name: 'Mostrar metadatos', exact: true }).click();
+    await page.getByRole('dialog').getByText('Preparado', { exact: true }).waitFor();
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Añadir credencial', exact: true }).click();
     const credential = page.getByRole('dialog');
     await credential.getByLabel('Proveedor').fill('draft-provider');

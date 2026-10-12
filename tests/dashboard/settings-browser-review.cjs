@@ -59,6 +59,7 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
       await page.goto('https://dashboard.test/settings?node=server');
       await page.getByRole('button', { name: 'Connect · prepare authentication', exact: true }).waitFor();
       await page.getByRole('link', { name: 'Show metadata', exact: true }).first().waitFor();
+      await page.getByText('prepareauthentication, login, checkauthentication, install, refresh').waitFor();
     }
     async function refresh() { await page.getByRole('button', { name: 'Refresh authoritative state', exact: true }).click(); }
     for (const width of [1280, 375]) {
@@ -85,6 +86,7 @@ const metadata = { id: 'credential-a', provider: 'Provider', type: 'API token', 
         await page.evaluate(() => { window.settingsNavigationFixture = 'retained'; });
         await metadataLink.click();
         await page.getByRole('dialog').getByText('credential:credential-a', { exact: true }).waitFor();
+        await page.getByRole('dialog').getByText('Ready', { exact: true }).waitFor();
         assert.equal(await page.evaluate(() => window.settingsNavigationFixture), 'retained', 'Metadata navigation retains the session and pending mutation owners.');
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         await page.screenshot({ timeout: 10000, animations: 'disabled', path: path.join(output, `metadata-${theme}-${width}.png`), fullPage: false });

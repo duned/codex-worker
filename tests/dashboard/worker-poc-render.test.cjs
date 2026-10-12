@@ -25,6 +25,12 @@ test('Worker detail renders real identity, current stage, outcomes, links and ca
  assert.ok(html.includes('Issue #27'));
  assert.ok(!html.includes('Upcoming'));
 });
+test('Readiness heartbeat uses the same current, stale and unknown status projection as Worker detail',()=>{
+ const heartbeatText=html=>html.slice(html.indexOf('Heartbeat freshness'),html.indexOf('poc-capabilities-panel'));
+ assert.match(heartbeatText(render({})),/>Fresh</);
+ assert.match(heartbeatText(render({observations:[{...worker,availability:'stale'}]})),/>Stale</);
+ assert.match(heartbeatText(render({observations:[{...worker,lastHeartbeatAtUtc:undefined}]})),/>Unknown</);
+});
 test('Configuration failure is independent, unknown/stale evidence is never healthy, and safe diagnostics are discoverable',()=>{
  const html=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'error',workerReportedManagedDiagnostics:{retrieval:'retrieved',synchronization:'error',source:'server-retrieved',failureStage:'contract-validation',diagnosticCode:'managed-contract-invalid'}} });
  assert.ok(html.includes('aria-label="Connection: Connected"'));
