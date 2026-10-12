@@ -18,6 +18,11 @@ function validateWorker(value: unknown) {
   if (item.configuredMaximumCapacity != null && (!Number.isSafeInteger(item.configuredMaximumCapacity) || Number(item.configuredMaximumCapacity) < 1 || Number(item.configuredMaximumCapacity) > 8)) throw new Error('Invalid configured Worker capacity.');
   if (item.workerExecutionSlots != null && (!Number.isSafeInteger(item.workerExecutionSlots) || Number(item.workerExecutionSlots) < 1 || Number(item.workerExecutionSlots) > 8)) throw new Error('Invalid Worker execution slots.');
   if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid Worker configuration revision.');
+  if (item.telegram != null) {
+    const telegram = fields(item.telegram, []);
+    if (typeof telegram.enabled !== 'boolean' || typeof telegram.tokenConfigured !== 'boolean' || 'botToken' in telegram || 'token' in telegram) throw new Error('Invalid Telegram settings.');
+    optional(telegram, ['chatId', 'credentialId']);
+  }
   if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version']); }); }
   if (item.hostResources != null) {
     const resources = fields(item.hostResources, ['measuredAtUtc']);
@@ -61,7 +66,8 @@ export const nodes = list<NodeSummary>(value => {
 });
 export const diagnostics: Validator<WorkerDiagnostics> = value => {
   const item = fields(value, ['configurationSynchronization', 'provisioningState'], ['aiAgentReady', 'gitHubReady', 'gitReady']);
-  optional(item, ['workerVersion', 'recentOperationalError'], ['canActivate', 'capabilityObservationsCurrent']);
+  optional(item, ['workerVersion', 'recentOperationalError'], ['canActivate', 'capabilityObservationsCurrent'], ['configurationRevision']);
+  if (item.configurationRevision != null && (!Number.isSafeInteger(item.configurationRevision) || Number(item.configurationRevision) < 1)) throw new Error('Invalid diagnostics configuration revision.');
   if (item.projects != null) {
     if (!Array.isArray(item.projects)) throw new Error('Invalid project readiness.');
     item.projects.forEach(value => {

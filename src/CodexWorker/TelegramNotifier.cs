@@ -8,9 +8,14 @@ namespace CodexWorker;
 public sealed class TelegramNotifier : IDisposable
 {
     private static readonly JsonSerializerOptions TelegramJsonOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-    private readonly bool _enabled;
-    private readonly string? _token;
-    private readonly string? _chatId;
+    private sealed record DeliverySettings(bool Enabled, string? Token, string? ChatId);
+    private DeliverySettings _settings = new(false, null, null);
+
+    internal void Configure(bool enabled, string? token, string? chatId)
+    {
+        ValidateConfiguration(enabled, token, chatId);
+        Volatile.Write(ref _settings, new(enabled, token, chatId));
+    }
     private readonly HttpClient _client;
     private readonly bool _ownsClient;
     private readonly WorkerConsole _console;
@@ -24,9 +29,7 @@ public sealed class TelegramNotifier : IDisposable
 
     private TelegramNotifier(bool enabled, string? token, string? chatId, HttpClient client, WorkerConsole? console, bool ownsClient)
     {
-        _enabled = enabled;
-        _token = token;
-        _chatId = chatId;
+        Configure(enabled, token, chatId);
         _client = client;
         _ownsClient = ownsClient;
         _console = console ?? new WorkerConsole();
@@ -171,18 +174,19 @@ public sealed class TelegramNotifier : IDisposable
 
     private async Task SendAsync(string text, CancellationToken ct, bool html = false)
     {
-        if (!_enabled) return;
+        var settings = Volatile.Read(ref _settings);
+        if (!settings.Enabled) return;
         try
         {
-            var payload = new Dictionary<string, object?> { ["chat_id"] = _chatId, ["text"] = text };
+            var payload = new Dictionary<string, object?> { ["chat_id"] = settings.ChatId, ["text"] = text };
             if (html) payload["parse_mode"] = "HTML";
-            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{_token}/sendMessage", payload,
+            using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{settings.Token}/sendMessage", payload,
                 TelegramJsonOptions, ct);
             if (!response.IsSuccessStatusCode) _console.Warning($"Telegram notification failed with HTTP {(int)response.StatusCode}; worker continues.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            var detail = _token is null ? ex.Message : ex.Message.Replace(_token, "[redacted]", StringComparison.Ordinal);
+            var detail = settings.Token is null ? ex.Message : ex.Message.Replace(settings.Token, "[redacted]", StringComparison.Ordinal);
             _console.Warning($"Telegram notification failed: {detail}; worker continues.");
         }
     }

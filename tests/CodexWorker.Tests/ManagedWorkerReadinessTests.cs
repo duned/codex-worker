@@ -577,10 +577,13 @@ public sealed class ManagedWorkerReadinessTests
         }, [], new WorkerConsole(output, interactive: false),
             registrationClient: new WorkerRegistrationClient(client,
                 new NodeCapabilityDiscovery((_, _, _) => Task.FromResult((0, "1.0.0"))),
-                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))));
+                new WorkerCapabilityDiscovery((_, _, _, _, _) => Task.FromResult(new ProcessResult(0, "1.0.0", "")))),
+            agentAuthentication: new TestProvider { Available = true },
+            executionHistoryPath: Path.Combine(temporary.Path, "history.db"));
 
         await host.RunAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15));
-        Assert.Contains("Unsupported contract version: expected 2 (without slots) or 3, received 99", output.ToString(), StringComparison.Ordinal);
+        // Snapshot validation precedes Telegram resolution and uses the safe retrieval diagnostic.
+        Assert.Contains("Server configuration was retrieved but its contract is invalid.", output.ToString(), StringComparison.Ordinal);
         Assert.Equal(corruptCache ? "{}" : JsonSerializer.Serialize(valid, new JsonSerializerOptions(JsonSerializerDefaults.Web)), await File.ReadAllTextAsync(cache));
     }
 

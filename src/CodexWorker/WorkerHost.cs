@@ -77,7 +77,14 @@ public sealed class WorkerHost
         }
         _output.Startup(configuredProjects.Count);
         foreach (var item in configuredProjects) _output.ProjectLoaded(item.Configuration.Project.Name);
-        using var telegram = new TelegramNotifier(_global.Telegram.Enabled, _output);
+        using var telegram = new TelegramNotifier(managedConfiguration is null && _global.Telegram.Enabled, _output);
+
+        Task<IReadOnlyList<(string Path, WorkerConfiguration Configuration)>> SynchronizeAsync(
+            ManagedConfigurationSynchronizer synchronizer, WorkerRegistrationClient registration, CancellationToken token) =>
+            ManagedTelegramConfiguration.SynchronizeAsync(synchronizer, telegram,
+                new(_global.Telegram.Enabled, Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"), Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID")),
+                retrievalToken => registration.GetManagedConfigurationAsync(_global.Server, retrievalToken),
+                (credentialId, deliveryToken) => registration.RetrieveCredentialAsync(_global.Server, credentialId, deliveryToken), token);
         ExecutionHistoryStore? history = null;
         WorkerRuntimeReadModel? runtimeReadModel = null;
         Microsoft.AspNetCore.Builder.WebApplication? managementApi = null;
@@ -151,8 +158,7 @@ public sealed class WorkerHost
                 {
                     try
                     {
-                        configuredProjects = await managedConfiguration.RetrieveAndApplyAsync(
-                            token => registration.GetManagedConfigurationAsync(_global.Server, token), ct);
+                        configuredProjects = await SynchronizeAsync(managedConfiguration, registration, ct);
                     }
                     catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException or InvalidDataException or System.Text.Json.JsonException) &&
                         (ex is not OperationCanceledException || !ct.IsCancellationRequested))
@@ -161,6 +167,10 @@ public sealed class WorkerHost
                     }
                 }
             }
+            if (managedConfiguration is { HasCachedSnapshot: true, AppliedTelegram: null } &&
+                managedConfiguration.Status.AppliedVersion is not null && managedConfiguration.Status.SynchronizationStatus != "synchronized")
+                telegram.Configure(_global.Telegram.Enabled, Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"),
+                    Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID"));
             if (managedConfiguration?.AppliedWorkerExecutionSlots is { } initialSlots)
                 _global.Worker.MaxParallelTasks = initialSlots;
             if (_global.Server.Enabled)
@@ -472,8 +482,7 @@ public sealed class WorkerHost
                         var previousVersion = managedConfiguration!.Status.AppliedVersion;
                         var retryRuntimeSynchronization = managedConfiguration.Status.Diagnostics is
                             { FailureStage: "synchronization", DiagnosticCode: "managed-synchronization-failed" };
-                        var replacement = await managedConfiguration.RetrieveAndApplyAsync(
-                            token => registration.GetManagedConfigurationAsync(_global.Server, token), executionToken);
+                        var replacement = await SynchronizeAsync(managedConfiguration, registration, executionToken);
                         if (retryRuntimeSynchronization || !string.Equals(previousVersion, managedConfiguration.Status.AppliedVersion, StringComparison.Ordinal))
                         {
                             runtimeReadModel.Registry.ReplaceConfiguration(replacement, validateExecutionResources: false);

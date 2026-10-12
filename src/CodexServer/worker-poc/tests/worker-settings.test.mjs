@@ -27,7 +27,7 @@ async function fixture(t, mode = 'success') {
       const request = JSON.parse(options.body);
       writes.push(request);
       if (mode === 'conflict') return json({}, 409);
-      current = { ...current, displayName: request.displayName, configuredMaximumCapacity: request.maximumParallelExecutions, configurationRevision: 2, ...(request.workerExecutionSlots === undefined ? {} : { workerExecutionSlots: request.workerExecutionSlots }) };
+      current = { ...current, displayName: request.displayName, configuredMaximumCapacity: request.maximumParallelExecutions, configurationRevision: 2, ...(request.workerExecutionSlots === undefined ? {} : { workerExecutionSlots: request.workerExecutionSlots }), ...(request.telegram === undefined ? {} : { telegram: { enabled: request.telegram.enabled, chatId: request.telegram.chatId, tokenConfigured: Boolean(request.telegram.botToken) && !request.telegram.clearToken } }) };
       if (mode === 'lost-response') throw new TypeError('Connection lost');
       return json(current);
     }
@@ -76,4 +76,24 @@ test('slot save refreshes desired slots without changing applied capacity', asyn
   assert.deepEqual(runtime.queries.getQueryData(queryKeys.read(generation, path)), saved);
   assert.deepEqual(runtime.queries.getQueryData(queryKeys.read(generation, '/api/v1/workers'))[0], saved);
   assert.deepEqual(await runtime.read(path, new AbortController().signal, value => value), saved);
+});
+
+
+test('Telegram replacement is write-only and the authoritative result updates both views', async t => {
+  const { runtime, generation, writes } = await fixture(t);
+  const telegram = { enabled: true, chatId: '-123', botToken: { value: '123:abcdefghijklmnopqrstuvwxyz' }, clearToken: false };
+  const saved = await saveWorkerSettings(runtime, 'worker-1', 'Operations', 1, 1, undefined, telegram);
+  assert.deepEqual(writes[0].telegram, telegram);
+  assert.equal(saved.telegram.tokenConfigured, true);
+  assert.equal(JSON.stringify(saved).includes(telegram.botToken.value), false);
+  assert.equal(JSON.stringify(runtime.queries.getQueryData(queryKeys.read(generation, path))).includes(telegram.botToken.value), false);
+});
+
+test('Telegram can be explicitly disabled and cleared without a token', async t => {
+  const { runtime, writes } = await fixture(t);
+  const saved = await saveWorkerSettings(runtime, 'worker-1', 'Operations', 1, 1, undefined,
+    { enabled: false, chatId: '', clearToken: true });
+  assert.equal(saved.telegram.enabled, false);
+  assert.equal(saved.telegram.tokenConfigured, false);
+  assert.equal('botToken' in writes[0].telegram, false);
 });

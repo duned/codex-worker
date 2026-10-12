@@ -1,5 +1,28 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "workers.telegramRuntimeFailure": "No se pudo aplicar la configuración de Telegram. Revisa el token del bot, el ID del chat y la autorización de entrega de credenciales del Worker, o desactiva Telegram.",
+  "workers.telegramStorageUnavailable": "El almacenamiento de secretos del Server no está disponible. Pide al administrador que revise el cifrado de credenciales antes de guardar un token.",
+  "workers.telegramApplied": "Aplicado: este Worker ha confirmado la configuración administrada actual.",
+  "workers.telegramPending": "Pendiente o sin verificar: este Worker no ha confirmado la configuración administrada actual.",
+
+  "workers.telegramTitle": "Notificaciones de Telegram",
+  "workers.telegramScope": "Por Worker, para todos sus proyectos. Los cambios afectan solo a este Worker.",
+  "workers.telegramManaged": "El Server administra la configuración de este Worker. Se reemplazan los ajustes locales y los valores del entorno de Telegram.",
+  "workers.telegramLegacy": "Configuración local: la activación procede del YAML del Worker; el token y el chat, del entorno del proceso. Sus valores efectivos no están disponibles aquí. Editar otros ajustes conserva esta configuración.",
+  "workers.telegramApply": "Los ajustes guardados se aplican en la siguiente sincronización autenticada sin tareas activas. Consulta la sincronización de configuración en los detalles del Worker para ver el estado aplicado o pendiente.",
+  "workers.telegramManage": "Administrar Telegram para este Worker",
+  "workers.telegramEnabled": "Activar notificaciones de Telegram",
+  "workers.telegramChat": "ID del chat o nombre @canal",
+  "workers.telegramToken": "Reemplazar token del bot",
+  "workers.telegramTokenConfigured": "Hay un token de bot configurado. No se puede mostrar su valor.",
+  "workers.telegramTokenMissing": "No hay ningún token de bot administrado.",
+  "workers.telegramTokenHelp": "Déjalo vacío para conservar el token guardado. Los tokens se cifran y nunca se devuelven al panel.",
+  "workers.telegramClear": "Borrar el token al guardar (desactiva Telegram primero)",
+  "workers.telegramRequired": "Telegram activado requiere un ID de chat y un token de bot. Puedes desactivarlo sin credenciales.",
+  "workers.telegramTokenInvalid": "Introduce un token válido: ID numérico del bot, dos puntos y caracteres del token.",
+  "workers.telegramChatInvalid": "Introduce un ID numérico de chat o un nombre @canal.",
+  "workers.telegramValidationFailed": "Se rechazaron los ajustes. Revisa los campos del Worker, el ID del chat y el token; reemplaza un token no disponible o desactiva Telegram.",
+
   "workers.hostResources": "Especificaciones y recursos del equipo",
   "workers.logicalCpus": "CPU lógicas",
   "workers.cpuUsage": "Uso de CPU",

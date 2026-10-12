@@ -4,6 +4,7 @@ export interface WorkerObservation {
   workerId: string; displayName?: string; availability: string; lifecycleState?: string;
   capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
   activeAssignments?: number; schedulingPolicy?: string; lastHeartbeatAtUtc?: string;
+  telegram?: { enabled: boolean; chatId?: string | null; credentialId?: string | null; tokenConfigured: boolean };
   configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
   hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };
   platform?: string; firstRegisteredAtUtc?: string; activeProjects?: string[];
@@ -48,7 +49,7 @@ export interface NodeSummary {
 }
 export interface WorkerDiagnostics {
   aiAgentReady: boolean; gitHubReady: boolean; gitReady: boolean;
-  configurationSynchronization: string; provisioningState: string; workerVersion?: string; capabilityObservationsCurrent?: boolean; projects?: WorkerProjectReadiness[]; reasons?: string[];
+  configurationRevision?: number; configurationSynchronization: string; provisioningState: string; workerVersion?: string; capabilityObservationsCurrent?: boolean; projects?: WorkerProjectReadiness[]; reasons?: string[];
   recentOperationalError?: string;
 }
 export interface WorkerAdministration extends WorkerObservation {

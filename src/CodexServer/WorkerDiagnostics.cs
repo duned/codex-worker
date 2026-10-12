@@ -16,7 +16,7 @@ public sealed record WorkerDiagnostics(string WorkerId, string WorkerVersion, st
     bool GitHubReady, bool GitReady, bool AiAgentReady, IReadOnlyList<WorkerProjectReadiness> Projects,
     IReadOnlyList<string> Reasons, string? RecentOperationalError, ProvisioningOperationSummary? LatestProvisioningOperation = null,
     ManagedWorkerDiagnostics? WorkerReportedManagedDiagnostics = null,
-    bool CanActivate = false, IReadOnlyList<string>? ActivationBlockingReasons = null, bool CapabilityObservationsCurrent = false);
+    bool CanActivate = false, IReadOnlyList<string>? ActivationBlockingReasons = null, bool CapabilityObservationsCurrent = false, long ConfigurationRevision = 1);
 
 /// <summary>Deterministically explains whether a registered worker can accept work.</summary>
 public static class WorkerDiagnosticsDerivation
@@ -154,7 +154,7 @@ public static class WorkerDiagnosticsDerivation
             worker.LifecycleState, worker.ActiveExecutions, worker.MaximumCapacity, worker.AvailableCapacity,
             configurationSynchronization, provisioningState, githubReady, gitReady, aiReady, readiness, reasons.Distinct(StringComparer.Ordinal).ToArray(),
             recentError, latestProvisioning, worker.ManagedDiagnostics, activation.Count == 0,
-            activation.Distinct(StringComparer.Ordinal).ToArray(), observationsCurrent);
+            activation.Distinct(StringComparer.Ordinal).ToArray(), observationsCurrent, worker.ConfigurationRevision);
     }
 
     private static bool Has(IReadOnlyList<WorkerCapability> capabilities, string type, string name, string? scope = null) =>

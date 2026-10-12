@@ -478,7 +478,7 @@ public static partial class ServerApplication
                     if (current is null) return Results.NotFound();
                     var projects = await store.GetProjectsAsync(context.RequestAborted);
                     var diagnostics = WorkerDiagnosticsDerivation.Derive(current, projects,
-                        await store.GetProvisioningPlansAsync(context.RequestAborted), ManagedConfigurationVersion(projects, current.WorkerExecutionSlots),
+                        await store.GetProvisioningPlansAsync(context.RequestAborted), ManagedConfigurationVersion(projects, current.WorkerExecutionSlots, current.Telegram),
                         await commands.ListNodeAsync(workerId, context.RequestAborted), clock.GetUtcNow());
                     if (!diagnostics.CanActivate)
                         return Results.Conflict(new { error = "Worker activation is blocked by current preparation evidence.", reasons = diagnostics.ActivationBlockingReasons });
@@ -489,7 +489,7 @@ public static partial class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
         app.MapPut("/api/v1/workers/{workerId}/settings", async (string workerId, WorkerConfigurationUpdateRequest request,
-            HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+            HttpContext context, ServerConfiguration settings, IRegistryStore store, ICredentialStore credentials) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (request is null || string.IsNullOrWhiteSpace(request.DisplayName) || request.DisplayName.Length > 200 || request.DisplayName.Trim().Length > 200 ||
@@ -499,8 +499,13 @@ public static partial class ServerApplication
             if (current is null) return Results.NotFound();
             if (current.ConfigurationRevision != request.ExpectedRevision)
                 return Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
-            var updated = await store.UpdateWorkerConfigurationAsync(workerId, request.DisplayName.Trim(),
-                request.MaximumParallelExecutions, request.ExpectedRevision, context.RequestAborted, request.WorkerExecutionSlots);
+            WorkerRegistrationResponse? updated;
+            try
+            {
+                updated = await WorkerTelegramSettings.UpdateAsync(workerId, request, current, store, credentials, context.RequestAborted);
+            }
+            catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException) { return Results.Problem(statusCode: 503, title: "telegram-secret-storage-unavailable"); }
             if (updated is not null) return Results.Ok(updated);
             current = await store.GetWorkerAsync(workerId, context.RequestAborted);
             return current is null ? Results.NotFound() : Results.Conflict(new { error = "Worker configuration has changed.", currentRevision = current.ConfigurationRevision });
@@ -640,7 +645,7 @@ public static partial class ServerApplication
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
             var typedCommands = await commands.ListNodeAsync(workerId, context.RequestAborted);
             return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans,
-                ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots), typedCommands, clock.GetUtcNow()));
+                ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots, worker.Telegram), typedCommands, clock.GetUtcNow()));
         });
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
@@ -649,9 +654,9 @@ public static partial class ServerApplication
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
             var projects = await store.GetProjectsAsync(context.RequestAborted);
-            var version = ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots);
+            var version = ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots, worker.Telegram);
             // Older contract-2 Workers hash projects alone and must reject slot-bearing snapshots explicitly.
-            return Results.Ok(new ServerManagedConfigurationResponse(worker.WorkerExecutionSlots is null ? 2 : 3, version, projects, worker.WorkerExecutionSlots));
+            return Results.Ok(new ServerManagedConfigurationResponse(worker.Telegram is not null ? 4 : worker.WorkerExecutionSlots is null ? 2 : 3, version, projects, worker.WorkerExecutionSlots, worker.Telegram));
         });
         app.MapGet("/api/v1/events/stream", async (HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -1066,7 +1071,7 @@ public static partial class ServerApplication
 
     private static bool ValidCapability(WorkerCapability value) => WorkerRegistrationRequest.ValidCapability(value);
 
-    internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects, int? workerExecutionSlots = null)
+    internal static string ManagedConfigurationVersion(IReadOnlyList<CentralProject> projects, int? workerExecutionSlots = null, WorkerTelegramConfiguration? telegram = null)
     {
         var material = new StringBuilder();
         foreach (var project in projects.OrderBy(item => item.Id, StringComparer.Ordinal))
@@ -1092,6 +1097,7 @@ public static partial class ServerApplication
             Append(material, "end-project");
         }
         if (workerExecutionSlots is { } slots) Append(material, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (telegram is not null) Append(material, JsonSerializer.Serialize(telegram));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
     }
 
@@ -1102,7 +1108,7 @@ public static partial class ServerApplication
     }
 
     private sealed record ServerManagedConfigurationResponse(int ContractVersion, string Version,
-        IReadOnlyList<CentralProject> Projects, int? WorkerExecutionSlots = null);
+        IReadOnlyList<CentralProject> Projects, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null);
 
     public static string DisplayVersion => CodexProvisioning.ProductVersion.Display(Assembly.GetExecutingAssembly());
 }

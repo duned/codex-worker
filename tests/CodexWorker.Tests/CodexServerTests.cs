@@ -989,6 +989,83 @@ public sealed class CodexServerTests
     }
 
     [Fact]
+    public async Task WorkerTelegramApiReturnsOnlyMetadataAndUsesManagedSnapshotAndWorkerOnlyDelivery()
+    {
+        using var temporary = new TemporaryDirectory();
+        var previousManagement = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        var previousKey = Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "telegram-management-test");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY",
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        const string botToken = "123456:abcdefghijklmnopqrstuvwxyz_123456789";
+        var url = $"http://127.0.0.1:{ReservePort()}";
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync(Args(url, Path.Combine(temporary.Path, "telegram-api.db")));
+            await app.StartAsync();
+            using var management = new HttpClient { BaseAddress = new Uri(url) };
+            management.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "telegram-management-test");
+            var registry = app.Services.GetRequiredService<IRegistryStore>();
+            var credentials = app.Services.GetRequiredService<ICredentialStore>();
+            var id = Guid.NewGuid().ToString("N");
+            var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(5));
+            Assert.True(await registry.BootstrapWorkerAsync(bootstrap, new(2, id, "Worker", "1.0", "test", 1, []), "telegram-worker-authentication-test"));
+            using var workerClient = new HttpClient { BaseAddress = new Uri(url) };
+            workerClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "telegram-worker-authentication-test");
+            using var invalid = await management.PutAsJsonAsync($"/api/v1/workers/{id}/settings",
+                new WorkerConfigurationUpdateRequest("Worker", 1, 1, Telegram: new(true, "123")));
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            using var saved = await management.PutAsJsonAsync($"/api/v1/workers/{id}/settings",
+                new WorkerConfigurationUpdateRequest("Worker", 1, 1, Telegram: new(true, "-123", new(botToken))));
+            Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+            Assert.DoesNotContain(botToken, await saved.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var worker = await saved.Content.ReadFromJsonAsync<WorkerRegistrationResponse>();
+            var telegram = Assert.IsType<WorkerTelegramConfiguration>(worker?.Telegram);
+            var reference = Assert.IsType<string>(telegram.CredentialId);
+            foreach (var path in new[] { $"/api/v1/workers/{id}", "/api/v1/workers", $"/api/v1/credentials/{reference}" })
+            {
+                using var read = await management.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+                Assert.DoesNotContain(botToken, await read.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+            using var snapshotResponse = await workerClient.GetAsync($"/api/v1/workers/{id}/configuration");
+            var snapshot = await snapshotResponse.Content.ReadFromJsonAsync<ServerManagedConfigurationContract>();
+            Assert.NotNull(snapshot);
+            Assert.Equal(4, snapshot.ContractVersion);
+            ManagedConfigurationSynchronizer.ValidateSnapshot(snapshot);
+            using var denied = await management.GetAsync($"/api/v1/workers/{id}/credentials/{reference}");
+            Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+            await credentials.SetWorkerDeliveryTokenAsync(id, new("telegram-delivery-test-with-sufficient-entropy"));
+            using var delivery = new HttpClient { BaseAddress = new Uri(url) };
+            delivery.DefaultRequestHeaders.Add("X-Worker-Credential-Token", "telegram-delivery-test-with-sufficient-entropy");
+            var secret = await delivery.GetFromJsonAsync<CredentialDeliveryResponse>($"/api/v1/workers/{id}/credentials/{reference}");
+            Assert.Equal(botToken, secret?.Secret);
+            using var conflict = await management.PutAsJsonAsync($"/api/v1/workers/{id}/settings",
+                new WorkerConfigurationUpdateRequest("Worker", 1, 1, Telegram: new(false, null, ClearToken: true)));
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+            await registry.HeartbeatWorkerAsync(new(2, id, "1.0", "running", 0, 1, [], [],
+                "synchronized", snapshot.Version));
+            var applied = await management.GetFromJsonAsync<CodexServer.WorkerDiagnostics>($"/api/v1/workers/{id}/diagnostics");
+            Assert.Equal("synchronized", applied?.ConfigurationSynchronization);
+            Assert.Equal(2, applied?.ConfigurationRevision);
+            using var cleared = await management.PutAsJsonAsync($"/api/v1/workers/{id}/settings",
+                new WorkerConfigurationUpdateRequest("Worker", 1, 2, Telegram: new(false, null, ClearToken: true)));
+            Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+            var pending = await management.GetFromJsonAsync<CodexServer.WorkerDiagnostics>($"/api/v1/workers/{id}/diagnostics");
+            Assert.Equal("out-of-sync", pending?.ConfigurationSynchronization);
+            Assert.Equal(3, pending?.ConfigurationRevision);
+            using var revoked = await delivery.GetAsync($"/api/v1/workers/{id}/credentials/{reference}");
+            Assert.Equal(HttpStatusCode.NotFound, revoked.StatusCode);
+            await app.StopAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previousManagement);
+            Environment.SetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY", previousKey);
+        }
+    }
+
+    [Fact]
     public async Task WorkerConfigurationApiSavesRevisionCheckedSettingsAndPreservesReportedCapacity()
     {
         using var temporary = new TemporaryDirectory();
@@ -2872,7 +2949,7 @@ public sealed class CodexServerTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE workers DROP COLUMN worker_execution_slots; ALTER TABLE workers DROP COLUMN configured_display_name; ALTER TABLE workers DROP COLUMN configured_maximum_capacity; ALTER TABLE workers DROP COLUMN configuration_revision; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE workers DROP COLUMN worker_execution_slots; ALTER TABLE workers DROP COLUMN telegram_json; ALTER TABLE workers DROP COLUMN configured_display_name; ALTER TABLE workers DROP COLUMN configured_maximum_capacity; ALTER TABLE workers DROP COLUMN configuration_revision; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
             await command.ExecuteNonQueryAsync();
         }
 

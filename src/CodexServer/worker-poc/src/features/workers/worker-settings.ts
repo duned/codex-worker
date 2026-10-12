@@ -6,13 +6,14 @@ import { t } from '../../shared/i18n';
 
 /** Persist Server assignment settings and publish the authoritative revision to both views. */
 export async function saveWorkerSettings(runtime: DashboardRuntime, workerId: string, displayName: string,
-  maximumParallelExecutions: number, revision: number, workerExecutionSlots?: number) {
+  maximumParallelExecutions: number, revision: number, workerExecutionSlots?: number, telegram?: { enabled: boolean; chatId: string; botToken?: { value: string }; clearToken: boolean }) {
   const path = `/api/v1/workers/${encodeURIComponent(workerId)}`, resource = path;
   const generation = runtime.snapshot().generation;
   const saved = await runtime.mutate(resource, `${path}/settings`, 'PUT', {
     displayName,
     maximumParallelExecutions,
     ...(workerExecutionSlots === undefined ? {} : { workerExecutionSlots }),
+    ...(telegram === undefined ? {} : { telegram }),
     expectedRevision: revision
   }, value => {
     const result = validateWorker(value);
@@ -20,6 +21,10 @@ export async function saveWorkerSettings(runtime: DashboardRuntime, workerId: st
         result.configuredMaximumCapacity !== maximumParallelExecutions || result.configurationRevision !== revision + 1 ||
         (workerExecutionSlots !== undefined && result.workerExecutionSlots !== workerExecutionSlots))
       throw new Error('Unexpected Worker configuration response.');
+    if (telegram !== undefined && (!result.telegram || result.telegram.enabled !== telegram.enabled ||
+        (result.telegram.chatId ?? '') !== telegram.chatId ||
+        (telegram.clearToken && result.telegram.tokenConfigured) || (telegram.botToken && !result.telegram.tokenConfigured)))
+      throw new Error('Unexpected Telegram configuration response.');
     return result;
   }, async signal => {
     const current = await runtime.read(path, signal, validateWorker);

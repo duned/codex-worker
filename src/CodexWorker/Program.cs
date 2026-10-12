@@ -132,14 +132,14 @@ public static class Program
         try
         {
             global = GlobalWorkerConfiguration.Load(configurationPath);
-            TelegramNotifier.ValidateConfiguration(global.Telegram.Enabled,
+            if (global.Projects.Ownership != "managed") TelegramNotifier.ValidateConfiguration(global.Telegram.Enabled,
                 Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"), Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID"));
             projects = ProjectConfigurationDiscovery.LoadForWorker(global);
         }
         catch (Exception ex)
         {
             output.InfrastructureFailure($"Configuration error: {ex.Message}");
-            if (global?.Telegram.Enabled == true &&
+            if (global?.Telegram.Enabled == true && global.Projects.Ownership != "managed" &&
                 !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN")) &&
                 !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID")))
             {

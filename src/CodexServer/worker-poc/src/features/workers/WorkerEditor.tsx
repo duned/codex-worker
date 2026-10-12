@@ -49,6 +49,13 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const [capacity, setCapacity] = useState(baseline.maximumParallelExecutions);
   const [slots, setSlots] = useState(baseline.workerExecutionSlots);
   const [revision, setRevision] = useState(worker.configurationRevision ?? 1);
+  const [telegramOverride, setTelegramOverride] = useState(worker.telegram != null);
+  const [telegramEnabled, setTelegramEnabled] = useState(worker.telegram?.enabled ?? false);
+  const [telegramChat, setTelegramChat] = useState(worker.telegram?.chatId ?? '');
+  const [telegramConfigured, setTelegramConfigured] = useState(worker.telegram?.tokenConfigured ?? false);
+  const [telegramToken, setTelegramToken] = useState('');
+  const [clearTelegramToken, setClearTelegramToken] = useState(false);
+  const [telegramDirty, setTelegramDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshRequired, setRefreshRequired] = useState(false);
@@ -70,7 +77,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const currentCapacity = Number(capacity);
   const validCapacity = Number.isInteger(currentCapacity) && currentCapacity >= 1 && currentCapacity <= 8;
   const validSlots = Number.isInteger(Number(slots)) && Number(slots) >= 1 && Number(slots) <= 8;
-  const dirty = slots !== baseline.workerExecutionSlots || currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
+  const dirty = telegramDirty || slots !== baseline.workerExecutionSlots || currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
   const canSubmit = dirty && !busy && !locked && !refreshRequired && !refreshing;
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -80,7 +87,20 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
     setBusy(true);
     setError('');
     try {
-      await saveWorkerSettings(runtime, worker.workerId, currentName, currentCapacity, revision, Number(slots));
+      if (telegramDirty && telegramOverride && telegramEnabled &&
+          (!telegramChat.trim() || (!telegramToken && (!telegramConfigured || clearTelegramToken)))) {
+        setError(t('workers.telegramRequired')); return;
+      }
+      if (telegramDirty && telegramToken && !/^[0-9]+:[A-Za-z0-9_-]{20,}$/.test(telegramToken)) {
+        setError(t('workers.telegramTokenInvalid')); return;
+      }
+      if (telegramDirty && telegramChat && !/^(?:-?[0-9]+|@[A-Za-z][A-Za-z0-9_]{4,})$/.test(telegramChat.trim())) {
+        setError(t('workers.telegramChatInvalid')); return;
+      }
+      await saveWorkerSettings(runtime, worker.workerId, currentName, currentCapacity, revision, Number(slots),
+        telegramDirty && telegramOverride ? { enabled: telegramEnabled, chatId: telegramChat.trim(),
+          ...(telegramToken ? { botToken: { value: telegramToken } } : {}), clearToken: clearTelegramToken } : undefined);
+      setTelegramToken('');
       onClose();
     } catch (failure) {
       const preflightConflict = failure instanceof ApiError && (failure.status === 409 || failure.message === t('workers.editorRevisionConflict'));
@@ -88,9 +108,10 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
       setRefreshRequired(preflightConflict || uncertain);
       const status = failure instanceof ApiError ? failure.status : undefined;
       setError(preflightConflict ? t('workers.editorRevisionConflict')
-        : status === 400 ? t('workers.editorValidationFailed')
+        : status === 400 ? t('workers.telegramValidationFailed')
           : status === 401 || status === 403 ? t('workers.editorAuthorizationFailed')
             : status === 404 ? t('workers.editorWorkerMissing')
+              : status === 503 && telegramDirty ? t('workers.telegramStorageUnavailable')
               : uncertain ? t('workers.editorSaveUnconfirmed') : t('workers.editorSaveFailed'));
       if (body.current) body.current.scrollTo({ top: 0 });
     } finally {
@@ -116,6 +137,11 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
       setSlots(form.workerExecutionSlots);
       setBaseline(form);
       setRevision(current.configurationRevision ?? 1);
+      setTelegramOverride(current.telegram != null);
+      setTelegramEnabled(current.telegram?.enabled ?? false);
+      setTelegramChat(current.telegram?.chatId ?? '');
+      setTelegramConfigured(current.telegram?.tokenConfigured ?? false);
+      setTelegramToken(''); setClearTelegramToken(false); setTelegramDirty(false);
       setRefreshRequired(false);
       setError('');
       runtime.queries.setQueryData(queryKeys.read(session.generation, path), current);
@@ -187,6 +213,24 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
           <div className="worker-editor-card">
             <Input label={t('workers.editorWorkerName')} value={displayName} onChange={setDisplayName} isRequired maxLength={200} pattern=".*\S.*" />
             <p className="worker-editor-help">{t('workers.editorNameHelp')}</p>
+          </div>
+        </section>
+
+        <section aria-labelledby="worker-editor-telegram" className="worker-editor-section">
+          <div className="worker-editor-section-heading"><h2 id="worker-editor-telegram">{t('workers.telegramTitle')}</h2><p>{t('workers.telegramScope')}</p></div>
+          <div className="worker-editor-card">
+            <p>{t(worker.telegram ? 'workers.telegramManaged' : 'workers.telegramLegacy')}</p>
+            {worker.telegram && <p role="status">{t(!diagnosticsLoading && !diagnosticsError && diagnostics?.configurationSynchronization === 'synchronized' && diagnostics.configurationRevision === revision && worker.availability !== 'stale' ? 'workers.telegramApplied' : 'workers.telegramPending')}</p>}
+            <p className="worker-editor-help">{t('workers.telegramApply')}</p>
+            {!telegramOverride && <Button color="secondary" onPress={() => { setTelegramOverride(true); setTelegramDirty(true); }}>{t('workers.telegramManage')}</Button>}
+            {telegramOverride && <>
+              <label><input type="checkbox" checked={telegramEnabled} onChange={event => { setTelegramEnabled(event.target.checked); setTelegramDirty(true); }} /> {t('workers.telegramEnabled')}</label>
+              <Input label={t('workers.telegramChat')} value={telegramChat} maxLength={200} onChange={value => { setTelegramChat(value); setTelegramDirty(true); }} />
+              <p>{t(telegramConfigured && !clearTelegramToken ? 'workers.telegramTokenConfigured' : 'workers.telegramTokenMissing')}</p>
+              <Input label={t('workers.telegramToken')} type="password" autoComplete="new-password" value={telegramToken} maxLength={200} onChange={value => { setTelegramToken(value); setClearTelegramToken(false); setTelegramDirty(true); }} />
+              <p className="worker-editor-help">{t('workers.telegramTokenHelp')}</p>
+              <label><input type="checkbox" checked={clearTelegramToken} onChange={event => { setClearTelegramToken(event.target.checked); setTelegramToken(''); setTelegramDirty(true); }} /> {t('workers.telegramClear')}</label>
+            </>}
           </div>
         </section>
 

@@ -7,7 +7,7 @@ namespace CodexWorker;
 
 /// <summary>Server-owned orchestration snapshot. Machine paths and credentials are deliberately absent.</summary>
 public sealed record ServerManagedConfigurationContract(int ContractVersion, string Version,
-    IReadOnlyList<ServerProjectContract> Projects, int? WorkerExecutionSlots = null);
+    IReadOnlyList<ServerProjectContract> Projects, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null);
 
 public sealed record WorkerConfigurationSyncStatus(string? DesiredVersion, string? AppliedVersion,
     string SynchronizationStatus, DateTimeOffset? LastSuccessfulUpdateUtc, string? Error,
@@ -26,6 +26,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
     public IReadOnlyList<ServerProjectContract> AppliedProjects { get { lock (_gate) return _appliedProjects; } }
 
     public WorkerConfigurationSyncStatus Status { get { lock (_gate) return _status; } }
+    private WorkerTelegramConfiguration? _appliedTelegram;
+    public WorkerTelegramConfiguration? AppliedTelegram { get { lock (_gate) return _appliedTelegram; } }
     private int? _appliedWorkerExecutionSlots;
     public int? AppliedWorkerExecutionSlots { get { lock (_gate) return _appliedWorkerExecutionSlots; } }
     public bool HasCachedSnapshot => File.Exists(_cachePath);
@@ -118,6 +120,17 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         }
     }
 
+    internal void RecordTelegramFailure()
+    {
+        lock (_gate) _status = _status with
+        {
+            SynchronizationStatus = "error",
+            Error = "Telegram configuration could not be applied. Check bot token, chat ID and Worker credential delivery authorization, or disable Telegram.",
+            Diagnostics = Diagnostics with { Retrieval = "retrieved", Synchronization = "error", FailureStage = "synchronization",
+                DiagnosticCode = "managed-synchronization-failed" }
+        };
+    }
+
     public void RecordSynchronizationFailure()
     {
         lock (_gate) _status = _status with
@@ -161,6 +174,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                     if (!unchanged) PersistAtomically(desired);
                     _appliedProjects = desired.Projects.ToArray();
                     _appliedWorkerExecutionSlots = desired.WorkerExecutionSlots;
+                    _appliedTelegram = desired.Telegram;
                     _status = new(desired.Version, desired.Version, "synchronized",
                         unchanged ? _status.LastSuccessfulUpdateUtc : DateTimeOffset.UtcNow, null,
                         new("retrieved", "synchronized", "server-retrieved", desired.Version, desired.Version, null, null,
@@ -173,6 +187,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 {
                     _appliedProjects = desired.Projects.ToArray();
                     _appliedWorkerExecutionSlots = desired.WorkerExecutionSlots;
+                    _appliedTelegram = desired.Telegram;
                 }
             return applied;
         }
@@ -209,9 +224,15 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
 
     internal static void ValidateSnapshot(ServerManagedConfigurationContract snapshot, bool cachedLegacy = false)
     {
+        if (snapshot.Telegram is not null)
+        {
+            if (snapshot.ContractVersion < 4) throw new InvalidDataException("Telegram requires managed contract version 4.");
+            snapshot.Telegram.Validate();
+        }
+        if (snapshot.ContractVersion == 4 && snapshot.Telegram is null) throw new InvalidDataException("Contract version 4 requires Telegram settings.");
         // Contract 2 predates slot hashing. Never attach new hash inputs to that wire contract.
-        if (snapshot.ContractVersion is not (2 or 3) && !(cachedLegacy && snapshot.ContractVersion == 1))
-            throw new InvalidDataException($"Unsupported contract version: expected 2 (without slots) or 3, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
+        if (snapshot.ContractVersion is not (2 or 3 or 4) && !(cachedLegacy && snapshot.ContractVersion == 1))
+            throw new InvalidDataException($"Unsupported contract version: expected 2, 3 or 4, received {snapshot.ContractVersion}. Upgrade Worker and Server to matching supported contracts.");
         if (snapshot.ContractVersion < 3 && snapshot.WorkerExecutionSlots is not null)
             throw new InvalidDataException("Worker execution slots require managed configuration contract version 3. Upgrade Worker and Server to matching supported contracts and retrieve configuration again.");
         if (string.IsNullOrWhiteSpace(snapshot.Version) || snapshot.Version.Length > 128 ||
@@ -223,7 +244,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             throw new InvalidDataException("Server returned duplicate managed project IDs.");
         var duplicate = snapshot.Projects.GroupBy(project => project.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
         if (duplicate is not null) throw new InvalidDataException("Server returned duplicate managed project names.");
-        var expected = CalculateVersion(snapshot.Projects, cachedLegacy, snapshot.WorkerExecutionSlots);
+        var expected = CalculateVersion(snapshot.Projects, cachedLegacy, snapshot.WorkerExecutionSlots, snapshot.Telegram);
         if (!string.Equals(expected, snapshot.Version, StringComparison.Ordinal))
             throw new InvalidDataException("Snapshot version/hash mismatch: Server managed configuration version does not match its contents.");
     }
@@ -242,7 +263,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             (requirement.Version is null || (requirement.Version.Length <= 100 && !requirement.Version.Any(char.IsControl))) &&
             (requirement.Scope is null || (requirement.Scope.Length <= 200 && !requirement.Scope.Any(char.IsControl))));
 
-    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects, bool legacy = false, int? workerExecutionSlots = null)
+    public static string CalculateVersion(IReadOnlyList<ServerProjectContract> projects, bool legacy = false, int? workerExecutionSlots = null, WorkerTelegramConfiguration? telegram = null)
     {
         var materialBuilder = new StringBuilder();
         foreach (var project in projects.OrderBy(project => project.Id, StringComparer.Ordinal))
@@ -268,6 +289,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Append(materialBuilder, "end-project");
         }
         if (workerExecutionSlots is { } slots) Append(materialBuilder, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (telegram is not null) Append(materialBuilder, JsonSerializer.Serialize(telegram));
         var material = materialBuilder.ToString();
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
     }
