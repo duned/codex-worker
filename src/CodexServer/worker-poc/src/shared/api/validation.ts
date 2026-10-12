@@ -79,6 +79,17 @@ export const diagnostics: Validator<WorkerDiagnostics> = value => {
   }
   if (item.reasons != null) stringList(item.reasons);
   if (item.activationBlockingReasons != null && (!Array.isArray(item.activationBlockingReasons) || item.activationBlockingReasons.some(value => typeof value !== 'string'))) throw new Error('Invalid reasons.');
+  if (item.workerReportedManagedDiagnostics != null) {
+    const managed = fields(item.workerReportedManagedDiagnostics, ['retrieval', 'synchronization', 'source']);
+    optional(managed, ['failureStage', 'diagnosticCode']);
+    if (!['unverified', 'retrieved', 'unavailable', 'unauthorized'].includes(String(managed.retrieval)) ||
+        !['not-synchronized', 'synchronized', 'cached', 'unavailable', 'error'].includes(String(managed.synchronization)) ||
+        !['none', 'server-retrieved', 'cached'].includes(String(managed.source)) ||
+        (managed.failureStage != null && !['retrieval', 'contract-validation', 'synchronization'].includes(String(managed.failureStage))) ||
+        (managed.diagnosticCode != null && !['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
+          'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing',
+          'project-preparation-failed'].includes(String(managed.diagnosticCode)))) throw new Error('Invalid managed diagnostics.');
+  }
   if (item.latestProvisioningOperation != null) optional(record(item.latestProvisioningOperation), ['action', 'status']);
   return value as WorkerDiagnostics;
 };

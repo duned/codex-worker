@@ -47,29 +47,53 @@ test('Status colors preserve stale, unknown, unavailable and not applicable text
  for(const state of ['offline','disconnected'])assert.equal(statusColor(state),'error');
 });
 
-test('Worker connection summary uses disconnected, stale, connected precedence and rejects uncertain evidence', async () => {
+test('Worker connection summary uses connected/disconnected evidence and rejects contradictions', async () => {
  const { workerConnectionStatus } = await model;
  const worker = { availability: 'online' };
  const cases = [
   [{ availability: 'stale' }, { connectivity: 'disconnected', observationsStale: true }, { state: 'Disconnected', tone: 'error' }],
   [{ availability: 'offline' }, { connectivity: 'disconnected', observationsStale: false }, { state: 'Disconnected', tone: 'error' }],
-  [worker, { connectivity: 'connected', observationsStale: true }, { state: 'Stale', tone: 'warning' }],
+  [worker, { connectivity: 'connected', observationsStale: true }, { state: 'Connected', tone: 'success' }],
   [worker, { connectivity: 'connected', observationsStale: false }, { state: 'Connected', tone: 'success' }],
   [worker, null, { state: 'Unknown', tone: 'gray' }],
-  [{ availability: 'stale' }, null, { state: 'Unknown', tone: 'gray' }],
+  [{ availability: 'stale' }, null, { state: 'Disconnected', tone: 'error' }],
   [{}, { connectivity: 'connected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
   [{ availability: 'offline' }, { connectivity: 'connected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
   [worker, { connectivity: 'disconnected', observationsStale: false }, { state: 'Unknown', tone: 'gray' }],
-  [worker, { connectivity: 'connected' }, { state: 'Unknown', tone: 'gray' }]
+  [worker, { connectivity: 'connected' }, { state: 'Connected', tone: 'success' }],
+  [{ availability: 'stale' }, { connectivity: 'disconnected', observationsStale: true }, { state: 'Disconnected', tone: 'error' }]
  ];
  for (const [observation, node, expected] of cases) assert.deepEqual(workerConnectionStatus(observation, node), expected);
+});
+
+test('Worker detail keeps connection, heartbeat, managed configuration and scheduling independent', async () => {
+ const { workerDetailStatuses } = await model;
+ const currentWorker = { availability: 'online', lastHeartbeatAtUtc: '2026-01-01T00:02:00Z', schedulingPolicy: 'Enabled' };
+ const connectedNode = { connectivity: 'connected', observationsStale: false };
+ const failed = workerDetailStatuses(currentWorker, connectedNode, { configurationSynchronization: 'error' });
+ assert.deepEqual(failed, {
+  connection: { state: 'Connected', tone: 'success' },
+  freshness: { state: 'Fresh', tone: 'success' },
+  configuration: { state: 'Ko', tone: 'error' },
+  scheduling: { state: 'Active', tone: 'success' }
+ });
+
+ const stale = workerDetailStatuses({ availability: 'stale', schedulingPolicy: 'Enabled' },
+  { connectivity: 'disconnected', observationsStale: true }, { configurationSynchronization: 'synchronized' });
+ assert.deepEqual(stale.connection, { state: 'Disconnected', tone: 'error' });
+ assert.deepEqual(stale.freshness, { state: 'Stale', tone: 'warning' });
+ assert.deepEqual(stale.configuration, { state: 'Unknown', tone: 'gray' });
+ assert.equal(workerDetailStatuses(currentWorker, connectedNode, { configurationSynchronization: 'unknown' }).configuration.state, 'Unknown');
+ assert.equal(workerDetailStatuses(currentWorker, connectedNode, { configurationSynchronization: 'cached' }).configuration.state, 'Unknown');
+ assert.equal(workerDetailStatuses({ ...currentWorker, schedulingPolicy: 'Draining' }, connectedNode, { configurationSynchronization: 'synchronized' }).scheduling.state, 'Draining');
+ assert.equal(workerDetailStatuses({ ...currentWorker, schedulingPolicy: 'Disabled' }, connectedNode, { configurationSynchronization: 'synchronized' }).scheduling.state, 'Inactive');
 });
 
 test('Worker list projection keeps summary, freshness, readiness and scheduling independent', async () => {
  const { workerListSignals, currentWorkerExecutionReadiness } = await model;
  const worker = { availability: 'Connected', lifecycleState: 'Registered', schedulingPolicy: 'Draining', activeExecutions: 1, maximumCapacity: 3, activeProjects: ['project-a'] };
  assert.deepEqual(workerListSignals(worker, { connectivity: 'connected', observationsStale: true, executionReadiness: 'NotReady' }), {
-  connection: 'Stale', connectionTone: 'warning', freshness: 'Stale', readiness: 'not-ready', scheduling: 'Draining', occupiedSlots: 1, totalSlots: 3, projects: ['project-a']
+  connection: 'Connected', connectionTone: 'success', freshness: 'Stale', readiness: 'not-ready', scheduling: 'Draining', occupiedSlots: 1, totalSlots: 3, projects: ['project-a']
  });
  assert.deepEqual(workerListSignals({ availability: 'Disconnected', capacity: 2 }, null), {
   connection: 'Disconnected', connectionTone: 'error', freshness: 'Unknown', readiness: 'Unknown', scheduling: 'Unknown', occupiedSlots: undefined, totalSlots: 2, projects: []

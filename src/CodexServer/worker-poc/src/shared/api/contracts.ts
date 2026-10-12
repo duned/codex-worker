@@ -51,6 +51,9 @@ export interface WorkerDiagnostics {
   aiAgentReady: boolean; gitHubReady: boolean; gitReady: boolean;
   configurationRevision?: number; configurationSynchronization: string; provisioningState: string; workerVersion?: string; capabilityObservationsCurrent?: boolean; projects?: WorkerProjectReadiness[]; reasons?: string[];
   recentOperationalError?: string;
+  workerReportedManagedDiagnostics?: {
+    retrieval: string; synchronization: string; source: string; failureStage?: string | null; diagnosticCode?: string | null;
+  } | null;
 }
 export interface WorkerAdministration extends WorkerObservation {
   authenticationCredentialRevokedAtUtc?: string;

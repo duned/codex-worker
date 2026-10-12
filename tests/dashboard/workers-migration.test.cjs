@@ -59,6 +59,9 @@ test('Server-shaped command, readiness and delivery metadata validate nested pre
   assert.throws(() => api.deliveryAuthorization({ status: 'active', revokedAtUtc: {} }));
   const diagnostics = { aiAgentReady: true, gitHubReady: false, gitReady: true, configurationSynchronization: 'synchronized', provisioningState: 'Running', capabilityObservationsCurrent: false, projects: [{ projectId: 'project', projectName: 'Project', isEligible: false, missingRequirements: ['Scoped GitHub access'], observationStatus: 'stale-revision' }] };
   assert.equal(api.diagnostics(diagnostics), diagnostics);
+  const managedDiagnostics = { retrieval: 'retrieved', synchronization: 'error', source: 'server-retrieved', failureStage: 'contract-validation', diagnosticCode: 'managed-contract-invalid' };
+  assert.equal(api.diagnostics({ ...diagnostics, workerReportedManagedDiagnostics: managedDiagnostics }).workerReportedManagedDiagnostics, managedDiagnostics);
+  assert.throws(() => api.diagnostics({ ...diagnostics, workerReportedManagedDiagnostics: { ...managedDiagnostics, diagnosticCode: 'secret-token' } }));
   assert.throws(() => api.diagnostics({ ...diagnostics, projects: [{ ...diagnostics.projects[0], missingRequirements: [{}] }] }));
   assert.throws(() => api.diagnostics({ ...diagnostics, recentOperationalError: {} }));
   const worker = { workerId: request.workerId, availability: 'online', platform: 'linux', firstRegisteredAtUtc: '2026-01-01', activeProjects: ['Project'] };

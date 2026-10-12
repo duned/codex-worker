@@ -54,6 +54,7 @@ test('switching localizes representative shell, worker, errors and dialog copy w
   assert.ok(!html.includes('Administration sign in'));
   const worker = renderToStaticMarkup(createElement(WorkerDetail, props));
   for (const text of ['Detalle del agente', 'Preparación', 'Ejecuciones recientes', 'Validación']) assert.ok(worker.includes(text), text);
+  for (const text of ['Conexión: Conectado', 'Latido: Reciente', 'Configuración: Config. correcta', 'Planificación: Activo']) assert.ok(worker.includes(text), text);
   assert.equal(t('executions.cancelOnlyThisQueuedRequestAssignedAndRunningWorkCannotBeCancelled').startsWith('Cancele solo'), true);
   assert.equal(t('shared.cancel'), 'Cancelar');
   assert.equal(statusLabel('NeedsReprovision'), 'Requiere reaprovisionamiento');

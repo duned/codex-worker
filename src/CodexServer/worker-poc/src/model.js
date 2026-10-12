@@ -3,11 +3,11 @@ import { isActiveExecutionState, statusColor } from './shared/status-model.mjs';
 // Presentation only: scheduling and readiness remain Server-owned.
 export { isActiveExecutionState, statusColor };
 const connectedAvailability = new Set(['online', 'draining', 'connected']);
-const disconnectedAvailability = new Set(['offline', 'disconnected']);
+const disconnectedAvailability = new Set(['offline', 'disconnected', 'stale']);
 
 /** Resolve the prominent connection summary from both Server observations.
  * Missing or contradictory evidence stays unknown; this is presentation only.
- * @returns {{ state: 'Disconnected' | 'Stale' | 'Connected' | 'Unknown', tone: 'error' | 'warning' | 'success' | 'gray' }} */
+ * @returns {{ state: 'Disconnected' | 'Connected' | 'Unknown', tone: 'error' | 'success' | 'gray' }} */
 export function workerConnectionStatus(worker, node) {
   const availability = typeof worker?.availability === 'string' ? worker.availability.toLowerCase() : '';
   const connectivity = typeof node?.connectivity === 'string' ? node.connectivity.toLowerCase() : '';
@@ -20,18 +20,54 @@ export function workerConnectionStatus(worker, node) {
     return { state: 'Unknown', tone: 'gray' };
   }
   if (availabilityDisconnected || nodeDisconnected) return { state: 'Disconnected', tone: 'error' };
-  if (!availabilityConnected || !nodeConnected || typeof node?.observationsStale !== 'boolean') {
+  if (!availabilityConnected || !nodeConnected) {
     return { state: 'Unknown', tone: 'gray' };
   }
-  return node.observationsStale
+  return { state: 'Connected', tone: 'success' };
+}
+
+/** Map independent Worker observations for the Worker detail header.
+ * Configuration is healthy only when the authoritative synchronization result
+ * and a current Worker heartbeat are both available.
+ */
+export function workerDetailStatuses(worker, node, diagnostics) {
+  const availability = typeof worker?.availability === 'string' ? worker.availability.toLowerCase() : '';
+  const hasHeartbeat = Number.isFinite(Date.parse(worker?.lastHeartbeatAtUtc ?? ''));
+  const freshness = availability === 'stale'
     ? { state: 'Stale', tone: 'warning' }
-    : { state: 'Connected', tone: 'success' };
+    : hasHeartbeat && ['online', 'draining', 'offline'].includes(availability)
+      ? { state: 'Fresh', tone: 'success' }
+      : { state: 'Unknown', tone: 'gray' };
+  const synchronization = typeof diagnostics?.configurationSynchronization === 'string'
+    ? diagnostics.configurationSynchronization.toLowerCase() : '';
+  const configuration = freshness.state !== 'Fresh'
+    ? { state: 'Unknown', tone: 'gray' }
+    : synchronization === 'synchronized'
+      ? { state: 'Ok', tone: 'success' }
+      : ['error', 'not-synchronized', 'out-of-sync'].includes(synchronization)
+        ? { state: 'Ko', tone: 'error' }
+        : { state: 'Unknown', tone: 'gray' };
+  const policy = typeof worker?.schedulingPolicy === 'string' ? worker.schedulingPolicy : '';
+  const scheduling = policy === 'Enabled'
+    ? { state: 'Active', tone: 'success' }
+    : policy === 'Disabled'
+      ? { state: 'Inactive', tone: 'gray' }
+      : policy === 'Draining'
+        ? { state: 'Draining', tone: 'warning' }
+        : { state: 'Unknown', tone: 'gray' };
+
+  return {
+    connection: workerConnectionStatus(worker, node),
+    freshness,
+    configuration,
+    scheduling
+  };
 }
 
 /** Presentation can only downgrade readiness when connection evidence is not current. */
 export function currentWorkerExecutionReadiness(worker, node) {
   const connection = workerConnectionStatus(worker, node);
-  if (connection.state === 'Disconnected' || connection.state === 'Stale') return 'not-ready';
+  if (connection.state === 'Disconnected' || node?.observationsStale === true) return 'not-ready';
   if (connection.state !== 'Connected') return 'Unknown';
   return node?.executionReadiness ?? 'Unknown';
 }

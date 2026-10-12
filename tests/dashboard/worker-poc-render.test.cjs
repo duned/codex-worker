@@ -16,10 +16,28 @@ const {props,worker,node,capability,current,completed}=require('./worker-poc-fix
 const render=data=>renderToStaticMarkup(createElement(WorkerDetail,{...props,...data}));
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
- for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Ready','Fresh','Validating','2m 30s','Completed','1m 0s','https://github.com/owner/repo/issues/27','https://github.com/owner/repo/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
+ for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','https://github.com/owner/repo/issues/27','https://github.com/owner/repo/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
+ assert.ok(html.includes('aria-label="Connection: Connected"'));
+ assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
+ assert.ok(html.includes('aria-label="Configuration: Config OK"'));
+ assert.ok(html.includes('aria-label="Scheduling: Active"'));
  assert.ok(!html.includes('other-execution'));assert.ok(!html.includes('8 active'));
  assert.ok(html.includes('Issue #27'));
  assert.ok(!html.includes('Upcoming'));
+});
+test('Configuration failure is independent, unknown/stale evidence is never healthy, and safe diagnostics are discoverable',()=>{
+ const html=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'error',workerReportedManagedDiagnostics:{retrieval:'retrieved',synchronization:'error',source:'server-retrieved',failureStage:'contract-validation',diagnosticCode:'managed-contract-invalid'}} });
+ assert.ok(html.includes('aria-label="Connection: Connected"'));
+ assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
+ assert.ok(html.includes('aria-label="Configuration: Config KO"'));
+ assert.ok(html.includes('Scheduling: Active'));
+ assert.ok(html.includes('Last reported failure: contract validation · managed contract invalid'));
+
+ const unknown=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'unknown'} });
+ assert.ok(unknown.includes('aria-label="Configuration: Config unknown"'));
+ const stale=render({ observations:[{...worker,availability:'stale',lastHeartbeatAtUtc:undefined}] });
+ assert.ok(stale.includes('aria-label="Heartbeat: Stale"'));
+ assert.ok(stale.includes('aria-label="Configuration: Config unknown"'));
 });
 test('The five-stage rail highlights only the reported current stage and does not invent history',()=>{
  for(const currentStage of ['Codex','Validation','Integration',null]){

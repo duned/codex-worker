@@ -1,14 +1,13 @@
 import { WorkerResources } from './features/workers/WorkerResources';
 import { useState } from 'react';
-import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
+import { t, useLanguage, localizeText } from './shared/i18n';
 import { ExternalLink } from './shared/Actions';
 import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
-import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness } from './model.js';
-import { WorkerConnectionBadge } from './features/workers/WorkerConnectionBadge';
+import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses } from './model.js';
 
 const executionStages = [
   { id: 'claimed', label: 'Claimed' },
@@ -17,6 +16,9 @@ const executionStages = [
   { id: 'validation', label: 'Validating' },
   { id: 'integration', label: 'Integrating' }
 ];
+const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
+const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
+  'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
 
 function statusTone(value) {
   if ([t('workers.fresh'), t('workers.ready'), t('workers.available'), t('workers.connected')].includes(value)) return 'success';
@@ -53,12 +55,23 @@ function relativeAge(value, now) {
   return t('workers.hoursAgo', { count: Math.floor(seconds / 3600) });
 }
 
-function heartbeatFreshness(worker) {
-  if (!Number.isFinite(Date.parse(worker.lastHeartbeatAtUtc ?? ''))) return { value: t('shared.unknown'), tone: 'gray' };
-  const availability = worker.availability.toLowerCase();
-  if (availability === 'stale') return { value: statusLabel('stale'), tone: 'warning' };
-  if (['online', 'draining', 'offline'].includes(availability)) return { value: t('workers.fresh'), tone: 'success' };
-  return { value: t('shared.unknown'), tone: 'gray' };
+function configurationFailureDiagnostic(diagnostics) {
+  const managed = diagnostics?.workerReportedManagedDiagnostics;
+  const details = [
+    managedFailureStages.has(managed?.failureStage) ? t(`status.${managed.failureStage}`) : null,
+    managedFailureCodes.has(managed?.diagnosticCode) ? t(`status.${managed.diagnosticCode}`) : null
+  ].filter(Boolean);
+  return details.length
+    ? t('workers.configurationFailureDiagnostic', { detail: details.join(' · ') })
+    : t('workers.configurationFailureGeneric');
+}
+
+function WorkerOperationalStatus({ label, value, tone, diagnostic }) {
+  return <span className="poc-worker-status-item" role="group" aria-label={`${label}: ${value}`}
+    aria-describedby={diagnostic ? 'poc-worker-config-diagnostic' : undefined}>
+    <Status value={value} tone={tone} />
+    {diagnostic && <span id="poc-worker-config-diagnostic" className="poc-worker-status-diagnostic">{diagnostic}</span>}
+  </span>;
 }
 
 function CopyWorkerId({ id }) {
@@ -80,11 +93,21 @@ function CopyWorkerId({ id }) {
   </>;
 }
 
-function WorkerHeading({ worker, node, now, readOnly, administrationHref, workersHref, administration }) {
+function WorkerHeading({ worker, node, diagnostics, now, readOnly, administrationHref, workersHref, administration }) {
   useLanguage();
-  const readinessValue = currentWorkerExecutionReadiness(worker, node);
-  const readiness = localizeText(readinessValue);
-  const freshness = heartbeatFreshness(worker);
+  const statuses = workerDetailStatuses(worker, node, diagnostics);
+  const connection = statuses.connection.state === 'Connected' ? t('workers.connected')
+    : statuses.connection.state === 'Disconnected' ? t('workers.disconnected') : t('shared.unknown');
+  const freshness = statuses.freshness.state === 'Fresh' ? t('workers.fresh')
+    : statuses.freshness.state === 'Stale' ? t('workers.staleHeartbeat') : t('shared.unknown');
+  const configuration = statuses.configuration.state === 'Ok' ? t('workers.configurationOk')
+    : statuses.configuration.state === 'Ko' ? t('workers.configurationKo') : t('workers.configurationUnknown');
+  const scheduling = statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
+    : statuses.scheduling.state === 'Inactive' ? t('workers.schedulingInactive')
+      : statuses.scheduling.state === 'Draining' ? t('workers.schedulingDraining') : t('shared.unknown');
+  const synchronization = diagnostics?.configurationSynchronization?.toLowerCase();
+  const configurationFailureReported = ['error', 'not-synchronized', 'out-of-sync'].includes(synchronization);
+  const configDiagnostic = configurationFailureReported ? configurationFailureDiagnostic(diagnostics) : null;
   const slots = worker.activeExecutions == null || (worker.maximumCapacity ?? worker.capacity) == null
     ? t('shared.unknown')
     : `${worker.activeExecutions} / ${worker.maximumCapacity ?? worker.capacity}`;
@@ -97,11 +120,11 @@ function WorkerHeading({ worker, node, now, readOnly, administrationHref, worker
       <h1 tabIndex={-1}>{worker.displayName || t('shared.workerDetails')}</h1>
       <div className="poc-worker-meta">
         <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />{worker.workerVersion && <span>{t('workers.workerVersion')} {worker.workerVersion}</span>}
-        <div className="poc-worker-statuses" aria-label={t('workers.workerStatus')}>
-          <span className="sr-only">{t('workers.connection')}</span><WorkerConnectionBadge worker={worker} node={node} />
-          <span className="sr-only">{t('workers.currentExecutionReadiness')}</span>
-          <Status value={readiness} tone={statusTone(readinessValue)} />
-          <Status value={freshness.value} tone={freshness.tone} />
+        <div className="poc-worker-statuses" role="group" aria-label={t('workers.workerStatus')}>
+          <WorkerOperationalStatus label={t('workers.connection')} value={connection} tone={statuses.connection.tone} />
+          <WorkerOperationalStatus label={t('workers.heartbeatStatus')} value={freshness} tone={statuses.freshness.tone} />
+          <WorkerOperationalStatus label={t('shared.configuration')} value={configuration} tone={statuses.configuration.tone} diagnostic={configDiagnostic} />
+          <WorkerOperationalStatus label={t('workers.schedulingStatus')} value={scheduling} tone={statuses.scheduling.tone} />
         </div>
         {readOnly && <a className="poc-readonly-link" href={administrationHref ?? `/workers/${encodeURIComponent(worker.workerId)}`}>{t('shared.openWorkerDetailAndAdministration')}</a>}
       </div>
@@ -418,7 +441,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
     {!worker ? <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div> : <>
-      <WorkerHeading worker={worker} node={node} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
+      <WorkerHeading worker={worker} node={node} diagnostics={diagnostics} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
       <div className={readOnly ? 'poc-worker-layout poc-worker-read-only' : 'poc-worker-layout'}>
         <div className="poc-worker-main poc-main">
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />

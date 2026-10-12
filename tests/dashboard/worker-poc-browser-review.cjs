@@ -63,6 +63,10 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       await page.reload();
       assert.equal(await page.locator('html').evaluate(element => element.classList.contains('dark-mode')), theme === 'dark');
       await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
+      for (const [label, value] of [['Connection', 'Connected'], ['Heartbeat', 'Fresh'], ['Configuration', 'Config OK'], ['Scheduling', 'Inactive']])
+        await page.getByRole('group', { name: `${label}: ${value}` }).waitFor();
+      assert.deepEqual(await page.locator('.poc-worker-status-item').evaluateAll(items => items.map(item => item.getAttribute('aria-label'))),
+        ['Connection: Connected', 'Heartbeat: Fresh', 'Configuration: Config OK', 'Scheduling: Inactive']);
       await page.getByRole('link', { name: 'Issue #27' }).waitFor();
       await page.getByText('Pending', { exact: true }).waitFor();
       assert.equal(await page.getByRole('link', { name: 'Issue #27' }).getAttribute('href'), 'https://github.com/owner/repo/issues/27');

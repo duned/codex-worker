@@ -112,7 +112,9 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-copy-id { display: inline-flex; width: 26px; height: 25px; align-items: center; justify-content: center; border: 1px solid var(--color-border-secondary); border-radius: 5px; padding: 4px; background: var(--color-bg-secondary); color: var(--color-fg-quaternary); cursor: pointer; }
 .poc-copy-id:hover { color: var(--color-text-primary); }
 .poc-copy-id svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.poc-worker-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 10px; }
+.poc-worker-statuses { display: flex; min-width: 0; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-left: 10px; }
+.poc-worker-status-item { display: inline-flex; min-width: 0; max-width: 100%; flex-direction: column; align-items: flex-start; gap: 3px; }
+.poc-worker-status-diagnostic { max-width: 18rem; color: var(--color-text-warning-primary); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .poc-worker-metrics { display: flex; min-height: 62px; align-items: center; flex-shrink: 0; }
 .poc-worker-metrics .poc-summary-metric { min-height: 62px; padding-left: 20px; }
 .poc-worker-metrics .poc-summary-metric:first-child { min-width: 177px; }
