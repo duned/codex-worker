@@ -77,7 +77,40 @@ test('only an available Worker version exposes the Server update action', () => 
   assert.match(editor, /version\.state === 'unavailable'/);
   assert.doesNotMatch(editor, /navigator\.clipboard|sudo codex-worker update/);
   assert.match(editor, /runtime\.mutate\(`\$\{path\}\/update`/);
+  assert.match(editor, /aria-describedby="worker-update-help"/);
+  assert.match(editor, /aria-label=\{t\('workers\.editorUpdateWorkerFor'/);
+  assert.match(editor, /loading: updateRead\.fetching/);
   assert.match(english, /waits for active executions to finish/);
+});
+
+test('Telegram editor uses shared Untitled UI controls and never renders the saved token', () => {
+  const editor = read('features/workers/WorkerEditor.tsx');
+  const english = read('shared/locales/en.ts');
+  const spanish = read('shared/locales/es.ts');
+  assert.match(editor, /import \{ Checkbox \} from .*checkbox\/checkbox/);
+  assert.equal((editor.match(/<Checkbox /g) ?? []).length, 2);
+  assert.match(editor, /<Input label=\{t\('workers\.telegramChat'\)\}[^>]*hint=/);
+  assert.match(editor, /<Input label=\{t\('workers\.telegramToken'\)\} type="password" autoComplete="new-password"/);
+  assert.match(editor, /telegramTokenConfigured/);
+  assert.match(editor, /telegramClearHelp/);
+  assert.doesNotMatch(editor, /<label><input type="checkbox"/);
+  for (const language of [english, spanish]) {
+    assert.match(language, /"workers\.telegramChatHelp":/);
+    assert.match(language, /"workers\.telegramClearHelp":/);
+  }
+});
+
+test('Worker data refresh keeps the mounted editor, dirty draft and scroller available', () => {
+  const page = read('features/workers/WorkerPocPage.tsx');
+  const editor = read('features/workers/WorkerEditor.tsx');
+  const styles = read('poc.css');
+  assert.match(page, /const editingWorker = registry\.retainedData/);
+  assert.match(page, /editing && editingWorker && <WorkerEditor key=\{id\}/);
+  assert.match(editor, /const \[displayName, setDisplayName\] = useState\(baseline\.displayName\)/);
+  assert.doesNotMatch(editor, /useEffect\([^)]*(setDisplayName|setTelegramChat|setCapacity)/);
+  assert.match(editor, /className="worker-editor-body"/);
+  assert.match(styles, /scrollbar-gutter: stable/);
+  assert.match(styles, /overscroll-behavior: contain/);
 });
 
 test('Worker editor copy is complete in English and Spanish', () => {
@@ -104,12 +137,12 @@ test('invalid managed configuration does not hide or block an available controll
   assert.equal(workerVersionState(updateWorker({ workerVersion: '0.16.0' }), '0.15.0').state, 'ahead');
 });
 
-for (const [flag, reason] of Object.entries({ busy: 'busy', pending: 'pending', loading: 'loading', error: 'status-error', failed: 'failed', locked: 'locked' })) {
+for (const [flag, reason] of Object.entries({ busy: 'busy', refreshing: 'refreshing', editorLocked: 'editor-locked', workerStatusError: 'worker-status-error', pending: 'pending', loading: 'loading', error: 'status-error', failed: 'failed', locked: 'locked' })) {
   test(`update explains ${reason} and has localized recovery text`, () => {
     assert.equal(workerUpdateBlockReason(updateWorker(), { [flag]: true }), reason);
     for (const language of ['en', 'es']) assert.ok(read(`shared/locales/${language}.ts`).includes(`"workers.editorUpdateBlock.${reason}"`));
   });
 }
-for (const [overrides, reason] of [[{ availability: 'offline' }, 'offline'], [{ capabilities: [] }, 'unsupported'], [{ lifecycleState: 'stopped' }, 'lifecycle']]) {
+for (const [overrides, reason] of [[{ availability: 'offline' }, 'offline'], [{ availability: 'stale' }, 'stale'], [{ capabilities: [] }, 'unsupported'], [{ lifecycleState: 'stopped' }, 'lifecycle']]) {
   test(`update safely blocks ${reason}`, () => assert.equal(workerUpdateBlockReason(updateWorker(overrides)), reason));
 }

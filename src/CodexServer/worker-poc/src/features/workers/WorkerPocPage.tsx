@@ -37,6 +37,7 @@ export function WorkerPocPage({ id }: { id: string }) {
   const delivery = useApiRead(`${base}/credential-access`, deliveryAuthorization);
   const [selected, setSelected] = useState<string>(), [pending, setPending] = useState(false), [message, setMessage] = useState('');
   const [editing, setEditing] = useState(false);
+  const editingWorker = registry.retainedData;
   const locked = runtime.locked(resource);
   const refresh = async () => {
     if (pending) return;
@@ -89,7 +90,7 @@ export function WorkerPocPage({ id }: { id: string }) {
     onRefresh: () => { void refresh(); }
   };
   return <><WorkerDetailPage workerId={id} administration={administration} />
-    {editing && registry.data && <WorkerEditor key={id} worker={registry.data} diagnostics={readiness.data}
+    {editing && editingWorker && <WorkerEditor key={id} worker={editingWorker} workerStatusError={!!registry.error} diagnostics={readiness.data}
       diagnosticsLoading={readiness.loading} diagnosticsError={!!readiness.error}
       serverVersion={serverVersion.data?.version} serverVersionLoading={serverVersion.loading || serverVersion.fetching} onClose={() => setEditing(false)} />}
     <ConfirmationDialog key={selected ?? 'closed'} isOpen={!!selected} onClose={() => setSelected(undefined)}

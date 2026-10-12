@@ -11,12 +11,14 @@ import { Notice, StatusBadge } from '../../shared/Presentation';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { statusColor } from '../../shared/status-model.mjs';
 import { Button } from '../../untitled/components/base/buttons/button';
+import { Checkbox } from '../../untitled/components/base/checkbox/checkbox';
 import { saveWorkerSettings } from './worker-settings';
 import { workerUpdate } from './worker-update';
 import { workerConfiguration, workerVersionState, workerUpdateBlockReason } from './worker-editor-model.mjs';
 
 interface WorkerEditorProps {
   worker: WorkerAdministration;
+  workerStatusError?: boolean;
   diagnostics?: WorkerReadiness;
   diagnosticsLoading?: boolean;
   diagnosticsError?: boolean;
@@ -39,7 +41,7 @@ function reportedTone(value: string | undefined) {
   return statusTones.find(tone => tone === statusColor(value)) ?? 'gray';
 }
 
-export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnosticsError, serverVersion, serverVersionLoading, onClose }: WorkerEditorProps) {
+export function WorkerEditor({ worker, workerStatusError = false, diagnostics, diagnosticsLoading, diagnosticsError, serverVersion, serverVersionLoading, onClose }: WorkerEditorProps) {
   useLanguage();
   const runtime = useRuntime(), session = useSession();
   const path = `/api/v1/workers/${encodeURIComponent(worker.workerId)}`;
@@ -64,13 +66,14 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
   const [updateBusy, setUpdateBusy] = useState(false);
   const updateGuard = useRef(false);
   const updateId = useRef(crypto.randomUUID().replaceAll('-', ''));
+  const locked = runtime.locked(resource);
   const updateRead = useApiRead(`${path}/update`, workerUpdate);
   const update = updateRead.data;
   const updatePending = update?.state === 'waiting-for-idle' || update?.state === 'updating' || update?.state === 'reconnecting';
-  const updateBlock = workerUpdateBlockReason(worker, { busy: updateBusy || busy, pending: updatePending, loading: updateRead.loading, error: updateRead.hasError, failed: update?.state === 'failed', locked: runtime.locked(`${path}/update`) });
+  const updateBlock = workerUpdateBlockReason(worker, { busy: updateBusy || busy, refreshing, editorLocked: locked,
+    workerStatusError, pending: updatePending, loading: updateRead.fetching, error: updateRead.hasError, failed: update?.state === 'failed', locked: runtime.locked(`${path}/update`) });
   const guard = useRef(false);
   const body = useRef<HTMLFieldSetElement | null>(null);
-  const locked = runtime.locked(resource);
   const hasCurrentCapacity = Number.isInteger(worker.maximumCapacity) && Number(worker.maximumCapacity) >= 1;
   const version = workerVersionState(worker, serverVersion, serverVersionLoading);
   const currentName = displayName.trim();
@@ -224,12 +227,11 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
             <p className="worker-editor-help">{t('workers.telegramApply')}</p>
             {!telegramOverride && <Button color="secondary" onPress={() => { setTelegramOverride(true); setTelegramDirty(true); }}>{t('workers.telegramManage')}</Button>}
             {telegramOverride && <>
-              <label><input type="checkbox" checked={telegramEnabled} onChange={event => { setTelegramEnabled(event.target.checked); setTelegramDirty(true); }} /> {t('workers.telegramEnabled')}</label>
-              <Input label={t('workers.telegramChat')} value={telegramChat} maxLength={200} onChange={value => { setTelegramChat(value); setTelegramDirty(true); }} />
-              <p>{t(telegramConfigured && !clearTelegramToken ? 'workers.telegramTokenConfigured' : 'workers.telegramTokenMissing')}</p>
-              <Input label={t('workers.telegramToken')} type="password" autoComplete="new-password" value={telegramToken} maxLength={200} onChange={value => { setTelegramToken(value); setClearTelegramToken(false); setTelegramDirty(true); }} />
-              <p className="worker-editor-help">{t('workers.telegramTokenHelp')}</p>
-              <label><input type="checkbox" checked={clearTelegramToken} onChange={event => { setClearTelegramToken(event.target.checked); setTelegramToken(''); setTelegramDirty(true); }} /> {t('workers.telegramClear')}</label>
+              <Checkbox label={t('workers.telegramEnabled')} isSelected={telegramEnabled} onChange={selected => { setTelegramEnabled(selected); setTelegramDirty(true); }} />
+              <Input label={t('workers.telegramChat')} value={telegramChat} maxLength={200} hint={t('workers.telegramChatHelp')} onChange={value => { setTelegramChat(value); setTelegramDirty(true); }} />
+              <p role="status" className="worker-editor-help">{t(telegramConfigured && !clearTelegramToken ? 'workers.telegramTokenConfigured' : 'workers.telegramTokenMissing')}</p>
+              <Input label={t('workers.telegramToken')} type="password" autoComplete="new-password" value={telegramToken} maxLength={200} hint={t('workers.telegramTokenHelp')} onChange={value => { setTelegramToken(value); setClearTelegramToken(false); setTelegramDirty(true); }} />
+              <Checkbox label={t('workers.telegramClear')} hint={t('workers.telegramClearHelp')} isSelected={clearTelegramToken} onChange={selected => { setClearTelegramToken(selected); setTelegramToken(''); setTelegramDirty(true); }} />
             </>}
           </div>
         </section>
@@ -278,7 +280,7 @@ export function WorkerEditor({ worker, diagnostics, diagnosticsLoading, diagnost
             </div>
             {version.state === 'available' && <>
               <Notice>{t('workers.editorUpdateAvailableHelp')}</Notice>
-              <Button color="primary" className="bg-success-solid hover:bg-green-700" aria-describedby="worker-update-help" isDisabled={Boolean(updateBlock)} onPress={() => { void requestUpdate(); }}>{t('workers.editorUpdateWorker')}</Button>
+              <Button color="primary" className="bg-success-solid hover:bg-green-700" aria-label={t('workers.editorUpdateWorkerFor', { name: worker.displayName?.trim() || worker.workerId })} aria-describedby="worker-update-help" isDisabled={Boolean(updateBlock)} onPress={() => { void requestUpdate(); }}>{t('workers.editorUpdateWorker')}</Button>
               <p id="worker-update-help" role="status" className="worker-editor-help">{updateBlock ? t(`workers.editorUpdateBlock.${updateBlock}`) : t('workers.editorUpdateRecoveryHelp')}</p>
             </>}
             {update && <Notice error={update.state === 'failed'}><span role="status">{update.state === 'succeeded' && update.diagnostic === 'already-current'

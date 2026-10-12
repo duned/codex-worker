@@ -73,13 +73,17 @@ export function workerVersionState(worker, serverVersion, serverVersionLoading =
 }
 
 // Update eligibility is independent of execution readiness; the Server owns drain and lease checks.
-export function workerUpdateBlockReason(worker, { busy = false, pending = false, loading = false, error = false, failed = false, locked = false } = {}) {
+export function workerUpdateBlockReason(worker, { busy = false, refreshing = false, editorLocked = false, workerStatusError = false, pending = false, loading = false, error = false, failed = false, locked = false } = {}) {
   if (busy) return 'busy';
+  if (refreshing) return 'refreshing';
+  if (editorLocked) return 'editor-locked';
+  if (workerStatusError) return 'worker-status-error';
   if (loading) return 'loading';
   if (error) return 'status-error';
   if (failed) return 'failed';
   if (pending) return 'pending';
   if (locked) return 'locked';
+  if (worker?.availability === 'stale') return 'stale';
   if (!['online', 'draining'].includes(worker?.availability)) return 'offline';
   if (!worker?.capabilities?.some(item => item.type === 'protocol' && item.name === 'worker-self-update-v1')) return 'unsupported';
   if (!['running', 'not-ready', 'ready', 'draining', 'drain-requested', 'drained'].includes(worker?.lifecycleState)) return 'lifecycle';

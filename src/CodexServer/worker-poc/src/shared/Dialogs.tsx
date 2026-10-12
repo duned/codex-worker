@@ -23,7 +23,7 @@ export function FormDialog({ isOpen, title, description, onClose, children, pend
   return <ModalOverlay isOpen={isOpen} onOpenChange={open => { if (!open && !pending) onClose(); }}
     isDismissable={!pending} isKeyboardDismissDisabled={pending}
     className={isEnqueue ? 'enqueue-dialog-overlay' : isSidePanel ? 'fixed inset-0 z-50 flex justify-end bg-overlay/70' : 'fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
-    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : isSidePanel ? 'flex h-dvh w-full flex-col overflow-hidden bg-primary shadow-xl ring-1 ring-secondary md:w-[60vw] md:max-w-5xl' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
+    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : isSidePanel ? 'flex h-dvh w-full flex-col overflow-hidden bg-primary shadow-xl ring-1 ring-secondary lg:w-[60vw] lg:max-w-5xl' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
       <Dialog aria-describedby={descriptionId} className={isEnqueue ? 'enqueue-dialog' : isSidePanel ? 'flex h-full min-h-0 flex-col outline-none' : 'flex flex-col gap-4 outline-none'}>
         {isEnqueue && <Button color="tertiary" className="enqueue-dialog-close" aria-label={t('shared.closeDialog')} isDisabled={pending} onPress={onClose}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" /></svg>
