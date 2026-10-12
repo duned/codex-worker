@@ -387,6 +387,8 @@ public sealed class GitHubSettings
 public sealed class CodexSettings
 {
     public string InstructionsFile { get; set; } = "AGENTS.md";
+    // Managed repositories need not carry the conventional optional instructions file.
+    internal bool AllowMissingDefaultInstructions { get; set; }
     public string? Model { get; set; }
     public string ReasoningEffort { get; set; } = "medium";
     public int TimeoutMinutes { get; set; } = 60;

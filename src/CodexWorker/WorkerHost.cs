@@ -687,6 +687,7 @@ public sealed class WorkerHost
                         // Start guarding the assignment before any GitHub label/comment work in
                         // ClaimAssignedAsync; that work can itself outlive a short lease.
                         var leaseRenewal = RenewLeaseWhileActiveAsync(lease, leaseStop);
+                        var preparationStage = "revision-verification";
                         try
                         {
                             try
@@ -695,6 +696,7 @@ public sealed class WorkerHost
                                 if (!preparedConfigurations.Contains(assignedProject.Configuration))
                                 {
                                     managedConfiguration!.RecordProjectState(assignment.Project, "materializing");
+                                    preparationStage = "checkout-preparation";
                                     await assignedProject.RepositoryGate.WaitAsync(leaseStop.Token);
                                     try
                                     {
@@ -703,10 +705,13 @@ public sealed class WorkerHost
                                         await assignedProject.Git.MaterializeManagedCheckoutAsync(leaseStop.Token);
                                     }
                                     finally { assignedProject.RepositoryGate.Release(); }
+                                    preparationStage = "github-labels";
                                     foreach (var label in await assignedProject.GitHub.FindMissingLabelsAsync(
                                         assignedProject.Configuration.GitHub.RequiredLabels, leaseStop.Token))
                                         await assignedProject.GitHub.CreateLabelAsync(label, leaseStop.Token);
+                                    preparationStage = "instructions-and-initialization";
                                     await assignedProject.Worker.PrepareForHostAsync(leaseStop.Token);
+                                    preparationStage = "recovery-verification";
                                     await ReconcileRecoveryAsync([assignedProject], history, runtimeReadModel, leaseStop.Token);
                                     if (runtimeReadModel.Registry.Get(assignedProject.Configuration.Project.Name) is
                                         { State: ProjectLifecycleState.Unavailable } unavailable)
@@ -715,15 +720,18 @@ public sealed class WorkerHost
                                     managedConfiguration!.RecordProjectState(assignment.Project, "ready");
                                 }
                                 else LogAssignment(assignment, "checkout reuse", assignedProject.Configuration);
+                                preparationStage = "revision-verification";
                                 await VerifyAssignmentRevisionAsync(assignment, leaseStop.Token);
                                 LogAssignment(assignment, $"revision {assignment.Project.Revision} verified · project ready", assignedProject.Configuration);
                             }
                             catch (Exception ex) when (!leaseStop.IsCancellationRequested)
                             {
-                                managedConfiguration!.RecordProjectState(assignment.Project, "failed", "project-preparation-failed");
+                                var diagnostic = ex is ManagedCheckoutPreparationException checkoutFailure
+                                    ? checkoutFailure.DiagnosticCode : "project-" + preparationStage + "-failed";
+                                managedConfiguration!.RecordProjectState(assignment.Project, "failed", diagnostic);
                                 var reason = $"Managed project '{assignment.Project.Id}', revision {assignment.Project.Revision}: " +
                                     (ex is IssuePreparationRejectedException ? "project revision or recovery verification rejected preparation. " : "local project preparation failed. ") +
-                                    "Diagnostic: project-preparation-failed. Check checkout ownership, repository access and node configuration.";
+                                    $"Diagnostic: {diagnostic}. Check the indicated preparation stage and node configuration.";
                                 LogAssignment(assignment, $"infrastructure failure before execution · {reason}", assignedProject.Configuration);
                                 await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, reason, leaseStop.Token);
                                 runtimeReadModel.Registry.MarkUnavailable(assignedProject.Configuration.Project.Name, reason);

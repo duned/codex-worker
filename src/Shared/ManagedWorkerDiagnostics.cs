@@ -23,5 +23,10 @@ public sealed record ManagedWorkerDiagnostics(string Retrieval, string Synchroni
     private static bool ValidVersion(string? value) => value is null || value.Length <= 128 && !value.Any(char.IsControl);
     private static bool ValidCode(string? value) => value is null or "server-unavailable" or "server-unauthorized" or
         "managed-contract-invalid" or "managed-local-configuration-invalid" or "managed-synchronization-failed" or
-        "project-capabilities-missing" or "project-preparation-failed";
+        "project-capabilities-missing" or "project-preparation-failed" or
+        "project-revision-verification-failed" or "project-checkout-preparation-failed" or
+        "project-checkout-inspection-failed" or "project-checkout-path-and-lock-failed" or
+        "project-checkout-clone-failed" or "project-checkout-publication-failed" or
+        "project-checkout-initialization-failed" or "project-github-labels-failed" or
+        "project-instructions-and-initialization-failed" or "project-recovery-verification-failed";
 }

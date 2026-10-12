@@ -321,6 +321,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             Codex = new CodexSettings
             {
                 InstructionsFile = defaults.Codex.InstructionsFile, Model = defaults.Codex.Model,
+                AllowMissingDefaultInstructions = defaults.Codex.InstructionsFile == "AGENTS.md",
                 ReasoningEffort = defaults.Codex.ReasoningEffort, TimeoutMinutes = defaults.Codex.TimeoutMinutes
             },
             Validation = new ValidationSettings

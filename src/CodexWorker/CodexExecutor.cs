@@ -42,7 +42,8 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     public ICodexExecutor WithProfile(CodexExecutionProfile profile) => new CodexExecutor(runner, new CodexSettings
     {
         Model = profile.Model, ReasoningEffort = profile.Effort,
-        InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes
+        InstructionsFile = settings.InstructionsFile, TimeoutMinutes = settings.TimeoutMinutes,
+        AllowMissingDefaultInstructions = settings.AllowMissingDefaultInstructions
     }, projectEnvironment);
 
     private Func<string, Task>? _sessionObserver;
@@ -356,9 +357,21 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         ? "Codex timeout"
         : "Codex service/authentication/infrastructure failure";
 
-    private static async Task<string> ReadExecutionInstructionsAsync(string instructionsFile, CancellationToken ct)
+    internal async Task<string> ReadExecutionInstructionsAsync(string instructionsFile, CancellationToken ct)
     {
-        try { return await ReadInstructionsAsync(instructionsFile, ct); }
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if (settings.AllowMissingDefaultInstructions)
+            {
+                try { return await File.ReadAllTextAsync(instructionsFile, ct); }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+                {
+                    return "No repository instructions file is present. Follow the generic Worker task instructions.";
+                }
+            }
+            return await ReadInstructionsAsync(instructionsFile, ct);
+        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {

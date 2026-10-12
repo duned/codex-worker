@@ -497,7 +497,8 @@ public sealed class ManagedWorkerReadinessTests
                 var observation = Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(heartbeat.ManagedDiagnostics).Projects);
                 Assert.Equal(project.Id, observation.ProjectId);
                 Assert.Equal(project.Revision, observation.Revision);
-                Assert.Equal("project-preparation-failed", observation.DiagnosticCode);
+                Assert.Equal("project-checkout-clone-failed", observation.DiagnosticCode);
+                Assert.Contains("project-checkout-clone-failed", report.Summary, StringComparison.Ordinal);
                 Assert.DoesNotContain("clone unavailable", JsonSerializer.Serialize(heartbeat), StringComparison.Ordinal);
             }
             await terminalLogged.Task.WaitAsync(TimeSpan.FromSeconds(15));

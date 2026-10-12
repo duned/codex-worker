@@ -29,7 +29,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
 
     public async Task PrepareForHostAsync(CancellationToken ct)
     {
-        if (!File.Exists(config.Codex.InstructionsFile))
+        if (!config.Codex.AllowMissingDefaultInstructions && !File.Exists(config.Codex.InstructionsFile))
             throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
         await _repositoryGate.WaitAsync(ct);
         try { await git.InitializeAsync(ct); }
@@ -766,7 +766,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         var safelyIdle = false;
         try
         {
-            if (!File.Exists(config.Codex.InstructionsFile))
+            if (!config.Codex.AllowMissingDefaultInstructions && !File.Exists(config.Codex.InstructionsFile))
                 throw new WorkerInfrastructureException($"Configured Codex instructions file does not exist: {config.Codex.InstructionsFile}");
             await git.InitializeAsync(ct);
             await ReconcileIntegrationRecoveryAsync(ct);

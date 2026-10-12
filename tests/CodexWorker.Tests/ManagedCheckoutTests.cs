@@ -8,9 +8,11 @@ namespace CodexWorker.Tests;
 public sealed class ManagedCheckoutTests
 {
     [Theory]
-    [InlineData(1)]
-    [InlineData(7)]
-    public async Task FirstColdAssignmentPreservesLeaseGenerationInHistoryAndEveryLifecycleReport(long generation)
+    [InlineData(1, false)]
+    [InlineData(1, true)]
+    [InlineData(7, false)]
+    [InlineData(7, true)]
+    public async Task FirstColdAssignmentPreservesLeaseGenerationInHistoryAndEveryLifecycleReport(long generation, bool reuse)
     {
         using var fixture = await Fixture.CreateAsync();
         using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
@@ -46,9 +48,17 @@ public sealed class ManagedCheckoutTests
         // Follow the host's cold-assignment preparation before claiming the assigned Issue.
         synchronizer.RecordProjectState(project, "materializing");
         await repository.MaterializeManagedCheckoutAsync(CancellationToken.None);
-        var instructions = Path.Combine(fixture.Root, "AGENTS.md");
-        await File.WriteAllTextAsync(instructions, "test instructions");
-        configuration.Codex.InstructionsFile = instructions;
+        // The local repository intentionally contains no AGENTS.md. Both a fresh
+        // assignment and reuse must still reach claim with generic Worker instructions.
+        if (reuse) await repository.MaterializeManagedCheckoutAsync(CancellationToken.None);
+        Assert.False(File.Exists(configuration.Codex.InstructionsFile));
+        var executor = new CodexExecutor(new ProcessRunner(), configuration.Codex);
+        Assert.Contains("generic Worker task instructions", await executor.ReadExecutionInstructionsAsync(
+            configuration.Codex.InstructionsFile, CancellationToken.None), StringComparison.Ordinal);
+        await File.WriteAllTextAsync(configuration.Codex.InstructionsFile, "repository instructions");
+        Assert.Equal("repository instructions", await executor.ReadExecutionInstructionsAsync(
+            configuration.Codex.InstructionsFile, CancellationToken.None));
+        File.Delete(configuration.Codex.InstructionsFile);
         using var journal = new StringWriter();
         var operationalMessages = new List<string>();
         var output = new WorkerConsole(journal, interactive: false);
@@ -100,6 +110,22 @@ public sealed class ManagedCheckoutTests
             Assert.False(entry.Resumed);
         });
         Assert.Equal(generation, Assert.Single(await history.ReadAllAsync()).OwnershipGeneration);
+    }
+
+    [Fact]
+    public async Task ExplicitMissingInstructionsRemainAConfigurationFailure()
+    {
+        using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        var project = new ServerProjectContract("central", "Central", "owner/repo", "main", "", [], 1, now, now);
+        var runtime = new ManagedProjectRuntimeSettings { CheckoutDirectory = Path.Combine(fixture.Root, "derived") };
+        runtime.Codex.InstructionsFile = "required.md";
+        var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(fixture.Root, "snapshot.json"), runtime);
+        var configuration = Assert.Single(synchronizer.Apply(new(2,
+            ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]))).Configuration;
+        var executor = new CodexExecutor(new ProcessRunner(), configuration.Codex);
+        await Assert.ThrowsAsync<CodexExecutionInfrastructureException>(() => executor.ReadExecutionInstructionsAsync(
+            configuration.Codex.InstructionsFile, CancellationToken.None));
     }
 
     private sealed class ReportHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
@@ -243,7 +269,7 @@ public sealed class ManagedCheckoutTests
             var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
                 repository.ValidateManagedRemoteReadAsync(CancellationToken.None));
             Assert.DoesNotContain("credential-sentinel", failure.ToString(), StringComparison.Ordinal);
-            await Assert.ThrowsAsync<WorkerInfrastructureException>(() =>
+            await Assert.ThrowsAsync<ManagedCheckoutPreparationException>(() =>
                 repository.MaterializeManagedCheckoutAsync(CancellationToken.None));
             Assert.False(Directory.Exists(fixture.Checkout));
             return;
@@ -310,7 +336,10 @@ public sealed class ManagedCheckoutTests
         var head = await fixture.Git(fixture.Checkout, "rev-parse", "HEAD");
 
         using var restarted = fixture.Repository();
-        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => restarted.MaterializeManagedCheckoutAsync(CancellationToken.None));
+        var failure = await Assert.ThrowsAsync<ManagedCheckoutPreparationException>(() => restarted.MaterializeManagedCheckoutAsync(CancellationToken.None));
+        Assert.Equal("project-checkout-inspection-failed", failure.DiagnosticCode);
+        Assert.Null(failure.InnerException);
+        Assert.DoesNotContain("https://", failure.ToString(), StringComparison.Ordinal);
 
         Assert.Equal(head, await fixture.Git(fixture.Checkout, "rev-parse", "HEAD"));
         Assert.Equal("https://github.com/other/project.git", await fixture.Git(fixture.Checkout, "config", "--get", "remote.origin.url"));
@@ -341,7 +370,7 @@ public sealed class ManagedCheckoutTests
         // A completed clone whose validation failed is equivalent to a process
         // stopping before atomic publication: it must never become authoritative.
         using (var invalid = fixture.Repository(new GitSettings { FeaturePrefix = "invalid.." }))
-            await Assert.ThrowsAsync<WorkerInfrastructureException>(() => invalid.MaterializeManagedCheckoutAsync(CancellationToken.None));
+            await Assert.ThrowsAsync<ManagedCheckoutPreparationException>(() => invalid.MaterializeManagedCheckoutAsync(CancellationToken.None));
         Assert.False(Directory.Exists(fixture.Checkout));
         var abandoned = Assert.Single(Directory.GetDirectories(fixture.Root, "checkout.clone-*"));
 
