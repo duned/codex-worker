@@ -2,6 +2,8 @@
 
 Requires the .NET 10 SDK. From the repository root run `dotnet restore CodexWorker.sln`, `dotnet build CodexWorker.sln`, and `dotnet test CodexWorker.sln`. Dashboard build instructions are in [React architecture](server-dashboard-react.md); product releases use [release packaging](release-packaging.md).
 
+The [test-suite audit](test-suite-audit-28.2.md) records the reduction baseline, retained safety coverage and timing method. The [documentation inventory](documentation-inventory.md) records the combined review and local validation limitations.
+
 ## Local developer operations
 
 From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local. You can optionally expose it through a PATH directory:
@@ -39,4 +41,3 @@ For recovery inspection, cleanup and completed-branch maintenance, follow the [e
 Any version failure stops before release publication. If publication fails, the version is already committed/pushed and remains intact; publication may have an uncertain outcome. Inspect GitHub release/tag state and follow the release workflow's recovery guidance before manually using `cw r VERSION`. The combined command never rolls back, deletes remote state, or automatically retries publication. This is a repository-local developer command, separate from installed Worker and WET commands.
 
 The production release workflow remains [`packaging/release.sh`](../packaging/release.sh).
-

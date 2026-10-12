@@ -1,5 +1,17 @@
 # Documentation inventory
 
+## Combined review (28 / Issue 367)
+
+Reviewed the integrated documentation consolidation (Issue 368) and test reduction (Issue 369). The operator entry point is [operations](operations.md), supported by Linux installation, HTTPS deployment, self-update, Server and Worker local administration, and execution maintenance. It covers standalone YAML/checkouts and managed enrollment/central projects, service-account prerequisites, updates/backups/drain, outbound communication, snapshot validation, lease fencing and connectivity-loss recovery. Specialized recovery, security, capability and optional-feature guides remain linked from that entry point. Engineering instructions, release/package artifacts, examples, campaign guides and approved/draft visual references remain available.
+
+The final `docs` inventory contains **31 Markdown files**, including the two audit records and contributor/design references; **23 historical reports were removed**. The table below enumerates the retained assets and removal rationale. README provides a short operator navigation set. A local link check of README, AGENTS and all 31 documentation Markdown files found no missing file targets. A source/reference scan found no remaining references to deleted reports outside this intentional inventory. External active-Issue references cannot be verified locally; visual assets and campaign references were preserved for that reason.
+
+The [test audit](test-suite-audit-28.2.md) records **2,088 → 2,085 tests** and **357.607 → 337.949 seconds** (5.50% faster) in its successful before/after sessions. The case-count reduction is modest (0.14%); the timing is a single observed pair, not proof of a repeatable whole-suite speedup. Review of the test diff confirms only Git worktree tests changed: copied repositories/remotes remain independently mutable, sibling-preservation assertions survive consolidation, and fresh/retry/recovery plus completed-ref presence/absence remain covered. Core lifecycle, managed readiness/leases, recovery, security, installation and configuration suites were retained. No production behavior, version or validation configuration changed.
+
+Combined local validation on 2026-10-12 attempted `dotnet build CodexWorker.sln -m:1` and `dotnet test CodexWorker.sln --no-restore -m:1 --logger trx --results-directory /tmp/issue-367-tests` once. NuGet access was denied by the sandbox (`NU1301`, `api.nuget.org:443`), preventing build/test execution and a new runtime measurement. The figures above are the child's recorded measurements, not results from this checkout. The Worker's separately configured authoritative validation remains required before integration; no passing combined gate is claimed here.
+
+## Per-file decisions
+
 Inventory for the operator consolidation: tracked Markdown and documentation assets, including contributor material. Installation scripts, service units and configuration examples were also reviewed as the implementation source of truth. Historical reports are removed only where current guides retain the operational contract; executable campaign guides, engineering/release instructions and visual assets remain. External active-Issue asset references cannot be enumerated locally, so assets are preserved. New entry points are README, operations and development. The retained inventory itself records removal decisions; removed paths below are intentional historical identifiers, not links.
 
 | File | Decision | Reason |
