@@ -12,7 +12,7 @@ export function WorkerResources({ worker, node, now }: { worker: WorkerObservati
   const measuredAt = measured ? Date.parse(measured) : NaN;
   const connection = workerConnectionStatus(worker, node);
   const metricsUnavailable = connection.state === 'Disconnected' || connection.state === 'Unknown';
-  const stale = connection.state !== 'Connected' || (!!resources && (!Number.isFinite(measuredAt) || now - measuredAt > 120000));
+  const stale = connection.state !== 'Connected' || node?.observationsStale === true || (!!resources && (!Number.isFinite(measuredAt) || now - measuredAt > 120000));
   const sampleLabel = stale ? ` (${t('workers.lastSample')})` : '';
   const measuredAge = Number.isFinite(measuredAt) ? relativeAge(measuredAt, now) : unavailable;
   const facts = [

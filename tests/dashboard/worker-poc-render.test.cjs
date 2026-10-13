@@ -26,7 +26,7 @@ test('Worker detail renders real identity, current stage, outcomes, links and ca
  assert.ok(!html.includes('Upcoming'));
 });
 test('Readiness heartbeat uses the same current, stale and unknown status projection as Worker detail',()=>{
- const heartbeatText=html=>html.slice(html.indexOf('Heartbeat freshness'),html.indexOf('poc-capabilities-panel'));
+ const heartbeatText=html=>{const start=html.indexOf('poc-readiness-panel');const end=html.indexOf('poc-worker-extra',start);return html.slice(start,end<0?undefined:end);};
  assert.match(heartbeatText(render({})),/>Fresh</);
  assert.match(heartbeatText(render({observations:[{...worker,availability:'stale'}]})),/>Stale</);
  assert.match(heartbeatText(render({observations:[{...worker,lastHeartbeatAtUtc:undefined}]})),/>Unknown</);
@@ -50,7 +50,7 @@ test('The five-stage rail highlights only the reported current stage and does no
   const html=render({executions:[{...current,currentStage}, {...completed,state:'Failed',durationMilliseconds:null,completedAtUtc:null,recoveryState:'LeaseExpiredUncertain'}]});
   const expected=currentStage==='Validation'?'Validating':currentStage==='Integration'?'Integrating':currentStage;
   assert.ok(html.includes(expected||'Not reported'));assert.ok(html.includes('Claimed'));assert.ok(html.includes('Preparing'));assert.ok(html.includes('Codex'));assert.ok(html.includes('Validating'));assert.ok(html.includes('Integrating'));
-  assert.ok(html.includes('Only the reported current stage is available; stage history is not provided.'));
+  assert.ok(html.includes('Stages before the reported current stage are shown as completed when the execution lifecycle establishes they were passed; detailed stage history is not provided.'));
   assert.ok(html.includes('aria-current="step"')===!!currentStage);assert.ok(html.includes('Failed'));assert.ok(html.includes('Duration unavailable'));assert.ok(html.includes('LeaseExpiredUncertain'));assert.ok(html.includes('31/12/2025'));
  }
 });
@@ -88,7 +88,7 @@ test('Last reported checks survive disconnect while current execution readiness 
  assert.ok(passed.includes('Current execution readiness'));
  assert.ok(passed.includes('not-ready'));
  for(const fact of ['Linux','8','16.0 GiB','128.0 GiB','Unavailable'])assert.ok(passed.includes(fact),fact);
- for(const liveValue of ['25.0%','50.0%','8.0 GiB','64.0 GiB'])assert.ok(!passed.includes(liveValue),liveValue);
+ for(const liveValue of ['25.0%','50.0%','8.0 GiB','64.0 GiB'])assert.doesNotMatch(passed,new RegExp(`>${liveValue.replaceAll('.','\\.')}(?:<| ·)`),liveValue);
 
  const failedCapability={...capability,state:{...capability.state,health:'Failed',authentication:'Missing'}};
  const failed=render({observations:[offlineWorker],nodes:[{...disconnectedNode,capabilities:[failedCapability]}]});

@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { useApiRead } from '../../shared/api/session';
 import { workers, projects, executions } from '../../shared/api/validation';
 import { useServerReadiness } from '../server/useServerReadiness';
-import { completedExecutions, completedStatuses, recentProjects, repositoryLink, sectionMessage } from './model';
+import { completedExecutions, completedStatuses, homeWorkerSummary, recentProjects, repositoryLink, sectionMessage } from './model';
 import { Notice, StatusBadge } from '../../shared/Presentation';
 import { ExternalLink } from '../../shared/Actions';
 import { Button } from '../../untitled/components/base/buttons/button';
@@ -25,13 +25,14 @@ export function HomePage() {
   const [filter, setFilter] = useState('All');
   const current = activity.data?.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state)) ?? [];
   const completed = completedExecutions(activity.data ?? [], filter);
+  const workerSummary = homeWorkerSummary(registry.data);
   const today = new Date().toISOString().slice(0, 10);
   const completedToday = activity.data?.filter(item => item.completedAtUtc?.slice(0, 10) === today) ?? [];
   const running = activity.data?.filter(item => isActiveExecutionState(item.state)) ?? [];
   const metrics = [
-    { label: t('home.activeWorkers'), value: registry.data?.filter(worker => worker.availability === 'online').length, detail: registry.data ? `${registry.data.length} ${t('home.totalWorkers')}` : undefined },
+    { label: t('home.workers'), value: workerSummary ? `${workerSummary.active} / ${workerSummary.total}` : undefined, detail: workerSummary ? t('home.activeTotalWorkers') : undefined },
     { label: t('home.projects'), value: catalog.data?.length, detail: undefined },
-    { label: t('home.runningExecutions'), value: activity.data ? running.length : undefined, detail: t('home.latest50Requests') },
+    { label: t('home.runningExecutions'), value: activity.data ? `${running.length} / ${workerSummary?.totalSlots ?? t('home.unknown')}` : undefined, detail: activity.data ? t('home.runningCapacityDetail') : undefined },
     { label: t('home.completedToday'), value: activity.data ? completedToday.length : undefined, detail: activity.data ? t('home.latest50Requests') : undefined }
   ];
   const linkClass = 'text-brand-secondary hover:underline';
@@ -79,7 +80,7 @@ export function HomePage() {
         </li>;
         })}</ul></div></section>
     </div>
-    <section aria-labelledby="home-current"><h2 id="home-current" className="mb-3 text-lg font-semibold text-primary">{`${t('home.currentExecutions')}${activity.data ? t('home.activeCount', { count: current.length }) : ''}`}</h2><div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(activity, t("home.noExecutionRequestsYet"))}{activity.data && !current.length && <p className="px-5 py-4 text-sm text-tertiary">{t("home.noActiveExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{current.map(item => executionRow(item, true))}</ul></div><Button className="mt-2" href="/executions" color="link-color">{t("home.allExecutions")}</Button></section>
+    <section aria-labelledby="home-current"><h2 id="home-current" className="mb-1 text-lg font-semibold text-primary">{`${t('home.currentExecutions')}${activity.data ? t('home.activeCount', { count: current.length }) : ''}`}</h2>{activity.data && <p className="mb-3 text-sm text-tertiary">{t('home.runningExecutionCapacity', { running: running.length, capacity: workerSummary?.totalSlots ?? t('home.unknown') })}{' · '}{t('home.latest50Requests')}</p>}<div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(activity, t("home.noExecutionRequestsYet"))}{activity.data && !current.length && <p className="px-5 py-4 text-sm text-tertiary">{t("home.noActiveExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{current.map(item => executionRow(item, true))}</ul></div><Button className="mt-2" href="/executions" color="link-color">{t("home.allExecutions")}</Button></section>
     <section aria-labelledby="home-completed"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 id="home-completed" className="text-lg font-semibold text-primary">{t("home.recentCompletedExecutions")}</h2><label className="text-sm">{t("home.status")}<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...completedStatuses].map(state => <option key={state} value={state}>{statusLabel(state)}</option>)}</select></label></div><div className="rounded-xl border border-secondary bg-primary">
       {activity.data && !completed.length ? <p className="px-5 py-4 text-sm text-tertiary">{completedExecutions(activity.data).length ? t("home.noCompletedExecutionsMatchThisStatus") : t("home.noCompletedExecutionsInThisSnapshot")}</p> : activity.data && <ExecutionTable items={completed} projects={catalog.data ?? []} workers={registry.data ?? []} />}
     </div></section>

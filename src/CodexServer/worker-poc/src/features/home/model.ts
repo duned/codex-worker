@@ -1,5 +1,6 @@
 import { t, statusLabel } from '../../shared/i18n';
 import type { ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
+import { workerListSignals } from '../../model.js';
 export function executionNeedsAttention(item: ExecutionSummary) {
   return !!(item.pendingReason || item.recoveryState || item.managedEligibilityState === 'blocked');
 }
@@ -17,6 +18,18 @@ export function workerAttention(worker: WorkerObservation, nodes: NodeSummary[] 
 export function aggregateCapacity(workers: WorkerObservation[] | undefined, field: 'maximumCapacity' | 'activeExecutions' | 'availableCapacity') {
   if (!workers || workers.some(worker => worker[field] == null)) return 'Unavailable';
   return workers.reduce((sum, worker) => sum + (worker[field] ?? 0), 0);
+}
+
+export function homeWorkerSummary(workers: WorkerObservation[] | undefined) {
+  if (!workers) return undefined;
+  const capacities = workers.map(worker => workerListSignals(worker, undefined).totalSlots);
+  return {
+    active: workers.filter(worker => worker.availability === 'online').length,
+    total: workers.length,
+    totalSlots: capacities.some(capacity => capacity == null)
+      ? undefined
+      : capacities.reduce((sum, capacity) => sum + (capacity ?? 0), 0)
+  };
 }
 
 export function activityTime(item: ExecutionSummary) {

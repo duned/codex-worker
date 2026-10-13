@@ -34,7 +34,8 @@ test('the shared execution table keeps Executions columns, formatting, status an
     createdAtUtc: '2026-01-15T12:34:00.000Z', completedAtUtc: '2026-01-15T13:45:00.000Z',
     assignedWorkerId: 'worker one', workReference: { type: 'github-issue', id: '42' }
   };
-  const markup = render([item], [{ id: item.projectId, name: 'Example project', repository: 'example/tasks' }],
+  const successfulItem = { ...item, id: '22222222222222222222222222222222', state: 'Completed' };
+  const markup = render([successfulItem, item], [{ id: item.projectId, name: 'Example project', repository: 'example/tasks' }],
     [{ workerId: item.assignedWorkerId, displayName: 'Worker One' }]);
 
   const header = markup.match(/<thead[^>]*>(.*?)<\/thead>/s)?.[1];
@@ -47,7 +48,9 @@ test('the shared execution table keeps Executions columns, formatting, status an
   assert.match(markup, /href="\/workers\/worker%20one"[^>]*>Worker One<\/a>/);
   assert.match(markup, /aria-label="Created \d{2}\/\d{2}\/2026 at \d{2}:\d{2}"/);
   assert.match(markup, /aria-label="Finished \d{2}\/\d{2}\/2026 at \d{2}:\d{2}"/);
+  assert.match(markup, />Completed</);
   assert.match(markup, />Failed</);
+  assert.match(markup, /bg-utility-green-50 text-utility-green-700/);
   assert.match(markup, /bg-utility-red-50 text-utility-red-700/);
 });
 

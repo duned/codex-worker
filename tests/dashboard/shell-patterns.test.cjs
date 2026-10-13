@@ -22,18 +22,19 @@ test('shared actions retain text, disabled deletion and safe external destinatio
   const link = render(ExternalLink, { href: 'https://github.com/owner/repo', children: 'Repository' });
   for (const text of ['target="_blank"', 'noopener noreferrer', 'opens in new window', 'Repository', '<svg']) assert.ok(link.includes(text));
 });
-test('Server status separates live, offline, interrupted, error and unknown observations', () => {
+test('Server status separates ready, offline, stale and unknown observations', () => {
   const { ServerStatusView } = load('ServerStatus.tsx');
-  const data = { state: 'running', version: 'fixture', startedAtUtc: '2026-01-01T00:00:00Z' };
+  const data = { state: 'ready', version: 'fixture', startedAtUtc: '2026-01-01T00:00:00Z' };
   const updatedAt = Date.parse('2026-10-01T12:00:00Z');
-  const show = props => render(ServerStatusView, { data, live: 'Live · connected', updatedAt, ...props });
-  assert.match(show({}), /Server live/);
+  const show = props => render(ServerStatusView, { data, hasError: false, loading: false, updatedAt, ...props });
+  assert.match(show({}), /Server ready/);
   assert.match(show({ data: { ...data, state: 'offline' } }), /Server offline/);
-  assert.match(show({ live: 'Live · connection interrupted; retrying' }), /live updates unavailable/);
-  const error = show({ data: undefined, error: 'Transport unavailable' });
-  assert.match(error, /refresh failed/); assert.match(error, /2026-10-01T12:00:00.000Z/); assert.match(error, /stale/); assert.ok(!error.includes('Server offline'));
+  const stale = show({ hasError: true });
+  assert.match(stale, /Server unavailable/); assert.match(stale, /Stale/);
+  const error = show({ data: undefined, hasError: true });
+  assert.match(error, /Server unavailable/); assert.match(error, /2026-10-01T12:00:00.000Z/); assert.match(error, /Stale/); assert.ok(!error.includes('Server offline'));
   const unknown = show({ data: undefined, updatedAt: 0 });
-  assert.match(unknown, /Server status unknown/); assert.match(unknown, /Last updated: Unknown/); assert.ok(!unknown.includes('<time'));
+  assert.match(unknown, /Server status unknown/); assert.match(unknown, /Updated Unavailable/); assert.ok(!unknown.includes('<time'));
 });
 test('theme control exposes an icon and action label and preference persists explicit choices', () => {
   const { ThemeControl } = load('ThemeControl.tsx');

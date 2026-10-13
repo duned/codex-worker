@@ -66,6 +66,7 @@ export function workerDetailStatuses(worker, node, diagnostics) {
 
 /** Presentation can only downgrade readiness when connection evidence is not current. */
 export function currentWorkerExecutionReadiness(worker, node) {
+  if (!node) return 'Unknown';
   const connection = workerConnectionStatus(worker, node);
   if (connection.state === 'Disconnected' || node?.observationsStale === true) return 'not-ready';
   if (connection.state !== 'Connected') return 'Unknown';

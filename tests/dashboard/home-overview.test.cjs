@@ -7,7 +7,7 @@ const { join, resolve } = require('node:path');
 const directory = mkdtempSync(join(tmpdir(), 'home-overview-'));
 const root = resolve('src/CodexServer/worker-poc/src');
 buildSync({ stdin: { contents: `export * from '${root}/features/server/readiness'; export * from '${root}/features/home/model'; export * from '${root}/shared/api/validation';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(directory, 'model.cjs') });
-const { serverGitHubReadiness, preparedWorker, workerAttention, executionNeedsAttention, aggregateCapacity, serverGitHubConnection, executions } = require(join(directory, 'model.cjs'));
+const { serverGitHubReadiness, preparedWorker, workerAttention, executionNeedsAttention, aggregateCapacity, homeWorkerSummary, serverGitHubConnection, executions } = require(join(directory, 'model.cjs'));
 const { worker, node, capability, current } = require('./worker-poc-fixtures.cjs');
 after(() => rmSync(directory, { recursive: true, force: true }));
 const server = { ...node, id: 'server', kind: 'server', capabilities: [{ ...capability, definition: { ...capability.definition, id: 'github-cli' } }] };
@@ -26,6 +26,16 @@ test('configured prerequisites are independent of scheduling and local provision
   assert.match(workerAttention({ ...worker, schedulingPolicy: 'Disabled' }, [node]).join(), /Scheduling: Disabled/);
   assert.equal(aggregateCapacity([worker, { ...worker, maximumCapacity: 8 }], 'maximumCapacity'), 10);
   assert.equal(aggregateCapacity([{ workerId: 'missing', availability: 'online' }], 'availableCapacity'), 'Unavailable');
+});
+test('Home shows active Workers over the full Worker count and sums reported slot capacity', () => {
+  assert.deepEqual(homeWorkerSummary([
+    { ...worker, capacity: 20 },
+    { ...worker, workerId: 'offline', availability: 'offline', maximumCapacity: undefined, capacity: 4 },
+    { ...worker, workerId: 'draining', availability: 'draining', maximumCapacity: 3 }
+  ]), { active: 1, total: 3, totalSlots: 9 });
+  assert.equal(homeWorkerSummary(undefined), undefined);
+  assert.deepEqual(homeWorkerSummary([]), { active: 0, total: 0, totalSlots: 0 });
+  assert.deepEqual(homeWorkerSummary([{ workerId: 'unknown', availability: 'online' }]), { active: 1, total: 1, totalSlots: undefined });
 });
 test('stale, disconnected and unavailable inventories cannot complete readiness', () => {
   assert.equal(serverGitHubReadiness({ ...server, observationsStale: true }, connection).complete, false);

@@ -53,7 +53,7 @@ test('switching localizes representative shell, worker, errors and dialog copy w
   for (const text of ['Inicio', 'Proyectos', 'Ejecuciones', 'Ajustes', 'Idioma', 'Inicio de sesión de administración', 'Su sesión caducó', 'Iniciar sesión']) assert.ok(html.includes(text), text);
   assert.ok(!html.includes('Administration sign in'));
   const worker = renderToStaticMarkup(createElement(WorkerDetail, props));
-  for (const text of ['Detalle del agente', 'Preparación', 'Ejecuciones recientes', 'Validación']) assert.ok(worker.includes(text), text);
+  for (const text of ['Detalle del agente', 'Preparación', 'Ejecuciones recientes', 'Validando']) assert.ok(worker.includes(text), text);
   assert.ok(worker.includes('Vigencia del latido'));
   for (const text of ['Conexión: Conectado', 'Latido: Reciente', 'Configuración: Config. correcta', 'Planificación: Activo']) assert.ok(worker.includes(text), text);
   assert.equal(t('executions.cancelOnlyThisQueuedRequestAssignedAndRunningWorkCannotBeCancelled').startsWith('Cancele solo'), true);

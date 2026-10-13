@@ -234,7 +234,7 @@ function RecentExecutions({ items, projects, now, loading }) {
             return <tr key={item.id}>
               <td><a href={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</a></td>
               <td><WorkReference item={item} project={project} /><a className="block break-all text-xs text-tertiary" href={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></a></td>
-              <td><span className="poc-table-status"><Status value={item.state} /></span></td>
+              <td><span className="poc-table-status"><Status value={item.state} /></span>{item.recoveryState && <span className="block text-xs text-tertiary">{t('executions.recoveryStatus')}: {statusLabel(item.recoveryState)}</span>}</td>
               <td>{item.startedAtUtc ? timestamp(item.startedAtUtc) : t('workers.notReported')}</td>
               <td>{duration(item, now)}</td>
             </tr>;
