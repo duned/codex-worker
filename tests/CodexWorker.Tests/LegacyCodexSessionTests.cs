@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class LegacyCodexSessionTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("root", null)]
     [InlineData("child", null)]

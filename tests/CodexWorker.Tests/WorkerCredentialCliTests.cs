@@ -10,6 +10,8 @@ public sealed class WorkerCredentialCliTests
     private const string NodeId = "12345678901234567890123456789012";
     private const string PrivateOutput = "private-provider-token";
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("github-cli")]
     [InlineData("codex-cli")]
@@ -27,6 +29,8 @@ public sealed class WorkerCredentialCliTests
         Assert.DoesNotContain(PrivateOutput, output.ToString() + error.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -61,6 +65,8 @@ public sealed class WorkerCredentialCliTests
         Assert.DoesNotContain(PrivateOutput, JsonSerializer.Serialize(result), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0, 0, true)]
     [InlineData(1, 0, false)]
@@ -96,6 +102,8 @@ public sealed class WorkerCredentialCliTests
         Assert.DoesNotContain(PrivateOutput, output.ToString() + error.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LoginAndLogoutRefreshCachedInventoryAndCredentialReadiness()
     {
@@ -134,6 +142,8 @@ public sealed class WorkerCredentialCliTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalPolicyDeniesLoginWithoutLaunchingProvider()
     {
@@ -145,6 +155,8 @@ public sealed class WorkerCredentialCliTests
         Assert.Equal(ProvisioningDiagnostic.Denied, result.Report.Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("check", "github-cli", ProvisioningCommandAction.CheckAuthentication)]
     [InlineData("logout", "codex-cli", ProvisioningCommandAction.Logout)]
@@ -163,6 +175,8 @@ public sealed class WorkerCredentialCliTests
         Assert.DoesNotContain(PrivateOutput, output.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingToolsAndCancellationDoNotImplyReadiness()
     {
@@ -182,6 +196,8 @@ public sealed class WorkerCredentialCliTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.StatusAsync(new CancellationToken(true)));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("install", "github-cli")]
     [InlineData("login", "git")]
@@ -191,6 +207,8 @@ public sealed class WorkerCredentialCliTests
     public void InvalidOrUnrelatedOperationsAreRejected(params string[] arguments) =>
         Assert.Throws<ArgumentException>(() => WorkerCredentialCli.Parse(arguments));
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void NamedCommandAndHelpAreDiscoverableWithoutConfiguration()
     {
@@ -202,6 +220,8 @@ public sealed class WorkerCredentialCliTests
         Assert.Contains("headless", output.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledDeviceLoginRetainsTerminalReportAndClearsChallenge()
     {
@@ -222,6 +242,8 @@ public sealed class WorkerCredentialCliTests
         Assert.Empty(result.Credentials);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidChallengeNeverReachesPresentation()
     {

@@ -8,6 +8,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 public sealed class AutomaticIssueDiscoveryTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ConfigurationDefaultsDisabledPersistsAndValidatesBounds()
     {
@@ -31,6 +33,8 @@ public sealed class AutomaticIssueDiscoveryTests
             await Assert.ThrowsAsync<InvalidDataException>(() => fixture.Store.UpdateProjectAsync(project.Id, Definition(invalid), project.Revision));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PagingUnblocksLaterIssuesSuppressesTerminalWorkAcrossRestartAndAllowsExplicitRetry()
     {
@@ -61,6 +65,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal("Queued", explicitRetry.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("disable")]
     [InlineData("repository")]
@@ -92,6 +98,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Empty(await fixture.Store.GetExecutionsAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task OverlapIsSkippedAndExplicitEnqueueRaceIsAtomicallyDeduplicated()
     {
@@ -122,6 +130,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Single(races, result => result);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DeletedProjectAliasCannotReplayCanonicalTerminalIssue()
     {
@@ -139,6 +149,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal(alias.Id, Assert.Single(executions, work => work.WorkReference.Id == "2").ProjectId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SupportedHistoryWithoutUrlsRetainsCanonicalIdentityBeforeProjectDeletion()
     {
@@ -163,6 +175,8 @@ public sealed class AutomaticIssueDiscoveryTests
         await Assert.ThrowsAsync<ExecutionRequestConflictException>(() => github.EnqueueIssueAsync(alias, new("github-issue", "01")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("authentication-failed")]
     [InlineData("rate-limited")]
@@ -186,6 +200,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal(5, (await fixture.Store.GetExecutionsAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedEligibilityReadAdvancesCompletePageWithoutAuthorizingFailedCandidate()
     {
@@ -201,6 +217,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal("3", Assert.Single(await fixture.Store.GetExecutionsAsync()).WorkReference.Id);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ShutdownCancelsAndJoinsOwnedReadAndAuthorizesNothing()
     {
@@ -222,6 +240,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Empty(await fixture.Store.GetExecutionsAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Completed")]
     [InlineData("Failed")]
@@ -257,6 +277,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal(state, (await fixture.Store.GetExecutionAsync(assignment.ServerExecutionId))?.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BlockerCompletionAndReadyLabelChangesResumeQueuedWorkThroughNormalAssignment()
     {
@@ -312,6 +334,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.False((await fixture.GitHub.RequestAssignmentAsync(request)).HasWork);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task UnavailableQueuedRefreshPreservesEligibilityAndRedactsProviderFailure()
     {
@@ -341,6 +365,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Single(await fixture.Store.GetExecutionsAsync(), work => work.WorkReference.Id == "1");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DisabledProjectDoesNotDiscoverUntilReenabled()
     {
@@ -357,6 +383,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal(2, (await fixture.Store.GetExecutionsAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task EligibilityChangesAndMissingIssuesAreSkippedThenReconsidered()
     {
@@ -385,6 +413,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Equal(3, (await fixture.Store.GetExecutionsAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DeadlineUsesClockAndStopsReadWithoutImmediateRetry()
     {
@@ -407,6 +437,8 @@ public sealed class AutomaticIssueDiscoveryTests
         Assert.Contains(fixture.Logger.Events, entry => entry.Message.Contains("deadline-exceeded", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NoWorkCyclesStayDebugAndSummariesCarryCountsAndCorrelation()
     {

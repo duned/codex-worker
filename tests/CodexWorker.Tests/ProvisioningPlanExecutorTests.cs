@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ProvisioningPlanExecutorTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SingleAlreadySatisfiedActionCompletesWithoutInstallerWork()
     {
@@ -19,6 +21,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal("Completed", reports[^1].State);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyPlanCompletesAsNoOp()
     {
@@ -30,6 +34,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("No provisioning actions", result.Result);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingCapabilitiesAndRefreshActionsAreIdempotentAcrossMultipleActions()
     {
@@ -53,6 +59,9 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal(14, discoveryCalls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task UnsupportedMissingCapabilityFailsAtTheSpecificAction()
     {
@@ -66,6 +75,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal("Failed", reports[^1].State);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("10.0", "10.0.0", true)]
     [InlineData(">=10.0", "10.1", true)]
@@ -77,6 +88,9 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal(expected, CapabilityVersionMatcher.Satisfies(new WorkerCapabilityContract("runtime", "dotnet", installedVersion), requirement));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task AptInstallerBuildsTrustedElevatedPackageCommandAndSkipsCompatibleCapability()
     {
@@ -107,6 +121,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("upgrades and downgrades", incompatible.Reason);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void InstallerExplicitlyRejectsUnsupportedPlatformAndDependency()
     {
@@ -123,6 +139,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("No trusted package mapping", dependencyPlan.Reason);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SuccessfulInstallMustPassCapabilityVerification()
     {
@@ -147,6 +165,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains(reportedCapabilities!, capability => capability.Type == "tool" && capability.Name == "git" && capability.Version == "2.43.0");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedInstallAndUnverifiedInstallProduceExplicitFailure()
     {
@@ -168,6 +188,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("not detected afterward", unverified.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisioningPolicyDeniesDisabledAndSpecificActionsBeforeInstallerExecution()
     {
@@ -186,6 +208,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal(0, installer.InstallCount);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PolicyChangesAreAppliedBeforeTheNextActionAndPrivilegedAllowlistIsExplicit()
     {
@@ -207,6 +231,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("explicitly allowlisted privileged action", permitted.Result);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExplicitlyAllowedNonPrivilegedActionCanRun()
     {
@@ -225,6 +251,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("non-privileged action", result.Result);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AptPrivilegedBoundaryRejectsArbitraryPackageAndReportsMissingHostPermissionWithoutPrompting()
     {
@@ -248,6 +276,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Empty(commands);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ArbitraryServerOperationIsRejectedAndCredentialPolicyIsExplicit()
     {
@@ -267,6 +297,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Contains("no local executor", result.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CredentialProvisioningUsesWorkerHandlerAndReportsOnlySafeOutcomes()
     {
@@ -290,6 +322,8 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.DoesNotContain("fake-token", string.Join(" ", reports.Select(report => report.Result + report.Failure)), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedAuthenticationReadinessDoesNotAdvertiseCapability()
     {

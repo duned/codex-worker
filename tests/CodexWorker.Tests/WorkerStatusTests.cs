@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerStatusTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CachedManagedStatusUsesTheSameObservationsInTextAndJsonWithoutClaimingServerReadiness()
     {
@@ -33,6 +35,8 @@ public sealed class WorkerStatusTests
         Assert.Equal("cached", document.RootElement.GetProperty("managedDiagnostics").GetProperty("source").GetString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyStandaloneConfigurationIsValidWhilePreparingExecutionDependencies()
     {
@@ -49,6 +53,8 @@ public sealed class WorkerStatusTests
         Assert.Contains("codex-cli:tool-missing", status.Diagnostics);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusReportsValidManagedConfigurationAndLocalDependencySummary()
     {
@@ -77,6 +83,8 @@ public sealed class WorkerStatusTests
         Assert.Contains("server-state-unverified", status.Diagnostics);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidOrMissingConfigurationIsAStatusResultAndJsonHasVersionedContract()
     {
@@ -92,6 +100,8 @@ public sealed class WorkerStatusTests
         Assert.Equal("unknown", document.RootElement.GetProperty("operation").GetProperty("lifecycle").GetString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConfiguredWorkerWithMissingExecutionToolsIsNotReadyWithFixedDiagnostics()
     {
@@ -109,6 +119,8 @@ public sealed class WorkerStatusTests
         Assert.Contains("codex-cli:tool-missing", status.Diagnostics);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HealthyStandaloneConfigurationReportsLocallyObservedReadiness()
     {
@@ -134,6 +146,8 @@ public sealed class WorkerStatusTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusReportsSharedExecutionReadinessBlockerForInstalledGitWithoutIdentity()
     {
@@ -151,6 +165,8 @@ public sealed class WorkerStatusTests
         Assert.DoesNotContain("local-prerequisites-present", status.Diagnostics);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CleanHostStatusUsesTypedBlockersAndOnlyObservesLocalState()
     {
@@ -206,6 +222,8 @@ public sealed class WorkerStatusTests
         Assert.DoesNotContain(commands, command => command.Contains("usermod", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DockerBlockerIsVisibleWithoutBecomingAGenericExecutionPrerequisite()
     {
@@ -219,6 +237,8 @@ public sealed class WorkerStatusTests
         Assert.Contains(status.Capabilities, capability => capability.Name == "docker" && capability.State == "blocked");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InstalledCodexWithoutAuthenticationIsBlockedSeparatelyFromInstallation()
     {
@@ -235,6 +255,8 @@ public sealed class WorkerStatusTests
         Assert.DoesNotContain("codex-cli:tool-missing", status.Diagnostics);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidConfiguredPolicyIsReportedWithoutLeakingConfigurationContents()
     {
@@ -251,6 +273,8 @@ public sealed class WorkerStatusTests
         Assert.Equal("unknown", status.Registration.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task StatusCommandAcceptsJsonAndReturnsSuccessForMissingConfiguration()
     {
@@ -269,6 +293,8 @@ public sealed class WorkerStatusTests
         Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("missing", "local-identity-missing", "missing")]
     [InlineData("legacy-environment", "local-identity-missing", "missing")]
@@ -322,6 +348,8 @@ public sealed class WorkerStatusTests
         if (scenario == "invalid-token") Assert.Equal("private-invalid-token", await File.ReadAllTextAsync(path + ".token"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusDoesNotExposeInvalidPersistedServerAssociation()
     {

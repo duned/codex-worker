@@ -6,6 +6,8 @@ using System.Text.Json;
 
 public sealed class ToolProvisioningLifecycleTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git", "1.0.0", "1.0.0", UpdateState.Current)]
     [InlineData("github-cli", "1.0.0", "2.0.0", UpdateState.Available)]
@@ -29,6 +31,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(InstallationState.Installed, state.Installation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git")]
     [InlineData("github-cli")]
@@ -44,6 +48,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(ProvisioningDiagnostic.ProcessFailed, (await executor.ExecuteAsync(command, true)).Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CodexUninstallOnCleanNodeDoesNotInstallRuntimeOrRunCommands()
     {
@@ -58,6 +64,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(0, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git", "git", true)]
     [InlineData("github-cli", "gh", true)]
@@ -157,6 +165,8 @@ public sealed class ToolProvisioningLifecycleTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CodexInstallUsesAvailableNpmAndLeavesAuthenticationRequired()
     {
@@ -195,6 +205,8 @@ public sealed class ToolProvisioningLifecycleTests
             CapabilityCatalog.Definitions.Single(item => item.Id == "codex-cli"), state).BlockingReasons);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install, true, false)]
     [InlineData(ProvisioningCommandAction.Install, false, false)]
@@ -248,6 +260,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.Equal(["login", "status"], authentication.Args);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install, false)]
     [InlineData(ProvisioningCommandAction.Update, false)]
@@ -275,6 +289,8 @@ public sealed class ToolProvisioningLifecycleTests
         await AssertDenied(request);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install, "Error: double-loading config /dev/null", ProvisioningFailureCode.ProviderConfigurationFailed)]
     [InlineData(ProvisioningCommandAction.Update, "npm ERR! code EAI_AGAIN", ProvisioningFailureCode.RegistryUnavailable)]
@@ -313,6 +329,8 @@ public sealed class ToolProvisioningLifecycleTests
         Assert.True(ProvisioningCommandProtocol.ValidReport(report));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CodexInstallerFailureNamesProviderStepWithoutReturningOutput()
     {

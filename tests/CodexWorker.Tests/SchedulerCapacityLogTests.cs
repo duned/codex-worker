@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class SchedulerCapacityLogTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void StartupWithNoWorkEntersIdleOnceAcrossRepeatedPolls()
     {
@@ -14,6 +16,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LastExecutionCompletionEntersIdleOnlyAfterActiveCountReachesZero()
     {
@@ -24,6 +28,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.True(state.Observe(activeExecutions: 0, foundWork: false));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WorkIdleWorkIdleProducesOneNotificationForEachIdleTransition()
     {
@@ -37,6 +43,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.False(state.Observe(activeExecutions: 0, foundWork: false));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CapacityTransitionsAreReportedAsOneSnapshotWithOnlyActiveProjects()
     {
@@ -59,6 +67,8 @@ public sealed class SchedulerCapacityLogTests
         }, messages);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MultipleActiveProjectsShareOneCapacityLineAndInactiveProjectsAreOmitted()
     {
@@ -75,6 +85,8 @@ public sealed class SchedulerCapacityLogTests
         }, messages);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PartialCapacityWakesForTheNormalPollWhileExecutionIsStillRunning()
     {
@@ -87,6 +99,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.False(execution.Task.IsCompleted);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FullCapacityWaitsForExecutionOrConfigurationChange()
     {
@@ -101,6 +115,8 @@ public sealed class SchedulerCapacityLogTests
         await wait;
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IdleHeartbeatIsConciseAndRepeatsOnlyEveryFifteenMinutes()
     {
@@ -116,6 +132,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.Equal(new[] { "Worker heartbeat · idle", "Worker heartbeat · idle" }, messages);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ResumeAndCompletionLogsUseOnlyAttemptLineageContext()
     {
@@ -136,6 +154,8 @@ public sealed class SchedulerCapacityLogTests
         Assert.DoesNotContain("(Issue ·", text);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FirstAttemptCompletionHasNoLineageSuffixAndLaterAttemptUsesImmediatePredecessor()
     {

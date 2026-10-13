@@ -6,6 +6,8 @@ using WorkerCapability = CodexServer.WorkerCapability;
 
 public sealed class ServerOperationalDiagnosticsTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Completed")]
     [InlineData("Failed")]
@@ -57,6 +59,8 @@ public sealed class ServerOperationalDiagnosticsTests
         });
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Codex", "expired-requeued")]
     [InlineData("Integration", "expired-uncertain")]
@@ -80,6 +84,8 @@ public sealed class ServerOperationalDiagnosticsTests
         Assert.Contains(fixture.Logger.Events, e => e.Reason == "ownership-or-lease-lost" && e.Level == LogLevel.Debug);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CancellationIdleAndEligibilityAreOperationalDecisions()
     {
@@ -101,6 +107,8 @@ public sealed class ServerOperationalDiagnosticsTests
         Assert.DoesNotContain(fixture.Logger.Events, e => e.Level >= LogLevel.Warning || e.Message.Contains("private-reason", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RejectedInputsAndInfrastructureExceptionsCannotLeakAuthentication()
     {
@@ -121,6 +129,8 @@ public sealed class ServerOperationalDiagnosticsTests
         Assert.Contains(fixture.Logger.Events, e => e.Reason == "infrastructure-failure" && e.Level == LogLevel.Error);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LiveIneligibleIssueRejectsEnqueueAndReleasesAssignmentWithoutLoggingBody()
     {
@@ -161,6 +171,8 @@ public sealed class ServerOperationalDiagnosticsTests
                 [], [], false, ["Blocked by policy."]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ProjectDefinitionAndLifecycleChangesUseFixedReasonCodes()
     {

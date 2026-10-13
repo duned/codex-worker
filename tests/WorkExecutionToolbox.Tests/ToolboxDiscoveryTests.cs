@@ -6,6 +6,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed partial class ToolboxCommandTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("https://github.com/owner/repo.git")]
     [InlineData("git@github.com:owner/repo.git")]
@@ -28,6 +30,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal("owner/repo", provider.Issue?.Repository.Repository);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExplicitRepositoryNeverInvokesDiscovery()
     {
@@ -41,6 +45,9 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal("explicit/repo", provider.Issue?.Repository.Repository);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("")]
     [InlineData("https://example.invalid/owner/repo.git")]
@@ -69,6 +76,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain("secret-credential", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SuccessfulDiscoveryPrecedesAuthentication()
     {
@@ -94,6 +103,8 @@ public sealed partial class ToolboxCommandTests
         Assert.True(authenticated);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("parent set 9 9 3")]
     [InlineData("parent set 9 3 3")]
@@ -109,6 +120,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Null(provider.Operation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OversizedParentBatchRejectedBeforeProvider()
     {
@@ -119,6 +132,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Null(provider.Operation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ParentBatchJsonIsOneEnvelopeWithChildAndParentIdentity()
     {
@@ -133,6 +148,8 @@ public sealed partial class ToolboxCommandTests
             Assert.Equal("changed", item.GetProperty("result").GetProperty("status").GetString()));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ParentBatchHumanOutputIdentifiesEveryChild()
     {
@@ -145,6 +162,8 @@ public sealed partial class ToolboxCommandTests
 
 public sealed class LocalRepositoryDiscoveryTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -160,6 +179,8 @@ public sealed class LocalRepositoryDiscoveryTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("https://github.com/owner/repo.git")]
     [InlineData("git@github.com:owner/repo.git")]

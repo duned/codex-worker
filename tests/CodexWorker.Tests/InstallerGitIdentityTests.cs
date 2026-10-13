@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class InstallerGitIdentityTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task InstalledServiceAccountIdentitySatisfiesGitConfigurationCheckAndInventory()
     {

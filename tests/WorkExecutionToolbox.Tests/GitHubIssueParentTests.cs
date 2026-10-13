@@ -5,6 +5,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed class GitHubIssueParentTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SetClearAndRepeatsUseNativeIdsAndVerifyWrites()
     {
@@ -23,6 +25,8 @@ public sealed class GitHubIssueParentTests
         Assert.Null(http.DefaultRequestHeaders.Authorization);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -39,6 +43,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(clear ? null : (int?)2, (await Provider(http).GetParentAsync(Issue(1)))?.Issue.Number);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingDifferentParentRequiresExplicitClear()
     {
@@ -55,6 +61,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(RelationshipChangeStatus.Changed, (await provider.SetParentAsync(new(Issue(1), 3))).Status);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -70,6 +78,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingAncestryCycleAlsoTerminatesWithoutWriting()
     {
@@ -81,6 +91,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PreviewPreflightsButDoesNotMutate()
     {
@@ -92,6 +104,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(1, false)]
     [InlineData(2, false)]
@@ -108,6 +122,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("/issues/2", false)]
     [InlineData("/issues/1/parent", false)]
@@ -124,6 +140,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -138,6 +156,8 @@ public sealed class GitHubIssueParentTests
         Assert.Single(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ClearReadBackCannotTreatInvisibleChildAsSuccess()
     {
@@ -149,6 +169,8 @@ public sealed class GitHubIssueParentTests
         Assert.Contains("could not be verified", result.Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401)]
     [InlineData(403)]
@@ -169,6 +191,8 @@ public sealed class GitHubIssueParentTests
         Assert.DoesNotContain("fake-test-credential", result.Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedReadBackAndPreflightTransportRetainSafeDiagnostics()
     {
@@ -186,6 +210,8 @@ public sealed class GitHubIssueParentTests
         Assert.DoesNotContain("sensitive-response", result.Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ChildListingIsPaginatedAndDirectOnly()
     {
@@ -204,6 +230,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(2, handler.ListPages);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("other/project", false)]
     [InlineData("team/project", true)]
@@ -217,6 +245,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadsDistinguishMissingIssuesAndApiErrors()
     {
@@ -230,6 +260,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(GitHubIssueFailure.Authorization, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationPropagatesDuringAncestryAndAfterWrite()
     {
@@ -252,6 +284,8 @@ public sealed class GitHubIssueParentTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchPreservesChangedAndUnchangedOutcomes()
     {
@@ -267,6 +301,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(3, handler.Parents[2]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchAssignsMultipleChildren()
     {
@@ -278,6 +314,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(2, handler.Writes.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchConflictPreflightsEveryChildWithoutWriting()
     {
@@ -291,6 +329,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -307,6 +347,8 @@ public sealed class GitHubIssueParentTests
         Assert.Single(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchRetainsSuccessBeforeLaterUncertainty()
     {
@@ -323,6 +365,8 @@ public sealed class GitHubIssueParentTests
         Assert.Equal(2, handler.Writes.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchPreviewChecksCyclesWithoutWriting()
     {
@@ -334,6 +378,8 @@ public sealed class GitHubIssueParentTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void BatchRequestCopiesChildrenAndRejectsInvalidInput()
     {
@@ -348,6 +394,8 @@ public sealed class GitHubIssueParentTests
         Assert.Throws<ArgumentException>(() => new SetParentsRequest(Issue(100), Enumerable.Range(1, 51).ToArray()));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BatchCancellationAfterWriteDoesNotAttemptRemainingChildren()
     {

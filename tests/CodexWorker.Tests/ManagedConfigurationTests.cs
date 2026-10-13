@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagedConfigurationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WorkerSlotsAreValidatedAppliedAndRetainedInSnapshotCache()
     {
@@ -29,6 +31,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal(1, synchronizer.AppliedWorkerExecutionSlots);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(null)]
     [InlineData(1)]
@@ -46,6 +50,8 @@ public sealed class ManagedConfigurationTests
         Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { ContractVersion = 1 }));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
@@ -60,6 +66,8 @@ public sealed class ManagedConfigurationTests
         Assert.Null(Assert.Single(synchronizer.AppliedProjects).MaxParallelTasks);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SuccessfulRetrievalWithLocalMismatchReportsSynchronizationFailureAndProjectRevision()
     {
@@ -82,6 +90,8 @@ public sealed class ManagedConfigurationTests
         Assert.False(File.Exists(fixture.CachePath));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401, "unauthorized", "server-unauthorized")]
     [InlineData(503, "unavailable", "server-unavailable")]
@@ -103,6 +113,8 @@ public sealed class ManagedConfigurationTests
         Assert.DoesNotContain("private-value", JsonSerializer.Serialize(synchronizer.Status), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidJsonIsAContractFailureAfterRetrieval()
     {
@@ -117,6 +129,8 @@ public sealed class ManagedConfigurationTests
         Assert.DoesNotContain("private-value", JsonSerializer.Serialize(synchronizer.Status), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RegistrationAuthorizationFailureIsNotReportedAsServerUnavailability()
     {
@@ -129,6 +143,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal("server-unauthorized", synchronizer.Status.Diagnostics?.DiagnosticCode);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledRetrievalDoesNotBecomeConnectivityFailure()
     {
@@ -144,6 +160,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectObservationsKeepRevisionContextAndAreNotRestoredAsReadinessAuthority()
     {
@@ -167,6 +185,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal("not-materialized", Assert.Single(Assert.IsType<CodexProvisioning.ManagedWorkerDiagnostics>(synchronizer.Status.Diagnostics).Projects).State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AppliesAnEmptyServerSnapshotForAColdStartWorker()
     {
@@ -180,6 +200,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal("synchronized", synchronizer.Status.SynchronizationStatus);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void InitialSnapshotIsValidatedAppliedAndReported()
     {
@@ -196,6 +218,8 @@ public sealed class ManagedConfigurationTests
         Assert.NotNull(synchronizer.Status.LastSuccessfulUpdateUtc);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UpdatedSnapshotAppliesOnlyServerOwnedProjectFieldsAndAdvancesVersion()
     {
@@ -221,6 +245,8 @@ public sealed class ManagedConfigurationTests
         Assert.NotEqual(synchronizer.Status.AppliedVersion, fixture.Snapshot(1).Version);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UnchangedSnapshotDoesNotRewriteCacheOrChangeSuccessfulUpdateTime()
     {
@@ -237,6 +263,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal(writtenAt, File.GetLastWriteTimeUtc(fixture.CachePath));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ExecutionRequirementsSurviveInvalidUpdatesAndCachedRestart()
     {
@@ -253,6 +281,9 @@ public sealed class ManagedConfigurationTests
         Assert.Equal(project.Requirements, Assert.Single(restarted.AppliedProjects).Requirements);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void InvalidUpdateKeepsLastValidSnapshotAvailableAndReportsError()
     {
@@ -272,6 +303,8 @@ public sealed class ManagedConfigurationTests
         Assert.NotNull(synchronizer.Status.Error);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void TemporaryServerLossPreservesAppliedConfigurationAcrossRestart()
     {
@@ -292,6 +325,8 @@ public sealed class ManagedConfigurationTests
         Assert.True(restartedProcess.Status.LastSuccessfulUpdateUtc.HasValue);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectRevisionTransitionChangesSnapshotVersion()
     {
@@ -302,6 +337,8 @@ public sealed class ManagedConfigurationTests
         Assert.NotEqual(fixture.Snapshot(1).Version, ManagedConfigurationSynchronizer.CalculateVersion([changedProject]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void DisabledCentralLifecycleFieldSurvivesManagedSnapshotCachingAndRestart()
     {
@@ -322,6 +359,8 @@ public sealed class ManagedConfigurationTests
         Assert.False(Assert.Single(restored!.Projects).Enabled);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ColdStartAcceptsServerProjectWithoutYamlCheckoutOrInstructions()
     {
@@ -343,6 +382,8 @@ public sealed class ManagedConfigurationTests
         Assert.Equal(applied.Configuration.Project.Directory, Assert.Single(restarted.LoadLastValid()).Configuration.Project.Directory);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RenameAndRevisionRetainCheckoutIdentityAndServerLifecycle()
     {
@@ -363,6 +404,8 @@ public sealed class ManagedConfigurationTests
         Assert.False(Assert.Single(synchronizer.AppliedProjects).Enabled);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RejectsDuplicateServerIdsWithoutReplacingCache()
     {
@@ -381,6 +424,8 @@ public sealed class ManagedConfigurationTests
         {"contractVersion":1,"version":"5c2a4f0fd442e98b7b518ff6390881296918bedbe6559a95e45847c98c25865e","projects":[{"id":"repository","name":"Repository","repository":"owner/repository","defaultBranch":"main","description":"generic project","requirements":[],"revision":1,"createdAtUtc":"1970-01-01T00:00:00+00:00","updatedAtUtc":"1970-01-02T00:00:00+00:00","enabled":true}]}
         """;
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LegacyCacheIsNeverAppliedAndFreshV2ReplacesItBeforeRestart()
     {

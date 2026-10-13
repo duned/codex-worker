@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 
 public sealed class OperabilityTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RuntimeVersionMatchesProductVersionMetadata()
     {
@@ -13,12 +15,16 @@ public sealed class OperabilityTests
         Assert.Equal(version.Split('+')[0], ApplicationVersion.Display);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ServerAndWorkerExposeTheSameReleaseVersion()
     {
         Assert.Equal(ApplicationVersion.Display, CodexServer.ServerApplication.DisplayVersion);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ServerRuntimeVersionMatchesProductVersionMetadata()
     {
@@ -26,6 +32,8 @@ public sealed class OperabilityTests
         Assert.Equal(version.Split('+')[0], CodexServer.ServerApplication.DisplayVersion);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProcessExitCodesDistinguishGracefulStartupAndRuntimeOutcomes()
     {
@@ -34,6 +42,8 @@ public sealed class OperabilityTests
         Assert.Equal(ProcessExitCodes.RuntimeFailure, Program.ExitCodeFor(new WorkerInfrastructureException("runtime failed")));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void InteractiveStartupClearsTerminalBeforeHeader()
     {
@@ -43,6 +53,8 @@ public sealed class OperabilityTests
         Assert.Contains($"CODEX WORKER v{ApplicationVersion.Display} · Example", writer.ToString());
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RedirectedStartupDoesNotEmitClearScreenOrAnsi()
     {
@@ -51,6 +63,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("\u001b[", writer.ToString());
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MultiProjectStartupHeaderUsesAssemblyVersion()
     {
@@ -61,6 +75,8 @@ public sealed class OperabilityTests
         Assert.Equal($"{assemblyVersion.Major}.{assemblyVersion.Minor}.{assemblyVersion.Build}", ApplicationVersion.Display);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GracefulIdleFinalizationKeepsInteractiveLineAndPlacesShutdownBelowIt()
     {
@@ -78,6 +94,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("\r\u001b[2K", output[idleLine..stopped]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RedirectedIdleFinalizationRemainsPlainLineBasedOutput()
     {
@@ -92,6 +110,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain('\r', output);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RedirectedConsoleUsesSemanticTextWithoutAnsi()
     {
@@ -107,6 +127,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("\u001b[", text);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FailureReasonIsCorrelatedBoundedAndRedacted()
     {
@@ -124,6 +146,8 @@ public sealed class OperabilityTests
         Assert.True(line.Length < 300);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RepeatedIdleStateIsPrintedOnlyOnceUntilIssueStarts()
     {
@@ -136,6 +160,8 @@ public sealed class OperabilityTests
         Assert.Equal(2, writer.ToString().Split("Waiting for work...", StringSplitOptions.None).Length - 1);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutionReadinessBlockerReplacesOrdinaryIdleOutputAndClearsAfterRecovery()
     {
@@ -152,6 +178,8 @@ public sealed class OperabilityTests
         Assert.Equal(1, text.Split("Worker online but not execution-ready", StringSplitOptions.None).Length - 1);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InteractiveProgressFinalizesTheSpinnerWhenCancelled()
     {
@@ -170,6 +198,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("Codex working failed", writer.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InteractivePreflightProgressSpinsAndFinalizesWithElapsedTime()
     {
@@ -189,6 +219,8 @@ public sealed class OperabilityTests
         Assert.Contains("✓ Codex preflight OK · 1s", text);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IdleSpinnerShowsElapsedTimeAndRestartsForANewIdlePeriod()
     {
@@ -215,6 +247,8 @@ public sealed class OperabilityTests
         Assert.Contains("\u001b[2K", writer.ToString());
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void TelegramFormatUsesCentralizedCompactSpanishLayout()
     {
@@ -225,6 +259,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain(">>", message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TelegramDisabledDoesNotAttemptDelivery()
     {
@@ -235,6 +271,8 @@ public sealed class OperabilityTests
         Assert.Equal(0, handler.Calls);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void EnabledTelegramRequiresBothEnvironmentValuesWithoutPrintingThem()
     {
@@ -244,6 +282,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("secret", error.Message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TelegramDeliveryFailureIsWarningAndDoesNotThrow()
     {
@@ -257,6 +297,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("token", writer.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TelegramLifecycleNotificationsUseSimpleSemanticFirstLines()
     {
@@ -294,6 +336,8 @@ public sealed class OperabilityTests
         string MessageAt(int index) => JsonDocument.Parse(handler.Bodies[index]).RootElement.GetProperty("text").GetString()!;
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CompletionNotificationCarriesDurationAndCommitDetails()
     {
@@ -314,6 +358,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("════════════", message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TaskIssueLinkEscapesCompleteIssueTitleForTelegramHtml()
     {
@@ -332,6 +378,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("#8 · Add <uptime>", message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IntegrationRecoveryIssueLinkRemainsTelegramHtmlWithWarningActionIcon()
     {
@@ -351,6 +399,8 @@ public sealed class OperabilityTests
         Assert.Contains("Recovery was rejected", message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConsoleTaskLifecycleLinesUseIssueIdentityAndKeepMarkdownOutOfOperationalOutput()
     {
@@ -388,6 +438,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("\u001b[", lines);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutionLifecycleFormattingKeepsIdsStableAcrossConcurrentTasksAndRetryHistory()
     {
@@ -421,6 +473,8 @@ public sealed class OperabilityTests
         Assert.Contains($"Execution `{ExecutionFormatting.Display(firstId)}` (`{firstId}`)", completionReport);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutionTelegramMessagesCarryCurrentAndPreviousIdsWhileGlobalMessagesStayGlobal()
     {
@@ -444,6 +498,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("[", handler.Bodies[3]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InterleavedProgressEventsKeepEachIssueContext()
     {
@@ -464,6 +520,8 @@ public sealed class OperabilityTests
         Assert.Contains("✓ Issue · Worker task #31 · Codex working OK", lines);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GracefulStopNotificationUsesStoppedStatus()
     {
@@ -477,6 +535,8 @@ public sealed class OperabilityTests
         Assert.DoesNotContain("Cancellation received", message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GlobalLifecycleNotificationsUseProjectCountAndNoProjectIdentity()
     {
@@ -491,6 +551,8 @@ public sealed class OperabilityTests
         Assert.Equal($"⚫ CW {ApplicationVersion.Display} · DETENIDO", stop.RootElement.GetProperty("text").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NoWorkLifecycleNotificationUsesYellowWorkerStatus()
     {

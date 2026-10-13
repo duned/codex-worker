@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexExecutorArgumentsTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UsesAutomaticReviewWithoutConflictingSandboxArgument()
     {
@@ -22,6 +24,8 @@ public sealed class CodexExecutorArgumentsTests
         Assert.Equal("task prompt", args[^1]);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OmitsModelWhenNotConfigured()
     {
@@ -32,6 +36,8 @@ public sealed class CodexExecutorArgumentsTests
         Assert.DoesNotContain("--sandbox", args);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void PreflightUsesConfiguredModelAndRunsEphemerallyOutsideGit()
     {
@@ -49,6 +55,8 @@ public sealed class CodexExecutorArgumentsTests
         Assert.Contains("Reply only with OK. Do not inspect or modify project files.", args);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CodexInfrastructureFailureCategoriesDistinguishTimeoutFromServiceFailure()
     {

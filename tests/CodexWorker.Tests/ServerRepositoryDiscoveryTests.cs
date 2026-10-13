@@ -8,6 +8,8 @@ public sealed class ServerRepositoryDiscoveryTests
         {"full_name":"team/project","name":"project","default_branch":"release/current","description":"Example"}
         """;
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiscoveryUsesAuthenticatedContextAndBoundsEachPage()
     {
@@ -28,6 +30,8 @@ public sealed class ServerRepositoryDiscoveryTests
         Assert.Single(commands);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -46,6 +50,8 @@ public sealed class ServerRepositoryDiscoveryTests
         Assert.Equal(repositoryReadable ? 2 : 1, commands.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task VerificationChecksActualBranchAndDoesNotCheckWriteAuthorization()
     {
@@ -63,6 +69,8 @@ public sealed class ServerRepositoryDiscoveryTests
         Assert.Equal(2, commands.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("not-json")]
     [InlineData("{}")]
@@ -74,6 +82,8 @@ public sealed class ServerRepositoryDiscoveryTests
         Assert.Equal("invalid-response", exception.Code);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationPropagatesAndValidationRejectsBeforeProviderAccess()
     {

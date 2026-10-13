@@ -2,6 +2,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed class IssueContractTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IndependentHostCanReadAndRequestRelationshipsUsingHumanNumbers()
     {
@@ -40,6 +42,8 @@ public sealed class IssueContractTests
         Assert.False(host.DependencyRequest.Applied);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -52,6 +56,8 @@ public sealed class IssueContractTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new SetDependencyRequest(issue, number, true));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SelfRelationshipsAreRejectedBeforeProviderCalls()
     {
@@ -60,6 +66,9 @@ public sealed class IssueContractTests
         Assert.Throws<ArgumentException>(() => new SetDependencyRequest(issue, 42, false));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
@@ -69,6 +78,8 @@ public sealed class IssueContractTests
         Assert.Throws<ArgumentException>(() => new RepositoryContext(repository));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RepositoryContextsAreBoundedAndRequired()
     {
@@ -79,6 +90,8 @@ public sealed class IssueContractTests
         Assert.Throws<ArgumentNullException>(() => new SetDependencyRequest(null!, 1, true));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HostCanPassCancellationThroughEveryOperation()
     {

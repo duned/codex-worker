@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitBranchTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("Add Fast Search!", "add-fast-search")]
     [InlineData("  Café / 東京  ", "caf")]
@@ -12,6 +14,8 @@ public sealed class GitBranchTests
     public void SanitizesIssueTitles(string title, string expected) =>
         Assert.Equal(expected, GitRepository.SanitizeTitle(title));
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void BranchSlugHasBoundedLength()
     {
@@ -19,6 +23,8 @@ public sealed class GitBranchTests
         Assert.Equal(72, slug.Length);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FeatureAndCompletedBranchesPlaceIssueNumberAfterSlugAndPreservePrefixes()
     {
@@ -29,6 +35,8 @@ public sealed class GitBranchTests
         Assert.Equal("done/feature/7-2-add-local-project-configuration-management-18", GitRepository.CompletedBranchName(settings, issue));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("Add [local] config!", "feature/task/add-local-config-31", "archive/task/add-local-config-31")]
     [InlineData("plain title", "feature/task/plain-title-31", "archive/task/plain-title-31")]
@@ -41,6 +49,8 @@ public sealed class GitBranchTests
         Assert.Equal(completed, GitRepository.CompletedBranchName(settings, issue));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IssueDisplayUsesTitleThenNumber()
     {
@@ -49,6 +59,8 @@ public sealed class GitBranchTests
         Assert.Equal("7.2 · Add local project configuration management #18", IssueFormatting.Display(issue));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("https://github.com/owner/repo.git", true)]
     [InlineData("git@github.com:owner/repo.git", true)]

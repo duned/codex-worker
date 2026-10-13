@@ -5,6 +5,8 @@ using System.Text.Json;
 
 public sealed class GitHubIssueReadProviderTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DiscoveryUsesBatchesCacheFreshnessAndAliasPolicyWithoutCreatingExecutions()
     {
@@ -44,6 +46,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Empty(await registry.ListExecutionsAsync(new()));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("OPEN", "open", "ineligible")]
     [InlineData("OPEN", "closed", "eligible")]
@@ -65,6 +69,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Single(source.Batches);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("read-unavailable")]
     [InlineData("rate-limited")]
@@ -86,6 +92,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Empty(await registry.GetExecutionsAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DiscoveryReportsMissingIssueWithoutAuthorizingIt()
     {
@@ -97,6 +105,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal(2, Assert.Single(page.MissingNumbers ?? []));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IdentitiesSurviveRestartRefreshAndRepositoryAliasesWithoutCollisions()
     {
@@ -122,6 +132,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal(3, source.Batches.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("OPEN", "codex-ready", 31, 2)]
     [InlineData("CLOSED", "codex-failed", 31, 2)]
@@ -144,6 +156,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal(expectedCalls, source.Batches.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RefreshDeduplicatesOverlappingHierarchyAndDependenciesAndBatchesTheFrontier()
     {
@@ -168,6 +182,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal(3, source.Batches.Sum(batch => batch.Count));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ListsBatchSnapshotsAndReevaluateEligibilityForProjectAliases()
     {
@@ -185,6 +201,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal(3, source.Batches.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ListBatchesReuseIdentitiesDiscoveredInEarlierRelationshipResults()
     {
@@ -196,6 +214,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal("node-team/project-11", source.Batches[1][11]);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FreshMutationScopesInvalidateIssueDataButRetainIdentities()
     {
@@ -212,6 +232,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Equal("node-team/project-1", source.Batches[1][1]);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConcurrentReadsShareFreshCacheAndCallerCancellationDoesNotBecomeInfrastructureFailure()
     {
@@ -226,6 +248,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Single(source.Batches);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SnapshotTransportCombinesReadsAndUsesPermanentNodeIdentityOnRefresh()
     {
@@ -256,6 +280,8 @@ public sealed class GitHubIssueReadProviderTests
             argument.Contains("subIssues(first:100)", StringComparison.Ordinal)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NetworkTimeoutDiagnosticsIdentifyGitHubContextAndUserCancellationPropagates()
     {
@@ -276,6 +302,8 @@ public sealed class GitHubIssueReadProviderTests
             new Dictionary<int, string?> { [1] = null }, cancellation.Token));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RelationshipWritesUseThePersistentDatabaseIdentityWithoutRawIdentityCalls()
     {
@@ -298,6 +326,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.All(commands, command => Assert.Contains("POST", command));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SnapshotTransportPaginatesRelationshipsAndRetainsRelatedIdentities()
     {
@@ -326,6 +356,8 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Contains(commands[1], argument => argument.Contains("after:\"next-page\"", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("issue")]
     [InlineData("issues")]

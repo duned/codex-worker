@@ -7,6 +7,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class GeneratedMessageOriginTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false, "codex1-vm")]
     [InlineData(true, "codex2-vm")]
@@ -57,6 +59,8 @@ public sealed class GeneratedMessageOriginTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("### Execution report\n\nCompleted")]
     [InlineData("### Failure\n\nFailed\n\n### Recovery\n\n- Inspect preserved work.")]
@@ -82,6 +86,8 @@ public sealed class GeneratedMessageOriginTests
         Assert.Equal(new[] { "issue", "close", "7", "--repo", "owner/repo" }, calls[2]);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -98,6 +104,8 @@ public sealed class GeneratedMessageOriginTests
         Assert.Equal($"🧭 Codex Server · {expected}\n{GeneratedMessageOrigin.ServerMarker}\n\n### Report", configuration.MessageOrigin.Format("### Report"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void DistinctWorkerNamesRemainDistinguishableWithTheSameReport()
     {
@@ -109,6 +117,8 @@ public sealed class GeneratedMessageOriginTests
         Assert.Contains("codex2-vm", second);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("invalid\nname")]
     [InlineData("invalid\tname")]
@@ -119,6 +129,8 @@ public sealed class GeneratedMessageOriginTests
         Assert.Throws<InvalidDataException>(configuration.Validate);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void DisplayNamesCannotInjectMarkupMentionsOrAdditionalLines()
     {

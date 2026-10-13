@@ -24,6 +24,8 @@ public sealed class WorkerServerHttpTransportTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [MemberData(nameof(RedirectCases))]
     public async Task RedirectsNeverDeliverCredentialsOrBodiesToDestination(int status, bool crossOrigin, bool bootstrap)
@@ -64,6 +66,8 @@ public sealed class WorkerServerHttpTransportTests
         finally { Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("http://example.com")]
     [InlineData("https://user:password@example.com")]
@@ -84,6 +88,8 @@ public sealed class WorkerServerHttpTransportTests
         Assert.Equal(0, server.Requests);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("http://127.0.0.1", true)]
     [InlineData("http://[::1]", true)]
@@ -98,6 +104,8 @@ public sealed class WorkerServerHttpTransportTests
         else Assert.Throws<InvalidDataException>(configuration.Validate);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("trusted")]
     [InlineData("untrusted")]
@@ -123,6 +131,8 @@ public sealed class WorkerServerHttpTransportTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -158,6 +168,8 @@ public sealed class WorkerServerHttpTransportTests
         Assert.True(failure.Message.Length < 1000);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -179,6 +191,8 @@ public sealed class WorkerServerHttpTransportTests
         Assert.Equal(callerCancellation, cancellation.IsCancellationRequested);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OversizedSuccessfulResponseIsRejected()
     {

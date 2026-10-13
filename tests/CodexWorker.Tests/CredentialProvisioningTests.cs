@@ -8,6 +8,8 @@ using CodexServer;
 
 public sealed class CredentialProvisioningTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CredentialsPersistEncryptedMetadataAndRestrictRetrievalToAssignedWorker()
     {
@@ -68,6 +70,8 @@ public sealed class CredentialProvisioningTests
         Assert.Null(await restarted.RetrieveForWorkerAsync(created.Id, workerId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingEncryptionKeyFailsWithoutIncludingSecretInFailure()
     {

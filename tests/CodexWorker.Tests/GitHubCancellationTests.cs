@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubCancellationTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledReadyIssueQueryPropagatesApplicationCancellation()
     {
@@ -16,6 +18,8 @@ public sealed class GitHubCancellationTests
             client.FindOldestReadyAsync("ready", cancellation.Token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledIssueMutationRemainsInfrastructureFailure()
     {

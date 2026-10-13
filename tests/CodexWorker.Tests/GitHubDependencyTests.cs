@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubDependencyTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependencyLookupUsesRestApiAndIssueListingDoesNotRequestBlockedBy()
     {
@@ -22,6 +24,8 @@ public sealed class GitHubDependencyTests
         Assert.DoesNotContain(fixture.Commands.SelectMany(args => args), arg => arg is "--add-label" or "--remove-label");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadyIssueWithoutDependenciesIsEligible()
     {
@@ -29,6 +33,8 @@ public sealed class GitHubDependencyTests
         Assert.Equal(1, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadyIssueLookupPreservesLabelsForSchedulingIntent()
     {
@@ -39,6 +45,8 @@ public sealed class GitHubDependencyTests
         Assert.Equal(new[] { "team-ready", "team-recover" }, issue?.Labels);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadyIssueWithAllDependenciesClosedIsEligible()
     {
@@ -46,6 +54,8 @@ public sealed class GitHubDependencyTests
         Assert.Equal(2, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadyIssueLookupSkipsIssuesAlreadyActiveOnThisWorker()
     {
@@ -58,6 +68,8 @@ public sealed class GitHubDependencyTests
             "api", "--paginate", "repos/owner/repo/issues/1/dependencies/blocked_by"]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("OPEN")]
     [InlineData("CLOSED", "OPEN")]
@@ -67,6 +79,8 @@ public sealed class GitHubDependencyTests
         Assert.Equal(11, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnresolvedDependencyOnLaterPagePreventsEligibility()
     {
@@ -74,6 +88,8 @@ public sealed class GitHubDependencyTests
         Assert.Null(await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependencyApiFailureDoesNotReturnAnEligibleIssue()
     {
@@ -83,6 +99,8 @@ public sealed class GitHubDependencyTests
         Assert.Contains("permission denied", failure.Message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StartupCapabilitiesAreReadOnlyAndProbeDependencyApiOnAnExistingIssue()
     {
@@ -106,6 +124,8 @@ public sealed class GitHubDependencyTests
         Assert.DoesNotContain(commands.SelectMany(command => command), argument => argument is "--add-label" or "--remove-label" or "comment");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StartupDependencyCapabilityFailureIsInfrastructureFailure()
     {
@@ -127,6 +147,8 @@ public sealed class GitHubDependencyTests
         Assert.Contains("endpoint unavailable", failure.Message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StartupCapabilityChecksDoNotAssumeRepositoryContainsIssues()
     {
@@ -145,6 +167,8 @@ public sealed class GitHubDependencyTests
         Assert.DoesNotContain(commands.SelectMany(command => command), argument => argument.Contains("/dependencies/blocked_by", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StartupRejectsGitHubAuthenticationWithoutIssueWritePermission()
     {
@@ -156,6 +180,8 @@ public sealed class GitHubDependencyTests
         Assert.Contains("lacks permission to manage Issues", failure.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"maintain\":true}", true)]
     [InlineData("{\"push\":true}", true)]
@@ -167,6 +193,8 @@ public sealed class GitHubDependencyTests
         else Assert.Throws<WorkerInfrastructureException>(() => GitHubClient.ValidateIssueWritePermission(permissions));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ApiCredentialProvisioningSendsSecretOnlyOnStandardInputAndVerifiesAccess()
     {
@@ -202,6 +230,8 @@ public sealed class GitHubDependencyTests
         Assert.DoesNotContain(secret, result.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringDependencyLookupPropagatesSafely()
     {

@@ -19,6 +19,8 @@ public sealed class ServerTokenEnvironmentCollection { }
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null)]
     [InlineData(2)]
@@ -91,6 +93,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(null)]
     [InlineData(1)]
@@ -110,6 +114,8 @@ public sealed class CodexServerTests
             ServerApplication.ManagedConfigurationVersion([project with { MaxParallelTasks = limit == 1 ? 2 : 1 }]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null, 2)]
     [InlineData(1, 1)]
@@ -158,6 +164,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerConfigurationCapacityLimitsNewServerAssignmentsWithoutChangingWorkerReportedCapacity()
     {
@@ -190,6 +198,8 @@ public sealed class CodexServerTests
         Assert.Equal("worker-capacity", secondLimit.Reason);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerSlotsRemainPendingUntilReportedAndPreserveIndependentAssignmentLimit()
     {
@@ -232,6 +242,8 @@ public sealed class CodexServerTests
         Assert.Equal(2, (await store.GetWorkerAsync(workerId))?.MaximumCapacity);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ProjectCapacityIsAtomicAcrossWorkersAndLimitChangesPreserveActiveWork()
     {
@@ -274,6 +286,8 @@ public sealed class CodexServerTests
             new Dictionary<string, int> { [project.Id] = 2 }))).HasWork);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Codex", true)]
     [InlineData("Integration", false)]
@@ -301,6 +315,8 @@ public sealed class CodexServerTests
         Assert.Equal(safe, (await store.RequestAssignmentAsync(request)).HasWork);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LegacyStoredProjectWithoutConcurrencyDefaultsToAutomatic()
     {
@@ -321,6 +337,8 @@ public sealed class CodexServerTests
         Assert.Null((await restarted.GetProjectAsync(project.Id))?.MaxParallelTasks);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
@@ -336,6 +354,8 @@ public sealed class CodexServerTests
         return await store.BootstrapWorkerAsync(authorization, registration, token, operation: existing is null ? "enroll" : "rotate");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task GuidedAuthorizationUsesManagementBoundaryAndExactHttpsDestinationWithoutGrantingReadiness()
     {
@@ -410,6 +430,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerRoutesRequireExactDurableIdentityAndRetainOwnershipChecks()
     {
@@ -516,6 +538,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedObservationsSurviveRegistryStorageAndRemainDistinctFromServerEligibility()
     {
@@ -550,6 +574,8 @@ public sealed class CodexServerTests
         Assert.Equal("stale-heartbeat", Assert.Single(WorkerDiagnosticsDerivation.Derive(stale, [project], [], "version").Projects).ObservationStatus);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ManagedDiagnosticsRejectRawOutputAndUnboundedPayloads()
     {
@@ -562,6 +588,8 @@ public sealed class CodexServerTests
             .Select(index => new ManagedProjectDiagnostic(index.ToString(System.Globalization.CultureInfo.InvariantCulture), 1, "ready")).ToArray() }));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task MissingLocalAuthenticationBlocksAssignmentDespiteRunningHeartbeat()
     {
@@ -598,6 +626,8 @@ public sealed class CodexServerTests
         Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task TypedProvisioningApiRejectsShellFieldsAndRunsKnownLocalAction()
     {
@@ -691,6 +721,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task NodeApiUsesCommonInventoryAndRequiresManagementAuthentication()
     {
@@ -740,6 +772,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CredentialAdministrationApiProjectsSecretFreeMetadataAndKeepsDeliveryAssignedOnly()
     {
@@ -857,6 +891,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BootstrapAndTransientLoginResponsesProhibitStorageIncludingRejections()
     {
@@ -907,6 +943,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerAdministrationApiProjectsPolicyAndSeparatesApiAndDeliveryRevocation()
     {
@@ -988,6 +1026,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerTelegramApiReturnsOnlyMetadataAndUsesManagedSnapshotAndWorkerOnlyDelivery()
     {
@@ -1065,6 +1105,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerConfigurationApiSavesRevisionCheckedSettingsAndPreservesReportedCapacity()
     {
@@ -1155,6 +1197,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DirectTokenCommandRejectsImplicitHomeState()
     {
@@ -1183,6 +1227,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("--help", 0)]
     [InlineData("-h", 0)]
@@ -1232,6 +1278,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CapabilityContractSupportsLegacyStringsAndUnknownFutureTypes()
     {
@@ -1240,6 +1288,8 @@ public sealed class CodexServerTests
             JsonSerializer.Deserialize<ServerWorkerCapability>("{\"type\":\"future-runtime\",\"name\":\"specialized\",\"version\":\"4.2\"}"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"type\":\"tool\",\"name\":\"git\",\"extra\":true}")]
     [InlineData("{\"type\":\"tool\",\"name\":7}")]
@@ -1247,6 +1297,8 @@ public sealed class CodexServerTests
     public void MalformedCapabilityDataIsRejected(string json) =>
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ServerWorkerCapability>(json));
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ServerLeaseTimingDefaultsAreConservativeAndRenewalMustPrecedeExpiry()
     {
@@ -1259,6 +1311,8 @@ public sealed class CodexServerTests
         Assert.Throws<InvalidDataException>(configuration.Validate);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BootstrapTokensAreShortLivedOneTimeAndCreatePerWorkerCredentials()
     {
@@ -1281,6 +1335,8 @@ public sealed class CodexServerTests
         Assert.False(await store.IsWorkerTokenValidAsync(workerId, "worker-secret-with-sufficient-entropy"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void DataDirectoryAndRelativeDatabasePathResolveOutsideTheWorkingDirectory()
     {
@@ -1292,6 +1348,8 @@ public sealed class CodexServerTests
         Assert.Equal(Path.Combine(temporary.Path, "state", "custom", "server.db"), configuration.ResolveDatabasePath());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BackupRoundTripPreservesControlPlaneMetadataAndExcludesSecrets()
     {
@@ -1399,6 +1457,8 @@ public sealed class CodexServerTests
         Assert.Equal("re-entered-test-secret", await restoredCredentials.RetrieveForWorkerAsync(credential.Id, workerId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BackupRejectsTypedProvisioningHistoryThatDoesNotMatchItsCurrentSchema()
     {
@@ -1422,6 +1482,8 @@ public sealed class CodexServerTests
         Assert.False(File.Exists(archivePath));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BackupRestoreRequiresExclusiveOfflineServerDatabaseAccess()
     {
@@ -1451,6 +1513,8 @@ public sealed class CodexServerTests
         Assert.Equal(project.Name, restored.Name);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidBackupIsRejectedBeforeRestoreChangesExistingDatabase()
     {
@@ -1474,6 +1538,8 @@ public sealed class CodexServerTests
         Assert.Equal(project.Name, existingProject.Name);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task CleanWorkerBootstrapRegistersVisibleWorkerAndEstablishesHeartbeatAuthentication()
     {
@@ -1510,6 +1576,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ManagedNotReadyHeartbeatIsAcceptedAndWorkerRemainsOnlineButCannotReceiveWork()
     {
@@ -1581,6 +1649,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null)]
     [InlineData("custom/registry.db")]
@@ -1669,6 +1739,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RegistrationValidationReturnsSafeActionableContractAndCorrelation()
     {
@@ -1730,6 +1802,8 @@ public sealed class CodexServerTests
         await app.StopAsync();
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InvalidBootstrapCredentialIsActionableAndDoesNotCreateWorker()
     {
@@ -1762,6 +1836,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RegistrationIsAuthenticatedIdempotentAndDurableAcrossServerRestart()
     {
@@ -1856,6 +1932,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HeartbeatAvailabilityTransitionsStaleAndReconnectsWithDeterministicClock()
     {
@@ -1884,6 +1962,8 @@ public sealed class CodexServerTests
         Assert.Contains(reconnected.Capabilities, capability => capability.Name == "new-capability");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerStartsAndExposesStatusHealthAndVersion()
     {
@@ -2015,6 +2095,8 @@ public sealed class CodexServerTests
         finally { await app.StopAsync(); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PersistenceSchemaSurvivesRepeatedInitializationAndRestart()
     {
@@ -2041,6 +2123,8 @@ public sealed class CodexServerTests
         Assert.Equal(1L, (long)(await verifyCommand.ExecuteScalarAsync())!);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CentralProjectsSupportValidatedCrudDurabilityUniquenessAndRevisionConflicts()
     {
@@ -2076,6 +2160,8 @@ public sealed class CodexServerTests
         Assert.Empty(await restarted.GetProjectsAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CentralProjectLifecyclePersistsAndSharesOptimisticRevisionWithDefinitionUpdates()
     {
@@ -2112,6 +2198,8 @@ public sealed class CodexServerTests
         Assert.Equal(4, enabled.Revision);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingCentralProjectRowsWithoutLifecycleFieldDefaultToEnabled()
     {
@@ -2135,6 +2223,8 @@ public sealed class CodexServerTests
         Assert.True((await restarted.GetProjectAsync(created.Id))!.Enabled);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DisabledCentralProjectPausesQueuedWorkButPreservesActiveLeaseAndBlocksUnsafeDeletion()
     {
@@ -2198,6 +2288,8 @@ public sealed class CodexServerTests
         Assert.True(await store.RemoveProjectAsync(project.Id, enabled.Revision));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ProvisioningPlansPersistLifecycleRecoverInterruptedWorkAndSanitizeFailure()
     {
@@ -2249,6 +2341,8 @@ public sealed class CodexServerTests
         Assert.Equal(3, (await restartedStore.GetProvisioningPlansAsync()).Count);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProvisioningActionsRequireExplicitSafeKindsAndRejectEmbeddedCredentialValues()
     {
@@ -2268,6 +2362,8 @@ public sealed class CodexServerTests
             new("auth", "authentication", "github-api", Operation: "provision", Scope: "team/repo")] )));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task StaleWorkerTurnsInterruptedProvisioningIntoAnExplicitFailure()
     {
@@ -2296,6 +2392,8 @@ public sealed class CodexServerTests
         catch (ProjectRevisionConflictException) { return null; }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task CentralProjectHttpApiRequiresAuthorizationAndExposesCrudContracts()
     {
@@ -2367,6 +2465,8 @@ public sealed class CodexServerTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CentralProjectDeleteApiReportsQueuedReferencesAndPreservesProject()
     {
@@ -2402,6 +2502,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CentralProjectsWithoutRequirementsRemainValidAndPersistAsAnEmptyList()
     {
@@ -2415,6 +2517,8 @@ public sealed class CodexServerTests
         Assert.Empty((await store.GetProjectAsync(created.Id))!.Requirements);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CentralProjectRequirementsRejectMalformedVersionsAndContradictionsAndReadLegacyValues()
     {
@@ -2434,6 +2538,8 @@ public sealed class CodexServerTests
         Assert.Contains("\"scope\":\"team/compiler\"", JsonSerializer.Serialize(scoped));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AutomaticDiscoveryDefaultsAndBoundsAreValidatedEvenWhenDisabled()
     {
@@ -2456,6 +2562,8 @@ public sealed class CodexServerTests
         Assert.NotNull(CentralProjectValidation.Error(Definition(new(false, 300, 25, 121))));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WorkerEligibilityMatchesAllRequirementsAndExplainsMissingOrIncompatibleCapabilities()
     {
@@ -2485,6 +2593,8 @@ public sealed class CodexServerTests
         Assert.Contains("requires PostgreSQL 18.0; worker reports PostgreSQL 17.9", result.MissingRequirements);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WorkerDiagnosticsExplainHealthyAndUnhealthyReadiness()
     {
@@ -2537,6 +2647,8 @@ public sealed class CodexServerTests
         Assert.Contains("Configuration synchronization required", syncDiagnostics.Reasons);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AuthenticationEligibilityRequiresBothApiAndGitReadinessForTheExactRepository()
     {
@@ -2553,6 +2665,8 @@ public sealed class CodexServerTests
         Assert.False(WorkerEligibility.Evaluate(required, ready.Select(capability => capability with { Scope = "team/other" })).IsEligible);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectEligibilityRequiresCodexAgentReadiness()
     {
@@ -2568,6 +2682,8 @@ public sealed class CodexServerTests
         Assert.True(WorkerEligibility.Evaluate(requirements, [.. repositoryReady, new WorkerCapability("agent-provider", "codex")]).IsEligible);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AssignmentSkipsIncompatibleWorkersKeepsWorkQueuedAndReevaluatesUpdatedCapabilities()
     {
@@ -2626,6 +2742,8 @@ public sealed class CodexServerTests
         Assert.Equal(workerId, updatedWorkerAssignment.WorkerId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AssignmentReevaluatesCurrentRevisionWithoutLocalProjects()
     {
@@ -2656,6 +2774,8 @@ public sealed class CodexServerTests
         Assert.NotNull(assignment.Lease);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2711,6 +2831,8 @@ public sealed class CodexServerTests
         { IntegrationRecoveries = [new(project.Id, queued.Id, localId, new string('b', 40), "Codex")] })).HasWork);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryAssignmentsAreNodeBoundIdempotentAndExhaustedBaseDoesNotRearmAfterRestart()
     {
@@ -2763,6 +2885,8 @@ public sealed class CodexServerTests
         Assert.Equal("LeaseExpiredUncertain", rows.Single(entry => entry.Id == rearmed.ServerExecutionId).RecoveryState);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -2808,6 +2932,8 @@ public sealed class CodexServerTests
         Assert.Contains("ownership metadata", Assert.Single(retained.ManagedEligibilityReasons!));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerSchedulingPolicyPersistsAndDrainPreservesActiveLeaseAndLifecycleObservations()
     {
@@ -2866,6 +2992,8 @@ public sealed class CodexServerTests
         Assert.Equal(second.Id, enabledAssignment.ServerExecutionId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WorkerApiTokenRevocationIsPersistentAndSeparateFromCredentialDeliveryAuthorization()
     {
@@ -2899,6 +3027,8 @@ public sealed class CodexServerTests
         Assert.Equal("revoked", (await restarted.GetWorkerAsync(workerId))!.AuthenticationCredentialStatus);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalWorkerAdministrationCliPersistsSchedulingChanges()
     {
@@ -2934,6 +3064,8 @@ public sealed class CodexServerTests
         Assert.Equal("active", projection.RootElement.GetProperty("credentialDeliveryAuthorization").GetProperty("status").GetString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RegistryUpgradeDefaultsExistingWorkersToEnabledScheduling()
     {
@@ -2963,6 +3095,8 @@ public sealed class CodexServerTests
         Assert.Equal("eligible", (await upgraded.GetExecutionAsync(execution.Id))!.ManagedEligibilityState);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExecutionQueuePersistsFifoWorkerReportsAndAllowsLaterAttemptsAcrossProjects()
     {
@@ -3031,6 +3165,8 @@ public sealed class CodexServerTests
         Assert.Equal(started.AddMinutes(2), persisted[0].CompletedAtUtc);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedWorkReferencesAreCanonicalPositiveGitHubIssuesAndRemainUniqueAcrossAliasesAndRestart()
     {
@@ -3080,6 +3216,8 @@ public sealed class CodexServerTests
             project.Id, new WorkReference("issue", "42"))));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExecutionAdministrationFiltersDetailsCancelsOnlyQueuedWorkAndPersistsAcrossRestart()
     {
@@ -3116,6 +3254,8 @@ public sealed class CodexServerTests
         Assert.Equal(2, (await restarted.ListExecutionsAsync(new ExecutionQuery(ProjectId: project.Id, Limit: 100))).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AssignmentLeaseIsExclusiveDurableAndReleasedOnTerminalReport()
     {
@@ -3168,6 +3308,8 @@ public sealed class CodexServerTests
         Assert.Equal(1L, await LeaseCountAsync(database, execution.Id));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LeaseRenewalIsGenerationAndOwnerBoundAndExpiryCreatesSafeRetry()
     {
@@ -3230,6 +3372,8 @@ public sealed class CodexServerTests
         Assert.Null(await restarted.RenewExecutionLeaseAsync(first.Id, new ExecutionLeaseRenewal(owner, lease.Generation)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExpiredLeaseReconciliationCreatesLinkedAttemptOnlyBeforeIntegrationAndIsIdempotent()
     {
@@ -3334,6 +3478,8 @@ public sealed class CodexServerTests
         return (long)(await command.ExecuteScalarAsync())!;
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task WorkerAssignmentRequestsRespectEligibilityCapacityAndRetainOwnershipAfterRestart()
     {
@@ -3462,6 +3608,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ExecutionQueueApiRequiresManagementTokenAndReturnsStructuredRequests()
     {
@@ -3520,6 +3668,8 @@ public sealed class CodexServerTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("file:///tmp/server")]
     [InlineData("http://user:pass@127.0.0.1:5090")]
@@ -3531,12 +3681,16 @@ public sealed class CodexServerTests
         await Assert.ThrowsAsync<InvalidDataException>(() => ServerApplication.BuildAsync(Args(listenUrl, Path.Combine(temporary.Path, "server.db"))));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyPersistenceLocationIsRejected()
     {
         await Assert.ThrowsAsync<InvalidDataException>(() => ServerApplication.BuildAsync(["--Server:ListenUrl=http://127.0.0.1:5090", "--Server:DatabasePath="]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyDataDirectoryIsRejected()
     {

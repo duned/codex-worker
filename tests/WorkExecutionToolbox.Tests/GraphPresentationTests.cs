@@ -4,6 +4,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed partial class ToolboxCommandTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphHierarchyShowsCompactChildAndRootPrerequisites()
     {
@@ -24,6 +26,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain(" blocks ", output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphDependencyBranchesIncludeBlockersAndDependentsWithTheirHierarchy()
     {
@@ -44,6 +48,8 @@ public sealed partial class ToolboxCommandTests
             """, output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphSharedNodesUseReferencesWithoutRepeatingMetadata()
     {
@@ -55,6 +61,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal(1, output.Split("Task 12", StringSplitOptions.None).Length - 1);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphHierarchyAndDependencyCyclesRemainDistinctAndTerminate()
     {
@@ -68,6 +76,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal(1, output.Split("Task 9", StringSplitOptions.None).Length - 1);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphSingleRootAndDepthTruncationAreExplicit()
     {
@@ -78,6 +88,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain("Related branches", output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphOrderingIsIndependentOfProviderNodeAndEdgeOrder()
     {
@@ -93,6 +105,8 @@ public sealed partial class ToolboxCommandTests
         }));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphRootlessRelatedCycleAndUnmarkedHierarchyCycleAreSafe()
     {
@@ -102,6 +116,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Contains("    └── #1 (cycle reference)", output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphSanitizesHumanTitlesAndPreservesJsonGraphContract()
     {

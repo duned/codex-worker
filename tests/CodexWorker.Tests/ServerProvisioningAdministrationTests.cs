@@ -7,6 +7,8 @@ using Microsoft.Extensions.Logging;
 
 public sealed class ServerProvisioningAdministrationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalGitHubLoginRemainsDiscoverableFromSeparateCliUntilAuthenticationCompletes()
     {
@@ -63,6 +65,8 @@ public sealed class ServerProvisioningAdministrationTests
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await executor.ExecuteAsync(runningCheck, true)).Status);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task EnabledLocalPolicyDispatchesExplicitGithubInstallThroughProvisioningExecutor()
     {
@@ -111,6 +115,8 @@ public sealed class ServerProvisioningAdministrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalElevationPolicyStillDeniesExplicitlyElevatedInstallWhenDisabled()
     {
@@ -147,6 +153,8 @@ public sealed class ServerProvisioningAdministrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalProvisioningLogsSanitizedFailureDetails()
     {
@@ -182,6 +190,8 @@ public sealed class ServerProvisioningAdministrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalCliPreservesMixedPlanAndTypedHistoryAndSupportsCancellationAndQuiescenceReconciliation()
     {
@@ -259,6 +269,8 @@ public sealed class ServerProvisioningAdministrationTests
         Assert.Equal("Pending", (await registry.GetProvisioningPlanAsync(plan.Id))?.State);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WorkerDiagnosticsReportTheLatestProvisioningSourceWithoutChangingProjectReadinessReasons()
     {

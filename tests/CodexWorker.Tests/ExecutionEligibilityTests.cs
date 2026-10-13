@@ -7,6 +7,9 @@ namespace CodexWorker.Tests;
 
 public sealed class ExecutionEligibilityTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(null, false)]
     [InlineData("9.0.1", false)]
@@ -22,6 +25,9 @@ public sealed class ExecutionEligibilityTests
         if (!eligible) Assert.Contains("requires .NET >=10", Assert.Single(result.MissingRequirements), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void VersionMatchingAcceptsAnyCompatibleInstalledVersion()
     {
@@ -29,6 +35,9 @@ public sealed class ExecutionEligibilityTests
             [new WorkerCapabilityContract("runtime", "dotnet", "9"), new WorkerCapabilityContract("runtime", "dotnet", "10")]).IsEligible);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("github-cli", "authentication-required")]
     [InlineData("codex-cli", "authentication-required")]
@@ -44,6 +53,9 @@ public sealed class ExecutionEligibilityTests
         Assert.True(CapabilityEligibility.Evaluate([], [], ReadyInventory()).IsEligible);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("github-api")]
     [InlineData("git-repository")]
@@ -64,6 +76,9 @@ public sealed class ExecutionEligibilityTests
             ReadyInventory()).IsEligible);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void MissingCapabilitiesPreventReservationsAndRestorationAllowsCleanRetry()
     {
@@ -88,6 +103,9 @@ public sealed class ExecutionEligibilityTests
         Assert.Null(registry.Get("Project")?.UnavailableReason);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("disabled")]
     [InlineData("draining")]
@@ -113,6 +131,9 @@ public sealed class ExecutionEligibilityTests
         Assert.Equal(0, registry.WorkerActiveExecutionCount);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void EligibilityMustMatchTheRegisteredConfiguration()
     {
@@ -126,6 +147,8 @@ public sealed class ExecutionEligibilityTests
         registry.Release("Project");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AssignmentRefusalRecordsTerminalPreparationFailureAndReportsOwnedGeneration()
     {

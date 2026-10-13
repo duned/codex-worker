@@ -4,6 +4,9 @@ namespace CodexWorker.Tests;
 
 public sealed class ProjectRuntimeRegistryTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -25,6 +28,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void LifecycleTransitionsAreIdempotentAndDrainCompletesWhenLastExecutionReleases()
     {
@@ -47,6 +53,9 @@ public sealed class ProjectRuntimeRegistryTests
         Assert.Equal(1, events.ReadRecent().Count(x => x.Type == "project.drain.completed"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void UnavailableProjectCannotBeReservedWhileIndependentProjectRemainsSchedulable()
     {
@@ -65,6 +74,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("beta");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void IdleWorkerDrainImmediatelyUpdatesTheAuthoritativeLifecycle()
     {
@@ -83,6 +95,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void WorkerDrainBlocksAllProjectsAndCompletesAfterReservationsRelease()
     {
@@ -100,6 +115,9 @@ public sealed class ProjectRuntimeRegistryTests
         Assert.Equal(0, registry.Lifecycle.Snapshot.ActiveExecutions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void InvalidReplacementPreservesSnapshotAndValidReplacementIsAtomic()
     {
@@ -113,6 +131,9 @@ public sealed class ProjectRuntimeRegistryTests
         Assert.Same(replacement, registry.Snapshot().Single().Configuration);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ActiveExecutionPreventsChangingRepositoryOrCheckoutButKeepsOldConfiguration()
     {
@@ -124,6 +145,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ActiveExecutionsKeepTheOldConfigurationWhileReplacementBecomesCurrent()
     {
@@ -140,6 +164,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ReservationFailsWhenTheSchedulerHasAStaleConfigurationSnapshot()
     {
@@ -152,6 +179,9 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void MaintenanceRequiresDrainAndPinsDrainAndConfigurationUntilReleased()
     {

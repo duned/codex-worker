@@ -5,6 +5,8 @@ using CodexWorker;
 
 public sealed class WorkerAdministrationIntegrationTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git")]
     [InlineData("github-cli")]
@@ -47,6 +49,8 @@ public sealed class WorkerAdministrationIntegrationTests
         Assert.True(CapabilityCatalog.ExecutionReadiness(await discovery.GetAsync()).Available);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git")]
     [InlineData("github-cli")]

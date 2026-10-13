@@ -4,6 +4,8 @@ Requires the .NET 10 SDK. From the repository root run `dotnet restore CodexWork
 
 The [test-suite audit](test-suite-audit-28.2.md) records the reduction baseline, retained safety coverage and timing method. The [documentation inventory](documentation-inventory.md) records the combined review and local validation limitations.
 
+The [validation runtime profile](test-runtime-profile-28.3.md) separates restore/build/discovery/execution costs and documents `TestType`, measured `Duration`, and the independent `ValidationProfile=FastCandidate` xUnit filters. Use its exact-count helper for focused runs so an empty filter cannot appear green. The required full validation gate remains unchanged.
+
 ## Local developer operations
 
 From the repository root, `./cw --help` lists the repository and local development Worker commands. The helper is repository-local. You can optionally expose it through a PATH directory:

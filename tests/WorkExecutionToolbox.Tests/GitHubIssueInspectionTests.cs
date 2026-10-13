@@ -6,6 +6,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed class GitHubIssueInspectionTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DirectRelationshipsImplementExistingContractAndKeepHumanMetadata()
     {
@@ -28,6 +30,8 @@ public sealed class GitHubIssueInspectionTests
         AssertSafe(result);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MixedGraphExpandsBothDirectionsAndSharedReferencesOnce()
     {
@@ -51,6 +55,8 @@ public sealed class GitHubIssueInspectionTests
         AssertSafe(graph);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -78,6 +84,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(15, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("parent")]
     [InlineData("children")]
@@ -102,6 +110,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Contains("inconsistent", error.Message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -116,6 +126,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0, 1, true)]
     [InlineData(1, 2, true)]
@@ -133,6 +145,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(count * 5, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("issues", 5)]
     [InlineData("requests", 3)]
@@ -154,6 +168,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(expectedRequests, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("sub_issues")]
     [InlineData("dependencies/blocked_by")]
@@ -176,6 +192,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(6, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphPaginationBoundDoesNotSilentlyReturnAnIncompleteList()
     {
@@ -189,6 +207,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(5, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphCanReadMultiplePagesBeforeApplyingDepthBound()
     {
@@ -203,6 +223,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(6, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DuplicateRelationsAcrossPagesAreRejected()
     {
@@ -216,6 +238,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(6, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("duplicate-number")]
     [InlineData("duplicate-id")]
@@ -242,6 +266,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -255,6 +281,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(2, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401, GitHubIssueFailure.Authorization)]
     [InlineData(429, GitHubIssueFailure.RateLimited)]
@@ -270,6 +298,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.DoesNotContain("secret-response", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationPropagatesDuringTraversal()
     {
@@ -287,6 +317,8 @@ public sealed class GitHubIssueInspectionTests
         Assert.Equal(6, handler.Paths.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidOptionsFailBeforeHttpOrCredentials()
     {
@@ -303,6 +335,8 @@ public sealed class GitHubIssueInspectionTests
             await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => provider.GetGraphAsync(Issue(1), options));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task WarmRelationshipSetsStillEnforceGraphPaginationLimits()
     {

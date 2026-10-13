@@ -8,6 +8,8 @@ public sealed class CodexQuotaTests
 {
     private static JsonElement Json(string text) => JsonDocument.Parse(text).RootElement.Clone();
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("primary", "secondary")]
     [InlineData("secondary", "primary")]
@@ -24,6 +26,8 @@ public sealed class CodexQuotaTests
         Assert.Equal("unavailable (stale)", observation.Summary(now.AddMinutes(3)));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("null")]
     [InlineData("{}")]
@@ -33,6 +37,8 @@ public sealed class CodexQuotaTests
         Assert.Empty(result.Windows);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("-1")]
     [InlineData("101")]
@@ -46,6 +52,8 @@ public sealed class CodexQuotaTests
         Assert.Equal("5h: unavailable · weekly: unavailable", result.Summary(now));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(300, "5h: 90% remaining", "weekly: unavailable")]
     [InlineData(10080, "weekly: 90% remaining", "5h: unavailable")]
@@ -59,6 +67,8 @@ public sealed class CodexQuotaTests
         Assert.Contains(absent, result.Summary(now));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProtocolInitializesBeforeReadAndOmitsSensitiveFields()
     {
@@ -72,6 +82,8 @@ public sealed class CodexQuotaTests
         Assert.Contains("\"method\":\"initialized\"", sent);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConcurrentReadsReuseLocalObservation()
     {
@@ -85,6 +97,8 @@ public sealed class CodexQuotaTests
         Assert.All(results, observation => Assert.Same(results[0], observation));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false, "query failed")]
     [InlineData(true, "timeout")]
@@ -96,6 +110,8 @@ public sealed class CodexQuotaTests
         Assert.Empty(result.Windows);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDoesNotThrow()
     {
@@ -107,6 +123,8 @@ public sealed class CodexQuotaTests
         Assert.Equal(0, transport.Calls);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void JournalAndNotificationIncludeContextWithoutAccountFields()
     {
@@ -123,6 +141,8 @@ public sealed class CodexQuotaTests
         Assert.Equal("", Worker.QuotaNotification(report with { QuotaAtEnd = new(now, "query failed", []) }));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"id\":1,\"error\":{\"message\":\"auth private\"}}\n")]
     [InlineData("{\"id\":1,\"result\":{}}\n{\"id\":2,\"error\":{\"code\":-32601}}\n")]
@@ -136,6 +156,8 @@ public sealed class CodexQuotaTests
         Assert.DoesNotContain("private", error.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OperationalSinkSharingStdoutEmitsOnceForInterleavedExecutions()
     {
@@ -164,6 +186,8 @@ public sealed class CodexQuotaTests
         Assert.Contains(ExecutionFormatting.ShortId(second.ExecutionId), events[2]);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -197,6 +221,8 @@ public sealed class CodexQuotaTests
         Assert.DoesNotContain("\u001b[90m", lines[5]);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CompactFormattingPreservesUnknownAndStaleLimits()
     {

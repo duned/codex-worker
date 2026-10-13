@@ -6,6 +6,8 @@ using System.Text.Json;
 
 public sealed class NodeGitHubSetupTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("owner/repository", true)]
     [InlineData("owner/repository.git", true)]
@@ -21,6 +23,8 @@ public sealed class NodeGitHubSetupTests
         Assert.False(ProvisioningCommandProtocol.Supported(new("server", "github-cli", ProvisioningCommandAction.GenerateSshKey)));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("prepareauthentication")]
     [InlineData("generatesshkey")]
@@ -36,6 +40,8 @@ public sealed class NodeGitHubSetupTests
         Assert.True(CapabilityCatalog.ValidInventory([state]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task KeyLifecycleExportsOnlyPublicIdentityAndRequiresExplicitReplacement()
     {
@@ -65,6 +71,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await setup.ExecuteAsync(Request(ProvisioningCommandAction.GenerateSshKey), CancellationToken.None)).Status);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CleanHostInspectionAndRepositoryReadNeedNoSshDirectoryOrGitIdentity()
     {
@@ -95,6 +103,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(node.Root, "ssh")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RepositoryReadFailureIsVerificationFailureAndProcessStartFailureRemainsTyped()
     {
@@ -119,6 +129,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Equal(ProvisioningFailureCode.ExecutableNotFound, startFailure.FailureDetail?.Code);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task KeysWithUnknownOwnershipBadPermissionsOrMismatchedPairsArePreserved()
     {
@@ -137,6 +149,8 @@ public sealed class NodeGitHubSetupTests
         Assert.True(File.Exists(node.Key));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AuthenticationLogoutTouchesOnlyProductFilesAndRejectsLinkedPaths()
     {
@@ -159,6 +173,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Equal(2, node.Calls.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SetupRefusesUnrelatedAuthenticationBeforeCreatingProductState()
     {
@@ -171,6 +187,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Empty(node.Calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GitHubLoginUsesPreparedProductDirectoryPublishesOnlyDeviceChallengeAndVerifiesStatus()
     {
@@ -206,6 +224,8 @@ public sealed class NodeGitHubSetupTests
         Assert.DoesNotContain("ABCD-1234", JsonSerializer.Serialize(login), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GitHubLoginFailureAndCancellationDoNotReportAuthenticationSuccess()
     {
@@ -234,6 +254,8 @@ public sealed class NodeGitHubSetupTests
         Assert.Equal(ProvisioningCommandStatus.Cancelled, cancelled.Status);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutorDenialCancellationAndFailureDoNotLeakOutputOrRunUnpermittedSetup()
     {
@@ -258,6 +280,8 @@ public sealed class NodeGitHubSetupTests
         Assert.DoesNotContain("private-sentinel", JsonSerializer.Serialize(report), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task StoreValidatesPublicReportsAndRetainsMetadataAcrossRestart()
     {

@@ -13,6 +13,8 @@ using System.Text.Json;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedExecutionMaintenanceTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DurableDispatchSerializesConcurrentCommandsAndNeverReplaysExpiredWork()
     {
@@ -46,6 +48,8 @@ public sealed class ManagedExecutionMaintenanceTests
         Assert.Null(await reopened.ClaimAsync(request.WorkerId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerAndWorkerChannelAuthorizesInventoryReportingRetryAndRejectsLostOwnership()
     {
@@ -124,6 +128,8 @@ public sealed class ManagedExecutionMaintenanceTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalReservationAndFreshAuthorityPreventCleanupAndCompletionReportEffects()
     {
@@ -153,6 +159,8 @@ public sealed class ManagedExecutionMaintenanceTests
         Assert.Null(await history.ReadServerReportDispositionAsync(entry.ExecutionId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RegistryAuthorityRejectsOfflineOutdatedAndExpiredLeaseWithoutInventingLocalAuthority()
     {
@@ -186,6 +194,8 @@ public sealed class ManagedExecutionMaintenanceTests
         Assert.NotEqual("Completed", (await registry.GetExecutionAsync(execution.Id))?.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -224,6 +234,8 @@ public sealed class ManagedExecutionMaintenanceTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

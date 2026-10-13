@@ -5,6 +5,9 @@ namespace CodexWorker.Tests;
 
 public sealed class AuthenticationReadinessTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task GitReadinessPreservesWrappedApplicationCancellation()
     {
@@ -14,6 +17,9 @@ public sealed class AuthenticationReadinessTests
             "owner/repo", "feature/", token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task GitReadinessChecksRemoteReadAndDryRunWriteWithoutMutation()
     {
@@ -32,6 +38,9 @@ public sealed class AuthenticationReadinessTests
         Assert.Contains("codex/auth-check-", commands[1][^1]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task MissingGitRemoteAuthenticationStopsReadinessWithoutLeakingProcessDiagnostics()
     {
@@ -48,6 +57,9 @@ public sealed class AuthenticationReadinessTests
         Assert.DoesNotContain("fake-secret", failure.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void WorkerReportsSeparateRepositoryScopedApiAndGitCapabilities()
     {
@@ -58,6 +70,9 @@ public sealed class AuthenticationReadinessTests
         Assert.Equal(new WorkerCapabilityContract("agent-provider", "codex"), WorkerAgentCapabilities.AuthenticatedProvider("Codex"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void GitHubReadinessRejectsMissingOrInsufficientIssueWritePermission()
     {
@@ -67,6 +82,9 @@ public sealed class AuthenticationReadinessTests
         GitHubClient.ValidateIssueWritePermission("{\"push\":true}", "team/repo");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("{\"pull\":true}")]
     [InlineData("{\"triage\":true,\"push\":false}")]
@@ -84,6 +102,9 @@ public sealed class AuthenticationReadinessTests
         Assert.DoesNotContain(commands, command => command.Contains("issue"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task DryRunWriteFailureIsReportedSeparatelyFromSuccessfulRead()
     {
@@ -94,6 +115,9 @@ public sealed class AuthenticationReadinessTests
         Assert.DoesNotContain("secret", failure.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task AssignedGitHubCredentialIsPassedOverStdinAndOnlySafeResultIsReturned()
     {

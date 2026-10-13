@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerCapabilityDiscoveryTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiscoversAvailableToolsAndParsesTheirVersions()
     {
@@ -30,6 +32,8 @@ public sealed class WorkerCapabilityDiscoveryTests
         Assert.Contains(capabilities, item => item.Type == "integration" && item.Name == "github-issues");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingExecutablesAreAbsentWithoutFailingDiscovery()
     {
@@ -42,6 +46,8 @@ public sealed class WorkerCapabilityDiscoveryTests
         Assert.Equal(new WorkerCapabilityContract("integration", "github-issues"), capability);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ServicePathResolutionFailuresAreUnavailableCapabilities()
     {
@@ -54,6 +60,8 @@ public sealed class WorkerCapabilityDiscoveryTests
             Assert.Single(await discovery.DiscoverAsync()));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CachedCapabilitiesRefreshAfterConfiguredInterval()
     {
@@ -70,6 +78,8 @@ public sealed class WorkerCapabilityDiscoveryTests
         Assert.Equal(14, calls);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("v20.1.2", "20.1.2")]
     [InlineData("git version 2.43.0.windows.1", "2.43.0")]

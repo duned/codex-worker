@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubRetryPolicyTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true, 3)]
     [InlineData(false, 1)]
@@ -21,6 +23,8 @@ public sealed class GitHubRetryPolicyTests
         Assert.Equal(transient ? new[] { TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60) } : [], delays);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true, 1)]
     [InlineData(false, 2)]
@@ -37,6 +41,8 @@ public sealed class GitHubRetryPolicyTests
         Assert.Equal(expectedAttempts, attempts);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnexpectedRemoteStateStopsReplay()
     {

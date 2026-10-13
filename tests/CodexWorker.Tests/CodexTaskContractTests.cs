@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexTaskContractTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void PromptMakesLocalSelfValidationBestEffortAndWorkerValidationAuthoritative()
     {
@@ -22,6 +24,8 @@ public sealed class CodexTaskContractTests
         Assert.Contains("Do not treat optional self-validation restrictions", prompt);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OutputSchemaExplainsOptionalValidationAndActualFailureSemantics()
     {
@@ -36,6 +40,8 @@ public sealed class CodexTaskContractTests
         Assert.Contains("include the command/check and the reason", checksDescription);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SuccessCanReportOptionalCheckUnavailable()
     {

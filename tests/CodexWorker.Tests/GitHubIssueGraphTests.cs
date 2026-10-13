@@ -5,6 +5,8 @@ using CodexServer;
 
 public sealed class GitHubIssueGraphTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HumanOutputShowsOperationalLabelsAndEachDependencyFromTheBlockedPerspective()
     {
@@ -28,6 +30,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Equal(1, text.Split("Blocked by:", StringSplitOptions.None).Length - 1);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphSeparatesHierarchyAndDependencyEdgesAndRendersStateAndLabels()
     {
@@ -56,6 +60,8 @@ public sealed class GitHubIssueGraphTests
             GitHubIssueGraphBuilder.RenderText(graph));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphDeduplicatesSharedNodesAndStopsDefensiveHierarchyCycles()
     {
@@ -78,6 +84,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Contains("already shown", GitHubIssueGraphBuilder.RenderText(graph), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphReportsDepthIssueAndEdgeTruncationExplicitly()
     {
@@ -106,6 +114,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Single(edgeLimited.Edges);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GraphPreservesMissingReferencesAndPropagatesReadFailures()
     {
@@ -135,6 +145,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Null(missingRoot);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task JsonGraphContractAndTextRenderingAreStable()
     {
@@ -162,6 +174,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Contains("Blocked by: #1 [open] Issue 1", GitHubIssueGraphBuilder.RenderText(graph), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependenciesExpandRecursivelyDeduplicateInverseEdgesAndDetectCycles()
     {
@@ -187,6 +201,8 @@ public sealed class GitHubIssueGraphTests
         Assert.All(graph.Nodes, node => Assert.Equal("available", node.Availability));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependencyExpansionRespectsDepthIssueAndEdgeLimits()
     {
@@ -213,6 +229,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Contains("max-edges", edges.TruncationReasons);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NestedTreeKeepsAncestorContinuationLines()
     {
@@ -231,6 +249,8 @@ public sealed class GitHubIssueGraphTests
         Assert.Contains("│   └── #5", text, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ShortestDependencyPathAllowsExpansionAndMixedRelationshipsAreNotCycles()
     {
@@ -247,6 +267,8 @@ public sealed class GitHubIssueGraphTests
         Assert.False(graph.CycleDetected);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MalformedResponsesAndCancellationAreNotConvertedToMissingNodes()
     {

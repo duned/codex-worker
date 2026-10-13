@@ -15,6 +15,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedHttpsSecurityTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData("enroll")]
     [InlineData("rotate")]

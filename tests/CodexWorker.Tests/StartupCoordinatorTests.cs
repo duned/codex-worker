@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class StartupCoordinatorTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task HostMapsPreOperationalCheckoutFailureToStartupExitCode()
     {
@@ -34,6 +36,8 @@ public sealed class StartupCoordinatorTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidFirstProjectPreventsEveryLabelOperation()
     {
@@ -47,6 +51,8 @@ public sealed class StartupCoordinatorTests
         Assert.Equal(new[] { "validate:A" }, events);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ValidFirstAndInvalidSecondProjectCreateNoLabelsAnywhere()
     {
@@ -61,6 +67,8 @@ public sealed class StartupCoordinatorTests
         Assert.DoesNotContain(events, x => x.StartsWith("create:", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StartupValidationDegradesOnlyTheProjectWithAnInvalidCheckout()
     {
@@ -77,6 +85,8 @@ public sealed class StartupCoordinatorTests
         Assert.Equal(new[] { "validate:A", "validate:B", "capabilities:B", "query:B", "create:B:b-ready", "initialize:B" }, events);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AllReadOnlyValidationFinishesBeforeLabelQueriesAndCreation()
     {
@@ -97,6 +107,8 @@ public sealed class StartupCoordinatorTests
         }, events);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LabelDiscoveryFailureStopsBeforeAnyCreationInitializationPreflightOrQueueWork()
     {
@@ -119,6 +131,8 @@ public sealed class StartupCoordinatorTests
         Assert.DoesNotContain(events, x => x.StartsWith("initialize:", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GitHubCapabilityFailureStopsBeforeLabelsCodexPreflightAndQueueAccess()
     {
@@ -134,6 +148,8 @@ public sealed class StartupCoordinatorTests
             item.StartsWith("create:", StringComparison.Ordinal) || item.StartsWith("initialize:", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LabelCreationFailureIsFatalAndStopsBeforeInitialization()
     {
@@ -148,6 +164,8 @@ public sealed class StartupCoordinatorTests
         Assert.DoesNotContain(events, x => x.StartsWith("initialize:", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringLabelMutationIsWrappedAsUncertainInfrastructureFailure()
     {
@@ -158,6 +176,8 @@ public sealed class StartupCoordinatorTests
         Assert.IsType<OperationCanceledException>(failure.InnerException);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("capabilities")]
     [InlineData("query")]

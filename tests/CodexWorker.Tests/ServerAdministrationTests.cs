@@ -5,6 +5,8 @@ using System.Text.Json;
 
 public sealed class ServerAdministrationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ConfigurationAdministrationUsesServerConfigurationPrecedenceAndRedactsSensitiveValues()
     {
@@ -25,6 +27,8 @@ public sealed class ServerAdministrationTests
         Assert.Equal("http://127.0.0.1:5090", result.Document.ListenUrl);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalStatusAndDiagnosticsUseRegistryServicesAndKeepReadinessMeaningExplicit()
     {
@@ -51,6 +55,8 @@ public sealed class ServerAdministrationTests
         Assert.Contains(diagnostics.Notes, note => note.Contains("project eligibility", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingLocalDatabaseReturnsUnhealthyWithoutCreatingIt()
     {
@@ -70,6 +76,8 @@ public sealed class ServerAdministrationTests
         Assert.NotNull(diagnostics.Diagnostic);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CliProducesVersionedJsonAndStableFailureExitCodes()
     {
@@ -102,6 +110,8 @@ public sealed class ServerAdministrationTests
             await cli.RunAsync(["status", "--json", $"--Server:DataDirectory={temporary.Path}"]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConfigShowAndValidateAreOfflineAndDoNotExposeCredentialsOrPaths()
     {
@@ -127,6 +137,8 @@ public sealed class ServerAdministrationTests
         Assert.Equal(0, factory.CreateCalls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CliMapsCancellationToItsStableCanceledExitCode()
     {
@@ -139,6 +151,8 @@ public sealed class ServerAdministrationTests
             ["status", $"--Server:DataDirectory={temporary.Path}"], new CancellationToken(canceled: true)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ProjectsCliUsesCentralContractsForCrudLifecycleAndConflictDiagnostics()
     {
@@ -221,6 +235,8 @@ public sealed class ServerAdministrationTests
         Assert.True(deletedJson.RootElement.GetProperty("deleted").GetBoolean());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExecutionsCliListsDetailsFiltersAndCancelsQueuedWorkFromLocalRegistry()
     {

@@ -5,6 +5,8 @@ using System.Text.Json;
 
 public sealed class ManagedGitHubIssueDiscoveryTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiscoveryPagesUseConfiguredLabelIssueConnectionAndContinuation()
     {
@@ -33,6 +35,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         });
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FullTerminalPageIsCompleteAndUnconfiguredLabelAddsNoFilter()
     {
@@ -46,6 +50,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         Assert.Null(result.NextCursor);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0, null)]
     [InlineData(101, null)]
@@ -57,6 +63,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         await Assert.ThrowsAsync<InvalidDataException>(() => service.ListDiscoveryIssueNumbersAsync(Project(), new(limit, after), CancellationToken.None));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"data\":{\"repository\":null}}")]
     [InlineData("{\"data\":{\"repository\":{\"issues\":{\"nodes\":[{\"number\":1,\"url\":\"https://github.com/other/project/issues/1\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}")]
@@ -70,6 +78,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         Assert.Equal("invalid-response", error.Code);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NonAdvancingCursorAndOversizedPageAreRejected()
     {
@@ -78,6 +88,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         await Assert.ThrowsAsync<GitHubReadUnavailableException>(() => service.ListDiscoveryIssueNumbersAsync(Project(), new(1), CancellationToken.None));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("Bad credentials (HTTP 401)", "authentication-failed")]
     [InlineData("To get started with GitHub CLI, please run: gh auth login", "authentication-failed")]
@@ -92,6 +104,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         Assert.DoesNotContain("private-token", error.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("RATE_LIMITED", "rate-limited")]
     [InlineData("UNAUTHORIZED", "authentication-failed")]
@@ -106,6 +120,8 @@ public sealed class ManagedGitHubIssueDiscoveryTests
         Assert.DoesNotContain("private-token", error.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationIsPropagatedAndUnavailableTransportIsNotIneligibility()
     {

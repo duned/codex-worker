@@ -1,0 +1,115 @@
+{
+  "measured_at_utc": "2026-10-13",
+  "host": {
+    "cpu": "AMD EPYC 7763",
+    "logical_cpus": 2,
+    "os": "Ubuntu 24.04 x64",
+    "sdk": "10.0.112",
+    "runtime": "10.0.12",
+    "vstest": "18.0.2",
+    "xunit": "2.9.3",
+    "adapter": "3.1.4",
+    "configuration": "Debug/net10.0"
+  },
+  "commands": {
+    "restore": "dotnet restore CodexWorker.sln -m:1 --disable-parallel",
+    "build": "dotnet build CodexWorker.sln --no-restore -m:1",
+    "baseline": "dotnet test CodexWorker.sln --no-build --no-restore -m:1 --logger trx --results-directory /tmp/issue-373-baseline --blame-hang-timeout 60s --blame-hang-dump-type none",
+    "discovery": "dotnet test CodexWorker.sln --no-build --no-restore -m:1 --list-tests"
+  },
+  "wall_seconds": {
+    "restore": 8.28,
+    "clean_checkout_build": 67.82,
+    "unchanged_build": 30.59,
+    "baseline_test": 315.05,
+    "solution_discovery": 4.4,
+    "worker_discovery": 2.92,
+    "toolbox_discovery": 1.71,
+    "metadata_rebuild": 49.07
+  },
+  "projects": [
+    {
+      "project": "CodexWorker.Tests",
+      "cases": 1816,
+      "session_seconds": 302.704759,
+      "active_case_interval_union_seconds": 299.05487200000067,
+      "case_duration_sum_seconds": 344.5001248,
+      "session_outside_case_intervals_seconds": 3.649886999999353
+    },
+    {
+      "project": "WorkExecutionToolbox.Tests",
+      "cases": 269,
+      "session_seconds": 10.598209,
+      "active_case_interval_union_seconds": 8.23894,
+      "case_duration_sum_seconds": 16.1882393,
+      "session_outside_case_intervals_seconds": 2.359269000000001
+    }
+  ],
+  "case_duration_percentiles_seconds": {
+    "p50": 0.0034313,
+    "p75": 0.0860726,
+    "p90": 0.3032941,
+    "p95": 0.4551038,
+    "p99": 4.3299285,
+    "max": 18.4192682
+  },
+  "method_bucket_rule": "Maximum baseline row duration: Fast < 0.1 seconds; Medium >= 0.1 and < 1; Slow >= 1.",
+  "test_count": 2085,
+  "method_count": 1170,
+  "notes": [
+    "Single baseline; no statistical claim or performance change from metadata.",
+    "Cold checkout build includes npm ci; package caches/feeds are not a controlled cold-cache benchmark.",
+    "Per-case duration sums overlap. Interval union is observed active case time, not pure assertion CPU time.",
+    "Raw TRX and logs remain local; committed CSV omits parameter values and test output."
+  ],
+  "filter_verification": [
+    {
+      "filter": "TestType=Unit",
+      "expected_cases": 358,
+      "passed_cases": 358,
+      "wall_seconds": 8.266
+    },
+    {
+      "filter": "TestType=Component",
+      "expected_cases": 797,
+      "passed_cases": 797,
+      "wall_seconds": 12.301
+    },
+    {
+      "filter": "TestType=Integration&FullyQualifiedName~LocalRepositoryDiscoveryTests",
+      "expected_cases": 4,
+      "passed_cases": 4,
+      "wall_seconds": 6.393
+    },
+    {
+      "filter": "Duration=Fast",
+      "expected_cases": 1562,
+      "passed_cases": 1562,
+      "wall_seconds": 22.846
+    },
+    {
+      "filter": "Duration=Medium&FullyQualifiedName~GitWorktreeTests.ExecutionWorktreeIsIsolatedAndRemovedAfterTaskFailureCleanup",
+      "expected_cases": 1,
+      "passed_cases": 1,
+      "wall_seconds": 7.457
+    },
+    {
+      "filter": "Duration=Slow&FullyQualifiedName~ProvisioningCommandTests.DeadlineCancelsRunningHandler",
+      "expected_cases": 1,
+      "passed_cases": 1,
+      "wall_seconds": 6.301
+    },
+    {
+      "filter": "ValidationProfile=FastCandidate",
+      "expected_cases": 86,
+      "passed_cases": 86,
+      "wall_seconds": 9.021
+    }
+  ],
+  "negative_filter_verification": {
+    "filter": "Duration=Typo",
+    "expected_cases": 1,
+    "observed_cases": 0,
+    "helper_exit_code": 1
+  }
+}

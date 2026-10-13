@@ -11,6 +11,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : IClassFixture<GitWorktreeTests.RepositorySeed>
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -70,6 +72,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(entry.CommitSha, await fixture.Git("rev-parse", $"refs/heads/{result.CompletedBranch}"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("missing")]
     [InlineData("malformed")]
@@ -92,6 +96,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => git.VerifyRemoteIntegrationAsync(entry, CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IndependentlyAdvancedRemoteWithoutExpectedCommitDoesNotAuthorizeCompletion()
     {
@@ -113,6 +119,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(expected, await fixture.GitAt(workspace, "rev-parse", "HEAD"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("execution")]
     [InlineData("issue")]
@@ -145,6 +153,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(info.BaseCommit, await fixture.GitAt(workspace, "rev-parse", "HEAD"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -198,6 +208,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.NotNull(await history.ReadArchiveAuditAsync(id));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LegacyReviewRestartAggregatesWarningsAndRetainsOriginalHistory()
     {
@@ -242,6 +254,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Null(await reopened.ReadArchiveAuditAsync(progressed.ExecutionId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -341,6 +355,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             throw new InvalidOperationException("No repair expected.");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RestartReconcilesIncompleteImplementationWithoutDiscardingChangesOrResettingBudget()
     {
@@ -377,6 +393,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("preserved after abrupt exit", await File.ReadAllTextAsync(Path.Combine(workspace, "partial.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task HostStaysOnlineAfterCodexInterruptionAndPreservesActiveSiblingOnShutdown()
     {
@@ -497,6 +515,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         public Task ValidateAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CodexInterruptionUsesSameWorkspaceAfterRestartAndPreservesAdvancedMain()
     {
@@ -541,6 +561,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("continued implementation", await File.ReadAllTextAsync(Path.Combine(fixture.Checkout, "finished.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task ExecutionWorktreeIsIsolatedAndRemovedAfterTaskFailureCleanup()
     {
@@ -568,6 +591,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedExecutionWithChangesRetainsOwnedWorktreeAndNeverIntegratesOrPushes()
     {
@@ -591,6 +616,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains($"worktree {directory}", await fixture.Git("worktree", "list", "--porcelain"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedExecutionWithoutChangesRemovesWorktreeAndBranch()
     {
@@ -608,6 +635,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RetryResumeCopiesVerifiedPartialFilesIntoNewOwnedWorktree()
     {
@@ -637,6 +666,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         await retry.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RetryResumeReappliesOnlyPreservedDeltaOnAdvancedBaseBeforeIntegration()
     {
@@ -688,6 +719,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("recovered task change", await File.ReadAllTextAsync(Path.Combine(originalDirectory, "task.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RetryResumeConflictStopsAndPreservesOriginalRecoveryWorkspace()
     {
@@ -716,6 +749,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.DoesNotContain("retry-2", await fixture.Git("branch", "--list"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RetryRestartUsesCurrentBaseWithoutCopyingPreviousPartialFiles()
     {
@@ -737,6 +772,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         await retry.DiscardUncommittedIssueChangesAsync(CancellationToken.None);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("ignored", false)]
     [InlineData("unignored", true)]
@@ -793,6 +830,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.True(Directory.Exists(workspace));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ResumeRejectsMissingOrUnsafePersistedRecoveryMetadata()
     {
@@ -815,6 +854,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.True(Directory.Exists(Path.Combine(fixture.WorktreeRoot, firstId.ToString("N"))));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExistingHistoricalNumberFirstBranchDoesNotBlockOrGetRemovedWithNewExecution()
     {
@@ -832,6 +873,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/example-task-17"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SuccessfulIntegrationCommitsFromWorktreeAndPreservesFeatureBranch()
     {
@@ -854,6 +897,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("implementation", await fixture.Git("show", "feature/example-task-17:implemented.txt"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AutoMergeFastForwardsWithoutMergeCommitAndPreservesCompletedBranch()
     {
@@ -875,6 +920,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     // Investigation baseline: a local remote can observe ref transactions, but
     // cannot reproduce GitHub's asynchronous Issue timeline indexing.
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(1, false, true)]
     [InlineData(2, true, true)]
@@ -935,6 +982,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task HistoricalMergeSequencePublishesImplementationWithBaseBeforeCompletedRef()
     {
@@ -972,6 +1021,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(result.CommitSha, (await fixture.Git("ls-remote", "origin", $"refs/heads/{completed}")).Split('\t')[0]);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ReopenedIssueArchivesEachExecutionWithoutReplacingHistoricalCompletedBranches()
     {
@@ -1000,6 +1051,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExistingLocalAndRemoteRetryCompletionRefsArePreservedAndExecutionGetsUniqueName()
     {
@@ -1026,6 +1079,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("new implementation", await fixture.Git("show", $"{unique}:retry-implementation.txt"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AdvancedBaseRebasesFeatureValidatesAndFastForwardsFeatureCommit()
     {
@@ -1053,6 +1108,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains(featureCommit, await fixture.Git("rev-list", "main"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BaseAdvanceDuringValidationReconcilesAgainWithoutMergeCommit()
     {
@@ -1083,6 +1140,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RebaseConflictStopsBeforeFastForwardAndPreservesExecutionWorktree()
     {
@@ -1109,6 +1168,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.False(Directory.Exists(Path.GetFullPath(rebaseApply, executionDirectory)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FreshAttemptAfterConflictUsesCurrentMainAndLeavesOldWorktreeUntouched()
     {
@@ -1138,6 +1199,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains($"worktree {oldDirectory}", await fixture.Git("worktree", "list", "--porcelain"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IntegrationRecoveryReusesPreservedImplementationAndValidatesBeforeCompleting()
     {
@@ -1181,6 +1244,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.False(Directory.Exists(directory));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LegacyIntegrationConflictUsesPersistedCommitWhenRecoveryStateIsMissing()
     {
@@ -1209,6 +1274,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("feature/example-task-17", await fixture.GitAt(directory, "branch", "--show-current"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LegacyIntegrationConflictIsRejectedWhenPreservedWorktreeIsMissing()
     {
@@ -1226,6 +1293,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains("missing", reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CodexResolvedRebaseConflictContinuesAndValidatesBeforeIntegration()
     {
@@ -1258,6 +1327,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.True(result.HasChanges);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedValidationAfterRebaseStopsBeforeIntegration()
     {
@@ -1280,6 +1351,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.True(Directory.Exists(git.ExecutionDirectory));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DistinctExecutionsUseDistinctDirectoriesAndOccupiedPathsArePreserved()
     {
@@ -1302,6 +1375,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SimultaneousCleanupRemovesOnlyEachExecutionAndKeepsGitMetadataValid()
     {
@@ -1331,6 +1406,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(string.Empty, await fixture.Git("branch", "--list", "feature/second-task-18"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PreservingOneFailedExecutionLeavesConcurrentExecutionUntouched()
     {
@@ -1358,6 +1435,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains($"worktree {activeDirectory}", worktrees);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SimultaneousSuccessfulIntegrationsCleanOnlyTheirOwnWorktrees()
     {
@@ -1390,6 +1469,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("second", await fixture.Git("show", "feature/second-task-18:second.txt"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task CancellationBeforeCleanupPreservesThisAndOtherExecutionWorkspaces()
     {
@@ -1414,6 +1496,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains(secondDirectory, await fixture.Git("worktree", "list", "--porcelain"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnexpectedWorktreeBranchPreservesExecutionState()
     {
@@ -1431,6 +1515,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("keep for inspection", await File.ReadAllTextAsync(Path.Combine(executionDirectory, "diagnostic.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("active", "active", "execution-active")]
     [InlineData("dirty", "keep", "recovery-changes-required")]
@@ -1562,6 +1648,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(result, await git.InspectCleanupAsync(entry, history, CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryCleanupRemovesOnlyThePersistedWorkerOwnedWorkspaceAndBranch()
     {
@@ -1590,6 +1678,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("main", await fixture.Git("branch", "--show-current"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryCleanupRefusesBranchNotMatchingExecutionIdentity()
     {
@@ -1610,6 +1700,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Contains(id.ToString("N"), await fixture.Git("worktree", "list", "--porcelain"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PostRebaseValidationDoesNotRetryWhenSourceChanges()
     {
@@ -1632,6 +1724,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.DoesNotContain("implemented.txt", await fixture.Git("ls-tree", "-r", "--name-only", "main"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1677,6 +1771,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(2, attempts);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1761,6 +1857,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(0, registry.Get("sample")!.ActiveExecutionCount);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ShutdownDuringCodexPreservesRealWorkspaceAndRestartContinuesIt()
     {
@@ -1817,6 +1915,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(interrupted.ExecutionId, retry.Report.RetryOfExecutionId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(true, false, false)]
     [InlineData(false, false, false)]
@@ -1949,6 +2049,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1985,6 +2087,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(string.Empty, await fixture.GitAt(workspace, "status", "--porcelain"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("history")]
     [InlineData("validation")]
@@ -2030,6 +2134,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         else Assert.Contains(violation == "history" ? "changed Git history" : violation == "validation" ? "source changed" : "authority was lost", error.Message);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CancellationDuringIntegrationRepairPreservesWorkAndNeverIntegrates()
     {
@@ -2058,6 +2164,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("interrupted useful repair", await File.ReadAllTextAsync(Path.Combine(workspace, "partial-repair.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LaterRepairCommitConflictAbortsRebaseAndPreservesCompleteImplementation()
     {
@@ -2343,6 +2451,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("integrated", "eligible")]
     [InlineData("flat-prefix", "eligible")]
@@ -2413,6 +2523,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2477,6 +2589,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CompletedBranchMaintenanceUsesPersistedHistoryAndRepositoryGate()
     {
@@ -2524,6 +2638,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Null(await service.CleanupAsync(request, CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CompletedBranchCleanupBoundsTheSameEligibleSetForPreviewAndApply()
     {
@@ -2555,6 +2671,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal(1, remaining.Deleted);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CompletedBranchCleanupRemoteLeasePreservesRefChangedDuringPush()
     {
@@ -2582,6 +2700,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.StartsWith(changedTip, await fixture.Git("ls-remote", "--heads", "origin", "refs/heads/" + branch));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("safe", "cleaned", "integrated")]
     [InlineData("dirty", "refused", "recovery-changes-required")]
@@ -2686,6 +2806,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         else if (scenario != "path") Assert.True(Directory.Exists(workspace));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2737,6 +2859,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.Equal("IntegrationConflict", (await history.ReadExecutionAsync(oldId))?.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task OperatorCleanupReadsHistoryAfterAcquiringRepositoryGateAndHoldsDrain()
     {

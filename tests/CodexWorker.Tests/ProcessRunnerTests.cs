@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ProcessRunnerTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -44,6 +46,8 @@ public sealed class ProcessRunnerTests
         catch (DirectoryNotFoundException) { return false; }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task TimeoutKillsProcessAndKeepsOutputDiagnostics()
     {

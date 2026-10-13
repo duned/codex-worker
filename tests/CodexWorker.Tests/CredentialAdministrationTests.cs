@@ -6,6 +6,8 @@ using CodexServer;
 
 public sealed class CredentialAdministrationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalCredentialCliListsShowsAssignsReplacesAndRevokesWithoutPrintingSecrets()
     {
@@ -83,6 +85,8 @@ public sealed class CredentialAdministrationTests
         Assert.Empty(error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalCredentialCliReportsEncryptionFailureWithoutLeakingInput()
     {
@@ -108,6 +112,8 @@ public sealed class CredentialAdministrationTests
         Assert.Contains("encryption is not configured", error.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -153,6 +159,8 @@ public sealed class CredentialAdministrationTests
         Assert.True(timeout.IsCancellationRequested);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

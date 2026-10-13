@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerAuthenticationContextTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

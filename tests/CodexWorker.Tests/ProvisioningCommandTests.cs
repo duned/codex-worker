@@ -9,6 +9,8 @@ using CodexWorker;
 
 public sealed class ProvisioningCommandTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task NodePreparationRecoversActiveOperationsBeyondUnrelatedAndTerminalHistory()
     {
@@ -33,6 +35,8 @@ public sealed class ProvisioningCommandTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.ListNodeAsync(workerId, cancellation.Token));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("git", ProvisioningCommandAction.Install, true)]
     [InlineData("git", ProvisioningCommandAction.Update, true)]
@@ -47,6 +51,8 @@ public sealed class ProvisioningCommandTests
         Assert.False(ProvisioningCommandProtocol.Valid(new("server", "git; echo secret", action)));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void GitHubDeviceLoginIsRegisteredAndAcceptsOnlyExpectedChallengeUrls()
     {
@@ -57,6 +63,8 @@ public sealed class ProvisioningCommandTests
             LoginInstructions: new("https://attacker.example/device", "ABCD-1234"))));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AdvertisedActionsHaveRegisteredCommandExecutors()
     {
@@ -80,6 +88,8 @@ public sealed class ProvisioningCommandTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void WireProtocolRejectsCommandsAndSecretFields()
     {
@@ -92,6 +102,8 @@ public sealed class ProvisioningCommandTests
         Assert.False(ProvisioningCommandProtocol.ValidReport(new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Denied)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutorUsesFixedArgumentsAndRequiresElevationAndPermission()
     {
@@ -114,6 +126,8 @@ public sealed class ProvisioningCommandTests
         Assert.Equal(new[] { "-n", "/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "git", "openssh-client" }, calls[1].Arguments);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutorClassifiesSudoDenialWithoutRetainingProcessOutput()
     {
@@ -133,6 +147,8 @@ public sealed class ProvisioningCommandTests
         Assert.DoesNotContain("private-token", JsonSerializer.Serialize(result), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InstallUpgradeAndUninstallCanBeRepeatedAndRefreshTheObservedState()
     {
@@ -173,6 +189,8 @@ public sealed class ProvisioningCommandTests
         Assert.Equal(InstallationState.Missing, (await discovery.GetAsync()).Single(state => state.Id == "git").Installation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutorDiscardsExceptionSecretsAndHonorsCancellationAndExpiredDeadline()
     {
@@ -187,6 +205,8 @@ public sealed class ProvisioningCommandTests
         Assert.Equal(ProvisioningDiagnostic.Cancelled, (await executor.ExecuteAsync(command, true, cancelled.Token)).Diagnostic);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task DurableDispatchDoesNotReplayAndConflictsRemainLockedUntilAcknowledgement()
     {
@@ -221,6 +241,8 @@ public sealed class ProvisioningCommandTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisioningFailureDetailIsPersistedAndSurvivesStoreRestart()
     {
@@ -250,6 +272,8 @@ public sealed class ProvisioningCommandTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PendingCancellationSurvivesRestartAndReleasesCapability()
     {
@@ -266,6 +290,8 @@ public sealed class ProvisioningCommandTests
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); File.Delete(path); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExpiredOperationIsReconciledWhenNodeReconnectsAndRequestsWork()
     {
@@ -288,6 +314,8 @@ public sealed class ProvisioningCommandTests
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); File.Delete(path); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task DeadlineCancelsRunningHandler()
     {
@@ -321,6 +349,8 @@ public sealed class ProvisioningCommandTests
         public override DateTimeOffset GetUtcNow() => Now;
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedWorkerExecutesKnownCommandAndReportsPolicyDenialWithoutExecutingMutation()
     {

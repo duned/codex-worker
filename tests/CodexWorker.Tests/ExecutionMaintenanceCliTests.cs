@@ -5,6 +5,8 @@ using CodexProvisioning;
 [Collection("ServerTokenEnvironment")]
 public sealed class ExecutionMaintenanceCliTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -15,6 +17,8 @@ public sealed class ExecutionMaintenanceCliTests
         Assert.Contains("--apply --confirm", output.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("cleanup", "abc", "--apply")]
     [InlineData("cleanup", "abc", "--confirm")]
@@ -26,6 +30,8 @@ public sealed class ExecutionMaintenanceCliTests
         using var output = new StringWriter();
         Assert.Equal(2, await ExecutionMaintenanceCli.RunAsync(false, args, writer: output));
     }
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(200, "{\"outcome\":\"succeeded\"}", 0)]
     [InlineData(200, "[{\"outcome\":\"failed\"}]", 5)]
@@ -48,6 +54,8 @@ public sealed class ExecutionMaintenanceCliTests
         finally { Environment.SetEnvironmentVariable("CODEX_ADMIN_URL", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

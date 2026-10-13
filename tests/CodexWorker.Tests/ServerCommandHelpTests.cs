@@ -20,6 +20,8 @@ public sealed class ServerCommandHelpTests
         "github create", "github update", "github label", "github dependency", "github parent", "github sub-issues", "github dependency-batch"
     };
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [MemberData(nameof(Contexts))]
     public async Task EveryContextSupportsBothAliasesWithoutReadingConfiguration(string context)
@@ -41,6 +43,8 @@ public sealed class ServerCommandHelpTests
         finally { Environment.SetEnvironmentVariable("Server__WorkerStaleAfterSeconds", previous); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("worker", "show")]
     [InlineData("backup", "export")]
@@ -59,6 +63,8 @@ public sealed class ServerCommandHelpTests
         Assert.DoesNotContain("Usage: CodexServer", result.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("worker")]
     [InlineData("backup")]
@@ -77,6 +83,8 @@ public sealed class ServerCommandHelpTests
         Assert.DoesNotContain("private-secret", result.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisioningHelpExplainsManagedGitHubLoginAndRunningChallengeDiscovery()
     {
@@ -87,6 +95,8 @@ public sealed class ServerCommandHelpTests
         Assert.Contains("provision show <command-id>", help.Output, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RootHelpIsAnIndexAndAliasesMatch()
     {
@@ -100,6 +110,8 @@ public sealed class ServerCommandHelpTests
         Assert.DoesNotContain("<expected-revision>", help.Output);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task WorkerListProvidesBoundedIdentitySummariesAndPagination()
     {
@@ -138,6 +150,8 @@ public sealed class ServerCommandHelpTests
         Assert.Equal(WorkerSchedulingPolicy.Draining, (await registry.GetWorkerAsync(first))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task WorkerListUsesConfiguredServiceDatabaseWhenPathIsOmitted()
     {
@@ -165,6 +179,8 @@ public sealed class ServerCommandHelpTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyWorkerListIsClearAndDoesNotCreateMissingDatabase()
     {
@@ -184,6 +200,8 @@ public sealed class ServerCommandHelpTests
         Assert.False(document.RootElement.GetProperty("hasMore").GetBoolean());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("--limit", "0")]
     [InlineData("--limit", "101")]

@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CapabilityInventoryTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InventoryIncludesInstalledMissingAndUnknownObservationsWithoutProcessOutput()
     {
@@ -52,6 +54,8 @@ public sealed class CapabilityInventoryTests
         Assert.Contains("GitHubCliLogin", json, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RefreshCommandRequestsFreshObservationsWhileListUsesCache()
     {

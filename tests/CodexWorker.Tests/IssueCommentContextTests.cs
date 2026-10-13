@@ -6,6 +6,8 @@ namespace CodexWorker.Tests;
 
 public sealed class IssueCommentContextTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ExternalCommentsAreChronologicalAttributedAndSeparateFromUnchangedIssueBody()
     {
@@ -25,6 +27,8 @@ public sealed class IssueCommentContextTests
         Assert.Contains(issue.CommentContext, repair);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(CodexComponent.Worker)]
     [InlineData(CodexComponent.Server)]
@@ -40,6 +44,8 @@ public sealed class IssueCommentContextTests
         Assert.Contains("unblock answer", context);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("🤖 Codex Worker · node\n\nlegacy report")]
     [InlineData("🧭 Codex Server · node\n\nlegacy report")]
@@ -53,6 +59,8 @@ public sealed class IssueCommentContextTests
         Assert.Contains(body.Replace("\n", "\n> ", StringComparison.Ordinal), context);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void EqualTimestampsUseCommentIdentityForDeterministicOrder()
     {
@@ -62,6 +70,8 @@ public sealed class IssueCommentContextTests
         Assert.True(context.IndexOf("> first", StringComparison.Ordinal) < context.IndexOf("> second", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CountBodyAndTotalBoundsRetainNewestContentAndDiscloseOmissions()
     {
@@ -83,6 +93,8 @@ public sealed class IssueCommentContextTests
         Assert.Contains("context truncated", totalContext);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyCommentSnapshotDoesNotFetchPagesOrAddASection()
     {
@@ -93,6 +105,8 @@ public sealed class IssueCommentContextTests
         Assert.Single(calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task KnownSecretsAreRedactedBeforeApplyingPromptSizeBounds()
     {
@@ -104,6 +118,8 @@ public sealed class IssueCommentContextTests
         Assert.True(context.Length <= IssueCommentContext.MaximumContextCharacters);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FetchUsesLatestPagesAndFiltersWorkerAndServerBeforeTruncatingBodies()
     {
@@ -128,6 +144,8 @@ public sealed class IssueCommentContextTests
         Assert.DoesNotContain("context truncated", context);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FetchStopsAtRecentExternalCountAndReportsUnscannedHistory()
     {
@@ -142,6 +160,8 @@ public sealed class IssueCommentContextTests
         Assert.Contains("context truncated", context);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AutomaticOnlyHistoryHasBoundedScanWithExplicitOmissionNotice()
     {
@@ -155,6 +175,8 @@ public sealed class IssueCommentContextTests
         Assert.DoesNotContain("> automatic", context);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("not-json")]
     [InlineData("[]")]
@@ -170,6 +192,8 @@ public sealed class IssueCommentContextTests
         Assert.DoesNotContain("private-comment-sentinel", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CommentFetchFailureRetainsTypedInfrastructureSemanticsAfterBoundedReadRetry()
     {
@@ -189,6 +213,8 @@ public sealed class IssueCommentContextTests
         Assert.Equal(GitHubRemoteState.NotApplicable, error.RemoteState);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProcessTimeoutCannotCopyCapturedCommentsIntoOperationalDiagnostics()
     {
@@ -204,6 +230,8 @@ public sealed class IssueCommentContextTests
         Assert.DoesNotContain("private-comment-sentinel", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CommentFetchCancellationRemainsCancellation()
     {

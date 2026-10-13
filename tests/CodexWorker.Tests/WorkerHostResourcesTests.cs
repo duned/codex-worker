@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerHostResourcesTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OlderHeartbeatCanOmitResources()
     {
@@ -17,6 +19,8 @@ public sealed class WorkerHostResourcesTests
         Assert.True(WorkerHostResources.Valid(null));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ResourcesRoundTripThroughServerHeartbeatContract()
     {
@@ -28,6 +32,8 @@ public sealed class WorkerHostResourcesTests
         Assert.True(WorkerHostResources.Valid(received.HostResources));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CollectionHonorsCancellation()
     {
@@ -37,6 +43,8 @@ public sealed class WorkerHostResourcesTests
             CodexWorker.WorkerHostResourceCollector.CollectAsync(cancellation.Token));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(-1)]
     [InlineData(101)]
@@ -48,6 +56,8 @@ public sealed class WorkerHostResourcesTests
         Assert.False(WorkerHostResources.Valid(new(DateTimeOffset.UnixEpoch, MemoryUsagePercent: percent)));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CpuRequiresMeaningfulSampleAndCapacityBoundsAreChecked()
     {

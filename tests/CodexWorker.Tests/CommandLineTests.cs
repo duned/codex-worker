@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class CommandLineTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [MemberData(nameof(GlobalHelpArguments))]
     public async Task GlobalHelpSucceeds(string[] args)
@@ -15,6 +17,8 @@ public sealed class CommandLineTests
         Assert.Contains("Usage: codex-worker", output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ShortHelpCommandUsesTheRootHelpOutput()
     {
@@ -26,6 +30,8 @@ public sealed class CommandLineTests
         Assert.Equal(helpOutput, aliasOutput);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [MemberData(nameof(CommandHelpArguments))]
     public async Task CommandHelpShowsCommandSpecificUsage(string[] args)
@@ -37,6 +43,8 @@ public sealed class CommandLineTests
         Assert.DoesNotContain("--token", output);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CommandLineResolvesExplicitConfigurationForms()
     {
@@ -56,6 +64,8 @@ public sealed class CommandLineTests
             WorkerCommandLine.DefaultConfigurationPath);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("status")]
     [InlineData("diagnostics")]
@@ -69,6 +79,8 @@ public sealed class CommandLineTests
         Assert.Throws<ArgumentException>(() => WorkerCommandLine.Parse([command, "--config", "first.yml", "--config", "second.yml"]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RunConfigOptionUsesTheExecutionCommandWhilePositionalConfigIsRejected()
     {
@@ -84,6 +96,8 @@ public sealed class CommandLineTests
         Assert.Contains("Unexpected run arguments", legacyOutput);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("run", "codex-worker run")]
     [InlineData("status", "codex-worker status")]
@@ -97,6 +111,8 @@ public sealed class CommandLineTests
         Assert.Contains(expectedHelp, output);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("config", "show")]
     [InlineData("config", "validate")]
@@ -118,6 +134,8 @@ public sealed class CommandLineTests
         Assert.False(Directory.Exists(Path.GetDirectoryName(missing)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiagnosticsHelpDescribesObservationScopeAndLifecycleHelpersRemainDiscoverable()
     {
@@ -130,6 +148,8 @@ public sealed class CommandLineTests
         Assert.Contains("update --help", rootHelp);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidJsonConfigurationOptionReturnsOneStructuredFailure()
     {
@@ -139,6 +159,8 @@ public sealed class CommandLineTests
         Assert.Equal("invalid-arguments", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("--help")]
     [InlineData("-h")]
@@ -162,6 +184,8 @@ public sealed class CommandLineTests
         Assert.False(Directory.Exists(Path.GetDirectoryName(identityPath)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [MemberData(nameof(InvalidRegisterArguments))]
     public async Task InvalidRegisterArgumentsShowUsageAndFailBeforeNetworkActivity(string[] args)

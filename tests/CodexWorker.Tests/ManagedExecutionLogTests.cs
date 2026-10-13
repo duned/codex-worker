@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagedExecutionLogTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AssignmentFieldsAndDiagnosticsAreBoundedRedactedAndSingleLine()
     {

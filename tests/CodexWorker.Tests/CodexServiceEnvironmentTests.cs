@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServiceEnvironmentTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -69,6 +71,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(null, 0)]
     [InlineData(null, 1)]
@@ -122,6 +126,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExecutionProfileControlsImplementationRepairIntegrationRepairAndConflictInvocations()
     {
@@ -177,6 +183,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ResolutionUsesChildPathAndDoesNotDependOnInteractivePath()
     {
@@ -202,6 +210,8 @@ public sealed class CodexServiceEnvironmentTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LaunchDiagnosticsSeparateMissingDirectoryInterpreterAndPermissions()
     {
@@ -224,6 +234,8 @@ public sealed class CodexServiceEnvironmentTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExplicitCliPreflightRetainsAccessibleDirectoryUntilExitAndCleansItOnColdStarts()
     {
@@ -265,6 +277,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PreflightUsesEffectivePathOnEachColdStartAndReportsMissingCapability()
     {
@@ -305,6 +319,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PreflightDirectoryCreationFailureIsDistinctFromExecutableFailure()
     {
@@ -322,6 +338,8 @@ public sealed class CodexServiceEnvironmentTests
         finally { Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InaccessibleDirectoryIsReportedAsPermissionFailureRatherThanMissingCodex()
     {
@@ -347,6 +365,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(7, "preflight exited with code 7")]
     [InlineData(0, "unexpected response")]
@@ -385,6 +405,8 @@ public sealed class CodexServiceEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisionedCliUsesSameExecutableAndExistingAuthenticationForPreflightAndTasks()
     {

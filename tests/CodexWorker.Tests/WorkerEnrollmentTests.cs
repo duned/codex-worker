@@ -10,6 +10,8 @@ using CodexWorker;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerEnrollmentTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BoundEnrollmentRejectsWrongIdentityOperationExpiryAndReuseWithoutScheduling()
     {
@@ -37,6 +39,8 @@ public sealed class WorkerEnrollmentTests
             "enroll", TimeSpan.FromMinutes(15)), worker, new string('q', 64)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task GenericEnrollmentCannotReplaceIdentityAndTargetedAuthorizationIsOneUseAndFresh()
     {
@@ -66,6 +70,8 @@ public sealed class WorkerEnrollmentTests
         Assert.NotNull(await restarted.GetWorkerAsync(worker.WorkerId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalOperatorCommandIssuesAuthorizationForTheExactWorkerAndOperation()
     {
@@ -95,6 +101,8 @@ public sealed class WorkerEnrollmentTests
         Assert.True(await store.BootstrapWorkerAsync(authorization, worker, new string('b', 64), operation: "rotate"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConcurrentEnrollmentCommitsOnlyOneCredential()
     {
@@ -110,6 +118,8 @@ public sealed class WorkerEnrollmentTests
         Assert.Single(await store.GetWorkersAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("enroll")]
     [InlineData("rotate")]
@@ -154,6 +164,8 @@ public sealed class WorkerEnrollmentTests
                 Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(temporary.Identity + suffix));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("")]
     [InlineData("{")]
@@ -183,6 +195,8 @@ public sealed class WorkerEnrollmentTests
         Assert.NotEqual(oldToken, WorkerAuthentication.GetToken(settings));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnassociatedCredentialIsNeverReusedAtRequestedEndpoint()
     {
@@ -200,6 +214,8 @@ public sealed class WorkerEnrollmentTests
         Assert.Null(WorkerPendingRegistration.Load(temporary.Identity));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedReassociationPreservesActiveStateAndNeverDisclosesPreviousCredential()
     {
@@ -242,6 +258,8 @@ public sealed class WorkerEnrollmentTests
         Assert.Equal(posts, handler.BootstrapRequests);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InterruptedPublicationBlocksRuntimeAndCompletesFromVerifiedPendingState()
     {
@@ -263,6 +281,8 @@ public sealed class WorkerEnrollmentTests
         Assert.Equal(settings.Url, settings.EffectiveUrl);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExpiredTargetedAuthorizationDoesNotChangeCredentialOrVisibility()
     {
@@ -282,6 +302,8 @@ public sealed class WorkerEnrollmentTests
             Registration(Guid.NewGuid().ToString("N")), "short"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConcurrentLocalOperationsCannotReplacePendingMaterialOrReadMixedActiveState()
     {
@@ -314,6 +336,8 @@ public sealed class WorkerEnrollmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidPendingEndpointIsRejectedWithoutRepairingOrReplacingFiles()
     {
@@ -336,6 +360,8 @@ public sealed class WorkerEnrollmentTests
         Assert.Equal(settings.Url, await File.ReadAllTextAsync(temporary.Identity + ".server"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledPublicationPreservesExistingFileAndRemovesTemporaryMaterial()
     {

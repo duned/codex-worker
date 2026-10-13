@@ -17,6 +17,8 @@ public sealed class ServerEventStreamTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(3);
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PopulatedWorkerEventsMatchHttpContractAcrossUpdates()
     {
@@ -78,6 +80,8 @@ public sealed class ServerEventStreamTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LiveStreamsCompleteOnClientDisconnectAndHostStop()
     {
@@ -162,6 +166,8 @@ public sealed class ServerEventStreamTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("read", false)]
     [InlineData("write", false)]

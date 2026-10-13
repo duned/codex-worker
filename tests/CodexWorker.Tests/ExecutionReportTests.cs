@@ -2,6 +2,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ExecutionReportTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void GithubCommentReportTitleUsesSecondLevelHeading()
     {
@@ -13,6 +15,8 @@ public sealed class ExecutionReportTests
         Assert.False(heading.StartsWith("# ", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FirstPassSuccessIncludesImplementationValidationDurationAndIntegration()
     {
@@ -30,6 +34,8 @@ public sealed class ExecutionReportTests
         Assert.Contains("- Preserved as: `done/feature/123-example`", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CompletionMarkdownRetainsCodexSummaryAndUsesLowerHeadingLevelsForReportSections()
     {
@@ -43,6 +49,8 @@ public sealed class ExecutionReportTests
         Assert.Contains("### Validation", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OneRepairKeepsInitialAndRepairSummariesWithoutValidationLogs()
     {
@@ -60,6 +68,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("stderr", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MultipleRepairsRemainInExecutionOrderAndFinalFailedValidationIsReported()
     {
@@ -76,6 +86,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("stdout", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void BlockedReportRetainsWorkAndHumanQuestionWithoutEnvironmentValues()
     {
@@ -90,6 +102,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("GITHUB_TOKEN", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void BlockedReportIncludesPreservedWorkspaceAndRetryDetails()
     {
@@ -105,6 +119,8 @@ public sealed class ExecutionReportTests
         Assert.Contains("- **Workspace:** Preserved\n- **Retry/resume:** Available", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FailedValidationReportIncludesCompilerAndTestDiagnosticsAndRecoveryMetadata()
     {
@@ -132,6 +148,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("private-value", secretReport.ToMarkdown(IssueOutcomeKind.Failed));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IntegrationConflictReportSeparatesCompletedImplementationFromPreservedRecoveryState()
     {
@@ -150,6 +168,8 @@ public sealed class ExecutionReportTests
         Assert.Contains("- **Retry/resume:** Unavailable", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ValidationDiagnosticSummarySelectsActionableLinesRedactsSecretsAndBoundsOutput()
     {
@@ -168,6 +188,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("noise output", summary);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void NoRepairFailureIncludesFinalDiagnosticAndSuccessfulReportHasNoRecoverySection()
     {
@@ -187,6 +209,8 @@ public sealed class ExecutionReportTests
         Assert.Contains("### Validation\n\nValidation passed successfully.", succeededMarkdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IncompleteCodexReportHasSeparatedMarkdownSectionsCorrelationAndRecoveryWithoutDuplicateText()
     {
@@ -207,6 +231,8 @@ public sealed class ExecutionReportTests
         Assert.DoesNotContain("### Failure**Reason", markdown);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FailureMarkdownIdentifiesValidationAndProcessFailureCategoriesAndRedactsSecrets()
     {

@@ -26,6 +26,8 @@ public sealed class WorkerPreparationTests
         IReadOnlyList<ProvisioningCommand>? commands = null) =>
         WorkerDiagnosticsDerivation.Derive(worker, [project ?? Project], [], "version", commands, ObservedAt);
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ActivationPermitsLazyCheckoutButDoesNotChangeSchedulingPolicy()
     {
@@ -37,6 +39,8 @@ public sealed class WorkerPreparationTests
         Assert.Equal("not-materialized", Assert.Single(diagnostics.Projects).MaterializationState);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("stale")]
     [InlineData("cached")]
@@ -65,6 +69,8 @@ public sealed class WorkerPreparationTests
         Assert.False(Describe(worker).CanActivate);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RevisionChangesDisabledProjectsAndMissingProjectsBlockActivation()
     {
@@ -73,6 +79,8 @@ public sealed class WorkerPreparationTests
         Assert.False(WorkerDiagnosticsDerivation.Derive(Worker, [], [], "version", observedAtUtc: ObservedAt).CanActivate);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void FailedProjectDoesNotHideHealthyProjectEvidence()
     {
@@ -86,6 +94,8 @@ public sealed class WorkerPreparationTests
         Assert.Contains(diagnostics.Reasons, reason => reason.Contains("project-preparation-failed", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandStatus.Pending, false)]
     [InlineData(ProvisioningCommandStatus.Running, false)]

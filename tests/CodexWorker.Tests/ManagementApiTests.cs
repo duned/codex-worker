@@ -11,6 +11,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagementApiTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CleanupApiValidatesSelectionAndRequiresCompletedRunningDrain()
     {
@@ -63,6 +65,8 @@ public sealed class ManagementApiTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ActiveDrainCompletesOnFinalReleaseAndCancellationRestoresScheduling()
     {
@@ -134,6 +138,8 @@ public sealed class ManagementApiTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ApiServesSafeRuntimeSnapshotsAndBoundedEvents()
     {
@@ -263,6 +269,8 @@ public sealed class ManagementApiTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ExactAndIssueLookupsIncludeOldAttemptsOutsideBoundedRecentList()
     {
@@ -334,6 +342,8 @@ public sealed class ManagementApiTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("InfrastructureFailure", "infrastructure-failure")]
     [InlineData("Cancelled", "cancelled")]
@@ -370,6 +380,8 @@ public sealed class ManagementApiTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ApiDefaultsToLoopbackAndRejectsPublicBindings()
     {

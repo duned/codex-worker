@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class DependencyGraphTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ResolvedSqliteGraphDoesNotContainVulnerableNativePackageVersion()
     {

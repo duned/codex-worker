@@ -8,6 +8,8 @@ using System.Text.Json;
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexGuidedAuthenticationTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LoginPublishesOnlyValidatedInstructionsAndVerifiesAuthentication()
     {
@@ -41,6 +43,8 @@ public sealed class CodexGuidedAuthenticationTests
         Assert.True(refreshed > 0);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DeniedLoginDoesNotLaunchAndCancellationClearsChallenge()
     {
@@ -62,6 +66,8 @@ public sealed class CodexGuidedAuthenticationTests
         Assert.Null(result.LoginInstructions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("https://evil.example", "ABCD-EFGHI")]
     [InlineData(CodexDeviceLogin.VerificationUri, "token-secret")]
@@ -73,6 +79,8 @@ public sealed class CodexGuidedAuthenticationTests
             ProvisioningDiagnostic.Completed, LoginInstructions: new(CodexDeviceLogin.VerificationUri, "ABCD-EFGHI"))));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InstructionsAreTransientOwnedAndClearedOnCompletion()
     {
@@ -103,6 +111,8 @@ public sealed class CodexGuidedAuthenticationTests
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(directory, true); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true, 1)]
     [InlineData(false, 2)]
@@ -128,6 +138,8 @@ public sealed class CodexGuidedAuthenticationTests
         Assert.Equal(expectedCommands, commands);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RealLoginProcessUsesServiceHomeAndExtractsChallengeWithoutReturningLogs()
     {

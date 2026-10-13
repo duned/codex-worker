@@ -6,6 +6,8 @@ using CodexWorker;
 [Collection("ServerTokenEnvironment")]
 public sealed class ProvisioningCliTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningFailureCode.ElevationDenied)]
     [InlineData(ProvisioningFailureCode.PackageUnavailable)]
@@ -25,6 +27,8 @@ public sealed class ProvisioningCliTests
         Assert.Equal(code.ToString(), json.RootElement.GetProperty("report").GetProperty("failureDetail").GetProperty("code").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledProvisioningRetainsTerminalReportWithoutCollectingPresentationState()
     {
@@ -53,6 +57,8 @@ public sealed class ProvisioningCliTests
         Assert.Equal(0, uncancellableProbes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("5")]
     [InlineData("600")]
@@ -65,6 +71,8 @@ public sealed class ProvisioningCliTests
         Assert.Equal(120, ProvisioningCli.Parse(["detect", "git"]).TimeoutSeconds);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("4")]
     [InlineData("601")]
@@ -77,6 +85,8 @@ public sealed class ProvisioningCliTests
         Assert.Contains("codex-worker provision --help", failure.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MissingAndRepeatedDeadlinesAreRejected()
     {
@@ -98,6 +108,8 @@ public sealed class ProvisioningCliTests
         }
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("install", ProvisioningCommandAction.Install)]
     [InlineData("upgrade", ProvisioningCommandAction.Update)]
@@ -114,6 +126,8 @@ public sealed class ProvisioningCliTests
         Assert.True(authorized.Json);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void StatusAndConfigurationOverrideUseTheNamedCommandGroup()
     {
@@ -123,6 +137,8 @@ public sealed class ProvisioningCliTests
         Assert.True(ProvisioningCli.Parse(commandLine.Arguments).Json);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnknownAndUnsupportedCapabilitiesHaveClearBoundedFailures()
     {
@@ -136,6 +152,8 @@ public sealed class ProvisioningCliTests
         Assert.Contains("not supported", result.Reason ?? string.Empty);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void PolicyDenialsExplainTheControllingConfigurationKeyOrElevationFlag()
     {
@@ -157,6 +175,8 @@ public sealed class ProvisioningCliTests
         Assert.True(WorkerProvisioning.Decide(request, policy).Permitted);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DeniedCliMutationReportsWhyAndDoesNotProbeOrInvokeProvisioning()
     {
@@ -176,6 +196,8 @@ public sealed class ProvisioningCliTests
         Assert.Equal(0, probes);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CredentialAndNonPrivilegedDenialsIdentifyTheirPolicyControls()
     {
@@ -190,6 +212,8 @@ public sealed class ProvisioningCliTests
         Assert.Contains("worker.provisioning.allowNonPrivileged", nonPrivileged.Remediation ?? string.Empty);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusRefreshesCapabilitiesAndShowsPolicyForEachSupportedAction()
     {
@@ -208,6 +232,8 @@ public sealed class ProvisioningCliTests
         Assert.Contains(git.Actions, action => action.Action == "uninstall");
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TextStatusLabelsNodeAuthenticationSeparatelyFromServerAndProviderAuthorization()
     {
@@ -238,6 +264,8 @@ public sealed class ProvisioningCliTests
         Assert.DoesNotContain("credential-delivery", output.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SuccessfulGitHubPreparationPrintsTheTypedDeviceLoginHandoff()
     {
@@ -259,6 +287,8 @@ public sealed class ProvisioningCliTests
         Assert.DoesNotContain("token", output.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusShowsPolicyAllowedMutationsAndTheirExplicitElevationRequirement()
     {

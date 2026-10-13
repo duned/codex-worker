@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ExecutionMaintenanceTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ArchiveReceiptSurvivesRestartAndRepeatedApplyWithoutLosingLineage()
     {
@@ -29,6 +31,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.Single(await reopened.ReadAllAsync());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("archive")]
     [InlineData("cleanup")]
@@ -52,6 +56,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.NotNull(await store.ReadExecutionAsync(entry.ExecutionId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InventoryFiltersSameIssueByProjectAndPaginatesWithinBound()
     {
@@ -74,6 +80,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.NotEqual(first[0].ExecutionId, second[0].ExecutionId);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OldAgeNeverMakesUncertainManagedExecutionSafeToClean()
     {
@@ -90,6 +98,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.DoesNotContain("cleanup", result.Actions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ActiveOldAndMissingProjectAreExplicitlyClassified()
     {
@@ -100,6 +110,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.Equal("orphaned", ExecutionMaintenanceClassifier.Classify(entry, started.AddDays(1), false).Status);
         Assert.Equal("stale", ExecutionMaintenanceClassifier.Classify(entry, started.AddDays(8), true).Status);
     }
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("recoverable", "recoverable", "workspace-recoverable")]
     [InlineData("preparation-failed", "retained-review", "preparation-resource-proof-missing")]
@@ -129,6 +141,8 @@ public sealed class ExecutionMaintenanceTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InventoryOutcomeCaseAndAttentionPagingPreserveBusinessFailure()
     {
@@ -150,6 +164,8 @@ public sealed class ExecutionMaintenanceTests
         Assert.Contains("Allowed values: succeeded", invalid.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("github-reconciled")]
     [InlineData("operator-cleaned")]
@@ -165,6 +181,8 @@ public sealed class ExecutionMaintenanceTests
             entry with { ReportingFailure = null, CompletionJson = "{}" }, now, true).ReasonCode);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ActiveAndSuccessfulCompletionRemainDistinctFromCleanedFailures()
     {

@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Http;
 [Collection("ServerTokenEnvironment")]
 public sealed class AdministrationSessionTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SessionsExpireRotateAndCancelWithoutPersistingManagementCredentials()
     {
@@ -72,6 +74,8 @@ public sealed class AdministrationSessionTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("http://admin.example", false)]
     [InlineData("http://127.0.0.1:5090", true)]
@@ -85,6 +89,8 @@ public sealed class AdministrationSessionTests
         else Assert.Throws<InvalidDataException>(configuration.Validate);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task UpgradedHttpsEnvironmentExplainsMissingOriginAndInstalledConfigSetRestoresLogin()
     {
@@ -167,6 +173,8 @@ public sealed class AdministrationSessionTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -278,6 +286,8 @@ public sealed class AdministrationSessionTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

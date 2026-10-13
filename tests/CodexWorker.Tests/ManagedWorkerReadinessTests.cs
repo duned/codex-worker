@@ -9,6 +9,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedWorkerReadinessTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -40,6 +42,8 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal(installed ? 1 : 0, provider.Calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData("gh")]
     [InlineData("codex")]
@@ -88,6 +92,8 @@ public sealed class ManagedWorkerReadinessTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -170,6 +176,8 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal(expectedPreflights, provider.Calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -231,6 +239,8 @@ public sealed class ManagedWorkerReadinessTests
         Assert.Equal("Central", Assert.Single(cached.LoadLastValid()).Configuration.Project.Name);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -335,6 +345,8 @@ public sealed class ManagedWorkerReadinessTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task CachedUnmaterializedProjectReconnectsWithoutRestartOrAssignment()
     {
@@ -402,6 +414,8 @@ public sealed class ManagedWorkerReadinessTests
         finally { stop.Cancel(); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData("materialization")]
     [InlineData("snapshot-stale")]
@@ -549,6 +563,8 @@ public sealed class ManagedWorkerReadinessTests
         public override DateTimeOffset GetUtcNow() => new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerMinute), TimeSpan.Zero);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -598,6 +614,8 @@ public sealed class ManagedWorkerReadinessTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedPreflightIsRetriedOnlyAfterExplicitRefreshAndCancellationPropagates()
     {
@@ -618,6 +636,8 @@ public sealed class ManagedWorkerReadinessTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readiness.EvaluateAsync(discovery, true, stop.Token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RequiredDependencyLossLeavesAgentReadyWithoutRepeatingPreflight()
     {

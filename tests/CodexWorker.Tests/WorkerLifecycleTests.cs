@@ -4,6 +4,9 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerLifecycleTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void InvalidManagedConfigurationCanDrainForUpdateWithoutBecomingExecutionReady()
     {
@@ -21,6 +24,9 @@ public sealed class WorkerLifecycleTests
         Assert.Equal("managed-contract-invalid", lifecycle.Snapshot.ReconnectReadinessResult);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ReadinessTransitionsDoNotCancelAnOperatorDrain()
     {
@@ -36,6 +42,9 @@ public sealed class WorkerLifecycleTests
         Assert.Equal("drained", lifecycle.Snapshot.State);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void DrainCannotFinishUntilActiveExecutionsHaveReleased()
     {
@@ -55,6 +64,9 @@ public sealed class WorkerLifecycleTests
         Assert.Equal(0, lifecycle.Snapshot.ActiveExecutions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void PendingDrainCanBeCancelledAfterDrainTimeout()
     {
@@ -69,6 +81,9 @@ public sealed class WorkerLifecycleTests
         Assert.False(lifecycle.Snapshot.DrainRequested);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void UpdateAndRestartFailuresNeverReturnWorkerToReady()
     {
@@ -94,6 +109,9 @@ public sealed class WorkerLifecycleTests
         Assert.Equal("service manager could not restart worker", lifecycle.Snapshot.ReconnectReadinessResult);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ReadinessRejectsCapabilityRegressionAndIncompatibleConfiguration()
     {

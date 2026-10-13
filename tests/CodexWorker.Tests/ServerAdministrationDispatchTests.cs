@@ -5,6 +5,8 @@ using CodexServer;
 [Collection("ServerTokenEnvironment")]
 public sealed class ServerAdministrationDispatchTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DashboardCapabilityProbeReturnsExactContractWithoutHosting()
     {
@@ -22,6 +24,8 @@ public sealed class ServerAdministrationDispatchTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProgramDispatchesAdministrationRootsToTheirHandlers()
     {

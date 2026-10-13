@@ -8,6 +8,8 @@ namespace CodexWorker.Tests;
 
 public sealed class DevelopmentDashboardAssetsTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OverrideRequiresDevelopmentAndValidManifestAndLoadsSnapshot()
     {

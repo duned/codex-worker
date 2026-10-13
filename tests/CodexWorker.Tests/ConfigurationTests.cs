@@ -4,6 +4,9 @@ namespace CodexWorker.Tests;
 
 public sealed class ConfigurationTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ManagedServerRequiresSecureRemoteTransport()
     {
@@ -16,6 +19,8 @@ public sealed class ConfigurationTests
         server.Validate();
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectOwnershipDefaultsToStandaloneAndManagedRequiresServerConfiguration()
     {
@@ -34,6 +39,8 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IdentityPathResolvesRelativeToConfigurationAndExpandsHome()
     {
@@ -52,6 +59,8 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void GlobalYamlLoadsWorkerProvisioningPolicyAndDefaultsToDisabled()
     {
@@ -86,6 +95,8 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoadsYamlAndResolvesProjectAndInstructionPaths()
     {
@@ -139,6 +150,8 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RejectsUnknownAndDuplicateYamlKeys()
     {
@@ -155,6 +168,8 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RejectsWorkerGlobalSettingsInsideProjectFile()
     {
@@ -171,6 +186,9 @@ public sealed class ConfigurationTests
         finally { Directory.Delete(folder, recursive: true); }
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData("owner/repo", true)]
     [InlineData("owner", false)]
@@ -183,6 +201,9 @@ public sealed class ConfigurationTests
         else Assert.Throws<InvalidDataException>(config.Validate);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void RejectsDuplicateGitHubLabelsAndInvalidGitTimeout()
     {
@@ -194,6 +215,9 @@ public sealed class ConfigurationTests
         Assert.Contains("gitTimeoutSeconds", error.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(-1)]
     [InlineData(6)]
@@ -205,12 +229,18 @@ public sealed class ConfigurationTests
         Assert.Contains("validation.maxFixAttempts", error.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void DefaultsValidationRepairAttemptsToTwo()
     {
         Assert.Equal(2, new ValidationSettings().MaxFixAttempts);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void IntegrationLabelDefaultsUseCodexPrefixAndAllowCustomNames()
     {

@@ -8,6 +8,8 @@ using Microsoft.Data.Sqlite;
 
 public sealed class GitHubDeviceLoginTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ServerConnectionRecoversActiveLoginBeyondGeneralHistoryAndClearsCompletedChallenge()
     {
@@ -34,6 +36,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.Null(completed.LoginInstructions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("! First copy your one-time code: ABCD-1234\nOpen this URL to continue in your web browser: https://github.com/login/device\n", true)]
     [InlineData("! First copy your one-time code: \u001b[1mABCD-1234\u001b[0m\nhttps://github.com/login/device\nprivate-token", true)]
@@ -49,6 +53,8 @@ public sealed class GitHubDeviceLoginTests
         if (valid) Assert.Equal(new("https://github.com/login/device", "ABCD-1234"), instructions);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoginUsesIsolatedHeadlessProductContext()
     {
@@ -63,6 +69,8 @@ public sealed class GitHubDeviceLoginTests
             Assert.False(start.Environment.ContainsKey(secret));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProcessCapturesSplitInstructionsOnceAndDrainsUnrelatedOutput()
     {
@@ -78,6 +86,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.DoesNotContain("private-token", JsonSerializer.Serialize(reports), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -104,6 +114,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.False(Directory.Exists($"/proc/{pid}"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)]
     [InlineData(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed)]
@@ -140,6 +152,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.DoesNotContain("ABCD-1234", Assert.IsType<string>(await query.ExecuteScalarAsync()), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExpiredChallengeIsHiddenAndBackupExcludesActiveChallenge()
     {
@@ -172,6 +186,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.Null((await reader.ReconcileAsync(command.Id))?.LoginInstructions);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LoginWithoutDeviceFlowReturnsFailureWithoutRawOutput()
     {
@@ -186,6 +202,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.False(published);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(7, 0, ProvisioningFailureCode.ProcessExited)]
     [InlineData(0, 1, ProvisioningFailureCode.VerificationFailed)]
@@ -211,6 +229,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.DoesNotContain("private-token", JsonSerializer.Serialize(result), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExpiredLoginDeadlineDoesNotLaunchProcess()
     {
@@ -231,6 +251,8 @@ public sealed class GitHubDeviceLoginTests
         Assert.False(launched);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RunningLoginDeadlineCancelsExecutorAndClearsPersistedChallenge()
     {

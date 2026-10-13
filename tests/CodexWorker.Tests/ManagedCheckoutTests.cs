@@ -7,6 +7,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class ManagedCheckoutTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(1, false)]
     [InlineData(1, true)]
@@ -112,6 +114,8 @@ public sealed class ManagedCheckoutTests
         Assert.Equal(generation, Assert.Single(await history.ReadAllAsync()).OwnershipGeneration);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExplicitMissingInstructionsRemainAConfigurationFailure()
     {
@@ -161,6 +165,8 @@ public sealed class ManagedCheckoutTests
             Task.FromResult(ValidationResult.Success);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerCatalogAuthorizesFirstMaterializationAndRevisionRetainsCheckoutAcrossRestart()
     {
@@ -239,6 +245,8 @@ public sealed class ManagedCheckoutTests
         Assert.Single(Directory.GetDirectories(runtime.CheckoutDirectory));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CatalogProbeDoesNotCloneAndFirstAssignmentPublishesCheckout()
     {
@@ -255,6 +263,8 @@ public sealed class ManagedCheckoutTests
         Assert.Empty(Directory.GetFiles(fixture.Checkout, "*.yml"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -292,6 +302,8 @@ public sealed class ManagedCheckoutTests
         Assert.Contains("pull", calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CatalogAccessFailureDoesNotExposeProcessDiagnostics()
     {
@@ -307,6 +319,8 @@ public sealed class ManagedCheckoutTests
         Assert.False(Directory.Exists(fixture.Checkout));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ReuseAndRestartFastForwardWithoutReplacingLocalResources()
     {
@@ -326,6 +340,8 @@ public sealed class ManagedCheckoutTests
         Assert.Contains("preserved-recovery", await fixture.Git(fixture.Checkout, "branch", "--list"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RepositoryMismatchPreservesCheckoutWithoutUpdatingIt()
     {
@@ -345,6 +361,8 @@ public sealed class ManagedCheckoutTests
         Assert.Equal("https://github.com/other/project.git", await fixture.Git(fixture.Checkout, "config", "--get", "remote.origin.url"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -363,6 +381,8 @@ public sealed class ManagedCheckoutTests
         else Assert.Equal("preserved-branch", await fixture.Git(fixture.Checkout, "branch", "--show-current"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InterruptedCloneIsNotPublishedAndRestartUsesFreshStaging()
     {
@@ -381,6 +401,8 @@ public sealed class ManagedCheckoutTests
         Assert.Equal("base", await File.ReadAllTextAsync(Path.Combine(fixture.Checkout, "task.txt")));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task MultipleAssignmentsShareRepositoryGateAndOneCheckout()
     {
@@ -398,6 +420,8 @@ public sealed class ManagedCheckoutTests
         Assert.Equal("main", await fixture.Git(fixture.Checkout, "branch", "--show-current"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDoesNotPublishCheckout()
     {

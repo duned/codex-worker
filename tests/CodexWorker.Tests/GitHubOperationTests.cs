@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubOperationTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SuccessCommentReadUsesSupportedPaginatedArguments()
     {
@@ -12,6 +14,8 @@ public sealed class GitHubOperationTests
             GitHubClient.SuccessCommentReadArguments("owner/repo", 17, "marker"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalUsageFailureDoesNotRetryOrCreateComment()
     {
@@ -28,6 +32,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CommentProofFindsMarkerOnLaterPage()
     {
@@ -43,6 +49,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -72,6 +80,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("changed")]
     [InlineData("duplicate")]
@@ -96,6 +106,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RemovedConfirmedSuccessReportRequiresInspectionRatherThanRecreation()
     {
@@ -110,6 +122,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CompletionCanInspectClosedIssueWithoutMakingItEligibleForAssignedExecution()
     {
@@ -119,6 +133,8 @@ public sealed class GitHubOperationTests
         await Assert.ThrowsAsync<GitHubOperationException>(() => client.GetIssueAsync(17, CancellationToken.None));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -142,6 +158,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(applied ? 1 : 2, writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OperatorModifiedIssueStopsAutomaticRetry()
     {
@@ -162,6 +180,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(1, writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TransientReadRetriesOnceAndReturnsVerifiedState()
     {
@@ -181,6 +201,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(2, calls);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("HTTP 403: Resource not accessible by integration", GitHubFailureKind.AuthenticationOrAuthorization, GitHubRemoteState.NotChanged)]
     [InlineData("HTTP 422: Validation Failed", GitHubFailureKind.DeterministicRequest, GitHubRemoteState.NotChanged)]
@@ -197,6 +219,8 @@ public sealed class GitHubOperationTests
         Assert.Equal(remoteState, failure.RemoteState);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RestartReconciliationQuarantinesOnlyAnOpenIssueThatRemainsReady()
     {
@@ -222,6 +246,8 @@ public sealed class GitHubOperationTests
         Assert.False(WorkerHost.RequiresManualGitHubReconciliation(closedIssue, "ready"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependencyReadFailureIsReadOnlyAndDoesNotMutateEligibility()
     {

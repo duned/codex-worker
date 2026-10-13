@@ -15,6 +15,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         new GitHubIssueCacheOptions { DirectoryPath = _directory, TimeProvider = _clock });
     private static IssueReference Issue(int number = 1, string repository = "team/project") => new(new(repository), number);
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FifteenIssueGraphReusesPersistedReadsAcrossProviderRestarts()
     {
@@ -42,6 +44,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task OperationDeduplicatesConcurrentAndOverlappingRefreshReads()
     {
@@ -65,6 +69,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(10, handler.Reads.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false, 29, 0)]
     [InlineData(false, 30, 5)]
@@ -81,6 +87,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(newReads, handler.Reads.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RepositoryAndNumberKeysAreSafeAndCaseInsensitive()
     {
@@ -95,6 +103,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(3, Directory.GetFiles(_directory, "*-identity.json", SearchOption.AllDirectories).Length);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("graph")]
     [InlineData("relationships")]
@@ -119,6 +129,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Empty(error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PersistentIdentitySurvivesExpirationAndDetectsChangedIdentity()
     {
@@ -132,6 +144,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(2, handler.Reads.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -161,6 +175,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Empty(handler.Reads);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -189,6 +205,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(5, handler.Reads.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("invalid-json")]
     [InlineData("version")]
@@ -211,6 +229,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(2, handler.Reads.Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CorruptIdentityIsResolvedAgainWithoutPoisoningTheProvider()
     {
@@ -225,6 +245,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(1001, repaired.RootElement.GetProperty("DatabaseId").GetInt64());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task WarmCacheStillHonorsCancellationAndRefreshPreservesTypedFailures()
     {
@@ -244,6 +266,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MutationAlsoInvalidatesEnclosingLibraryReadScope()
     {
@@ -260,6 +284,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(2, Assert.Single(after.BlockedBy).Issue.Number);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -294,6 +320,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(4, count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadStartedBeforeMutationCannotRepublishStaleRelationships()
     {
@@ -328,6 +356,8 @@ public sealed class GitHubIssueCacheTests : IDisposable
         Assert.Equal(2, Assert.Single(fresh.BlockedBy).Issue.Number);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LostGenerationMarkerCannotResurrectInvalidatedData()
     {

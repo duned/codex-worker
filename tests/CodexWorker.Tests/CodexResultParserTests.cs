@@ -4,6 +4,9 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexResultParserTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ParsesSuccessStructuredResponse()
     {
@@ -15,6 +18,9 @@ public sealed class CodexResultParserTests
         Assert.Equal("Ran focused checks.", Assert.Single(result.TestsOrValidationPerformed));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void RejectsInvalidStatusAndMissingSchemaFields()
     {
@@ -24,6 +30,9 @@ public sealed class CodexResultParserTests
         Assert.ThrowsAny<System.Text.Json.JsonException>(() => CodexResultParser.Parse("{"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void EnforcesConsistentBlockedAndSuccessResults()
     {
@@ -49,6 +58,9 @@ public sealed class CodexResultParserTests
         Assert.Equal("human_input", result.BlockerType);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ParsesExplicitExternalPrerequisiteBlockerWithoutHumanInput()
     {
@@ -62,6 +74,9 @@ public sealed class CodexResultParserTests
         Assert.Contains("NuGet feed", result.Question);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void RejectsAmbiguousExternalBlockerClassification()
     {
@@ -73,6 +88,9 @@ public sealed class CodexResultParserTests
             """));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void FailedResultCannotLeaveHumanInputUnresolved()
     {

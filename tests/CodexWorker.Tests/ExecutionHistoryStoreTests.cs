@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ExecutionHistoryStoreTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("original Issue intent is missing from execution history")]
     [InlineData("execution progressed beyond an uncompleted Codex invocation; inspect its lifecycle state")]
@@ -26,6 +28,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.True(await reopened.RecordLegacyReviewAsync(entry.ExecutionId, "changed evidence", DateTimeOffset.UtcNow, CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(404, true)]
     [InlineData(409, true)]
@@ -58,6 +62,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.All(warnings, warning => Assert.Contains("Server execution server-original", warning, StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("acknowledged")]
     [InlineData("manual-reconciliation-required: HTTP 404")]
@@ -78,6 +84,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(entry.ExecutionId, (await reopened.ReadExecutionAsync(entry.ExecutionId))?.ExecutionId);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -109,6 +117,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(1, calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -132,6 +142,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.DoesNotContain("private", writer.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OperatorCheckoutLockRejectsConcurrentWorkerOrAdministration()
     {
@@ -150,6 +162,8 @@ public sealed class ExecutionHistoryStoreTests
         await administrator.AcquireWorkerLockAsync(CancellationToken.None);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task OperatorAcknowledgmentRetainsProvenanceAndAuditAcrossRestart()
     {
@@ -183,6 +197,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Contains("verified remote integration", await restarted.ReadAcknowledgementAsync(entry.ExecutionId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("active")]
     [InlineData("managed")]
@@ -205,6 +221,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(entry.RecoveryState, (await store.ReadExecutionAsync(entry.ExecutionId))?.RecoveryState);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OperatorProofRequiresClosedDoneAndNoConflictingLabels()
     {
@@ -218,6 +236,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.NotNull(ExecutionAdministrationCli.Ineligible(entry, [entry, entry with { ExecutionId = Guid.NewGuid(), CompletedAtUtc = null }]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -256,6 +276,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(attempt.CodexRecovery, (await nextRestart.ReadExecutionAsync(attempt.ExecutionId))?.CodexRecovery);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task VersionElevenMigrationPreservesOutcomeWithoutInventingIntegrationCompletionProof()
     {
@@ -278,6 +300,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Null((await migrated.ReadExecutionAsync(original.ExecutionId))?.CompletionJson);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CodexRecoveryClaimAndConsumedBudgetSurviveRestartAndCannotBeDoubleClaimed()
     {
@@ -307,6 +331,8 @@ public sealed class ExecutionHistoryStoreTests
             attempt with { ExecutionId = Guid.NewGuid(), AttemptNumber = 3 }, CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CreationAndUpdatesSurviveStoreRecreationWithLifecycleDetails()
     {
@@ -353,6 +379,8 @@ public sealed class ExecutionHistoryStoreTests
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => reopened.UpdateAsync(actual with { State = "Failed" }));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task VersionSevenDatabaseMigratesReportingFailureWithoutChangingExistingOutcomes()
     {
@@ -377,6 +405,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Null(entry.ReportingFailure);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task VersionSixDatabaseMigratesWithoutInventingHistoricalSettings()
     {
@@ -400,6 +430,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("high", Assert.Single(await migrated.ReadAllAsync()).EffectiveEffort);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task VersionNineMigrationRetainsCliSelectionWithoutInventingAModel()
     {
@@ -422,6 +454,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.False(Assert.Single(entries, entry => entry.EffectiveModel == "explicit-model").ModelSelectedByCli);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task UpdatesResolveCliModelWithoutChangingEffort()
     {
@@ -440,6 +474,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("another", Assert.Single(await reopened.ReadAllAsync()).EffectiveModel);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("Blocked", "Human input required")]
     [InlineData("Failed", "Validation failed")]
@@ -461,6 +497,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.NotNull(actual.CompletedAtUtc);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CreatedExecutionWithoutTerminalStateRemainsIncompleteAfterRestart()
     {
@@ -474,6 +512,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Null(interrupted.CompletedAtUtc);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RetryAttemptIsPersistedAsSeparateLinkedHistoryRow()
     {
@@ -512,6 +552,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(second.ExecutionId, entries.Single(e => e.AttemptNumber == 3).RetryOfExecutionId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryExpiryIsStoredAndRecoveryCleanupDoesNotChangeExecutionHistory()
     {
@@ -536,6 +578,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(expires, actual.RecoveryExpiresAtUtc);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RecoveryRetentionUsesPersistedExpiryOrAControllableFallbackClock()
     {
@@ -553,6 +597,8 @@ public sealed class ExecutionHistoryStoreTests
         }, retention));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FreshDatabaseInitializesSchemaAndDoesNotPersistEnvironmentValues()
     {
@@ -575,6 +621,8 @@ public sealed class ExecutionHistoryStoreTests
         finally { Environment.SetEnvironmentVariable("CODEX_WORKER_HISTORY_TEST_SECRET", null); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ServerAssignmentRelationshipSurvivesHistoryReopen()
     {
@@ -591,6 +639,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal("assignment-456", actual.AssignmentId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IntegrationRecoveryClaimsAreAtomicAndBaseBudgetSurvivesRestart()
     {
@@ -625,6 +675,8 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(3, (await reopened.ReadAllAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedRecoveryHistoryInsertRollsBackClaimAndDoesNotConsumeBaseBudget()
     {

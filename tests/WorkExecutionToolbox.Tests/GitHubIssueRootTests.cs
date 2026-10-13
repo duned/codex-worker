@@ -7,6 +7,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed class GitHubIssueRootTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(IssueListState.All, 3)]
     [InlineData(IssueListState.Open, 2)]
@@ -23,6 +25,8 @@ public sealed class GitHubIssueRootTests
         Assert.Contains($"state={state.ToString().ToLowerInvariant()}", handler.Paths[0]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PaginationCountsPullRequestsAndReadsAnEmptyTerminalPage()
     {
@@ -33,6 +37,8 @@ public sealed class GitHubIssueRootTests
         Assert.EndsWith("page=3", handler.Paths[^1]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MultiPageListingReturnsAllRootsInNumberOrder()
     {
@@ -44,6 +50,8 @@ public sealed class GitHubIssueRootTests
         Assert.Contains(handler.Paths, path => path.EndsWith("page=2", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -56,6 +64,8 @@ public sealed class GitHubIssueRootTests
         Assert.Equal(GitHubIssueFailure.LimitExceeded, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DuplicateIssuesAcrossPagesAreRejected()
     {
@@ -65,6 +75,8 @@ public sealed class GitHubIssueRootTests
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyJsonResultIsASuccessfulArray()
     {
@@ -77,6 +89,8 @@ public sealed class GitHubIssueRootTests
         Assert.Empty(json.RootElement.GetProperty("data").EnumerateArray());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidBoundsAndStateFailBeforeHttp()
     {
@@ -93,6 +107,8 @@ public sealed class GitHubIssueRootTests
         Assert.Empty(handler.Paths);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(401, GitHubIssueFailure.Authorization)]
     [InlineData(429, GitHubIssueFailure.RateLimited)]
@@ -105,6 +121,8 @@ public sealed class GitHubIssueRootTests
         Assert.Equal(failure, error.Failure);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RefreshBypassesCachedParentDataAndRetainsReadDeduplication()
     {
@@ -128,6 +146,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task PersistentMultiPageScanRefreshesOnlyOpenOrChangedIssues()
     {
@@ -175,6 +195,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ClosedParentsRemainFreshWhileListingDiscoversUpdates()
     {
@@ -201,6 +223,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IncrementalScanDetectsClosuresReopensAndDisappearance()
     {
@@ -230,6 +254,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(IssueListState.Open)]
     [InlineData(IssueListState.Closed)]
@@ -259,6 +285,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task FailedPaginationCannotPublishACompleteListing()
     {
@@ -282,6 +310,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task IncrementalGrowthCannotBypassPaginationBounds()
     {
@@ -308,6 +338,8 @@ public sealed class GitHubIssueRootTests
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ParentFanOutIsBoundedAndJoined()
     {
@@ -342,6 +374,8 @@ public sealed class GitHubIssueRootTests
         public void Advance(TimeSpan elapsed) => _now += elapsed;
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -370,6 +404,8 @@ public sealed class GitHubIssueRootTests
         Assert.DoesNotContain("DatabaseId", output.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(0)]
     [InlineData(5)]
@@ -388,6 +424,8 @@ public sealed class GitHubIssueRootTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("roots --state unknown")]
     [InlineData("roots --state open --state closed")]
@@ -402,6 +440,8 @@ public sealed class GitHubIssueRootTests
         Assert.Empty(handler.Paths);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringParentReadPropagatesAndHasCliExit130()
     {
@@ -414,6 +454,8 @@ public sealed class GitHubIssueRootTests
         Assert.InRange(handler.Paths.Count, 2, 5); // One page and at most four in-flight parents.
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProviderFailureUsesExistingJsonErrorEnvelope()
     {

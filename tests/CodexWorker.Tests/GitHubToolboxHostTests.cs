@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubToolboxHostTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HostUsesGhCredentialOnlyForScopedRequest()
     {
@@ -23,6 +25,8 @@ public sealed class GitHubToolboxHostTests
         Assert.Equal("https://api.github.com/repos/team/project/issues/42", handler.Url);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -37,6 +41,8 @@ public sealed class GitHubToolboxHostTests
         Assert.DoesNotContain("fake-test-credential", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HostCredentialCancellationPropagates()
     {

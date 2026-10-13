@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class MultiProjectConfigurationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoadsGlobalConfigAndResolvesProjectsRelativeToWorkerFile()
     {
@@ -17,6 +19,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(Path.Combine(fixture.Root, "projects"), config.Projects.Directory);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ManagedOwnershipIgnoresLocalYamlAndDoesNotRequireProjectsDirectory()
     {
@@ -30,6 +34,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Throws<InvalidDataException>(() => ProjectConfigurationDiscovery.LoadForWorker(global));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ManagedRuntimeDefaultsResolveAtGlobalLayerAndRejectUnknownKeys()
     {
@@ -44,6 +50,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("")]
     [InlineData("  worker:\n    maxParallelTasks: 1\n")]
@@ -60,6 +68,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(yaml, File.ReadAllText(path));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
@@ -71,6 +81,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Throws<InvalidDataException>(() => GlobalWorkerConfiguration.Load(path));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoadsSupportedGlobalParallelism()
     {
@@ -80,6 +92,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(3, GlobalWorkerConfiguration.Load(path).Worker.MaxParallelTasks);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectParallelismDefaultsToOneAndCanBeConfigured()
     {
@@ -93,6 +107,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(2, projects.Single(x => x.Configuration.Project.Name == "Parallel").Configuration.Worker.MaxParallelTasks);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
@@ -106,6 +122,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Contains("worker.maxParallelTasks", error.Message);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void DiscoversYamlDeterministicallyAndIgnoresOtherFiles()
     {
@@ -117,6 +135,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(new[] { "alpha.yaml", "zeta.yml" }, projects.Select(x => Path.GetFileName(x.Path)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RejectsEmptyProjectsDirectory()
     {
@@ -124,6 +144,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Throws<InvalidDataException>(() => ProjectConfigurationDiscovery.Load(fixture.Projects));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ManagedWorkerCanDiscoverAnEmptyProjectsDirectory()
     {
@@ -149,6 +171,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal("Later", Assert.Single(ProjectConfigurationDiscovery.LoadForWorker(global)).Configuration.Project.Name);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MalformedProjectNamesSourceFile()
     {
@@ -158,6 +182,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Contains("broken.yml", error.Message);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("same", "owner/a", "a", "same", "owner/b", "b")]
     [InlineData("a", "owner/same", "a", "b", "owner/same", "b")]
@@ -170,6 +196,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Throws<InvalidDataException>(() => ProjectConfigurationDiscovery.Load(fixture.Projects));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RoundRobinStartsAtZeroAndAdvancesAfterSelection()
     {
@@ -181,6 +209,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(new[] { 2, 0, 1 }, scheduler.ScanOrder());
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RoundRobinSkipsProjectsAtCapacityAndUsesAvailableProjectCapacityFairly()
     {
@@ -207,6 +237,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.All(active.Zip(limits), pair => Assert.True(pair.First <= pair.Second));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CompletingOrFailingExecutionRestoresItsProjectCapacity()
     {
@@ -224,6 +256,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Contains(scheduler.ScanOrder(), index => active[index] < limits[index]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ScanSkipsEmptyQueuesAndAdvancesAfterOneSequentialSelection()
     {
@@ -249,6 +283,8 @@ public sealed class MultiProjectConfigurationTests
         Assert.Equal(new[] { 0, 1, 2 }, scheduler.ScanOrder());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ScanReturnsIdleWhenEveryProjectIsEmpty()
     {

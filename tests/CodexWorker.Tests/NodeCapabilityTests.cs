@@ -7,6 +7,8 @@ using System.Text.Json;
 
 public sealed class NodeCapabilityTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("codex-cli")]
     [InlineData("github-cli")]
@@ -41,6 +43,8 @@ public sealed class NodeCapabilityTests
         Assert.Equal(["authentication-required"], lost.Readiness.BlockingReasons);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ReadinessUsesDefinitionDependenciesAndDoesNotRequireCredentialsForEveryProvider()
     {
@@ -58,6 +62,8 @@ public sealed class NodeCapabilityTests
         Assert.False(CapabilityCatalog.ExecutionReadiness([installed]).Available);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OptionalToolEligibilityRequiresItsConfigurationButDoesNotBlockOtherTasks()
     {
@@ -77,6 +83,8 @@ public sealed class NodeCapabilityTests
         Assert.True(WorkerEligibility.Evaluate([new("tool", "docker")], [new("tool", "docker")], ready).IsEligible);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AuthenticationProbeFailurePreservesObservedInstallation()
     {
@@ -90,6 +98,8 @@ public sealed class NodeCapabilityTests
         Assert.False(CapabilityCatalog.Ready([state]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DetectionSeparatesInstallationAndAuthenticationAndDiscardsSecretOutput()
     {
@@ -114,6 +124,8 @@ public sealed class NodeCapabilityTests
         Assert.False(CapabilityCatalog.Ready(states));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExplicitRefreshRedetectsMachineFactsWhileOrdinaryReadsAreCached()
     {
@@ -133,6 +145,8 @@ public sealed class NodeCapabilityTests
         Assert.True(CapabilityCatalog.Ready(after));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConcurrentInspectionShowsRefreshInProgress()
     {
@@ -152,6 +166,8 @@ public sealed class NodeCapabilityTests
         Assert.All(await refresh, state => Assert.Equal(CapabilityOperationState.Idle, state.Operation.State));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProbeFailuresAreSafeAndCallerCancellationPropagates()
     {
@@ -164,6 +180,8 @@ public sealed class NodeCapabilityTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => discovery.GetAsync(cancellationToken: cancelled.Token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ManagedWireContractRoundTripsInventoryWithoutChangingLegacySchedulerCapabilities()
     {
@@ -180,6 +198,8 @@ public sealed class NodeCapabilityTests
             """)!.CapabilityInventory);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ConnectedWorkerCanLackReadinessAndOperationsSuppressActions()
     {
@@ -207,6 +227,8 @@ public sealed class NodeCapabilityTests
         Assert.All(stopped.Capabilities, item => Assert.Empty(item.AvailableActions));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void OptionalWorkloadProvidersDoNotMakeAnOtherwiseReadyWorkerUnavailable()
     {
@@ -226,6 +248,8 @@ public sealed class NodeCapabilityTests
         Assert.Equal(InstallationState.Unknown, Assert.Single(node.Capabilities, item => item.Definition.Id == "docker").State.Installation);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void InventoryRejectsDuplicateIdentifiersAndFreeFormDiagnostics()
     {
@@ -236,6 +260,8 @@ public sealed class NodeCapabilityTests
         Assert.False(CapabilityCatalog.ValidInventory([state with { Operation = new(CapabilityOperationState.Failed, DiagnosticCode: "private-token") }]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RegistryKeepsLatestInventoryAcrossRestart()
     {

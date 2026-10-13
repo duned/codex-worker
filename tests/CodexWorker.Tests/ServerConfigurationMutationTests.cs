@@ -7,6 +7,8 @@ using System.Text.Json;
 [Collection("ServerTokenEnvironment")]
 public sealed class ServerConfigurationMutationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void InstanceDisplayNameCanBeConfiguredThroughInstalledEnvironmentFile()
     {
@@ -21,6 +23,8 @@ public sealed class ServerConfigurationMutationTests
         Assert.Contains("Server__DisplayName=\"codex-server-main\"\n", File.ReadAllText(path), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConfigSetUpdatesInstalledEnvironmentFileAtomicallyAndReportsRestartRequirement()
     {
@@ -89,6 +93,8 @@ public sealed class ServerConfigurationMutationTests
         if (originalOwner is not null) Assert.Equal(originalOwner, ReadOwnerGroup(configurationPath));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("UnknownSetting", "true")]
     [InlineData("AdministrationOrigin", "http://external.example")]
@@ -111,6 +117,8 @@ public sealed class ServerConfigurationMutationTests
         Assert.Empty(Directory.EnumerateFiles(temporary.Path, "*.tmp", SearchOption.TopDirectoryOnly));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void MutationValidatesTheCompleteServerConfigurationBeforeReplacingTheFile()
     {

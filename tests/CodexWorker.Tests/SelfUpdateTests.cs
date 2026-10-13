@@ -8,6 +8,8 @@ using Xunit;
 
 public sealed class SelfUpdateTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("server")]
     [InlineData("worker")]
@@ -24,6 +26,8 @@ public sealed class SelfUpdateTests
         Assert.Contains("updated successfully", output.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("0.18.6", "0.18.6", false)]
     [InlineData("0.18.7", "0.18.6", false)]
@@ -48,6 +52,8 @@ public sealed class SelfUpdateTests
         Assert.Equal(0, operations.InstallCount);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("n\n")]
     [InlineData("")]
@@ -61,6 +67,8 @@ public sealed class SelfUpdateTests
         Assert.Contains("declined", output.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EmptyAnswerAcceptsDefault()
     {
@@ -70,6 +78,8 @@ public sealed class SelfUpdateTests
         Assert.Equal(1, operations.InstallCount);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -87,6 +97,8 @@ public sealed class SelfUpdateTests
         Assert.Equal("", error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -104,6 +116,8 @@ public sealed class SelfUpdateTests
         if (installerFailure) Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("finalVersion").ValueKind);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MismatchedFinalVersionFailsVerification()
     {
@@ -114,6 +128,8 @@ public sealed class SelfUpdateTests
         Assert.Contains("\"status\":\"failed\"", output.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiscoveryExcludesDraftPrereleaseInvalidAndIncompleteReleases()
     {
@@ -127,6 +143,8 @@ public sealed class SelfUpdateTests
         Assert.Equal("0.18.7", (await new PackagedSelfUpdate(http).FindReleaseAsync(Component(), CancellationToken.None)).Version);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NoValidReleaseAndNetworkFailureLeaveInstallationUntouched()
     {

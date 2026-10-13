@@ -8,6 +8,9 @@ public sealed class WorkerExecutionTests
     private static readonly GitSettings Git = new() { BaseBranch = "main", FeaturePrefix = "feature/" };
     private static readonly GitHubIssue Issue = new(17, "Add execution context", "", DateTimeOffset.UtcNow);
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void NewExecutionsHaveUniqueIdentityAndCompleteInitialContext()
     {
@@ -31,6 +34,9 @@ public sealed class WorkerExecutionTests
         Assert.True(first.StartedAtUtc <= DateTimeOffset.UtcNow);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void ServerAssignmentIsLinkedToTheNormalWorkerExecutionIdentity()
     {
@@ -44,6 +50,9 @@ public sealed class WorkerExecutionTests
         Assert.Equal("feature/add-execution-context-17", execution.FeatureBranch);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void GitRepositoryCreatesSeparateMutableRepositoryStatePerExecution()
     {
@@ -57,6 +66,9 @@ public sealed class WorkerExecutionTests
         Assert.NotSame(first, second);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void DefaultExecutionWorktreeRootsAreScopedByRepository()
     {
@@ -68,6 +80,9 @@ public sealed class WorkerExecutionTests
         Assert.EndsWith(Path.Combine("worktrees", "owner-two", "app"), second);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void NormalLifecycleTransitionsToCompleted()
     {
@@ -87,6 +102,9 @@ public sealed class WorkerExecutionTests
         Assert.Equal(ExecutionState.Completed, execution.State);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(ExecutionState.Blocked)]
     [InlineData(ExecutionState.Failed)]
@@ -116,6 +134,9 @@ public sealed class WorkerExecutionTests
         Assert.Throws<InvalidOperationException>(() => execution.TransitionTo(ExecutionState.Claimed));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void InvalidLifecycleTransitionDoesNotSilentlySucceed()
     {

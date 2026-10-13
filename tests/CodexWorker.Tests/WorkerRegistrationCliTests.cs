@@ -6,6 +6,8 @@ using CodexWorker;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerRegistrationCliTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("enroll")]
     [InlineData("associate")]
@@ -41,6 +43,8 @@ public sealed class WorkerRegistrationCliTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("http://127.0.0.1:5090", "enroll")]
     [InlineData("https://server.example", "associate")]
@@ -58,6 +62,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.False(File.Exists(path));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PairingCancellationDuringProtectedInputPreservesIdentityAndDoesNotBootstrap()
     {
@@ -81,6 +87,8 @@ public sealed class WorkerRegistrationCliTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("enroll")]
     [InlineData("rotate")]
@@ -102,6 +110,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.DoesNotContain("protected-token", writer.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -157,6 +167,8 @@ public sealed class WorkerRegistrationCliTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("sensitive-bootstrap", true)]
     [InlineData("abc", true)]
@@ -188,6 +200,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.DoesNotContain(token.Trim(), stderr.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancelledStandardInputReturnsCancellationWithoutEnrollment()
     {
@@ -210,6 +224,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.Equal("cancelled", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationBoundsInputThatDoesNotHonorTheTokenAndLateInputCannotEnroll()
     {
@@ -235,6 +251,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.DoesNotContain("late-sensitive-token", stdout.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExplicitMissingConfigurationFailsBeforeEnrollment()
     {
@@ -255,6 +273,8 @@ public sealed class WorkerRegistrationCliTests
         Assert.Equal("failed", result.RootElement.GetProperty("status").GetString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

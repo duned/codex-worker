@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ProjectConfigurationManagementTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CreateUpdateRemoveReloadAndNeverExposeEnvironmentValues()
     {
@@ -28,6 +30,8 @@ public sealed class ProjectConfigurationManagementTests
         Assert.Equal(new[] { "beta" }, (await reloaded.ListAsync(CancellationToken.None)).Select(project => project.Name));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidUpdateAndUniquenessConflictLeaveExistingYamlUntouched()
     {
@@ -44,6 +48,8 @@ public sealed class ProjectConfigurationManagementTests
         Assert.Equal(before, Directory.GetFiles(fixture.Projects, "*.yml").ToDictionary(path => Path.GetFileName(path)!, File.ReadAllText));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ActiveExecutionPreventsRemovalAndLastConfigurationCannotBeRemoved()
     {
@@ -58,6 +64,8 @@ public sealed class ProjectConfigurationManagementTests
         await Assert.ThrowsAsync<ProjectConfigurationConflictException>(() => service.RemoveAsync("alpha", CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RuntimeReservationPreventsRemovalBeforeExecutionHistoryIsWritten()
     {
@@ -77,6 +85,8 @@ public sealed class ProjectConfigurationManagementTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConfigurationMutationReplacesRuntimeSnapshotOnlyAfterValidation()
     {
@@ -100,6 +110,8 @@ public sealed class ProjectConfigurationManagementTests
         Assert.Same(accepted, registry.Snapshot().Single().Configuration);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FileWatcherDebouncesAndAppliesManualYamlChangesThroughValidatedReload()
     {

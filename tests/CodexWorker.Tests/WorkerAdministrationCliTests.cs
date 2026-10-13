@@ -5,6 +5,8 @@ using CodexWorker;
 
 public sealed class WorkerAdministrationCliTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiagnosticsUsesStatusContractAndHumanOutputIncludesActionableDiagnostics()
     {
@@ -25,6 +27,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Contains("install Codex", stdout.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ConfigJsonShorthandUsesTheShowService()
     {
@@ -38,6 +42,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal(1, json.RootElement.GetProperty("contractVersion").GetInt32());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("status")]
     [InlineData("capabilities")]
@@ -67,6 +73,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal("", stderr.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusServiceCancellationIsPropagatedWithTheCallerToken()
     {
@@ -78,6 +86,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal(cancellation.Token, status.Token);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusCollectionFailureIsStructuredWhenJsonIsRequested()
     {
@@ -90,6 +100,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal("status-collection-failed", result.RootElement.GetProperty("diagnostic").GetProperty("code").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalCommandAdaptersUseAdministrationServiceContracts()
     {
@@ -123,6 +135,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal((WorkerCommandLine.DefaultConfigurationPath, false), capabilities.Request);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task StatusCollectionFailuresReturnFailureExitCode()
     {
@@ -137,6 +151,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Contains("Status collection failed", stderr.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisioningCommandAdapterDelegatesTypedOperationToAdministrationService()
     {
@@ -150,6 +166,8 @@ public sealed class WorkerAdministrationCliTests
         Assert.Equal(0, service.StatusCalls);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ConfigurationAdministrationServiceReturnsVersionedRedactedDiagnosticContract()
     {

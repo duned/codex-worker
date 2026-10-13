@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class GitHubLabelTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingLabelsAreLeftUnchangedAndNoCreateCommandRuns()
     {
@@ -16,6 +18,8 @@ public sealed class GitHubLabelTests
         Assert.Equal(new[] { "label", "list" }, fixture.Commands[0].Take(2));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OnlyMissingConfiguredLabelIsCreatedAndSecondStartupIsIdempotent()
     {
@@ -32,6 +36,8 @@ public sealed class GitHubLabelTests
         Assert.Contains("--color", fixture.Commands[1]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CreatesAllSevenCustomizedLabelsWhenNoneExist()
     {
@@ -41,6 +47,8 @@ public sealed class GitHubLabelTests
         Assert.All(fixture.Created, name => Assert.Contains(name, fixture.Required.Select(x => x.Name)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LabelQueryFailureIsInfrastructureFailure()
     {
@@ -50,6 +58,8 @@ public sealed class GitHubLabelTests
         Assert.Contains("permission denied", failure.Message);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LabelCreationFailureIsInfrastructureFailureAndNeverUsesForce()
     {
@@ -67,6 +77,8 @@ public sealed class GitHubLabelTests
         Assert.DoesNotContain("--force", commands.SelectMany(x => x));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringLabelQueryIsSafeButCreateCancellationIsUncertain()
     {

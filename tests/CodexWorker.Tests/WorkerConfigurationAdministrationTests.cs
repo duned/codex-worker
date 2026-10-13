@@ -7,6 +7,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerConfigurationAdministrationTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ResolvePathUsesInstalledDefaultOrExplicitOverride()
     {
@@ -16,6 +18,8 @@ public sealed class WorkerConfigurationAdministrationTests
             WorkerConfigurationAdministration.ResolvePath("custom-worker.yml"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ShowJsonRedactsIdentityPathAndUrlCredentials()
     {
@@ -43,6 +47,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Contains(fixture.ConfigPath, output, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ValidateJsonReturnsFieldDiagnosticAndFailureExitCode()
     {
@@ -62,6 +68,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Contains("worker.pollingSeconds", diagnostic.GetProperty("message").GetString() ?? string.Empty, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ValidateJsonReportsValidManagedConfiguration()
     {
@@ -85,6 +93,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Empty(json.RootElement.GetProperty("diagnosticDetails").EnumerateArray());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SetCommandUsesOverridePathAndExplainsRestart()
     {
@@ -98,6 +108,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Contains("Restart the Worker service", output, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SetJsonReturnsVersionedUpdateContractAndAppliesTheSetting()
     {
@@ -115,6 +127,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Equal(3, GlobalWorkerConfiguration.Load(fixture.ConfigPath).Worker.MaxParallelTasks);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SetUpdatesKnownProvisioningPolicyAtomicallyAndPreservesOtherSettings()
     {
@@ -139,6 +153,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Empty(Directory.EnumerateFiles(fixture.Root, "*.tmp", SearchOption.TopDirectoryOnly));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SetPreservesInstalledUnixAccessModeAndLeavesUpdatedConfigurationReadable()
     {
@@ -165,6 +181,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Contains("worker.maxParallelTasks: 3", output, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SetOnReadOnlyInstalledConfigurationReturnsElevationRemediation()
     {
@@ -220,6 +238,8 @@ public sealed class WorkerConfigurationAdministrationTests
         return userId == "0";
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("worker.maxParallelTasks", "9")]
     [InlineData("worker.provisioning.enabled", "sometimes")]
@@ -235,6 +255,8 @@ public sealed class WorkerConfigurationAdministrationTests
         Assert.Equal(original, File.ReadAllText(fixture.ConfigPath));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SetRejectsUnknownSettingsWithoutChangingConfiguration()
     {

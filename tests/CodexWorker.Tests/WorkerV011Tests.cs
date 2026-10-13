@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerV011Tests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("success", IssueOutcomeKind.Succeeded)]
     [InlineData("failed", IssueOutcomeKind.Failed)]
@@ -19,6 +21,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("private quota error", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task QuotaObservationsDoNotSendExtraTelegramMessages()
     {
@@ -31,6 +35,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, h.OperationalMessages.Count(message => message.StartsWith("↳ Limits ·", StringComparison.Ordinal)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("success")]
     [InlineData("failed")]
@@ -90,6 +96,8 @@ public sealed class WorkerV011Tests
             Task.FromException<CodexQuotaObservation>(new IOException("private quota error"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CodexFailureDuringRequestedShutdownDoesNotBecomeWorkerFailure()
     {
@@ -97,6 +105,8 @@ public sealed class WorkerV011Tests
             Task.FromException<IssueProcessingResult?>(new CodexExecutionInfrastructureException("Codex usage limit", "Execution preserved") { Recoverable = true })]);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("snapshot", "snapshot is missing")]
     [InlineData("intent", "Issue intent is missing")]
@@ -127,6 +137,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(reason, h.Output.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null)]
     [InlineData(true)]
@@ -190,6 +202,8 @@ public sealed class WorkerV011Tests
         public void Advance(TimeSpan duration) => _now += duration;
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false, "restart", true, "blocked")]
     [InlineData(false, "resume", true, "blocked")]
@@ -257,6 +271,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("New unblock authorization", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RunningExecutionKeepsItsPreparedCommentSnapshot()
     {
@@ -275,6 +291,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.GitHub.CommentFetches);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CommentFetchFailurePreventsClaimAndWorkspaceMutationAndCanBeFetchedAgain()
     {
@@ -297,6 +315,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("fresh instructions", Assert.Single(h.Codex.Issues).CommentContext);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RejectedIntegrationRecoveryIsJournaledAndReported()
     {
@@ -314,6 +334,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("codex-integration-recovery->codex-integration-conflict", h.GitHub.Labels);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RejectedIntegrationRecoveryReleasesIssueReservationForExplicitReady()
     {
@@ -332,6 +354,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Started);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()
     {
@@ -343,6 +367,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("Scheduler · Test Project / #17 claimed", h.Output.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ConcurrentPollingDoesNotDispatchAnIssueWhileItsExecutionIsActive()
     {
@@ -373,6 +399,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ActiveOldestIssueDoesNotPreventDispatchOfAnotherReadyIssue()
     {
@@ -398,6 +426,8 @@ public sealed class WorkerV011Tests
         await Task.WhenAll(second!, replacement!);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IntegrationConflictHasDedicatedStateAndSchedulerCanContinue()
     {
@@ -419,6 +449,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, (await history.ReadAllAsync()).Count);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("IntegrationConflict", null)]
     [InlineData("IntegrationConflict", "integration-conflict")]
@@ -476,6 +508,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.OperationalMessages, message => message.Contains("explicit ready label takes precedence", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LegacyConflictWithoutRecoveryOrValidationMetadataStartsFreshFromExplicitReady()
     {
@@ -515,6 +549,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.GitHub.Comments, comment => comment.Contains("Preparation rejected", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null)]
     [InlineData("uncertain")]
@@ -555,6 +591,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("https://github.com/owner/repo/issues/17", notification);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CorrectedMetadataCanRetryAfterCleanPreparationFailureInResumeMode()
     {
@@ -592,6 +630,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.OperationalMessages, message => message.Contains("clean preparation failure", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -618,6 +658,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("Infrastructure failure", h.ErrorOutput.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -646,6 +688,8 @@ public sealed class WorkerV011Tests
         Assert.Single(h.TelegramMessages, message => message.Contains("Preparación rechazada:", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExplicitRecoveryLabelStillUsesIntegrationRecoveryPath()
     {
@@ -670,6 +714,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(sourceId, recovery.RetryOfExecutionId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DirtyCheckoutPreparationIsBlockedWithoutResumeMetadata()
     {
@@ -689,6 +735,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("### Recovery\n\n", Assert.Single(h.GitHub.Comments));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DirtyCheckoutFailureDoesNotCancelAnIndependentRunningExecution()
     {
@@ -713,6 +761,8 @@ public sealed class WorkerV011Tests
         Assert.NotNull(await independent!);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExplicitNewAttemptAfterOlderCompletionProceedsToIntegration()
     {
@@ -740,6 +790,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, attempt.AttemptNumber);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -780,6 +832,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Started);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ValidatedExecutionKeepsActiveClaimUntilTerminalReportingFinishes()
     {
@@ -814,6 +868,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, h.Git.Started);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LaterAttemptSupersedesValidatedExecutionWithExplicitReport()
     {
@@ -843,6 +899,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("superseded", entry.RecoveryState);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IncompatibleAssignmentCanRetryCleanlyInResumeModeOnceRequirementsAreRestored()
     {
@@ -873,6 +931,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("preparation-failed", entries.Single(entry => entry.State == "Blocked").RecoveryState);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AssignedUnrecoverableResumeReturnsCompletedRejectionTaskInsteadOfFailingClaim()
     {
@@ -900,6 +960,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("assignment-rejected", rejected.AssignmentId);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerAssignmentCreatesLinkedExecutionAndUsesNormalRunnerAndGitHubLifecycle()
     {
@@ -941,6 +1003,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(lines, line => line.Contains("completed ·", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedPreExecutionFailureLogsCorrelatedRedactedReasonWithoutRunningCodex()
     {
@@ -972,6 +1036,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("unsafe-value", h.Output.ToString(), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AssignmentCancellationBeforeIntegrationStopsAtTheSharedRepositoryBoundary()
     {
@@ -990,6 +1056,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Integrations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState()
     {
@@ -1041,6 +1109,8 @@ public sealed class WorkerV011Tests
         Assert.False(reported.Recoverable);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SchedulerDispatchesExplicitExecutionAndReceivesSafeTerminalOutcome()
     {
@@ -1058,6 +1128,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("working->blocked", h.GitHub.Labels);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InitialValidationSuccessDoesNotInvokeRepair()
     {
@@ -1076,6 +1148,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Validation\n\nValidation passed successfully.", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SuccessfulIssuePersistsWorkerLifecycleAndIntegrationFacts()
     {
@@ -1102,6 +1176,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CodexAndValidationUseTheExecutionWorktreeDirectory()
     {
@@ -1115,6 +1191,8 @@ public sealed class WorkerV011Tests
         Assert.NotEqual(h.Worker.Configuration.Project.Directory, h.Codex.InitialDirectory);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InitialValidationFailureThenSuccessfulRepairIsRevalidatedAndIntegrated()
     {
@@ -1139,6 +1217,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("stdout", comment);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SupportsMultipleBoundedRepairAttempts()
     {
@@ -1160,6 +1240,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("implemented", comment);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExhaustedRepairAttemptsFailTaskWithoutIntegratingEvenWhenRepairsReportSuccess()
     {
@@ -1189,6 +1271,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("### Implementation attempt", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BlockedRepairStopsLoopAndUsesBlockedWorkflow()
     {
@@ -1213,6 +1297,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedRepairStopsLoopAndUsesFailedWorkflow()
     {
@@ -1227,6 +1313,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("working->failed", h.GitHub.Labels);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PreflightRunsBeforeQueueAndSuccessfulPreflightAllowsClaim()
     {
@@ -1242,6 +1330,8 @@ public sealed class WorkerV011Tests
         Assert.Contains("Codex preflight OK ·", h.Output.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationWhileSafelyIdleUsesConciseShutdownPresentation()
     {
@@ -1257,6 +1347,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringReadyIssueQueryIsGracefulAndDoesNotThrowInfrastructureFailure()
     {
@@ -1271,6 +1363,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.TelegramMessages, message => message.Contains("INFRAESTRUCTURA", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationDuringIssueClaimRetainsInfrastructureClassification()
     {
@@ -1285,6 +1379,8 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain(h.TelegramMessages, message => message.Contains($"CW {ApplicationVersion.Display} · DETENIDO", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CompletingIssueEntersInteractiveIdleAndCancellationCleansSpinner()
     {
@@ -1326,6 +1422,9 @@ public sealed class WorkerV011Tests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task FailedPreflightStopsBeforeIssueQueryOrClaim()
     {
@@ -1339,6 +1438,9 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Started);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task RuntimeCodexInfrastructureFailureStopsWithoutMarkingIssueFailed()
     {
@@ -1359,6 +1461,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task SecondaryGitHubFailurePreservesPrimaryExecutionFailureAndRecordsUncertainty()
     {
@@ -1383,6 +1487,8 @@ public sealed class WorkerV011Tests
         Assert.Empty(h.GitHub.Comments);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task UncertainResultMutationIsNotFollowedByACompensatingGitHubMutation()
     {
@@ -1404,6 +1510,9 @@ public sealed class WorkerV011Tests
         Assert.Empty(h.GitHub.Comments);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task StructuredTaskFailureStillCleansAndReportsFailedIssue()
     {
@@ -1427,6 +1536,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task StructuredFailurePersistsRecoverableWorkspaceMetadata()
     {
@@ -1454,6 +1565,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task BlockedExecutionPreservesUsefulWorkspaceForAnExplicitRetry()
     {
@@ -1478,6 +1591,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExternalPrerequisiteBlockerUsesBlockedLifecycleAndPreservesRecovery()
     {
@@ -1509,6 +1624,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("failed", "Failed")]
     [InlineData("blocked", "Blocked")]
@@ -1549,6 +1666,8 @@ public sealed class WorkerV011Tests
         File.Delete(database);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -1590,6 +1709,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(count, (await history.ReadAllAsync()).Count(entry => entry.State == "Cancelled"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1617,6 +1738,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Cleanups);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ShutdownDuringIssueMutationKeepsUncertainOwnershipForInspection()
     {
@@ -1632,6 +1755,9 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, h.Git.Started);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task UnexpectedCancellationIsNotAControlledShutdownInterruption()
     {
@@ -1639,6 +1765,8 @@ public sealed class WorkerV011Tests
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => WorkerHost.AwaitShutdownExecutionsAsync([cancelled]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task GenuineFailureDuringShutdownStillFailsDrain()
     {
@@ -1647,6 +1775,8 @@ public sealed class WorkerV011Tests
         await Assert.ThrowsAsync<WorkerInfrastructureException>(() => WorkerHost.AwaitShutdownExecutionsAsync([cancelled, failure]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SecondaryGitHubFailureDuringRequestedShutdownDoesNotBecomeFatalExit()
     {
@@ -1658,6 +1788,9 @@ public sealed class WorkerV011Tests
         await WorkerHost.AwaitShutdownExecutionsAsync([shutdown, reporting]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public async Task GitHubReportingFailureDoesNotCancelAnUnrelatedActiveExecution()
     {
@@ -1684,6 +1817,8 @@ public sealed class WorkerV011Tests
     private static ValidationResult Failure(string command, int exitCode, string stderr) =>
         new(new ValidationFailure(1, command, exitCode, "useful stdout", stderr, false));
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("restart")]
     [InlineData("resume")]
@@ -1715,6 +1850,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `task-model` · effort: `low`", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("success", IssueOutcomeKind.Succeeded, "account-model")]
     [InlineData("failed", IssueOutcomeKind.Failed, "account-model")]
@@ -1738,6 +1875,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains($"Codex model: `{model ?? "unknown (CLI model unavailable)"}` · effort: `medium`", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("restart")]
     [InlineData("resume")]
@@ -1765,6 +1904,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `second-model`", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task CodexInfrastructureFailureRetainsObservedModelInHistoryAndInterruptionReport()
     {
@@ -1782,6 +1923,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Codex model: `account-model` · effort: `medium`", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ImplementationAndValidationRepairUseTheSameProfile()
     {
@@ -1795,6 +1938,8 @@ public sealed class WorkerV011Tests
         Assert.All(h.Codex.Profiles, profile => Assert.Equal(new CodexExecutionProfile("project-model", "high"), profile));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InvalidMetadataBlocksBeforePreparingGitAndCanBeCorrected()
     {
@@ -1812,6 +1957,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("low", Assert.Single(h.Codex.Profiles).Effort);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1843,6 +1990,8 @@ public sealed class WorkerV011Tests
         Assert.Null((await history.ReadAllAsync()).Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryClaim);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ExhaustedAutomaticRecoveryRemainsPreservedAcrossPollsAndRestartAndRearmsOnChangedBase()
     {
@@ -1872,6 +2021,8 @@ public sealed class WorkerV011Tests
         Assert.Null(restarted.Codex.InitialDirectory);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task OperatorRecoveryLabelRearmsAnUnchangedExhaustedBase()
     {
@@ -1885,6 +2036,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.RecoveryStarted);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task UnsafeConflictReportsReasonAndDoesNotBlockUnrelatedImplementation()
     {
@@ -1907,6 +2060,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("integration-conflict", (await history.ReadAllAsync()).Single(entry => entry.ExecutionId == source.ExecutionId).RecoveryState);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ConflictLabelWithoutHistoryNeverStartsImplementation()
     {
@@ -1919,6 +2074,8 @@ public sealed class WorkerV011Tests
         Assert.Contains(h.GitHub.Comments, comment => comment.Contains("no recoverable integration-conflict execution history", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1953,6 +2110,8 @@ public sealed class WorkerV011Tests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryClaimReservesCapacityAndCannotBeDoubleScheduledOrReimplemented()
     {
@@ -1984,6 +2143,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(0, registry.WorkerActiveExecutionCount);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ManagedRecoveryAssignmentContinuesPreservedImplementationWithLeaseLineageAndFrozenProfile()
     {
@@ -2013,6 +2174,8 @@ public sealed class WorkerV011Tests
         Assert.Equal("Original Issue intent", attempt.OriginalIssueBody);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ConflictFromNormalImplementationRetryRecoversItsOwnWorkspaceRatherThanEarlierFailedWork()
     {
@@ -2031,6 +2194,8 @@ public sealed class WorkerV011Tests
         Assert.Null(h.Codex.InitialDirectory);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -2080,6 +2245,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Started);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("label-before")]
     [InlineData("label-after")]
@@ -2119,6 +2286,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ManuallyClosedPublishedCompletionAcknowledgesSuccessWithoutGitHubEffects()
     {
@@ -2148,6 +2317,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ConfirmedBaseWithPendingArchiveRemainsInCompletionLifecycle()
     {
@@ -2171,6 +2342,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PendingIntegrationRecoveryCompletionRetainsClaimUntilSuccessAndNeverReportsAnotherRecoveryRejection()
     {
@@ -2201,6 +2374,8 @@ public sealed class WorkerV011Tests
         Assert.Equal(1, h.Git.Integrations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("body")]
     [InlineData("ready")]
@@ -2252,6 +2427,8 @@ public sealed class WorkerV011Tests
         Assert.Single(h.Codex.Issues);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -2339,6 +2516,8 @@ public sealed class WorkerV011Tests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task TerminalLegacyCompletionLeavesSchedulingAvailableAcrossRestarts()
     {
@@ -2385,6 +2564,8 @@ public sealed class WorkerV011Tests
         Assert.Single(h.Codex.Issues);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true, "working")]
     [InlineData(true, "done")]

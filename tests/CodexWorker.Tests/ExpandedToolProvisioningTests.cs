@@ -6,6 +6,8 @@ using CodexWorker;
 
 public sealed class ExpandedToolProvisioningTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CatalogAndLocalInventoryDescribeProvidedToolsAndSeparateDependencies()
     {
@@ -35,6 +37,8 @@ public sealed class ExpandedToolProvisioningTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk", "8.0.100 [/sdk]\n11.0.100 [/sdk]", null)]
     [InlineData("dotnet-sdk", "10.0.100-preview.1 [/sdk]", null)]
@@ -65,6 +69,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.True(CapabilityCatalog.ValidInventory(states));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(0, RequirementState.Satisfied)]
     [InlineData(1, RequirementState.Required)]
@@ -106,6 +112,8 @@ public sealed class ExpandedToolProvisioningTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DockerPermissionDeniedKeepsInstallationAndReportsSpecificUnavailableConfiguration()
     {
@@ -125,6 +133,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.True(CapabilityCatalog.ValidInventory([state]));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk", "dotnet-sdk-10.0")]
     [InlineData("dotnet-runtime", "aspnetcore-runtime-10.0")]
@@ -172,6 +182,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.DoesNotContain(calls, call => call.Args.Any(arg => arg is "purge" or "autoremove" or "rm" or "logout" or "usermod"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk")]
     [InlineData("dotnet-runtime")]
@@ -193,6 +205,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.True(ProvisioningCommandProtocol.ValidReport(report));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk")]
     [InlineData("dotnet-runtime")]
@@ -209,6 +223,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.Equal(ProvisioningDiagnostic.Denied, (await executor.ExecuteAsync(command, false)).Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk")]
     [InlineData("dotnet-runtime")]
@@ -236,6 +252,8 @@ public sealed class ExpandedToolProvisioningTests
         Assert.Equal(2 * CapabilityCatalog.Definitions.Count, probes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("dotnet-sdk", "10.0.100", "10.0.200", UpdateState.Available)]
     [InlineData("dotnet-runtime", "10.0.1", "10.0.2", UpdateState.Available)]

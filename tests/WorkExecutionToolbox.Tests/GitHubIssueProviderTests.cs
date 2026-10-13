@@ -8,6 +8,8 @@ public sealed class GitHubIssueProviderTests
 {
     private const string Secret = "fake-test-credential";
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("open", IssueState.Open)]
     [InlineData("closed", IssueState.Closed)]
@@ -37,6 +39,8 @@ public sealed class GitHubIssueProviderTests
         Assert.Null(http.DefaultRequestHeaders.Authorization);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingIssuesAndPullRequestsReturnNull()
     {
@@ -46,6 +50,8 @@ public sealed class GitHubIssueProviderTests
         Assert.Null(await Provider(pullHttp).GetIssueAsync(Issue()));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401, false, GitHubIssueFailure.Authorization)]
     [InlineData(403, false, GitHubIssueFailure.Authorization)]
@@ -63,6 +69,8 @@ public sealed class GitHubIssueProviderTests
         Assert.Null(error.InnerException);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"token\":\"fake-test-credential\"}")]
     [InlineData("not json fake-test-credential")]
@@ -75,6 +83,8 @@ public sealed class GitHubIssueProviderTests
         Assert.DoesNotContain(Secret, error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MismatchedRepositoryNumberAndInvalidIdentityAreRejected()
     {
@@ -86,6 +96,8 @@ public sealed class GitHubIssueProviderTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("project")]
     [InlineData("team/project/extra")]
@@ -99,6 +111,8 @@ public sealed class GitHubIssueProviderTests
         await Assert.ThrowsAsync<ArgumentException>(() => provider.GetIssueAsync(new(new(repository), 1)));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CredentialAndTransportFailuresCannotExposeSecrets()
     {
@@ -112,6 +126,8 @@ public sealed class GitHubIssueProviderTests
         Assert.DoesNotContain(Secret, error.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OversizedResponsesAreRejected()
     {
@@ -120,6 +136,8 @@ public sealed class GitHubIssueProviderTests
         Assert.Equal(GitHubIssueFailure.InvalidResponse, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("")]
     [InlineData("invalid token")]
@@ -132,6 +150,8 @@ public sealed class GitHubIssueProviderTests
         Assert.Equal(GitHubIssueFailure.Authorization, error.Failure);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationBeforeCredentialsAndDuringHttpRemainsCancellation()
     {
@@ -148,6 +168,8 @@ public sealed class GitHubIssueProviderTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.GetIssueAsync(Issue(), cancellation.Token));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RemoteDiscoveryRequiresOneUnambiguousRepository()
     {

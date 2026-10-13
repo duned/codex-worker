@@ -2,6 +2,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexExecutionProfileTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("", "project-model", "high")]
     [InlineData("## Codex\nmodel: task-model", "task-model", "high")]
@@ -16,6 +18,8 @@ public sealed class CodexExecutionProfileTests
         Assert.Equal("high", defaults.ReasoningEffort);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UnconfiguredProjectRetainsCliModelAndWorkerEffortDefaults()
     {
@@ -26,6 +30,8 @@ public sealed class CodexExecutionProfileTests
             CodexExecutionProfile.Resolve("## Codex\neffort: low", new CodexSettings()));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("## Codex\neffort: turbo")]
     [InlineData("## Codex\nmodel:")]
@@ -43,6 +49,8 @@ public sealed class CodexExecutionProfileTests
         Assert.StartsWith("Invalid ## Codex metadata:", error.Message);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void UnrelatedProseHeadingsAndFencedExamplesAreIgnored()
     {
@@ -66,6 +74,8 @@ public sealed class CodexExecutionProfileTests
         Assert.Equal(new CodexExecutionProfile(null, "low"), CodexExecutionProfile.Resolve(body, new CodexSettings()));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RecordedCliDefaultDoesNotBecomeAnExplicitModelOnRetry()
     {
@@ -74,6 +84,8 @@ public sealed class CodexExecutionProfileTests
             "## Codex\nmodel: edited", new CodexSettings { Model = "new-default" }, source));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ResolvedCliModelIsReportedOnRetryWithoutForcingSelection()
     {
@@ -85,6 +97,8 @@ public sealed class CodexExecutionProfileTests
         Assert.DoesNotContain("--model", CodexExecutor.BuildArguments(new CodexSettings { Model = profile.Model }, "schema", "output", "prompt"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LegacyRecoveryUsesProjectDefaultsWithoutApplyingIssueEdits()
     {
@@ -92,6 +106,8 @@ public sealed class CodexExecutionProfileTests
             "## Codex\neffort: invalid", new CodexSettings { Model = "project" }, Entry()));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LongerFencesAndIndentedCodeDoNotSelectSettings()
     {
@@ -99,6 +115,8 @@ public sealed class CodexExecutionProfileTests
         Assert.Equal(new CodexExecutionProfile(null, "medium"), CodexExecutionProfile.Resolve(body, new CodexSettings()));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void BlankConfiguredModelRetainsCliSelection()
     {

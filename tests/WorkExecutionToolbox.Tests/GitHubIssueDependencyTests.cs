@@ -5,6 +5,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed class GitHubIssueDependencyTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -28,6 +30,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.DoesNotContain(handler.Paths, path => path.Contains("labels", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -48,6 +52,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Equal(applied ? 2 : 1, handler.Writes.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PreviewPreflightsButNeverWrites()
     {
@@ -61,6 +67,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -79,6 +87,8 @@ public sealed class GitHubIssueDependencyTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TransitiveCycleInLaterBatchItemRejectsAllWrites()
     {
@@ -96,6 +106,8 @@ public sealed class GitHubIssueDependencyTests
             (await Provider(http).SetDependencyAsync(new(Target(), 11, false))).Status);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ExistingCycleInBlockerGraphIsRejected()
     {
@@ -109,6 +121,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationAfterMutationPropagatesAndStopsFurtherWrites()
     {
@@ -121,6 +135,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Contains(10, handler.Dependencies[42]);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DiamondGraphDoesNotLookLikeCycle()
     {
@@ -133,6 +149,8 @@ public sealed class GitHubIssueDependencyTests
             (await Provider(http).SetDependencyAsync(new(Target(), 10, true))).Status);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -148,6 +166,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.DoesNotContain("fake-secret", JsonSerializer.Serialize(result));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SuccessResponseWithoutMutationFailsReadBack()
     {
@@ -158,6 +178,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Contains("read-back", result.Diagnostic);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LostWriteResponseWithVerifiedMutationIsChanged()
     {
@@ -169,6 +191,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.DoesNotContain("fake-secret", JsonSerializer.Serialize(result));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnavailableReadBackReportsUncertaintyAndStopsBatch()
     {
@@ -181,6 +205,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Single(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadReturnsDirectListAndPaginatesInExplicitRepository()
     {
@@ -197,6 +223,8 @@ public sealed class GitHubIssueDependencyTests
         Assert.Empty(handler.Writes);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DependencyResponsesFromAnotherRepositoryAreRejectedBeforeWrites()
     {
@@ -210,6 +238,8 @@ public sealed class GitHubIssueDependencyTests
         await Assert.ThrowsAsync<GitHubIssueException>(() => Provider(http).GetBlockedByAsync(Target()));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingTargetReadReturnsNullAndCancellationPropagates()
     {
@@ -224,6 +254,8 @@ public sealed class GitHubIssueDependencyTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => provider.GetBlockedByAsync(Target(), cancellation.Token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidContextNumbersAndSelfLinksAreRejectedBeforeHttp()
     {

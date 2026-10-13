@@ -8,6 +8,8 @@ namespace CodexWorker.Tests;
 [Collection("ServerTokenEnvironment")]
 public sealed class WorkerRegistrationTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -35,6 +37,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("   ")]
     [InlineData("\t\n")]
@@ -54,6 +58,8 @@ public sealed class WorkerRegistrationTests
         Assert.False(File.Exists(path + ".server"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IdentityPersistsAndSeparateFilesProduceDistinctIdentities()
     {
@@ -67,6 +73,8 @@ public sealed class WorkerRegistrationTests
         Assert.True(Guid.TryParseExact(first, "N", out _));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidPersistedIdentityIsRejectedInsteadOfSilentlyChangingWorker()
     {
@@ -77,12 +85,16 @@ public sealed class WorkerRegistrationTests
         await Assert.ThrowsAsync<InvalidDataException>(() => WorkerIdentity.LoadOrCreateAsync(path));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void StandaloneModeIsDisabledByDefault()
     {
         Assert.False(new GlobalWorkerConfiguration().Server.Enabled);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AssignmentProjectMustMatchKnownWorkerConfiguration()
     {
@@ -103,6 +115,8 @@ public sealed class WorkerRegistrationTests
         Assert.False(WorkerHost.MatchesManagedProject(configuration, known with { Enabled = false }, [known]));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RegistrationFailureIsStartupFailureAndPayloadContainsNoSecrets()
     {
@@ -135,6 +149,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RegistrationFailureIncludesSafeServerReasonAndRedactsBootstrapToken()
     {
@@ -153,6 +169,8 @@ public sealed class WorkerRegistrationTests
         Assert.DoesNotContain(token, failure.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task HeartbeatFailureUsesSharedSafeDiagnosticAndCorrelation()
     {
@@ -174,6 +192,8 @@ public sealed class WorkerRegistrationTests
         Assert.DoesNotContain("hidden", failure.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("<html>private server payload</html>")]
     [InlineData("{\"error\":{\"secret\":\"private server payload\"}}")]
@@ -191,6 +211,8 @@ public sealed class WorkerRegistrationTests
         Assert.DoesNotContain("private server payload", failure.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BootstrapOmitsOversizedStructuredResponse()
     {
@@ -205,6 +227,8 @@ public sealed class WorkerRegistrationTests
         Assert.DoesNotContain("private server payload", failure.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RepeatedBootstrapRegistersTheSamePersistentIdentity()
     {
@@ -239,6 +263,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BootstrapPersistsDurableCredentialAndServerUrlWithoutReturningEitherInPayload()
     {
@@ -260,6 +286,8 @@ public sealed class WorkerRegistrationTests
         Assert.Equal(durableToken, WorkerAuthentication.GetToken(settings));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BootstrapWithoutExecutionDependenciesReportsMissingCapabilities()
     {
@@ -285,6 +313,8 @@ public sealed class WorkerRegistrationTests
         Assert.True(File.Exists(settings.IdentityFile + ".token"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingCodexDoesNotInvalidateSuccessfulBootstrapOrPersistentIdentity()
     {
@@ -316,6 +346,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_WORKER_CODEX_EXECUTABLE", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task BootstrapCanRetryAfterTheOneTimeTokenWasAlreadyConsumed()
     {
@@ -337,6 +369,8 @@ public sealed class WorkerRegistrationTests
         Assert.Equal("https://server.example", settings.EffectiveUrl);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AssignmentRequestUsesRegisteredIdentityAndDoesNotCallServerWithoutCapacity()
     {
@@ -371,6 +405,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LeaseRenewalUsesExecutionWorkerAndGenerationAndSurfacesStaleOwnership()
     {
@@ -405,6 +441,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ProvisioningProtocolAcceptsStructuredPlansAndReportsProgressWithoutSecrets()
     {
@@ -440,6 +478,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_REGISTRATION_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("not-a-url")]
     [InlineData("http://remote.example")]
@@ -464,6 +504,8 @@ public sealed class WorkerRegistrationTests
         Assert.Equal(token, WorkerAuthentication.GetToken(settings));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401)]
     [InlineData(403)]
@@ -484,6 +526,8 @@ public sealed class WorkerRegistrationTests
         Assert.Equal(token, WorkerAuthentication.GetToken(settings));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("short")]
     [InlineData("this-token-has-at-least-thirty-two-characters but-has-whitespace")]
@@ -502,6 +546,8 @@ public sealed class WorkerRegistrationTests
         Assert.Equal(token, await File.ReadAllTextAsync(path + ".token"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ConcurrentCreationConvergesOnOneDurableIdentityAndCredential()
     {
@@ -524,6 +570,8 @@ public sealed class WorkerRegistrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InvalidBootstrapEndpointFailsBeforeCreatingIdentityOrCredential()
     {
@@ -537,6 +585,8 @@ public sealed class WorkerRegistrationTests
         Assert.False(File.Exists(path + ".server"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DeliveryFailureRedactsCustomHeaderTokenFromBoundedErrors()
     {
@@ -560,6 +610,8 @@ public sealed class WorkerRegistrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", prior); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task HeartbeatPollingNotificationsDoNotExposeRawServerFailure()
     {
@@ -583,6 +635,8 @@ public sealed class WorkerRegistrationTests
         finally { await loop.StopAsync(); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task HeartbeatUsesCurrentAppliedCapacityIncludingFinalReport()
     {

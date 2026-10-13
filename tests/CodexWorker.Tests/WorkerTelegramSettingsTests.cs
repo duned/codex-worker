@@ -9,6 +9,8 @@ public sealed class WorkerTelegramSettingsTests
 {
     private const string Token = "123456:abcdefghijklmnopqrstuvwxyz_123456789";
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task PersistsPerWorkerEncryptedSettingsWithRevisionChecksAndExplicitClear()
     {
@@ -53,6 +55,8 @@ public sealed class WorkerTelegramSettingsTests
         Assert.Null(await credentials.RetrieveForWorkerAsync(credentialId, workerId));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(true, null, null)]
     [InlineData(true, "123", null)]
@@ -79,6 +83,8 @@ public sealed class WorkerTelegramSettingsTests
         Assert.False(disabled?.Telegram?.Enabled);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task EnvironmentIsPreservedUntilOverrideAndDisableNeverRetrievesOrFallsBack()
     {
@@ -114,6 +120,8 @@ public sealed class WorkerTelegramSettingsTests
             false, null, null, Retrieve, cancellation.Token));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task NotifierAppliesDisableAndReplacementWithoutChangingDeliveryFormatting()
     {
@@ -131,6 +139,8 @@ public sealed class WorkerTelegramSettingsTests
         Assert.Contains("456", handler.Deliveries[1].Body, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FailedRuntimeApplicationRetainsNotifierAndCacheAndDisableRecoversWithoutSecretDelivery()
     {
@@ -167,6 +177,8 @@ public sealed class WorkerTelegramSettingsTests
         Assert.Single(handler.Deliveries);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SnapshotHashIncludesTelegramAndCacheContainsOnlyReference()
     {

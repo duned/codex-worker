@@ -2,6 +2,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexCliModelTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ReadsOnlyCompleteCliHeaderIgnoringLaterToolOutput()
     {
@@ -12,6 +14,8 @@ public sealed class CodexCliModelTests
         Assert.Null(CodexCliModel.TryReadStartupHeader(new string('x', 8192) + header));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("model: secret with spaces")]
     [InlineData("model: ")]

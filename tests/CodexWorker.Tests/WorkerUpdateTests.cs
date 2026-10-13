@@ -30,6 +30,8 @@ public sealed class WorkerUpdateTests
         return (store, worker);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task InvalidManagedContractCanUpdateAfterDrainingButCannotRestoreSchedulingUntilSynchronized()
     {
@@ -61,6 +63,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("stopped", true)]
     [InlineData("running", false)]
@@ -77,6 +81,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ActiveWorkWaitsAndAdmissionStopsEvenAfterOperatorEnablesScheduling()
     {
@@ -97,6 +103,8 @@ public sealed class WorkerUpdateTests
         Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerLeaseMustFinishEvenWhenWorkerReportsZeroActiveExecutions()
     {
@@ -117,6 +125,8 @@ public sealed class WorkerUpdateTests
         Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Enabled")]
     [InlineData("Disabled")]
@@ -142,6 +152,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal(policy, (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Disabled")]
     [InlineData("Draining")]
@@ -162,6 +174,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal(changedPolicy, (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LostStartResponseAndServerRestartCannotReplayAndCanReconcileReadiness()
     {
@@ -183,6 +197,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal("succeeded", (await restarted.GetWorkerUpdateAsync(worker))?.State);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -204,6 +220,8 @@ public sealed class WorkerUpdateTests
         Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ReconnectRequiresInstallerResultAndExplicitRecoveryNeverDispatchesAgain()
     {
@@ -224,6 +242,8 @@ public sealed class WorkerUpdateTests
         Assert.StartsWith("reconciled:", (await store.GetWorkerUpdateAsync(worker))?.Diagnostic);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AlreadyCurrentTemporaryLocalDrainWaitsForReadyBeforeRestoringPolicy()
     {
@@ -243,6 +263,8 @@ public sealed class WorkerUpdateTests
         Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AlreadyCurrentDoesNotInstallAndStaleWorkersAreUnavailable()
     {

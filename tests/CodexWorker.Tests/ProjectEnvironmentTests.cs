@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ProjectEnvironmentTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoadsDotenvLinesCommentsEmptyLinesAndEqualsInValues()
     {
@@ -18,6 +20,8 @@ public sealed class ProjectEnvironmentTests
         Assert.Equal("", values["EMPTY"]);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("NOT_AN_ASSIGNMENT\n")]
     [InlineData("=missing-key\n")]
@@ -35,6 +39,8 @@ public sealed class ProjectEnvironmentTests
         Assert.DoesNotContain("secret-marker", error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ProjectWithoutEnvironmentConfigurationHasNoProjectVariables()
     {
@@ -44,6 +50,8 @@ public sealed class ProjectEnvironmentTests
         Assert.Empty(config.Environment.Variables);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void LoadsEnvironmentFileRelativeToProjectYamlAndRejectsMissingFilesWithoutSecrets()
     {
@@ -58,6 +66,8 @@ public sealed class ProjectEnvironmentTests
         Assert.DoesNotContain("secret-marker", missing.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ConfigurationDiagnosticsForMalformedEnvironmentNeverIncludeValues()
     {
@@ -71,6 +81,8 @@ public sealed class ProjectEnvironmentTests
         Assert.DoesNotContain("secret-marker", error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ValidationReceivesProjectEnvironment()
     {
@@ -81,6 +93,8 @@ public sealed class ProjectEnvironmentTests
         Assert.True(result.Succeeded);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void CodexEnvironmentReceivesOnlyItsProjectsValuesAndKeepsProtectedFiltering()
     {

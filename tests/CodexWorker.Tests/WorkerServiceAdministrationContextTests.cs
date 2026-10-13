@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerServiceAdministrationContextTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void PackagedRootAdministrationTransitionsAndOtherOperatorsCannotAuthenticateThemselvesAsTheNode()
     {
@@ -16,6 +18,8 @@ public sealed class WorkerServiceAdministrationContextTests
         Assert.False(WorkerServiceAdministrationContext.RequiresTransition(new("run", null, []), packaged: true, "codex-worker"));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("provision", "login", "codex-cli")]
     [InlineData("provision", "check-authentication", "codex-cli")]
@@ -47,6 +51,8 @@ public sealed class WorkerServiceAdministrationContextTests
             start.ArgumentList.Skip(boundary + 1));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void ContextMatchesPackagedUnitAndLeavesCodexOverridesToProtectedEnvironmentFile()
     {
@@ -63,6 +69,8 @@ public sealed class WorkerServiceAdministrationContextTests
             property => property.Contains("CODEX_HOME", StringComparison.Ordinal) || property.Contains("CODEX_WORKER_CODEX_EXECUTABLE", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("run")]
     [InlineData("register")]
@@ -72,6 +80,8 @@ public sealed class WorkerServiceAdministrationContextTests
         Assert.Throws<ArgumentException>(() => WorkerServiceAdministrationContext.CreateStartInfo(new(command, null, [])));
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("login", "--property=User=root")]
     [InlineData("shell", "codex-cli")]

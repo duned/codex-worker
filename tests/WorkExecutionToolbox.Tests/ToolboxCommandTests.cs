@@ -6,6 +6,8 @@ namespace WorkExecutionToolbox.Tests;
 
 public sealed partial class ToolboxCommandTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("--version")]
     [InlineData("-v")]
@@ -30,6 +32,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal(output.ToString(), standaloneOutput.ToString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("parent set 9 3", "parent", true)]
     [InlineData("parent clear 9", "parent", false)]
@@ -60,6 +64,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Empty(run.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("parent set 9 3")]
     [InlineData("relationships 9")]
@@ -90,6 +96,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Contains("wet --help", run.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OversizedDependencyBatchRejectedBeforeProvider()
     {
@@ -100,6 +108,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Null(provider.Operation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HelpNeedsNeitherRepositoryNorAuthentication()
     {
@@ -111,6 +121,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Null(provider.Operation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HumanRelationshipsDistinguishOrganizationAndBlockingAndEscapeControls()
     {
@@ -122,6 +134,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain('\u001b', run.Output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task HumanGraphShowsDirectionAndInspectionLimits()
     {
@@ -133,6 +147,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain("cycle", run.Output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task JsonRelationshipsRetainNumbersAndStringStates()
     {
@@ -143,6 +159,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal("open", data.GetProperty("issue").GetProperty("state").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(RelationshipChangeStatus.Changed, 0)]
     [InlineData(RelationshipChangeStatus.Unchanged, 0)]
@@ -159,6 +177,8 @@ public sealed partial class ToolboxCommandTests
             json.RootElement.GetProperty("data").GetProperty("status").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task PartialDependencyOutputPreservesIndividualOutcomes()
     {
@@ -170,6 +190,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Contains("Refresh relationships", run.Output);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("children")]
     [InlineData("relationships")]
@@ -183,6 +205,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Equal("missingIssue", json.RootElement.GetProperty("error").GetProperty("code").GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(GitHubIssueFailure.Authorization, "authorization")]
     [InlineData(GitHubIssueFailure.RateLimited, "rateLimited")]
@@ -198,6 +222,8 @@ public sealed partial class ToolboxCommandTests
         if (failure == GitHubIssueFailure.Authorization) Assert.Contains("gh auth status", run.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UnexpectedExceptionsDoNotExposeRawDiagnostics()
     {
@@ -207,6 +233,8 @@ public sealed partial class ToolboxCommandTests
         Assert.DoesNotContain("sensitive", run.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationReachesProviderAndHasDistinctExit()
     {
@@ -218,6 +246,8 @@ public sealed partial class ToolboxCommandTests
         Assert.Contains("Refresh relationships", run.Error);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task TimeoutDoesNotMasqueradeAsUserCancellation()
     {

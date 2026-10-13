@@ -5,6 +5,8 @@ using CodexWorker;
 
 public sealed class DockerProvisioningTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install)]
     [InlineData(ProvisioningCommandAction.Update)]
@@ -37,6 +39,8 @@ public sealed class DockerProvisioningTests
             Assert.DoesNotContain(calls, c => c.Contains("apt-get", StringComparison.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(10, "", ProvisioningFailureCode.DockerServiceRestartRequired)]
     [InlineData(1, "Cannot connect to the Docker daemon", ProvisioningFailureCode.DockerDaemonUnavailable)]
@@ -53,6 +57,8 @@ public sealed class DockerProvisioningTests
         Assert.True(ProvisioningCommandProtocol.ValidReport(report));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalAndServerDispatchedConfigurationRequirePolicyAndExplicitElevation()
     {
@@ -76,6 +82,8 @@ public sealed class DockerProvisioningTests
         Assert.True(parsed.AllowElevation);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task FreshAdministrativeProbeCannotHidePendingWorkerServiceRefresh()
     {
@@ -91,6 +99,8 @@ public sealed class DockerProvisioningTests
         Assert.Contains("systemctl restart codex-worker", result.Remediation ?? string.Empty, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task InterruptedConfigurationRefreshesObservationsWithoutClaimingReadiness()
     {
@@ -108,6 +118,8 @@ public sealed class DockerProvisioningTests
         Assert.Equal(RequirementState.Required, Assert.Single(await discovery.GetAsync(), s => s.Id == "docker").Configuration);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task UninstallDoesNotMutateAccountGroups()
     {

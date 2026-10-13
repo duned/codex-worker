@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class ValidationRepairContractTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false, 23, "process exit")]
     [InlineData(true, null, "timeout")]
@@ -28,6 +30,8 @@ public sealed class ValidationRepairContractTests
         Assert.True(text.Length < 1900);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ValidationCaptureRetainsFinalDiagnosticsAfterOutputLimit()
     {
@@ -43,6 +47,8 @@ public sealed class ValidationRepairContractTests
         Assert.True(failure.StandardOutput.Length < 161000);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void IntegrationRepairPromptIncludesCombinedSourceContextAndCompleteRedactedDiagnostics()
     {
@@ -76,6 +82,8 @@ public sealed class ValidationRepairContractTests
         Assert.DoesNotContain("private-value", prompt);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RepairPromptIncludesIssueInstructionsFailureAndAttemptContext()
     {
@@ -96,6 +104,8 @@ public sealed class ValidationRepairContractTests
         Assert.Contains("do not run GitHub CLI commands", prompt);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RepairDiagnosticsStayBoundedAndRetainBothOutputTailsAndFailureHeader()
     {

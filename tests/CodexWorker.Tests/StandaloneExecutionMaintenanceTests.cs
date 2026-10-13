@@ -2,6 +2,8 @@ namespace CodexWorker.Tests;
 
 public sealed class StandaloneExecutionMaintenanceTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -39,6 +41,8 @@ public sealed class StandaloneExecutionMaintenanceTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CancellationWhileWaitingRestoresSchedulingWithoutInterruptingActiveExecution()
     {
@@ -64,6 +68,8 @@ public sealed class StandaloneExecutionMaintenanceTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedModeIsRejectedBeforeDrainOrHistoryMutation()
     {

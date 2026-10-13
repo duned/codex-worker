@@ -5,6 +5,8 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerProvisioningTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install)]
     [InlineData(ProvisioningCommandAction.Update)]
@@ -44,6 +46,8 @@ public sealed class WorkerProvisioningTests
         Assert.DoesNotContain("secret-output", System.Text.Json.JsonSerializer.Serialize(result), StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SharedInstallerFailureReturnsAnOutcomeAndAdministrationRemainsUsable()
     {
@@ -64,6 +68,8 @@ public sealed class WorkerProvisioningTests
         Assert.Equal("succeeded", (await service.GetStatusAsync()).Status);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task DockerConfigurationCheckFailsWithServiceAccountRemediationWhenDaemonAccessIsDenied()
     {
@@ -89,6 +95,8 @@ public sealed class WorkerProvisioningTests
         Assert.Contains("provision configure docker --allow-elevation", result.Remediation ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalDetectionWorksWithoutServerOrExecutionTools()
     {
@@ -99,6 +107,8 @@ public sealed class WorkerProvisioningTests
         Assert.All(await discovery.GetAsync(), state => Assert.Equal(InstallationState.Missing, state.Installation));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(ProvisioningCommandAction.Install)]
     [InlineData(ProvisioningCommandAction.Login)]

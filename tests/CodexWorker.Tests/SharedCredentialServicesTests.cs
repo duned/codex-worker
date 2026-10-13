@@ -8,6 +8,8 @@ using CodexWorker;
 
 public sealed class SharedCredentialServicesTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("X-Codex-Worker-Token: SENTINEL-bootstrap-secret")]
     [InlineData("X-Worker-Credential-Token: SENTINEL-delivery-secret")]
@@ -24,6 +26,8 @@ public sealed class SharedCredentialServicesTests
         Assert.DoesNotContain("SENTINEL", FailureDiagnosticRedactor.Redact(value));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ServerStorageAndWorkerAuthenticationComposeTheSharedCredentialContract()
     {
@@ -73,6 +77,8 @@ public sealed class SharedCredentialServicesTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("github", "api-token", "credential", 1, "fake-token", true)]
     [InlineData("GitHub", "personal-access-token", "credential", 2, "fake-token", true)]
@@ -105,6 +111,8 @@ public sealed class SharedCredentialServicesTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SharedTokenAuthenticationReturnsSafeTimeoutAndProcessFailureReports()
     {
@@ -119,6 +127,8 @@ public sealed class SharedCredentialServicesTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task SharedTokenAuthenticationPropagatesCancellationWithoutStartingLogin()
     {

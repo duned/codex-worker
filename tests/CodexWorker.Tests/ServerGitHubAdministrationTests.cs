@@ -9,6 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 public sealed class ServerGitHubAdministrationTests
 {
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("open", "OPEN")]
     [InlineData("closed", "CLOSED")]
@@ -100,6 +102,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain(commands, command => command.Contains("permissions", StringComparer.Ordinal));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RelationshipsAndGraphAcceptRootWithoutParent()
     {
@@ -117,6 +121,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.False(graph.IsTruncated);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("{\"data\":{\"repository\":null}}")]
     [InlineData("{\"data\":{\"repository\":{\"issue\":null}}}")]
@@ -130,6 +136,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(401)]
     [InlineData(403)]
@@ -145,6 +153,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("private-token", exception.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CliAndSubIssueAdministrationUseOptionalParentReads()
     {
@@ -174,6 +184,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("parent:add:8:7", Assert.Single(writer.Operations));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("", "done")]
     [InlineData(",\"labels\":[]", null)]
@@ -193,6 +205,8 @@ public sealed class ServerGitHubAdministrationTests
         if (expectedLabel is not null) Assert.Equal(expectedLabel, labels[0].GetString());
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("null")]
     [InlineData("{}")]
@@ -205,6 +219,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("invalid-relationships", exception.Code);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task MissingRelatedMetadataFailsRatherThanReturningEmptyLabels()
     {
@@ -246,6 +262,8 @@ public sealed class ServerGitHubAdministrationTests
             return Task.FromResult(new GitHubReadCommandResult(0, "[]", ""));
         });
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("parent")]
     [InlineData("sub_issues")]
@@ -271,6 +289,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("secret", exception.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("list")]
     [InlineData("detail")]
@@ -291,6 +311,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("password", exception.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task AccessDiagnosticsDoNotReturnRawGhAuthenticationErrors()
     {
@@ -304,6 +326,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("private-token", access.Diagnostic, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AssignmentRechecksDependenciesReleasesBlockedReservationAndOnlyReturnsEligibleWork()
     {
@@ -338,6 +362,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(refreshed.ManagedEligibilityReasons!);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -390,6 +416,8 @@ public sealed class ServerGitHubAdministrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -430,6 +458,8 @@ public sealed class ServerGitHubAdministrationTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task AssignmentReadFailureReleasesReservationAndDoesNotReturnWork()
     {
@@ -455,6 +485,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("Released", queued.Lease!.State);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task IssueWriteServiceUsesProjectScopedTypedArgumentsAndReturnsSafeFailures()
     {
@@ -506,6 +538,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("private-output", failure.Message, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task IssueMutationPreviewValidationAndIdempotencyStayProjectScoped()
     {
@@ -557,6 +591,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(new[] { "create", "update", "label:add", "blocked-by:remove" }, writer.Operations);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RelationshipAdministrationSetsChangesClearsAndBatchesScopedIssueNumbers()
     {
@@ -602,6 +638,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(3, writer.Operations.Count(operation => operation.StartsWith("parent:", StringComparison.Ordinal)));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ParentBatchReportsPartialChangeWithSafeRecoveryGuidance()
     {
@@ -629,6 +667,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.DoesNotContain("private-token", diagnostic, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ProjectOnboardingApiChecksAccessAndPreservesRegistryRevisionSemanticsWithoutWorkers()
     {
@@ -690,6 +730,8 @@ public sealed class ServerGitHubAdministrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task GitHubApiRequiresManagementAuthBoundsIssueQueriesAndOnlyExplicitlyEnqueuesEligibleIssues()
     {
@@ -753,6 +795,8 @@ public sealed class ServerGitHubAdministrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task GitHubMutationApiRequiresManagementAuthAndPreviewsBeforeScopedWrites()
     {
@@ -850,6 +894,8 @@ public sealed class ServerGitHubAdministrationTests
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task LocalCliListsIssuesAndEnqueuesOnlyOnExplicitCommand()
     {
@@ -876,6 +922,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalCliPreviewsIssueMutationsAndScopesLabelAdministration()
     {
@@ -911,6 +959,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalCliShowsVersionedRelationshipsAndBatchMutationOutcomes()
     {
@@ -963,6 +1013,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Empty(error.ToString());
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task LocalCliRendersBoundedIssueGraphWithoutCallingMutationService()
     {

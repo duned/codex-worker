@@ -4,6 +4,8 @@ namespace CodexWorker.Tests;
 
 public sealed class CodexInterruptionTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("You've hit your usage limit", "Codex usage limit", true)]
     [InlineData("rate_limit_exceeded", "Codex usage limit", true)]
@@ -20,6 +22,8 @@ public sealed class CodexInterruptionTests
         Assert.DoesNotContain("secret-value", failure.Reason, StringComparison.Ordinal);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void AgentOutputAndEchoedPromptDoNotAuthorizeInfrastructureResume()
     {
@@ -29,6 +33,8 @@ public sealed class CodexInterruptionTests
             "{\"type\":\"turn.failed\",\"error\":{\"message\":\"You've hit your usage limit\"}}", "")).Category);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void TimeoutAndDiagnosticsAreBoundedAndSanitized()
     {
@@ -39,6 +45,8 @@ public sealed class CodexInterruptionTests
         Assert.True(evidence.Length < 2100);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void SessionIdentityComesOnlyFromValidatedThreadStartedEvent()
     {
@@ -48,6 +56,8 @@ public sealed class CodexInterruptionTests
         Assert.Null(CodexExecutor.TryReadSession($"{{\"type\":\"item.completed\",\"thread_id\":\"{id}\"}}"));
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ReadinessRestoresAutomaticallyWithBackoffAndNoBusyLoop()
     {

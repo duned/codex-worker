@@ -7,6 +7,8 @@ using System.Diagnostics;
 [Collection("ServerTokenEnvironment")]
 public sealed class ServerGitHubEnvironmentTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task RepositoryVerificationUsesOwnedServiceContextWithoutPersistingCredentials()
     {
@@ -34,6 +36,8 @@ public sealed class ServerGitHubEnvironmentTests
         await Assert.ThrowsAsync<IOException>(() => setup.CreateStartInfoAsync("/usr/bin/git", [], CancellationToken.None));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("auth status --hostname github.com")]
     [InlineData("api repos/team/project --jq .full_name")]
@@ -84,6 +88,8 @@ public sealed class ServerGitHubEnvironmentTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -112,6 +118,8 @@ public sealed class ServerGitHubEnvironmentTests
         await Assert.ThrowsAsync<GitHubIssueWriteUnavailableException>(() => writer.CreateIssueAsync(project, "Task", "Details"));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task ManagedAuthenticationIsUsedForAccessReadsAndWrites()
     {
@@ -149,6 +157,8 @@ public sealed class ServerGitHubEnvironmentTests
         Assert.Equal(new[] { "auth", "api", "issue", "api" }, calls);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task OptionalWorkerContextRetainsStandaloneBehaviorWhenManagedSetupIsAbsent()
     {
