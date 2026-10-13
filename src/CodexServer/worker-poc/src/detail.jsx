@@ -8,14 +8,7 @@ import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses } from './model.js';
-
-const executionStages = [
-  { id: 'claimed', label: 'Claimed' },
-  { id: 'preparing', label: 'Preparing' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'validation', label: 'Validating' },
-  { id: 'integration', label: 'Integrating' }
-];
+import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
 const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
 const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
   'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
@@ -36,18 +29,8 @@ function Status({ value, tone, active = false }) {
   return <StatusBadge compact tone={tone ?? statusTone(value)} withDot active={active}>{value ?? t('shared.unknown')}</StatusBadge>;
 }
 
-function stageKey(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  if (normalized === 'claim' || normalized === 'claimed') return 'claimed';
-  if (normalized === 'preparing' || normalized === 'preparation') return 'preparing';
-  if (normalized === 'codex') return 'codex';
-  if (normalized === 'validation' || normalized === 'validating') return 'validation';
-  if (normalized === 'integration' || normalized === 'integrating') return 'integration';
-  return null;
-}
-
 function stageLabel(stage) {
-  const key = stageKey(stage);
+  const key = executionTimeline(stage).find(item => item.state === 'current')?.id;
   return key ? localizeText(executionStages.find(item => item.id === key).label) : localizeText(stage);
 }
 
@@ -168,15 +151,26 @@ function WorkReference({ item, project }) {
 
 function ExecutionTimeline({ item }) {
   useLanguage();
-  const current = stageKey(item.currentStage);
+  const stages = executionTimeline(item.currentStage);
   return <div className="poc-execution-timeline">
     <ol className="poc-stage-list" aria-label={t('workers.executionStages')}>
-      {executionStages.map(stage => {
-        const active = current === stage.id;
-        return <li key={stage.id} className={active ? 'is-current' : ''} aria-current={active ? 'step' : undefined}>
-          <span className="poc-stage-marker" aria-hidden="true">{active ? <span /> : null}</span>
+      {stages.map(stage => {
+        const classes = [
+          stage.state === 'completed' && 'is-complete',
+          stage.state === 'current' && 'is-current',
+          stage.connectorComplete && 'has-completed-connector'
+        ].filter(Boolean).join(' ');
+        const detail = stage.state === 'completed' ? t('workers.stageCompleted')
+          : stage.state === 'current' ? t('workers.currentStageReported')
+            : stage.state === 'pending' ? t('workers.stagePending') : t('workers.notReported');
+        const markerState = stage.state === 'completed' ? 'is-complete' : stage.state === 'current' ? 'is-current' : '';
+        return <li key={stage.id} className={classes} aria-current={stage.state === 'current' ? 'step' : undefined}>
+          <span className={`poc-stage-marker ${markerState}`} aria-hidden="true">
+            {stage.state === 'completed' ? <svg viewBox="0 0 16 16" focusable="false"><path d="m3.5 8.25 3 2.75 6-6" /></svg>
+              : stage.state === 'current' ? <span className="poc-stage-active-dot" /> : null}
+          </span>
           <span className="poc-stage-name">{localizeText(stage.label)}</span>
-          <span className="poc-stage-detail">{active ? t('workers.currentStageReported') : t('workers.notReported')}</span>
+          <span className="poc-stage-detail">{detail}</span>
         </li>;
       })}
     </ol>
@@ -199,9 +193,13 @@ function CurrentExecution({ item, projects, now, showStatus }) {
         <dt>{t('workers.gitHubIssue')}</dt>
         <dd><WorkReference item={item} project={project} /></dd>
       </div>
+      <div>
+        <dt>{t('shared.elapsed')}</dt>
+        <dd>{duration(item, now)}</dd>
+      </div>
     </dl>
     <ExecutionTimeline item={item} />
-    <p className="poc-current-execution-timing">{t('home.elapsed')} {duration(item, now)} · {item.startedAtUtc ? `${t('executions.started')} ${relativeAge(item.startedAtUtc, now)}` : t('workers.executionStartNotReported')} · <a href={`/executions/${encodeURIComponent(item.id)}`}>{t('shared.executionDetails')}</a></p>
+    <p className="poc-current-execution-timing">{item.startedAtUtc ? `${t('executions.started')} ${relativeAge(item.startedAtUtc, now)}` : t('workers.executionStartNotReported')} · <a href={`/executions/${encodeURIComponent(item.id)}`}>{t('shared.executionDetails')}</a></p>
   </article>;
 }
 
