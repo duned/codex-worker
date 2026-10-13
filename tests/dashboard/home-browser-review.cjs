@@ -58,7 +58,14 @@ const output = path.resolve(process.argv[3] || '/tmp/home-browser-review');
         if (scenario === 'unavailable') await page.getByRole('alert').first().waitFor();
         if (scenario === 'empty') await page.getByText('No Workers registered. Add a Worker to get started.').waitFor();
         if (scenario === 'recovery') {
-          assert.ok(await page.locator('a[href="/executions/recover"]').count() > 0);
+          const recent = page.locator('#home-completed table');
+          assert.deepEqual(await recent.locator('thead th').allTextContents(), ['Exec. ID', 'Project', 'GitHub Issue', 'Created', 'State', 'Finished', 'Worker']);
+          const row = recent.locator('tbody tr').filter({ has: page.locator('a[href="/executions/recover"]') });
+          await row.waitFor();
+          assert.ok(await row.locator('a[href="/projects/project-a"]').count() > 0);
+          assert.ok(await row.locator('a[href="https://github.com/owner/repo/issues/27"]').count() > 0);
+          assert.ok(await row.locator('a[href="/workers/worker-a"]').count() > 0);
+          await page.getByRole('link', { name: 'All executions', exact: true }).waitFor();
           await page.getByLabel('Status', { exact: true }).selectOption('Completed');
           await page.getByText('No completed executions match this status.').waitFor();
           await page.getByText('Current work · 1 active', { exact: true }).waitFor();

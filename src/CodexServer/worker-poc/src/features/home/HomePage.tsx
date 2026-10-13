@@ -10,6 +10,7 @@ import { ExternalLink } from '../../shared/Actions';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { issueLink, timestamp, duration, statusColor, isActiveExecutionState } from '../../model';
 import { presentation } from '../executions/model';
+import { ExecutionTable } from '../executions/ExecutionTable';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { GuidDisplay } from '../../shared/GuidDisplay';
 import { WorkerConnectionBadge } from '../workers/WorkerConnectionBadge';
@@ -79,8 +80,8 @@ export function HomePage() {
         })}</ul></div></section>
     </div>
     <section aria-labelledby="home-current"><h2 id="home-current" className="mb-3 text-lg font-semibold text-primary">{`${t('home.currentExecutions')}${activity.data ? t('home.activeCount', { count: current.length }) : ''}`}</h2><div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(activity, t("home.noExecutionRequestsYet"))}{activity.data && !current.length && <p className="px-5 py-4 text-sm text-tertiary">{t("home.noActiveExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{current.map(item => executionRow(item, true))}</ul></div><Button className="mt-2" href="/executions" color="link-color">{t("home.allExecutions")}</Button></section>
-    <section aria-labelledby="home-completed"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 id="home-completed" className="text-lg font-semibold text-primary">{t("home.recentCompletedExecutions")}</h2><label className="text-sm">{t("home.status")}<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...completedStatuses].map(state => <option key={state} value={state}>{statusLabel(state)}</option>)}</select></label></div><div className="overflow-x-auto rounded-xl border border-secondary bg-primary">
-      {activity.data && !completed.length && <p className="px-5 py-4 text-sm text-tertiary">{completedExecutions(activity.data).length ? t("home.noCompletedExecutionsMatchThisStatus") : t("home.noCompletedExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{completed.map(item => executionRow(item))}</ul>
+    <section aria-labelledby="home-completed"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 id="home-completed" className="text-lg font-semibold text-primary">{t("home.recentCompletedExecutions")}</h2><label className="text-sm">{t("home.status")}<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...completedStatuses].map(state => <option key={state} value={state}>{statusLabel(state)}</option>)}</select></label></div><div className="rounded-xl border border-secondary bg-primary">
+      {activity.data && !completed.length ? <p className="px-5 py-4 text-sm text-tertiary">{completedExecutions(activity.data).length ? t("home.noCompletedExecutionsMatchThisStatus") : t("home.noCompletedExecutionsInThisSnapshot")}</p> : activity.data && <ExecutionTable items={completed} projects={catalog.data ?? []} workers={registry.data ?? []} />}
     </div></section>
   </div>;
 }

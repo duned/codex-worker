@@ -49,7 +49,7 @@ test('missing translator input falls back safely and failed detail retains optio
 });
 
 test('execution list keeps state details inside the badge and presents localized two-line timestamps', () => {
-  const detail = read('features/executions/ExecutionsPage.tsx');
+  const detail = read('features/executions/ExecutionTable.tsx');
   const english = read('shared/locales/en.ts');
   const spanish = read('shared/locales/es.ts');
   const dateRenderer = detail.match(/function ExecutionListTimestamp\([\s\S]*?\n\}/)?.[0];
