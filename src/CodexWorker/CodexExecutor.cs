@@ -580,7 +580,7 @@ public sealed record ValidationFailure(int CommandNumber, string Command, int? E
     private static string Tail(string value, int length) => length <= 0 ? "" : value.Length <= length ? value : value[^length..];
 }
 
-public sealed record ValidationResult(ValidationFailure? Failure)
+public sealed record ValidationResult(ValidationFailure? Failure, IReadOnlyList<ValidationReport>? Reports = null)
 {
     public bool Succeeded => Failure is null;
     public static ValidationResult Success { get; } = new((ValidationFailure?)null);
@@ -593,6 +593,7 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds,
     {
         IReadOnlyDictionary<string, string?>? environment = projectEnvironment?.ToDictionary(pair => pair.Key, pair => (string?)pair.Value);
         var index = 0;
+        var reports = new List<ValidationReport>();
         foreach (var command in commands)
         {
             index++;
@@ -603,12 +604,22 @@ public sealed class ValidationRunner(ProcessRunner runner, int timeoutSeconds,
             catch (ProcessTimeoutException ex)
             {
                 return new ValidationResult(new ValidationFailure(index, command, null, ex.StandardOutput, ex.StandardError, true,
-                    projectEnvironment?.Values.ToArray()));
+                    projectEnvironment?.Values.ToArray()), reports);
+            }
+            try
+            {
+                if (ValidationReport.Parse(result.StandardOutput, result.ExitCode == 0, projectEnvironment?.Values.ToArray()) is { } report)
+                    reports.Add(report);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidDataException)
+            {
+                return new ValidationResult(new ValidationFailure(index, command, result.ExitCode, "",
+                    "Invalid validation result metadata: " + ex.Message, false, projectEnvironment?.Values.ToArray()), reports);
             }
             if (result.ExitCode != 0)
                 return new ValidationResult(new ValidationFailure(index, command, result.ExitCode, result.StandardOutput, result.StandardError, false,
-                    projectEnvironment?.Values.ToArray()));
+                    projectEnvironment?.Values.ToArray()), reports);
         }
-        return ValidationResult.Success;
+        return new ValidationResult(null, reports);
     }
 }

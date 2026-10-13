@@ -30,6 +30,12 @@ class FilterGuardTests(unittest.TestCase):
             with self.subTest(outcomes=outcomes), self.assertRaises(ValueError):
                 self.check(outcomes, 1)
 
+    def test_dynamic_counts_require_positive_passing_cases(self):
+        self.assertEqual(3, self.check([["Passed", "Passed"], ["Passed"]], None))
+        for outcomes in ([], [[]], [["NotExecuted"]], [["Failed"]]):
+            with self.subTest(outcomes=outcomes), self.assertRaises(ValueError):
+                self.check(outcomes, None)
+
     def test_zero_expected_cannot_authorize_an_empty_selection(self):
         with self.assertRaises(ValueError):
             self.check([[]], 0)

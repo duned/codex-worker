@@ -4,6 +4,7 @@
 .vs/
 TestResults/
 **/node_modules/
+**/__pycache__/
 
 # Local settings, credentials, and runtime output
 .env

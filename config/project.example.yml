@@ -47,6 +47,9 @@ validation:
   # Separate bounded budgets for initial validation repair and integration repair.
   # Set to 0 to disable Codex repairs; authoritative validation still runs.
   maxFixAttempts: 2
+  # Commands are repository-owned. A repository can supply a scope/risk selector
+  # here; the Worker does not infer application-specific build/test commands.
+  # For this Codex Worker repository, see docs/risk-based-validation.md.
   commands:
     - dotnet test
 

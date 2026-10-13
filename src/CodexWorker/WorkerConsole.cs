@@ -39,6 +39,13 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
         WriteLine("────────────────────────────────────────────", ConsoleColor.Cyan);
     }
 
+    public void ValidationSelection(Guid executionId, string step, ValidationReport report)
+    {
+        WriteLine($"[{executionId}] {step} · {report.Mode} · {report.Reason} · build: {report.BuildScope}", null);
+        foreach (var run in report.Runs)
+            WriteLine($"[{executionId}] {run.Kind} · {run.Project} · filter: {run.Filter} · cases: {run.Cases} · {run.DurationSeconds:F3}s · {(run.Succeeded ? "passed" : "failed")}", null);
+    }
+
     public void ProjectLoaded(string name) => WriteLine($"Loaded · {name}", ConsoleColor.Green, "✓");
     public void GitHubCliReady() => WriteLine("GitHub CLI ready", ConsoleColor.Green, "✓");
     public void GitHubAuthenticationReady() => WriteLine("GitHub API authentication ready", ConsoleColor.Green, "✓");

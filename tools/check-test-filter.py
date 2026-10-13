@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a local dotnet test filter and require an exact, nonzero TRX case count."""
+"""Run a local dotnet filter with an exact count; share positive TRX guards with policy."""
 
 import argparse
 import json
@@ -10,13 +10,20 @@ import time
 import xml.etree.ElementTree as ET
 
 
-def check_results(directory, expected):
+def read_results(directory):
+    """Read current TRX cases, including failures, for count reporting."""
     results = []
     for artifact in sorted(Path(directory).glob("*.trx")):
         root = ET.parse(artifact).getroot()
         results.extend(root.findall(".//{*}UnitTestResult"))
-    if expected <= 0 or len(results) != expected:
-        raise ValueError(f"Expected {expected} nonzero cases; TRX contains {len(results)}")
+    return results
+
+
+def check_results(directory, expected):
+    """Require passing cases; None requests a dynamic positive count."""
+    results = read_results(directory)
+    if not results or (expected is not None and (expected <= 0 or len(results) != expected)):
+        raise ValueError(f"Expected {expected if expected is not None else 'positive'} nonzero cases; TRX contains {len(results)}")
     unsuccessful = sum(result.get("outcome") != "Passed" for result in results)
     if unsuccessful:
         raise ValueError(f"{unsuccessful} cases did not pass")

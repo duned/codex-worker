@@ -397,6 +397,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         try
         {
             var result = await validation.RunAsync(config.Validation.Commands, git.ExecutionDirectory, ct);
+            foreach (var report in result.Reports ?? [])
+                output.ValidationSelection(context.Execution.ExecutionId, step, report);
             if (result.Failure is { } failure)
                 output.ValidationFailure(context.Issue.Number, context.Execution.ExecutionId, step, repairAttempt,
                     config.Validation.Commands.Count, failure, elapsed.Elapsed, config.Environment.Variables.Values.ToArray());
