@@ -1,5 +1,17 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "projects.validationCommands": "Comandos de validación",
+  "projects.validationCommandsHelp": "El Worker ejecuta estos comandos de shell secuencialmente en el árbol de trabajo de la ejecución. El orden importa. Una lista vacía no ejecuta comandos de validación.",
+  "projects.validationUseDefaults": "Usar los comandos de validación predeterminados del Worker",
+  "projects.validationCommand": "Comando de validación {number}",
+  "projects.validationMoveUp": "Subir el comando de validación {number}",
+  "projects.validationMoveDown": "Bajar el comando de validación {number}",
+  "projects.validationRemove": "Eliminar el comando de validación {number}",
+  "projects.moveUp": "Subir",
+  "projects.moveDown": "Bajar",
+  "projects.removeCommand": "Eliminar comando",
+  "projects.addCommand": "Añadir comando de validación",
+
   "workers.telegramRuntimeFailure": "No se pudo aplicar la configuración de Telegram. Revisa el token del bot, el ID del chat y la autorización de entrega de credenciales del Worker, o desactiva Telegram.",
   "workers.telegramStorageUnavailable": "El almacenamiento de secretos del Server no está disponible. Pide al administrador que revise el cifrado de credenciales antes de guardar un token.",
   "workers.telegramApplied": "Aplicado: este Worker ha confirmado la configuración administrada actual.",

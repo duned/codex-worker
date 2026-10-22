@@ -6,7 +6,7 @@ import { build } from 'esbuild';
 
 // Exercise the workspace owner with deterministic hook state, without a browser.
 const bundle = await build({
-  stdin: { contents: `export { useWorkspaceOwner } from './src/features/projects/Workspace'; export { DashboardRuntime } from './src/shared/api/runtime'; export { HttpClient } from './src/shared/api/client'; export { sameDefinition } from './src/features/projects/model';`, resolveDir: new URL('..', import.meta.url).pathname },
+  stdin: { contents: `export { useWorkspaceOwner } from './src/features/projects/Workspace'; export { DashboardRuntime } from './src/shared/api/runtime'; export { HttpClient } from './src/shared/api/client'; export { sameDefinition, definitionOf, newDefinition } from './src/features/projects/model'; export { project } from './src/features/projects/contracts';`, resolveDir: new URL('..', import.meta.url).pathname },
   bundle: true, platform: 'node', format: 'cjs', write: false,
   plugins: [{ name: 'workspace-hooks', setup(build) {
     build.onLoad({ filter: /projects\/Workspace.tsx$/ }, args => ({ contents: readFileSync(args.path, 'utf8') + '\nexport { useWorkspaceOwner };', loader: 'tsx' }));
@@ -17,8 +17,8 @@ const bundle = await build({
 });
 const module = { exports: {} };
 new Function('module', 'exports', 'require', bundle.outputFiles[0].text)(module, module.exports, createRequire(import.meta.url));
-const { useWorkspaceOwner, DashboardRuntime, HttpClient, sameDefinition } = module.exports;
-const definition = { name: 'Sample', repository: 'owner/repo', defaultBranch: 'main', description: 'Keep my input', requirements: [], issueReadyLabel: null, issueBlockedLabel: null, maxParallelTasks: null,
+const { useWorkspaceOwner, DashboardRuntime, HttpClient, sameDefinition, definitionOf, newDefinition, project } = module.exports;
+const definition = { validationCommands: ['build', 'test'], name: 'Sample', repository: 'owner/repo', defaultBranch: 'main', description: 'Keep my input', requirements: [], issueReadyLabel: null, issueBlockedLabel: null, maxParallelTasks: null,
   automaticDiscovery: { intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120, enabled: true } };
 const saved = { ...definition, id: 'sample', revision: 1, enabled: true,
   automaticDiscovery: { enabled: true, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 } };
@@ -36,7 +36,8 @@ for (const mode of ['success', 'failure', 'lost-response']) test(`project creati
     if (url.endsWith('/session')) return Response.json({ csrfToken: 'fixture', expiresAtUtc: new Date(Date.now() + 60_000).toISOString() });
     if (url.endsWith('/stream')) return new Response(new ReadableStream());
     if (url.endsWith('/verify')) return Response.json({ repository: definition.repository, defaultBranch: 'main', repositoryReadable: true, branchExists: true, diagnostic: '' });
-    if (options.method === 'POST') {
+    if (options.method === 'POST' && !url.endsWith('/verify')) {
+      assert.deepEqual(JSON.parse(options.body).validationCommands, definition.validationCommands);
       if (mode === 'failure') return Response.json({}, { status: 400 });
       created = true;
       if (mode === 'lost-response') throw new TypeError('Connection lost');
@@ -81,5 +82,59 @@ for (const mode of ['success', 'failure', 'lost-response']) test(`project creati
       assert.equal(owner.locked(), false);
       assert.match(owner.message, /saved/i);
     }
+  }
+});
+
+test('validation commands survive unrelated edits and ordered comparison detects changes', () => {
+  assert.equal(sameDefinition(saved, { ...definition, validationCommands: ['test', 'build'] }), false);
+  assert.equal(sameDefinition(saved, { ...definition, validationCommands: [] }), false);
+  assert.equal(sameDefinition(saved, { ...definition, validationCommands: null }), false);
+});
+
+test('project edit sends ordered commands, preserves other fields and confirms the returned definition', async t => {
+  const desired = { ...definition, validationCommands: ['test', 'build', 'check'] };
+  const updated = { ...saved, ...desired, revision: 2 };
+  let persisted = saved;
+  const runtime = new DashboardRuntime(undefined, new HttpClient(async (url, options) => {
+    if (url.endsWith('/session')) return Response.json({ csrfToken: 'fixture', expiresAtUtc: new Date(Date.now() + 60_000).toISOString() });
+    if (url.endsWith('/stream')) return new Response(new ReadableStream());
+    if (url.endsWith('/verify')) return Response.json({ repository: definition.repository, defaultBranch: 'main', repositoryReadable: true, branchExists: true, diagnostic: '' });
+    if (options.method === 'PUT') {
+      assert.deepEqual(JSON.parse(options.body), { definition: desired, expectedRevision: 1 });
+      persisted = updated;
+      return Response.json(updated);
+    }
+    return Response.json(url.endsWith('/sample') ? persisted : [persisted]);
+  }));
+  t.after(() => { runtime.dispose(); delete globalThis.projectHooks; });
+  await runtime.session('GET');
+  const states = []; let cursor = 0;
+  globalThis.projectHooks = { runtime, effects: [], useState(initial) {
+    const index = cursor++;
+    if (!(index in states)) states[index] = initial;
+    return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
+  } };
+  const render = () => { cursor = 0; return useWorkspaceOwner(); };
+  let owner = render();
+  const draft = { before: saved, definition: desired, reviewed: desired, step: 3, open: true };
+  owner.setDraft(draft); owner = render();
+  assert.deepEqual(await owner.save(draft), updated);
+  owner = render();
+  assert.equal(owner.draft, undefined);
+  assert.deepEqual(persisted.validationCommands, desired.validationCommands);
+  assert.equal(persisted.description, saved.description);
+});
+
+test('project command mapping preserves defaults, command text and unrelated fields', () => {
+  assert.equal(newDefinition().validationCommands, null);
+  assert.equal(definitionOf({ ...saved, validationCommands: undefined }).validationCommands, null);
+  const mapped = definitionOf(saved);
+  assert.deepEqual(mapped.validationCommands, definition.validationCommands);
+  mapped.validationCommands.reverse();
+  assert.deepEqual(saved.validationCommands, ['build', 'test'], 'draft list does not mutate saved state');
+  assert.deepEqual(definitionOf({ ...saved, description: 'Changed' }).validationCommands, saved.validationCommands);
+  assert.deepEqual(project({ ...saved, validationCommands: [] }).validationCommands, []);
+  for (const commands of [[' '], [null], ['a'.repeat(4001)], Array(65).fill('test'), 'test']) {
+    assert.throws(() => project({ ...saved, validationCommands: commands }));
   }
 });

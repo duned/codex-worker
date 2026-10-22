@@ -1094,6 +1094,12 @@ public static partial class ServerApplication
                 Append(material, requirement.Version);
                 Append(material, requirement.Scope);
             }
+            if (project.ValidationCommands is { } commands)
+            {
+                Append(material, "validation-commands");
+                Append(material, commands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                foreach (var command in commands) Append(material, command);
+            }
             Append(material, "end-project");
         }
         if (workerExecutionSlots is { } slots) Append(material, slots.ToString(System.Globalization.CultureInfo.InvariantCulture));

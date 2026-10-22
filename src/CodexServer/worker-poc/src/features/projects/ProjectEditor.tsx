@@ -67,6 +67,29 @@ export function ProjectEditor() {
   }
   const text = (key: 'name' | 'repository' | 'defaultBranch' | 'description' | 'issueReadyLabel' | 'issueBlockedLabel', label: string, required = false, maxLength?: number) => <Input label={label} value={definition[key] ?? ''} onChange={value => update({ [key]: value || (required || key === 'description' ? '' : null) })} isRequired={required} maxLength={maxLength} />;
 
+  const validationEditor = <section className="flex flex-col gap-3" aria-label={t('projects.validationCommands')}>
+    <h3 className="font-semibold text-primary">{t('projects.validationCommands')}</h3>
+    <p className="text-sm text-tertiary">{t('projects.validationCommandsHelp')}</p>
+    <Checkbox label={t('projects.validationUseDefaults')} isSelected={definition.validationCommands === null} onChange={useDefaults => update({ validationCommands: useDefaults ? null : [] })} />
+    {definition.validationCommands?.map((command, index) => <div key={index} className="flex flex-col gap-2 rounded-lg border border-secondary p-3">
+      <TextArea label={t('projects.validationCommand', { number: index + 1 })} value={command} isRequired maxLength={4000} onChange={value => update({ validationCommands: definition.validationCommands?.map((item, position) => position === index ? value : item) ?? [] })} />
+      <div className="flex flex-wrap gap-2">
+        <Button color="secondary" isDisabled={index === 0} aria-label={t('projects.validationMoveUp', { number: index + 1 })} onPress={() => {
+          const commands = [...(definition.validationCommands ?? [])];
+          [commands[index - 1], commands[index]] = [commands[index], commands[index - 1]];
+          update({ validationCommands: commands });
+        }}>{t('projects.moveUp')}</Button>
+        <Button color="secondary" isDisabled={index === (definition.validationCommands?.length ?? 0) - 1} aria-label={t('projects.validationMoveDown', { number: index + 1 })} onPress={() => {
+          const commands = [...(definition.validationCommands ?? [])];
+          [commands[index], commands[index + 1]] = [commands[index + 1], commands[index]];
+          update({ validationCommands: commands });
+        }}>{t('projects.moveDown')}</Button>
+        <Button color="secondary" aria-label={t('projects.validationRemove', { number: index + 1 })} onPress={() => update({ validationCommands: definition.validationCommands?.filter((_, position) => position !== index) ?? [] })}>{t('projects.removeCommand')}</Button>
+      </div>
+    </div>)}
+    <Button color="secondary" isDisabled={(definition.validationCommands?.length ?? 0) >= 64} onPress={() => update({ validationCommands: [...(definition.validationCommands ?? []), ''] })}>{t('projects.addCommand')}</Button>
+  </section>;
+
   if (d.before) return <>
     <FormDialog isOpen={d.open} title={t('projects.editProject')} description={t('projects.editorDescription')} pending={busy} variant="side-panel" onClose={() => w.setDraft({ ...d, open: false })}
       headerActions={<div className="flex flex-wrap items-center justify-end gap-2">
@@ -143,6 +166,7 @@ export function ProjectEditor() {
             </div>
           </section>
 
+          {validationEditor}
           <section aria-labelledby="project-requirements-heading" className="rounded-xl border border-secondary bg-primary p-5 shadow-xs sm:p-6">
             <div className="mb-5">
               <h2 id="project-requirements-heading" className="text-base font-semibold text-primary">{t('projects.requirements')}</h2>
@@ -209,6 +233,7 @@ export function ProjectEditor() {
             </div>
             <Checkbox label={t("projects.enableAutomaticIssueDiscovery")} isSelected={definition.automaticDiscovery?.enabled === true} onChange={enabled => update({ automaticDiscovery: { ...(definition.automaticDiscovery ?? { intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }), enabled } })} />
             <p className="text-sm text-tertiary">{t("projects.discoveryCanQueueEligibleIssuesExecutionRequiresAnAuthorizedEligibleWorkerAnd")}</p>
+            {validationEditor}
             <AdvancedDisclosure title={t("projects.advancedDiscoveryAndExecutionRequirements")}>
               {(['intervalSeconds', 'pageSize', 'deadlineSeconds'] as const).map((key, index) => <NumberInput key={key} label={[t("projects.discoveryIntervalSeconds"), t("projects.maximumDiscoveryPageSize"), t("projects.cycleDeadlineSeconds")][index]} min={[30, 1, 10][index]} max={[86400, 100, 120][index]} value={String(definition.automaticDiscovery?.[key] ?? [300, 25, 120][index])} onChange={value => update({ automaticDiscovery: { ...(definition.automaticDiscovery ?? { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }), [key]: Number(value) } })} isRequired />)}
               {text('issueReadyLabel', t("projects.issueReadyLabel"), false, 100)}{text('issueBlockedLabel', t("projects.issueBlockedLabel"), false, 100)}
@@ -222,7 +247,7 @@ export function ProjectEditor() {
               <Button color="secondary" isDisabled={definition.requirements.length >= 64} onPress={() => update({ requirements: [...definition.requirements, { type: 'runtime', name: '', version: null, scope: null }] })}>{t("projects.addRequirement")}</Button>
             </AdvancedDisclosure>
           </>}
-          {d.step === 3 && <><p className="font-medium text-primary">{definition.name} · {definition.repository} · {definition.defaultBranch}</p><p className="whitespace-pre-wrap text-sm text-secondary">{definition.description || t("projects.noDescription")}</p><p className="text-sm text-secondary">{t("projects.projectConcurrency")}: {concurrencyLabel(definition.maxParallelTasks)}</p><p className="text-sm text-secondary">{t("projects.readyLabel")}{' '}{definition.issueReadyLabel || localizeText('none')}{' '}{t("projects.blockedLabel")}{' '}{definition.issueBlockedLabel || localizeText('none')}</p><p className="text-sm text-secondary">{t("projects.automaticDiscovery")}{' '}{definition.automaticDiscovery?.enabled ? localizeText('enabled') : localizeText('disabled')}{' '}{t("projects.interval")}{' '}{definition.automaticDiscovery?.intervalSeconds ?? 300}{t("projects.sPageSize")}{' '}{definition.automaticDiscovery?.pageSize ?? 25}{' '}{t("projects.deadline")}{' '}{definition.automaticDiscovery?.deadlineSeconds ?? 120}{t("projects.s")}</p>{definition.requirements.map((r, index) => <p key={index} className="text-sm text-secondary">{r.type} · {r.name}{r.version ? ` ${r.version}` : ''}{r.scope ? t('projects.scope', { scope: r.scope }) : ''}</p>)}<Notice>{t("projects.repositoryAndBranchReadVerifiedWorkerCheckoutPushPermissionCodexExecutionReadiness")}</Notice></>}
+          {d.step === 3 && <><p className="font-medium text-primary">{definition.name} · {definition.repository} · {definition.defaultBranch}</p><p className="whitespace-pre-wrap text-sm text-secondary">{definition.description || t("projects.noDescription")}</p><p className="text-sm text-secondary">{t("projects.projectConcurrency")}: {concurrencyLabel(definition.maxParallelTasks)}</p><p className="text-sm text-secondary">{t("projects.readyLabel")}{' '}{definition.issueReadyLabel || localizeText('none')}{' '}{t("projects.blockedLabel")}{' '}{definition.issueBlockedLabel || localizeText('none')}</p><p className="text-sm text-secondary">{t("projects.automaticDiscovery")}{' '}{definition.automaticDiscovery?.enabled ? localizeText('enabled') : localizeText('disabled')}{' '}{t("projects.interval")}{' '}{definition.automaticDiscovery?.intervalSeconds ?? 300}{t("projects.sPageSize")}{' '}{definition.automaticDiscovery?.pageSize ?? 25}{' '}{t("projects.deadline")}{' '}{definition.automaticDiscovery?.deadlineSeconds ?? 120}{t("projects.s")}</p><div className="text-sm text-secondary"><h3 className="font-semibold">{t('projects.validationCommands')}</h3>{definition.validationCommands === null ? <p>{t('projects.validationUseDefaults')}</p> : <ol className="list-decimal pl-5">{definition.validationCommands.map((command, index) => <li key={index} className="whitespace-pre-wrap break-words">{command}</li>)}</ol>}</div>{definition.requirements.map((r, index) => <p key={index} className="text-sm text-secondary">{r.type} · {r.name}{r.version ? ` ${r.version}` : ''}{r.scope ? t('projects.scope', { scope: r.scope }) : ''}</p>)}<Notice>{t("projects.repositoryAndBranchReadVerifiedWorkerCheckoutPushPermissionCodexExecutionReadiness")}</Notice></>}
         </fieldset>
         {error && <Notice error>{error}</Notice>}
         {locked && <Notice error>{t("projects.saveResultUncertainCloseAndChooseCheckSavedDefinitionBeforeAnotherWrite")}</Notice>}

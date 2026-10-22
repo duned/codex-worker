@@ -255,11 +255,11 @@ public static class ExecutionAdministrationValidation
 /// <summary>Portable Server-owned project definition. It deliberately excludes Worker paths and secrets.</summary>
 public sealed record CentralProjectDefinition(string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement>? Requirements = null, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
 public sealed record CentralProject(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ProjectRequirement> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, string? IssueReadyLabel = null,
-    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null);
+    string? IssueBlockedLabel = null, AutomaticIssueDiscovery? AutomaticDiscovery = null, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
 public sealed record ProjectLifecycleUpdateRequest(bool Enabled, long ExpectedRevision);
 
 /// <summary>A centrally declared capability required by a project.</summary>
@@ -344,6 +344,9 @@ public static class CentralProjectValidation
             return "issueReadyLabel and issueBlockedLabel must be different.";
         if (value.AutomaticDiscovery is { } discovery && AutomaticIssueDiscoveryValidation.Error(discovery) is { } discoveryError)
             return discoveryError;
+        if (value.ValidationCommands is { } commands &&
+            (commands.Count > 64 || commands.Any(command => string.IsNullOrWhiteSpace(command) || command.Length > 4000 || command.Contains('\0'))))
+            return "validationCommands must contain at most 64 nonblank commands of at most 4000 characters without null characters.";
         if (value.Requirements is null) return null;
         if (value.Requirements.Count > 64) return "requirements must contain at most 64 entries.";
         var normalized = new HashSet<string>(StringComparer.Ordinal);
@@ -2063,7 +2066,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (id.Length == 0) throw new InvalidDataException("Project name does not produce a valid project identifier.");
         var project = new CentralProject(id, definition.Name.Trim(), definition.Repository.Trim(), definition.DefaultBranch.Trim(),
             definition.Description.Trim(), (definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), 1, now, now,
-            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery, MaxParallelTasks: definition.MaxParallelTasks);
+            IssueReadyLabel: NormalizeLabel(definition.IssueReadyLabel), IssueBlockedLabel: NormalizeLabel(definition.IssueBlockedLabel), AutomaticDiscovery: definition.AutomaticDiscovery, MaxParallelTasks: definition.MaxParallelTasks, ValidationCommands: definition.ValidationCommands?.ToArray());
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
@@ -2086,7 +2089,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.validationCommands', json($validationCommands), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
@@ -2094,6 +2097,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         write.Parameters.AddWithValue("$requirements", JsonSerializer.Serialize((definition.Requirements ?? []).Select(CentralProjectValidation.Normalize).ToArray(), ProjectJson));
         write.Parameters.AddWithValue("$readyLabel", (object?)NormalizeLabel(definition.IssueReadyLabel) ?? DBNull.Value);
         write.Parameters.AddWithValue("$blockedLabel", (object?)NormalizeLabel(definition.IssueBlockedLabel) ?? DBNull.Value);
+        write.Parameters.AddWithValue("$validationCommands", JsonSerializer.Serialize(definition.ValidationCommands, ProjectJson));
         write.Parameters.AddWithValue("$parallelism", (object?)definition.MaxParallelTasks ?? DBNull.Value);
         write.Parameters.AddWithValue("$discovery", JsonSerializer.Serialize(definition.AutomaticDiscovery, ProjectJson));
         write.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);

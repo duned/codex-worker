@@ -8,6 +8,31 @@ public sealed class ManagedConfigurationTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public void ProjectValidationCommandsOverrideDefaultsInOrderAndSurviveReload()
+    {
+        using var fixture = new Fixture();
+        fixture.Runtime.Validation.Commands = ["default check"];
+        var synchronizer = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        Assert.Equal(["default check"], Assert.Single(synchronizer.Apply(fixture.Snapshot(1))).Configuration.Validation.Commands);
+        var project = fixture.Project(2) with { ValidationCommands = ["build first", "test second"] };
+        var snapshot = new ServerManagedConfigurationContract(2, ManagedConfigurationSynchronizer.CalculateVersion([project]), [project]);
+        Assert.Equal(project.ValidationCommands, Assert.Single(synchronizer.Apply(snapshot)).Configuration.Validation.Commands);
+        var restarted = new ManagedConfigurationSynchronizer(fixture.CachePath, fixture.Runtime);
+        Assert.Equal(project.ValidationCommands, Assert.Single(restarted.LoadLastValid()).Configuration.Validation.Commands);
+        var reordered = project with { ValidationCommands = ["test second", "build first"] };
+        Assert.NotEqual(snapshot.Version, ManagedConfigurationSynchronizer.CalculateVersion([reordered]));
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with { Projects = [reordered] }));
+        var invalid = project with { ValidationCommands = [" "] };
+        Assert.Throws<InvalidDataException>(() => synchronizer.Apply(snapshot with {
+            Projects = [invalid], Version = ManagedConfigurationSynchronizer.CalculateVersion([invalid]) }));
+        var empty = project with { ValidationCommands = [] };
+        Assert.Empty(Assert.Single(synchronizer.Apply(snapshot with {
+            Projects = [empty], Version = ManagedConfigurationSynchronizer.CalculateVersion([empty]) })).Configuration.Validation.Commands);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public void WorkerSlotsAreValidatedAppliedAndRetainedInSnapshotCache()
     {
         using var fixture = new Fixture();

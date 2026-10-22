@@ -3,6 +3,7 @@
   "repository": "example-owner/example-repository",
   "defaultBranch": "main",
   "maxParallelTasks": null,
+  "validationCommands": null,
   "description": "Server-owned managed project definition",
   "requirements": [],
   "issueReadyLabel": "ready",

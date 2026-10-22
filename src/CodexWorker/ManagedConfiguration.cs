@@ -256,6 +256,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         !string.IsNullOrWhiteSpace(project.Repository) && System.Text.RegularExpressions.Regex.IsMatch(project.Repository, "^[^/\\s]+/[^/\\s]+$") &&
         !string.IsNullOrWhiteSpace(project.DefaultBranch) && project.DefaultBranch.Length <= 200 && !project.DefaultBranch.Any(char.IsControl) &&
         project.MaxParallelTasks is not (< 1 or > 8) &&
+        (project.ValidationCommands is null || (project.ValidationCommands.Count <= 64 &&
+            project.ValidationCommands.All(command => !string.IsNullOrWhiteSpace(command) && command.Length <= 4000 && !command.Contains('\0')))) &&
         project.Description is not null && project.Description.Length <= 4000 &&
         project.Requirements is { Count: <= 64 } && project.Requirements.All(requirement =>
             requirement is not null && !string.IsNullOrWhiteSpace(requirement.Type) && requirement.Type.Length <= 40 && !requirement.Type.Any(char.IsControl) &&
@@ -285,6 +287,12 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 Append(materialBuilder, requirement.Name);
                 Append(materialBuilder, requirement.Version);
                 Append(materialBuilder, requirement.Scope);
+            }
+            if (project.ValidationCommands is { } commands)
+            {
+                Append(materialBuilder, "validation-commands");
+                Append(materialBuilder, commands.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                foreach (var command in commands) Append(materialBuilder, command);
             }
             Append(materialBuilder, "end-project");
         }
@@ -326,7 +334,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             },
             Validation = new ValidationSettings
             {
-                Commands = [.. defaults.Validation.Commands], TimeoutSeconds = defaults.Validation.TimeoutSeconds,
+                Commands = [.. server.ValidationCommands ?? defaults.Validation.Commands], TimeoutSeconds = defaults.Validation.TimeoutSeconds,
                 MaxFixAttempts = defaults.Validation.MaxFixAttempts
             },
             Environment = new ProjectEnvironmentSettings { File = defaults.Environment.File, Variables = defaults.Environment.Variables },

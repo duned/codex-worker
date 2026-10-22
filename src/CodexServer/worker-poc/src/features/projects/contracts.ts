@@ -3,7 +3,7 @@ import { record } from '../../shared/api/validation';
 export interface Requirement { type: string; name: string; version: string | null; scope: string | null }
 export interface Discovery { enabled: boolean; intervalSeconds: number; pageSize: number; deadlineSeconds: number }
 export interface Definition {
-  name: string; repository: string; defaultBranch: string; description: string; requirements: Requirement[];
+  validationCommands: string[] | null; name: string; repository: string; defaultBranch: string; description: string; requirements: Requirement[];
   issueReadyLabel: string | null; issueBlockedLabel: string | null; automaticDiscovery: Discovery | null; maxParallelTasks: number | null;
 }
 export interface Project extends Definition { id: string; revision: number; enabled: boolean }
@@ -25,6 +25,10 @@ export function array<T>(value: unknown, validate: Validator<T>, max = 10000): T
 const stringList = (value: unknown) => array(value, item => { if (typeof item !== 'string') throw Error('Invalid text.'); return item; });
 export const project: Validator<Project> = value => {
   const p = record(value); strings(p, ['id', 'name', 'repository', 'defaultBranch', 'description']); integer(p, 'revision'); bool(p, 'enabled');
+  if (p.validationCommands != null) {
+    const commands = stringList(p.validationCommands);
+    if (commands.length > 64 || commands.some(command => !command.trim() || command.length > 4000 || command.includes('\0'))) throw Error('Invalid validation commands.');
+  }
   nullableText(p, ['issueReadyLabel', 'issueBlockedLabel']);
   if (p.maxParallelTasks != null) integer(p, 'maxParallelTasks', 1, 8);
   array(p.requirements, value => { const r = record(value); strings(r, ['type', 'name']); nullableText(r, ['version', 'scope']); return r; }, 64);

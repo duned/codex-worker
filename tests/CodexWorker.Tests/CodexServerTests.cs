@@ -20,6 +20,35 @@ public sealed class ServerTokenEnvironmentCollection { }
 public sealed class CodexServerTests
 {
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ProjectValidationCommandsPersistThroughCreateUpdateAndReload()
+    {
+        using var directory = new TemporaryDirectory();
+        var database = Path.Combine(directory.Path, "registry.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Validation", "team/validation", "main", "Description",
+            ValidationCommands: ["build", "test"]);
+        var created = await store.CreateProjectAsync(definition);
+        Assert.Equal(definition.ValidationCommands, created.ValidationCommands);
+        var updated = await store.UpdateProjectAsync(created.Id,
+            definition with { ValidationCommands = ["test", "build", "check"] }, created.Revision);
+        Assert.NotNull(updated);
+        var reloaded = await new SqliteRegistryStore(database).GetProjectAsync(created.Id);
+        Assert.NotNull(reloaded);
+        Assert.Equal(["test", "build", "check"], reloaded.ValidationCommands);
+        Assert.Equal(definition.Description, reloaded.Description);
+        var empty = await store.UpdateProjectAsync(created.Id, definition with { ValidationCommands = [] }, updated.Revision);
+        Assert.NotNull(empty);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<string>>(empty.ValidationCommands));
+        var legacy = await store.CreateProjectAsync(new("Legacy validation", "team/legacy", "main", ""));
+        Assert.Null(legacy.ValidationCommands);
+        await Assert.ThrowsAsync<InvalidDataException>(() => store.UpdateProjectAsync(created.Id,
+            definition with { ValidationCommands = [" "] }, empty.Revision));
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
     [InlineData(null)]

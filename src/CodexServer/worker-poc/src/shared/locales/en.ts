@@ -1,4 +1,16 @@
 export const en = {
+  "projects.validationCommands": "Validation commands",
+  "projects.validationCommandsHelp": "The Worker runs these shell commands sequentially in the execution worktree. Order matters. An empty list runs no validation commands.",
+  "projects.validationUseDefaults": "Use Worker default validation commands",
+  "projects.validationCommand": "Validation command {number}",
+  "projects.validationMoveUp": "Move validation command {number} up",
+  "projects.validationMoveDown": "Move validation command {number} down",
+  "projects.validationRemove": "Remove validation command {number}",
+  "projects.moveUp": "Move up",
+  "projects.moveDown": "Move down",
+  "projects.removeCommand": "Remove command",
+  "projects.addCommand": "Add validation command",
+
   "workers.telegramRuntimeFailure": "Telegram configuration could not be applied. Check bot token, chat ID and Worker credential delivery authorization, or disable Telegram.",
   "workers.telegramStorageUnavailable": "Server secret storage is unavailable. Ask the administrator to check credential encryption before saving a token.",
   "workers.telegramApplied": "Applied: this Worker has acknowledged the current managed configuration.",

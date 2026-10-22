@@ -49,7 +49,7 @@ public sealed record WorkerAssignmentRequestContract(string WorkerId, bool Worke
 public sealed record ServerProjectRequirementContract(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
-    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, int? MaxParallelTasks = null);
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
 public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
 public sealed record ServerExecutionLeaseContract(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
