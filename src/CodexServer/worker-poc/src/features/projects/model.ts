@@ -6,6 +6,7 @@ export function definitionOf(p: Definition): Definition {
 }
 export function sameDefinition(a: Definition, b: Definition) {
   const normalized = (d: Definition) => ({ ...definitionOf(d), name: d.name.trim(), repository: d.repository.trim().toLowerCase(), defaultBranch: d.defaultBranch.trim(), description: d.description.trim(),
+    automaticDiscovery: d.automaticDiscovery ? { enabled: d.automaticDiscovery.enabled, intervalSeconds: d.automaticDiscovery.intervalSeconds, pageSize: d.automaticDiscovery.pageSize, deadlineSeconds: d.automaticDiscovery.deadlineSeconds } : null,
     requirements: d.requirements.map(r => ({ type: r.type.trim().toLowerCase(), name: r.name.trim().toLowerCase(), version: r.version?.trim().replace(/\d+/g, n => String(Number(n))) || null, scope: r.scope?.trim().toLowerCase() || null })),
     issueReadyLabel: d.issueReadyLabel?.trim() || null, issueBlockedLabel: d.issueBlockedLabel?.trim() || null });
   return JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
