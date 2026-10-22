@@ -248,6 +248,32 @@ public sealed class GitHubIssueReadProviderTests
         Assert.Single(source.Batches);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task SnapshotReadsLatestConfiguredReadyLabelEventRatherThanIssueUpdate()
+    {
+        var item = JsonSerializer.SerializeToNode(GraphItem(1)) ?? throw new InvalidOperationException();
+        item["timelineItems"] = JsonSerializer.SerializeToNode(new
+        {
+            nodes = new[]
+            {
+                new { createdAt = DateTimeOffset.UnixEpoch.AddSeconds(1), label = new { name = "codex-ready" } },
+                new { createdAt = DateTimeOffset.UnixEpoch.AddSeconds(2), label = new { name = "codex-ready" } },
+                new { createdAt = DateTimeOffset.UnixEpoch.AddSeconds(3), label = new { name = "other" } }
+            }
+        });
+        var source = new ServerGitHubReadService((arguments, _) =>
+        {
+            Assert.Contains(arguments, argument => argument.Contains("itemTypes:[LABELED_EVENT]", StringComparison.Ordinal));
+            return Task.FromResult(new GitHubReadCommandResult(0,
+                JsonSerializer.Serialize(new { data = new { i1 = new { issue = item } } }), ""));
+        });
+        var snapshot = Assert.Single(await source.ReadSnapshotsAsync(Project() with { IssueReadyLabel = "codex-ready" },
+            new Dictionary<int, string?> { [1] = null }, CancellationToken.None));
+        Assert.Equal(DateTimeOffset.UnixEpoch.AddSeconds(2), snapshot.Issue.ReadyLabelAppliedAtUtc);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]

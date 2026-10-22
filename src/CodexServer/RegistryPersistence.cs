@@ -69,7 +69,8 @@ public interface IRegistryStore
 public sealed record WorkReference(string Type, string Id, string? Url = null);
 public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference,
     [property: JsonIgnore] long? ExpectedProjectRevision = null, [property: JsonIgnore] bool AutomaticDiscovery = false,
-    [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null);
+    [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null,
+    [property: JsonIgnore] DateTimeOffset? ReadyLabelAppliedAtUtc = null);
 public sealed record ManagedEligibilityUpdate(string State, IReadOnlyList<string> Reasons, DateTimeOffset CheckedAtUtc);
 public sealed record ExecutionQuery(string? ProjectId = null, string? State = null, string? WorkType = null,
     string? WorkId = null, int Limit = 50, int Offset = 0);
@@ -840,7 +841,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
               AND (lower(json_extract(work_reference_json, '$.url'))=$url OR
                 (json_extract(work_reference_json, '$.url') IS NULL AND project_id IN
                   (SELECT project_id FROM projects WHERE lower(json_extract(configuration_json, '$.repository'))=$repository)))
-              AND ($automatic OR state IN ('Queued','Assigned','Running') OR
+              AND (($automatic AND NOT (
+                state='Failed' AND recovery_state IS NULL
+                AND completed_at_utc IS NOT NULL
+                AND COALESCE(julianday($readyApplied)>julianday(completed_at_utc), 0)
+                AND COALESCE(failure_classification IN ('Failed','Blocked'), 0))) OR state IN ('Queued','Assigned','Running') OR
                 (state='Failed' AND recovery_state='LeaseExpiredUncertain'))
             LIMIT 1;
             """;
@@ -848,6 +853,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         command.Parameters.AddWithValue("$url", diagnosticWork.Url?.ToLowerInvariant() ?? throw new InvalidDataException("Canonical Issue URL is missing."));
         command.Parameters.AddWithValue("$repository", project.Repository.ToLowerInvariant());
         command.Parameters.AddWithValue("$automatic", request.AutomaticDiscovery);
+        // Only an authoritative eligible read with a configured ready label can reopen safe task failures.
+        command.Parameters.AddWithValue("$readyApplied", request.AutomaticDiscovery && project.IssueReadyLabel is not null
+            ? (object?)request.ReadyLabelAppliedAtUtc?.ToString("O") ?? DBNull.Value : DBNull.Value);
         if (await command.ExecuteScalarAsync(cancellationToken) is string existingId)
         {
             ServerOperationalDiagnostics.Write(_logger, request.AutomaticDiscovery ? LogLevel.Debug : LogLevel.Information,

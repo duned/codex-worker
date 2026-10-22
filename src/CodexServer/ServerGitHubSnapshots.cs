@@ -38,7 +38,7 @@ public sealed partial class ServerGitHubReadService
             throw new InvalidDataException("Snapshot batches require 1 to 10 positive Issue numbers.");
         var repositoryParts = project.Repository.Split('/');
         var connectionFields = $"nodes{{{ReferenceFields}}} pageInfo{{hasNextPage endCursor}}";
-        var fields = $"{SnapshotFields} parent{{{ReferenceFields}}} subIssues(first:100){{{connectionFields}}} blockedBy(first:100){{{connectionFields}}} blocking(first:100){{{connectionFields}}}";
+        var fields = $"{SnapshotFields} timelineItems(last:100,itemTypes:[LABELED_EVENT]){{nodes{{... on LabeledEvent{{createdAt label{{name}}}}}}}} parent{{{ReferenceFields}}} subIssues(first:100){{{connectionFields}}} blockedBy(first:100){{{connectionFields}}} blocking(first:100){{{connectionFields}}}";
         var selections = identities.Select(pair => pair.Value is { } id
             ? $"i{pair.Key}:node(id:{JsonSerializer.Serialize(id)}){{... on Issue{{{fields}}}}}"
             : $"i{pair.Key}:repository(owner:{JsonSerializer.Serialize(repositoryParts[0])},name:{JsonSerializer.Serialize(repositoryParts[1])}){{issue(number:{pair.Key}){{{fields}}}}}");
@@ -154,7 +154,25 @@ public sealed partial class ServerGitHubReadService
         var reference = await ReadGraphReferenceAsync(project, item, known, cancellationToken);
         return new(reference.Number, reference.Title, RequiredString(item, "body"), reference.State.ToUpperInvariant(),
             item.GetProperty("createdAt").GetDateTimeOffset(), item.GetProperty("updatedAt").GetDateTimeOffset(),
-            reference.Url, reference.Labels, [], false, []);
+            reference.Url, reference.Labels, [], false, [], ReadyLabelAppliedAtUtc: ReadReadyLabelAppliedAt(project, item));
+    }
+
+    // A bounded timeline is conservative: if the ready event is older than this window,
+    // history remains suppressed. Unrelated Issue edits never authorize a new attempt.
+    private static DateTimeOffset? ReadReadyLabelAppliedAt(CentralProject project, JsonElement item)
+    {
+        if (project.IssueReadyLabel is null || !item.TryGetProperty("timelineItems", out var timeline)) return null;
+        DateTimeOffset? latest = null;
+        foreach (var entry in timeline.GetProperty("nodes").EnumerateArray())
+        {
+            if (entry.ValueKind == JsonValueKind.Null) continue;
+            var label = entry.GetProperty("label");
+            if (label.ValueKind == JsonValueKind.Null || !string.Equals(label.GetProperty("name").GetString(),
+                    project.IssueReadyLabel, StringComparison.OrdinalIgnoreCase)) continue;
+            var applied = entry.GetProperty("createdAt").GetDateTimeOffset();
+            if (latest is null || applied > latest) latest = applied;
+        }
+        return latest;
     }
 
 }

@@ -21,7 +21,8 @@ public sealed record GitHubIssueRelationshipBatchResult(int ContractVersion, str
     IReadOnlyList<GitHubIssueRelationshipBatchItem> Items);
 public sealed record ManagedGitHubIssue(int Number, string Title, string Body, string State,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, string Url, IReadOnlyList<string> Labels,
-    IReadOnlyList<GitHubBlockingIssue> BlockedBy, bool IsEligible, IReadOnlyList<string> EligibilityReasons);
+    IReadOnlyList<GitHubBlockingIssue> BlockedBy, bool IsEligible, IReadOnlyList<string> EligibilityReasons,
+    DateTimeOffset? ReadyLabelAppliedAtUtc = null);
 public sealed record GitHubRepositoryAccess(string Repository, bool CliAuthenticated, bool RepositoryReadable,
     string? Diagnostic, DateTimeOffset CheckedAtUtc);
 public sealed record GitHubReadCommandResult(int ExitCode, string StandardOutput, string StandardError);
@@ -931,7 +932,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
             ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
         if (!issue.IsEligible) throw new ManagedIssueIneligibleException(issue);
         var url = $"https://github.com/{project.Repository}/issues/{canonical.Id}";
-        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url), project.Revision, discoveredProject is not null, project.CreatedAtUtc), cancellationToken);
+        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url), project.Revision, discoveredProject is not null, project.CreatedAtUtc, issue.ReadyLabelAppliedAtUtc), cancellationToken);
         return await registry.UpdateManagedEligibilityAsync(created.Id,
             new("eligible", [], _clock.GetUtcNow()), cancellationToken) ?? created;
     }

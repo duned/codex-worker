@@ -10,6 +10,59 @@ public sealed class AutomaticIssueDiscoveryTests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("Failed", false, true)]
+    [InlineData("Blocked", false, true)]
+    [InlineData("Failed", true, true)]
+    [InlineData("InfrastructureFailure", false, false)]
+    [InlineData("IntegrationConflict", true, false)]
+    [InlineData("CodexInterruption", true, false)]
+    [InlineData(null, false, false)]
+    public async Task FreshReadyLabelRequeuesSafeFailureOnceAcrossRestart(string? classification, bool recoverable, bool requeues)
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var project = await fixture.CreateProjectAsync(new(true, 30));
+        fixture.Reads.Unready.UnionWith([2, 3]);
+        fixture.Reads.ReadyAppliedAt = fixture.Clock.GetUtcNow();
+        await fixture.Cycle.RunDueCyclesAsync();
+        var worker = Guid.NewGuid().ToString("N");
+        CodexServer.WorkerCapability[] capabilities = [new("tool", "git"), new("agent-provider", "codex"),
+            .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
+                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+        await fixture.Store.RegisterWorkerAsync(new(1, worker, "Worker", "1.0", "test", 1, capabilities));
+        await fixture.Store.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        var assignment = Assert.IsType<WorkAssignment>((await fixture.GitHub.RequestAssignmentAsync(request)).Assignment);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        await fixture.Store.ReportExecutionAsync(assignment.ServerExecutionId,
+            new(worker, assignment.AssignmentId, "local-run", "Failed", CompletedAtUtc: fixture.Clock.GetUtcNow(),
+                FailureClassification: classification, Recoverable: recoverable, Generation: lease.Generation));
+        // An unchanged ready state (or an unrelated update) cannot replay a failure.
+        for (var i = 0; i < 2; i++) { fixture.Clock.Advance(); await fixture.Cycle.RunDueCyclesAsync(); }
+        Assert.Single(await fixture.Store.GetExecutionsAsync());
+        fixture.Reads.ReadyAppliedAt = fixture.Clock.GetUtcNow().AddSeconds(1);
+        fixture.Reads.Blocked.Add(1);
+        for (var i = 0; i < 2; i++) { fixture.Clock.Advance(); await fixture.Cycle.RunDueCyclesAsync(); }
+        Assert.Single(await fixture.Store.GetExecutionsAsync());
+        fixture.Reads.Blocked.Clear();
+        fixture.Reads.Unready.Add(1);
+        for (var i = 0; i < 2; i++) { fixture.Clock.Advance(); await fixture.Cycle.RunDueCyclesAsync(); }
+        Assert.Single(await fixture.Store.GetExecutionsAsync());
+        fixture.Reads.Unready.Remove(1);
+        var restarted = new SqliteRegistryStore(fixture.Database, timeProvider: fixture.Clock);
+        await restarted.InitializeAsync();
+        using var cycle = new AutomaticIssueDiscoveryService(restarted,
+            new(restarted, fixture.Reads, timeProvider: fixture.Clock), fixture.Logger, fixture.Clock);
+        for (var i = 0; i < 4; i++) { fixture.Clock.Advance(); await cycle.RunDueCyclesAsync(); }
+        var executions = await restarted.GetExecutionsAsync();
+        Assert.Equal(requeues ? 2 : 1, executions.Count);
+        Assert.Equal(requeues ? 1 : 0, executions.Count(execution => execution.State == "Queued"));
+        Assert.Equal("Failed", (await restarted.GetExecutionAsync(assignment.ServerExecutionId))?.State);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task ConfigurationDefaultsDisabledPersistsAndValidatesBounds()
     {
@@ -538,6 +591,7 @@ public sealed class AutomaticIssueDiscoveryTests
 
     private sealed class Reads : IServerGitHubReadService
     {
+        public DateTimeOffset? ReadyAppliedAt { get; set; }
         public int Pages { get; private set; }
         public List<string?> Cursors { get; } = [];
         public HashSet<int> Blocked { get; } = [];
@@ -567,7 +621,7 @@ public sealed class AutomaticIssueDiscoveryTests
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, $"https://github.com/{project.Repository}/issues/{number}",
             Blocked.Contains(number) ? ["ready", "blocked"] : Unready.Contains(number) ? [] : ["ready"],
             OpenDependencies.Contains(number) ? [new(99, "Prerequisite", "OPEN", $"https://github.com/{project.Repository}/issues/99")] : [],
-            false, []));
+            false, [], ReadyAppliedAt));
         public Task<GitHubRepositoryAccess> CheckAccessAsync(CentralProject project, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<ManagedGitHubIssue>> ListIssuesAsync(CentralProject project, GitHubIssueQuery query, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<GitHubIssueRelationships?> GetIssueRelationshipsAsync(CentralProject project, int issueNumber, CancellationToken cancellationToken = default) => throw new NotSupportedException();
