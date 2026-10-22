@@ -11,6 +11,33 @@ const { savedDefinition, sameDefinition, definitionOf, newDefinition, project, i
 after(() => rmSync(dir, { recursive: true, force: true }));
 const p = { id: 'project-a', name: 'Sample project', repository: 'owner/repo', defaultBranch: 'main', description: '', requirements: [], revision: 2, enabled: true, issueReadyLabel: 'ready', issueBlockedLabel: 'blocked', automaticDiscovery: { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }, maxParallelTasks: null };
 const i = { number: 27, title: 'Fix parsing', body: 'Details', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [{ number: 28, title: 'Prerequisite', state: 'open', url: 'https://github.com/owner/repo/issues/28' }], isEligible: false, eligibilityReasons: ['Blocked by #28'] };
+test('fresh project definitions default labels independently of edited drafts', () => {
+  const draft = newDefinition();
+  assert.equal(draft.issueReadyLabel, 'codex-ready');
+  assert.equal(draft.issueBlockedLabel, 'codex-blocked');
+  draft.issueReadyLabel = 'custom-ready';
+  draft.issueBlockedLabel = 'custom-blocked';
+  const reviewed = definitionOf(draft);
+  assert.equal(reviewed.issueReadyLabel, 'custom-ready');
+  assert.equal(reviewed.issueBlockedLabel, 'custom-blocked');
+  assert.equal(savedDefinition([{ ...p, ...reviewed }], undefined, reviewed).state, 'applied');
+  const fresh = newDefinition();
+  assert.equal(fresh.issueReadyLabel, 'codex-ready');
+  assert.equal(fresh.issueBlockedLabel, 'codex-blocked');
+  assert.deepEqual(definitionOf(draft), reviewed, 'starting another draft does not reset edited values');
+});
+test('project label normalization preserves saved custom and explicitly cleared labels', () => {
+  for (const labels of [
+    { issueReadyLabel: 'ready', issueBlockedLabel: 'blocked' },
+    { issueReadyLabel: null, issueBlockedLabel: null }
+  ]) {
+    const definition = definitionOf({ ...p, ...labels });
+    assert.equal(definition.issueReadyLabel, labels.issueReadyLabel);
+    assert.equal(definition.issueBlockedLabel, labels.issueBlockedLabel);
+    assert.equal(project({ ...p, ...definition }).issueReadyLabel, labels.issueReadyLabel);
+    assert.equal(project({ ...p, ...definition }).issueBlockedLabel, labels.issueBlockedLabel);
+  }
+});
 test('current automatic-discovery and typed requirement contracts reject malformed evidence', () => {
   assert.deepEqual(project(p), p);
   for (const automaticDiscovery of [{ ...p.automaticDiscovery, pageSize: 101 }, { ...p.automaticDiscovery, enabled: 'true' }, { ...p.automaticDiscovery, deadlineSeconds: 0 }]) assert.throws(() => project({ ...p, automaticDiscovery }));
