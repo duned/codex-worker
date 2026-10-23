@@ -22,7 +22,12 @@ public sealed record GitHubIssueRelationshipBatchResult(int ContractVersion, str
 public sealed record ManagedGitHubIssue(int Number, string Title, string Body, string State,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, string Url, IReadOnlyList<string> Labels,
     IReadOnlyList<GitHubBlockingIssue> BlockedBy, bool IsEligible, IReadOnlyList<string> EligibilityReasons,
-    DateTimeOffset? ReadyLabelAppliedAtUtc = null);
+    DateTimeOffset? ReadyLabelAppliedAtUtc = null)
+{
+    public IReadOnlyList<string> Assignees { get; init; } = [];
+    public string? Author { get; init; }
+    public string? Milestone { get; init; }
+}
 public sealed record GitHubRepositoryAccess(string Repository, bool CliAuthenticated, bool RepositoryReadable,
     string? Diagnostic, DateTimeOffset CheckedAtUtc);
 public sealed record GitHubReadCommandResult(int ExitCode, string StandardOutput, string StandardError);
@@ -179,7 +184,7 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
         if (GitHubIssueQueryValidation.Error(query) is { } queryError) throw new InvalidDataException(queryError);
         var arguments = new List<string> { "issue", "list", "--repo", project.Repository, "--state", query.State,
             "--limit", query.Limit.ToString(System.Globalization.CultureInfo.InvariantCulture), "--json",
-            "number,title,body,state,createdAt,updatedAt,url,labels" };
+            "number,title,body,state,createdAt,updatedAt,url,labels,assignees,author,milestone" };
         if (query.Label is not null) { arguments.Add("--label"); arguments.Add(query.Label); }
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
@@ -231,7 +236,7 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
         try
         {
             result = await _run(["issue", "view", number, "--repo", project.Repository, "--json",
-                "number,title,body,state,createdAt,updatedAt,url,labels"], cancellationToken);
+                "number,title,body,state,createdAt,updatedAt,url,labels,assignees,author,milestone"], cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
@@ -472,8 +477,13 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
 
     private static ManagedGitHubIssue Evaluate(CentralProject project, IssueFields issue,
         IReadOnlyList<GitHubBlockingIssue> blockers) =>
-        ManagedGitHubIssueEligibility.Evaluate(project, new(issue.Number, issue.Title, issue.Body, issue.State,
-            issue.CreatedAtUtc, issue.UpdatedAtUtc, issue.Url, issue.Labels, blockers, false, []));
+        ManagedGitHubIssueEligibility.Evaluate(project, new ManagedGitHubIssue(issue.Number, issue.Title, issue.Body, issue.State,
+            issue.CreatedAtUtc, issue.UpdatedAtUtc, issue.Url, issue.Labels, blockers, false, [])
+        {
+            Assignees = issue.Assignees,
+            Author = issue.Author,
+            Milestone = issue.Milestone
+        });
 
     private static IssueFields ReadIssue(JsonElement item, string repository)
     {
@@ -487,10 +497,17 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
             throw new JsonException("GitHub Issue URL was invalid.");
         var state = RequiredString(item, "state");
         if (state is not ("OPEN" or "CLOSED")) throw new JsonException("GitHub Issue state was invalid.");
+        var assignees = item.TryGetProperty("assignees", out var assigneeArray)
+            ? assigneeArray.ValueKind == JsonValueKind.Array
+                ? assigneeArray.EnumerateArray().Select(assignee => RequiredString(assignee, "login")).ToArray()
+                : throw new JsonException("GitHub Issue assignees were invalid.")
+            : Array.Empty<string>();
+        var author = OptionalObjectText(item, "author", "login");
+        var milestone = OptionalObjectText(item, "milestone", "title");
         return new(number, RequiredString(item, "title"), item.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.String
                 ? body.GetString() ?? string.Empty : string.Empty,
             state, item.GetProperty("createdAt").GetDateTimeOffset(),
-            item.GetProperty("updatedAt").GetDateTimeOffset(), issueUrl.AbsoluteUri, labels);
+            item.GetProperty("updatedAt").GetDateTimeOffset(), issueUrl.AbsoluteUri, labels, assignees, author, milestone);
     }
 
     private static bool ValidIssueUrl(string value, string repository, int issueNumber) =>
@@ -502,6 +519,12 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
     private static string RequiredString(JsonElement item, string property) =>
         item.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { } text
             ? text : throw new JsonException($"GitHub response is missing '{property}'.");
+
+    private static string? OptionalObjectText(JsonElement item, string property, string valueProperty) =>
+        !item.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.ValueKind == JsonValueKind.Object ? RequiredString(value, valueProperty)
+            : throw new JsonException($"GitHub Issue {property} was invalid.");
 
     private static IReadOnlyList<JsonElement> ParsePages(string output)
     {
@@ -583,7 +606,8 @@ public sealed partial class ServerGitHubReadService : IGitHubIssueSnapshotSource
     }
 
     private sealed record IssueFields(int Number, string Title, string Body, string State, DateTimeOffset CreatedAtUtc,
-        DateTimeOffset UpdatedAtUtc, string Url, IReadOnlyList<string> Labels);
+        DateTimeOffset UpdatedAtUtc, string Url, IReadOnlyList<string> Labels, IReadOnlyList<string> Assignees,
+        string? Author, string? Milestone);
 }
 
 /// <summary>Coordinates explicit Server Issue reads, eligibility checks, queueing, and assignment gating.</summary>

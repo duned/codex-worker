@@ -10,7 +10,7 @@ buildSync({ stdin: { contents: `export * from '${entry}/features/projects/model'
 const { savedDefinition, sameDefinition, definitionOf, newDefinition, project, issue, readiness, matchesIssue, changeRequest, issueUrl, DashboardRuntime, HttpClient } = require(join(dir, 'test.cjs'));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const p = { id: 'project-a', name: 'Sample project', repository: 'owner/repo', defaultBranch: 'main', description: '', requirements: [], revision: 2, enabled: true, issueReadyLabel: 'ready', issueBlockedLabel: 'blocked', automaticDiscovery: { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }, maxParallelTasks: null };
-const i = { number: 27, title: 'Fix parsing', body: 'Details', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [{ number: 28, title: 'Prerequisite', state: 'open', url: 'https://github.com/owner/repo/issues/28' }], isEligible: false, eligibilityReasons: ['Blocked by #28'] };
+const i = { number: 27, title: 'Fix parsing', body: 'Details', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], assignees: [], blockedBy: [{ number: 28, title: 'Prerequisite', state: 'open', url: 'https://github.com/owner/repo/issues/28' }], isEligible: false, eligibilityReasons: ['Blocked by #28'] };
 test('fresh project definitions default labels independently of edited drafts', () => {
   const draft = newDefinition();
   assert.equal(draft.issueReadyLabel, 'codex-ready');

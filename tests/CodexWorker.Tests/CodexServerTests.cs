@@ -2012,8 +2012,8 @@ public sealed class CodexServerTests
             var resources = typeof(ServerApplication).Assembly.GetManifestResourceNames();
             Assert.DoesNotContain("CodexServer.dashboard.html", resources);
             Assert.DoesNotContain("CodexServer.worker-poc.js", resources);
-            foreach (var path in new[] { "/home", "/projects", "/projects/a?issue=27&label=review", "/executions", "/settings", "/workers", "/workers/worker-a?step=preparation&project=a", "/dashboard-preview", "/dashboard-preview/home",
-                "/dashboard-preview/projects/a?issue=27&label=review", "/dashboard-preview/workers/worker-a?step=preparation&project=a",
+            foreach (var path in new[] { "/home", "/projects", "/projects/a?issue=27&label=review", "/projects/a/issues/27", "/executions", "/settings", "/workers", "/workers/worker-a?step=preparation&project=a", "/dashboard-preview", "/dashboard-preview/home",
+                "/dashboard-preview/projects/a?issue=27&label=review", "/dashboard-preview/projects/a/issues/27", "/dashboard-preview/workers/worker-a?step=preparation&project=a",
                 "/dashboard-preview/executions/request-a?offset=50", "/dashboard-preview/settings/credential-a" })
             {
                 using var previewResponse = await client.GetAsync(path);
@@ -2072,7 +2072,7 @@ public sealed class CodexServerTests
             using var pocPost = await client.PostAsync("/workers/worker-a/poc", null);
             Assert.Equal(HttpStatusCode.MethodNotAllowed, pocPost.StatusCode);
             foreach (var path in new[] { "/home", "/projects", "/projects/missing?label=review",
-                "/executions/request-a?offset=50", "/settings/credential-a" })
+                "/projects/project-a/issues/42", "/executions/request-a?offset=50", "/settings/credential-a" })
             {
                 using var deepLink = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.OK, deepLink.StatusCode);

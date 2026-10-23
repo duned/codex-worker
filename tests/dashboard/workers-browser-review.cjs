@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { props } = require('./worker-poc-fixtures.cjs');
-const issue = (number, title) => ({ number, title, body: '', state: 'open', url: `https://github.com/owner/repo/issues/${number}`, labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] });
+const issue = (number, title) => ({ number, title, body: '', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: `https://github.com/owner/repo/issues/${number}`, labels: [], assignees: [], blockedBy: [], isEligible: true, eligibilityReasons: [] });
 const assets = path.resolve('src/CodexServer/obj/worker-poc/preview');
 const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
 (async () => {

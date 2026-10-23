@@ -20,8 +20,8 @@ const clone = value => structuredClone(value);
     let projects = clone(props.projects), failVerify = false, loseSave = false, loseIssue = false, loseEnqueue = false, loseRefresh = false, loseLifecycle = false, loseDelete = false;
     let queue = [{ id: 'queued-27', projectId: 'project-a', workReference: { type: 'github-issue', id: '27' }, state: 'Queued', createdAtUtc: '2026-01-01T00:02:30Z', managedEligibilityState: 'eligible', managedEligibilityReasons: [], managedEligibilityCheckedAtUtc: '2026-01-01T00:02:30Z' }], nextIssue = 30;
     const issues = new Map([
-      [27, { number: 27, title: 'Repair parser', body: 'Bounded description', state: 'open', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], blockedBy: [], isEligible: true, eligibilityReasons: [] }],
-      [28, { number: 28, title: 'Blocked task', body: '', state: 'open', url: 'https://github.com/owner/repo/issues/28', labels: [], blockedBy: [{ number: 27, title: 'Repair parser', state: 'open', url: 'https://github.com/owner/repo/issues/27' }], isEligible: false, eligibilityReasons: ['Ready label is missing.', 'Blocked by open Issue #27.'] }]
+      [27, { number: 27, title: 'Repair parser', body: 'Bounded description', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], assignees: [], blockedBy: [], isEligible: true, eligibilityReasons: [] }],
+      [28, { number: 28, title: 'Blocked task', body: '', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/28', labels: [], assignees: [], blockedBy: [{ number: 27, title: 'Repair parser', state: 'open', url: 'https://github.com/owner/repo/issues/27' }], isEligible: false, eligibilityReasons: ['Ready label is missing.', 'Blocked by open Issue #27.'] }]
     ]);
     await page.route('https://dashboard.test/**', async route => {
       const request = route.request(), url = new URL(request.url()), endpoint = url.pathname, method = request.method();

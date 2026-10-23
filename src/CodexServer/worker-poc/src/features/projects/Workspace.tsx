@@ -6,6 +6,7 @@ import { projectList, project, issue, issueResult, empty, verification, type Pro
 import { projectPath, issuePath, savedDefinition, sameDefinition, matchesIssue, changeRequest, type IssueChange } from './model';
 import { queryKeys } from '../../shared/api/runtime';
 import type { ExecutionSummary } from '../../shared/api/contracts';
+import { isActiveExecutionState } from '../../model';
 export interface ProjectDraft { before?: Project; definition: Definition; step: number; reviewed?: Definition; open: boolean }
 export interface IssueDraft { project: Project; before?: Issue; change: IssueChange; preview?: IssueResult; accepted?: ExecutionSummary; open: boolean }
 type Attempt = { kind: 'save'; before?: Project; definition: Definition } | { kind: 'lifecycle' | 'delete'; before: Project; enabled?: boolean } | { kind: 'issue'; project: Project; before?: Issue; change: IssueChange; executionIds?: string[]; eligibilityChecks?: Record<string, string | undefined> };
@@ -100,6 +101,8 @@ function useWorkspaceOwner() {
             if (d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && JSON.stringify(observed) !== JSON.stringify(d.before)) throw Error(t("projects.issueChangedReopenItAndPreviewTheCurrentState"));
             if (d.change.kind === 'enqueue' || d.change.kind === 'refresh') {
               const items = await runtime.read(queuePath(current.id, d.before.number), signal, executionList);
+              if (d.change.kind === 'enqueue' && items.some(item => ['Queued', 'Assigned'].includes(item.state) || isActiveExecutionState(item.state)))
+                throw Error(t('projects.issueAlreadyQueuedOrRunning'));
               attempt.executionIds = items.map(e => e.id);
               attempt.eligibilityChecks = Object.fromEntries(items.filter(e => e.state === 'Queued').map(e => [e.id, e.managedEligibilityCheckedAtUtc]));
             }

@@ -9,6 +9,7 @@ import { WorkerPocPage } from '../features/workers/WorkerPocPage';
 import { WorkersPage } from '../features/workers/WorkersPage';
 import { ProjectsPage } from '../features/projects/ProjectsPage';
 import { ProjectsWorkspace } from '../features/projects/Workspace';
+import { IssueHistoryRoute } from '../features/projects/IssueHistoryPage';
 import { sections, resourceSections } from './routes';
 
 const SettingsPage = lazy(() => import('../features/settings/SettingsPage').then(module => ({ default: module.SettingsPage })));
@@ -28,6 +29,7 @@ export function DashboardRoutes() {
   const location = useLocation();
   return <SettingsWorkspace><ProjectsWorkspace><Routes>
     <Route path="/" element={<Navigate to={{ pathname: '/home', search: location.search }} replace />} />
+    <Route path="/projects/:projectId/issues/:issueNumber" element={<IssueHistoryRoute />} />
     {sections.map(section => <Route key={section} path={`/${section}`} element={section === 'home' ? <HomePage /> : section === 'workers' ? <WorkersPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
     {resourceSections.map(section => <Route key={section} path={`/${section}/:resourceId`} element={section === 'workers' ? <WorkerPage /> : section === 'projects' ? <ProjectsPage /> : section === 'executions' ? <ExecutionsPage /> : <SettingsRoute />} />)}
     <Route path="*" element={<p role="alert">{t("shared.unknownDashboardRoute")}</p>} />

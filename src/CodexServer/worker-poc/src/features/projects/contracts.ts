@@ -9,7 +9,10 @@ export interface Definition {
 export interface Project extends Definition { id: string; revision: number; enabled: boolean }
 export interface Repository { repository: string; name: string; defaultBranch: string; description: string }
 export interface BlockingIssue { number: number; title: string; state: string; url: string }
-export interface Issue extends BlockingIssue { body: string; labels: string[]; blockedBy: BlockingIssue[]; isEligible: boolean; eligibilityReasons: string[] }
+export interface Issue extends BlockingIssue {
+  body: string; createdAtUtc: string; updatedAtUtc: string; labels: string[]; assignees: string[]; author?: string | null;
+  milestone?: string | null; blockedBy: BlockingIssue[]; isEligible: boolean; eligibilityReasons: string[]
+}
 export interface IssueResult { operation: string; repository: string; previewOnly: boolean; changed: boolean; issueNumber: number | null; title: string | null; body: string | null; label: string | null; applied: boolean | null; relatedIssueNumber: number | null }
 function strings(item: Record<string, unknown>, keys: string[]) {
   if (keys.some(key => typeof item[key] !== 'string')) throw Error('Invalid text.');
@@ -59,7 +62,12 @@ export const blockingIssue: Validator<BlockingIssue> = value => {
   const i = record(value); strings(i, ['title', 'state', 'url']); integer(i, 'number', 1, 2147483647); return value as BlockingIssue;
 };
 export const issue: Validator<Issue> = value => {
-  blockingIssue(value); const i = record(value); strings(i, ['body']); bool(i, 'isEligible'); stringList(i.labels); stringList(i.eligibilityReasons); array(i.blockedBy, blockingIssue); return value as Issue;
+  blockingIssue(value); const i = record(value); strings(i, ['body', 'createdAtUtc', 'updatedAtUtc']);
+  if (![i.createdAtUtc, i.updatedAtUtc].every(value => Number.isFinite(Date.parse(String(value))))) throw Error('Invalid issue timestamps.');
+  bool(i, 'isEligible'); stringList(i.labels); stringList(i.assignees); nullableText(i, ['author', 'milestone']);
+  if (typeof i.url !== 'string' || !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9]\d*$/.test(i.url) ||
+      Number(i.url.slice(i.url.lastIndexOf('/') + 1)) !== i.number) throw Error('Invalid issue URL.');
+  stringList(i.eligibilityReasons); array(i.blockedBy, blockingIssue); return value as Issue;
 };
 export const issueList: Validator<Issue[]> = value => array(value, issue, 100);
 export const issueResult: Validator<IssueResult> = value => {

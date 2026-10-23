@@ -5,7 +5,7 @@ using System.Text.Json;
 public sealed partial class ServerGitHubReadService
 {
     private const string ReferenceFields = "id fullDatabaseId number title state url labels(first:100){nodes{name} pageInfo{hasNextPage}}";
-    private const string SnapshotFields = "id fullDatabaseId number title body state createdAt updatedAt url labels(first:100){nodes{name} pageInfo{hasNextPage}}";
+    private const string SnapshotFields = "id fullDatabaseId number title body state createdAt updatedAt url labels(first:100){nodes{name} pageInfo{hasNextPage}} assignees(first:100){nodes{login} pageInfo{hasNextPage}} author{login} milestone{title}";
 
     public async Task<IReadOnlyList<int>> ListIssueNumbersAsync(CentralProject project, GitHubIssueQuery query,
         CancellationToken cancellationToken)
@@ -152,10 +152,29 @@ public sealed partial class ServerGitHubReadService
         Dictionary<int, GitHubIssueIdentity> known, CancellationToken cancellationToken)
     {
         var reference = await ReadGraphReferenceAsync(project, item, known, cancellationToken);
-        return new(reference.Number, reference.Title, RequiredString(item, "body"), reference.State.ToUpperInvariant(),
+        var assignees = item.TryGetProperty("assignees", out var assigneeConnection)
+            ? assigneeConnection.GetProperty("nodes").EnumerateArray().Select(assignee => RequiredString(assignee, "login")).ToArray()
+            : Array.Empty<string>();
+        if (assigneeConnection.ValueKind == JsonValueKind.Object &&
+            assigneeConnection.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean())
+            throw new JsonException("GitHub returned too many Issue assignees.");
+        var author = ReadOptionalGraphText(item, "author", "login");
+        var milestone = ReadOptionalGraphText(item, "milestone", "title");
+        return new ManagedGitHubIssue(reference.Number, reference.Title, RequiredString(item, "body"), reference.State.ToUpperInvariant(),
             item.GetProperty("createdAt").GetDateTimeOffset(), item.GetProperty("updatedAt").GetDateTimeOffset(),
-            reference.Url, reference.Labels, [], false, [], ReadyLabelAppliedAtUtc: ReadReadyLabelAppliedAt(project, item));
+            reference.Url, reference.Labels, [], false, [], ReadyLabelAppliedAtUtc: ReadReadyLabelAppliedAt(project, item))
+        {
+            Assignees = assignees,
+            Author = author,
+            Milestone = milestone
+        };
     }
+
+    private static string? ReadOptionalGraphText(JsonElement item, string property, string valueProperty) =>
+        !item.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.ValueKind == JsonValueKind.Object ? RequiredString(value, valueProperty)
+            : throw new JsonException($"GitHub Issue {property} was invalid.");
 
     // A bounded timeline is conservative: if the ready event is older than this window,
     // history remains suppressed. Unrelated Issue edits never authorize a new attempt.

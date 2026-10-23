@@ -32,7 +32,7 @@ public sealed class ServerGitHubAdministrationTests
                 return Task.FromResult(new GitHubReadCommandResult(0, "team/project\n", ""));
             if (arguments[0] == "issue" && arguments[1] == "list")
                 return Task.FromResult(new GitHubReadCommandResult(0, """
-                    [{"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}]}]
+                    [{"number":7,"title":"Build it","body":"Details","state":"OPEN","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-02T00:00:00Z","url":"https://github.com/team/project/issues/7","labels":[{"name":"ready"}],"assignees":[{"login":"assignee"}],"author":{"login":"owner"},"milestone":{"title":"Milestone 1"}}]
                     """.Replace("\"OPEN\"", $"\"{issueState}\"", StringComparison.Ordinal), ""));
             if (arguments[0] == "issue" && arguments[1] == "view")
             {
@@ -41,7 +41,9 @@ public sealed class ServerGitHubAdministrationTests
                 {
                     number, title = "Build it", body = "Details", state = issueState,
                     createdAt = "2026-09-01T00:00:00Z", updatedAt = "2026-09-02T00:00:00Z",
-                    url = $"https://github.com/team/project/issues/{number}", labels = new[] { new { name = "ready" } }
+                    url = $"https://github.com/team/project/issues/{number}", labels = new[] { new { name = "ready" } },
+                    assignees = new[] { new { login = "assignee" } }, author = new { login = "owner" },
+                    milestone = new { title = "Milestone 1" }
                 }), ""));
             }
             if (arguments.Contains("graphql"))
@@ -63,6 +65,7 @@ public sealed class ServerGitHubAdministrationTests
         var access = await service.CheckAccessAsync(project);
         var issues = await service.ListIssuesAsync(project, new GitHubIssueQuery(state, 2, "ready"));
         var detail = await service.GetIssueAsync(project, 7);
+        var detailView = Assert.Single(commands, command => command[0] == "issue" && command[1] == "view");
         var relationships = await service.GetIssueRelationshipsAsync(project, 7);
         var graph = await GitHubIssueGraphBuilder.BuildAsync(7,
             (number, token) => service.GetIssueRelationshipsAsync(project, number, token), new(MaxDepth: 0));
@@ -74,11 +77,17 @@ public sealed class ServerGitHubAdministrationTests
         var issue = Assert.Single(issues);
         Assert.False(issue.IsEligible);
         Assert.Equal("ready", Assert.Single(issue.Labels));
+        Assert.Equal("assignee", Assert.Single(issue.Assignees));
+        Assert.Equal("owner", issue.Author);
+        Assert.Equal("Milestone 1", issue.Milestone);
         Assert.Equal(3, Assert.Single(issue.BlockedBy).Number);
         Assert.Contains(issue.EligibilityReasons, reason => reason.Contains("#3", StringComparison.Ordinal));
         Assert.Equal(issueState, issue.State);
         Assert.NotNull(detail);
         Assert.False(detail.IsEligible);
+        Assert.Equal("assignee", Assert.Single(detail.Assignees));
+        Assert.Equal("owner", detail.Author);
+        Assert.Equal("Milestone 1", detail.Milestone);
         Assert.Equal(3, Assert.Single(detail.BlockedBy).Number);
         var relationshipResult = Assert.IsType<GitHubIssueRelationships>(relationships);
         Assert.Equal(1, relationshipResult.ContractVersion);
@@ -99,6 +108,8 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal("2", query[Array.IndexOf(query.ToArray(), "--limit") + 1]);
         Assert.Equal(state, query[Array.IndexOf(query.ToArray(), "--state") + 1]);
         Assert.Equal("ready", query[Array.IndexOf(query.ToArray(), "--label") + 1]);
+        Assert.Contains("number,title,body,state,createdAt,updatedAt,url,labels,assignees,author,milestone", query);
+        Assert.Contains("number,title,body,state,createdAt,updatedAt,url,labels,assignees,author,milestone", detailView);
         Assert.DoesNotContain(commands, command => command.Contains("permissions", StringComparer.Ordinal));
     }
 

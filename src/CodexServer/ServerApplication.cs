@@ -416,13 +416,13 @@ public static partial class ServerApplication
             catch (InvalidOperationException) { return Results.Json(new { error = "Credential encryption is not configured." }, statusCode: StatusCodes.Status503ServiceUnavailable); }
         });
         // Explicit UI routes only: protocol, API and health failures never become HTML.
-        foreach (var path in new[] { "/", "/home", "/projects", "/projects/{resourceId}",
+        foreach (var path in new[] { "/", "/home", "/projects", "/projects/{resourceId}", "/projects/{projectId}/issues/{issueNumber:int}",
             "/workers", "/workers/{resourceId}", "/executions", "/executions/{resourceId}",
             "/settings", "/settings/{resourceId}" })
             app.MapGet(path, () => Results.Content(preview.Shell, "text/html; charset=utf-8"));
         // Historical bookmarks resolve into the same canonical application.
         foreach (var path in new[] { "/dashboard-preview", "/dashboard-preview/home",
-            "/dashboard-preview/projects", "/dashboard-preview/projects/{resourceId}",
+            "/dashboard-preview/projects", "/dashboard-preview/projects/{resourceId}", "/dashboard-preview/projects/{projectId}/issues/{issueNumber:int}",
             "/dashboard-preview/workers", "/dashboard-preview/workers/{resourceId}",
             "/dashboard-preview/executions", "/dashboard-preview/executions/{resourceId}",
             "/dashboard-preview/settings", "/dashboard-preview/settings/{resourceId}" })

@@ -266,12 +266,18 @@ public sealed class GitHubIssueReadProviderTests
         var source = new ServerGitHubReadService((arguments, _) =>
         {
             Assert.Contains(arguments, argument => argument.Contains("itemTypes:[LABELED_EVENT]", StringComparison.Ordinal));
+            Assert.Contains(arguments, argument => argument.Contains("assignees(first:100){nodes{login}", StringComparison.Ordinal));
+            Assert.Contains(arguments, argument => argument.Contains("author{login}", StringComparison.Ordinal));
+            Assert.Contains(arguments, argument => argument.Contains("milestone{title}", StringComparison.Ordinal));
             return Task.FromResult(new GitHubReadCommandResult(0,
                 JsonSerializer.Serialize(new { data = new { i1 = new { issue = item } } }), ""));
         });
         var snapshot = Assert.Single(await source.ReadSnapshotsAsync(Project() with { IssueReadyLabel = "codex-ready" },
             new Dictionary<int, string?> { [1] = null }, CancellationToken.None));
         Assert.Equal(DateTimeOffset.UnixEpoch.AddSeconds(2), snapshot.Issue.ReadyLabelAppliedAtUtc);
+        Assert.Equal("assignee", Assert.Single(snapshot.Issue.Assignees));
+        Assert.Equal("owner", snapshot.Issue.Author);
+        Assert.Equal("Milestone 1", snapshot.Issue.Milestone);
     }
 
     [Trait("TestType", "Integration")]
@@ -430,6 +436,8 @@ public sealed class GitHubIssueReadProviderTests
         body = "Body", state = "OPEN", createdAt = DateTimeOffset.UnixEpoch, updatedAt = DateTimeOffset.UnixEpoch,
         url = $"https://github.com/team/project/issues/{number}",
         labels = new { nodes = new[] { new { name = "codex-ready" } }, pageInfo = new { hasNextPage = false } },
+        assignees = new { nodes = new[] { new { login = "assignee" } }, pageInfo = new { hasNextPage = false } },
+        author = new { login = "owner" }, milestone = new { title = "Milestone 1" },
         parent = (object?)null,
         subIssues = new { nodes = Array.Empty<object>(), pageInfo = new { hasNextPage = false, endCursor = (string?)null } },
         blockedBy = new { nodes = Array.Empty<object>(), pageInfo = new { hasNextPage = false, endCursor = (string?)null } },

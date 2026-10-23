@@ -11,7 +11,7 @@ const running = { ...queued, id: 'running', state: 'Running', assignedWorkerId: 
 const uncertain = { ...running, id: 'uncertain', state: 'Failed', recoveryState: 'LeaseExpiredUncertain', recoveryReason: 'Check authoritative repository evidence', retryOfExecutionId: 'previous', attemptNumber: 2, integrationResult: 'Unknown', lease: { ...running.lease, state: 'Expired' } };
 const missingRelated = { ...queued, id: 'missing-related', projectId: 'missing-project', assignedWorkerId: 'missing-worker', workReference: { type: 'github-issue', id: '8' } };
 const unassigned = { ...queued, id: 'unassigned', assignedWorkerId: undefined, workReference: undefined };
-const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open', url: 'https://github.com/example/repository/issues/7', labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] };
+const issue = { number: 7, title: 'Fix request parsing', body: '', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/example/repository/issues/7', labels: [], assignees: [], blockedBy: [], isEligible: true, eligibilityReasons: [] };
 (async () => {
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ headless: true });
