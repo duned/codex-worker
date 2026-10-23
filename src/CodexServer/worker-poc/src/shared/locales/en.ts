@@ -1273,6 +1273,7 @@ export const en = {
   "status.validating": "Validating",
   "status.integration": "Integration",
   "status.integrating": "Integrating",
+  "status.reporting": "Reporting",
   "status.implementation": "Implementation",
   "status.blocked": "blocked",
   "status.not-revoked": "not-revoked",

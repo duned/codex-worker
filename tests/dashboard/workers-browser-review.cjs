@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { props } = require('./worker-poc-fixtures.cjs');
+const issue = (number, title) => ({ number, title, body: '', state: 'open', url: `https://github.com/owner/repo/issues/${number}`, labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] });
 const assets = path.resolve('src/CodexServer/obj/worker-poc/preview');
 const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
 (async () => {
@@ -56,6 +57,7 @@ const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
       const fixtures = {
         '/api/version': { version: '0.15.0' }, '/api/v1/workers': inventory(), '/api/v1/workers/worker-a': registry(),
         '/api/v1/workers/worker-a/credential-access': { status: delivery }, '/api/v1/nodes': [node()], '/api/v1/nodes/worker-a/commands': commands,
+        '/api/v1/projects/project-a/github/issues/27': issue(27, 'Restore worker progress'), '/api/v1/projects/project-a/github/issues/26': issue(26, 'Resolve parser warning'), '/api/v1/projects/project-a/github/issues/28': issue(28, 'Preserve completed checks'),
         '/api/v1/workers/worker-a/diagnostics': { ...props.diagnostics, canActivate, activationBlockingReasons: canActivate ? [] : ['Current readiness unavailable'], capabilityObservationsCurrent: !stale, projects: [{ projectId: 'project-a', projectName: 'Sample project', isEligible: true, missingRequirements: [], workerReportedRevision: 1, observationStatus: stale ? 'stale-heartbeat' : 'worker-reported-current-revision', materializationState: 'not-materialized' }] },
         '/api/v1/projects': props.projects.map(item => ({ ...item, revision: 1, enabled: true, requirements: [] })), '/api/v1/provisioning': [],
         '/api/v1/executions': empty || quiet ? [] : [...props.executions, { ...props.executions[0], id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28' } }]
@@ -69,7 +71,7 @@ const output = path.resolve(process.argv[2] || '/tmp/workers-migration-review');
       await page.getByRole('heading', { name: 'Build Worker North' }).waitFor();
       await page.getByRole('heading', { name: 'Current executions', exact: true }).waitFor();
       await page.getByText('2 / 2 active', { exact: true }).waitFor();
-      assert.equal(await page.getByRole('link', { name: 'Issue #28' }).getAttribute('href'), 'https://github.com/owner/repo/issues/28');
+      assert.equal(await page.getByRole('link', { name: '#28 · Preserve completed checks' }).getAttribute('href'), 'https://github.com/owner/repo/issues/28');
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (width === 375) await page.getByRole('button', { name: 'Expand navigation menu' }).click();
       const connection = page.getByRole('region', { name: 'Server connection' }).filter({ visible: true });

@@ -9,6 +9,7 @@ import { TableCard } from './untitled/components/application/table/table';
 import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
+import { IssueTitle } from './features/projects/IssueTitle';
 const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
 const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
   'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
@@ -140,13 +141,20 @@ function PanelHeading({ id, title, trailing }) {
   </div>;
 }
 
-function WorkReference({ item, project }) {
+function WorkReference({ item, project, showTitle = false }) {
   useLanguage();
   const work = item.workReference;
   if (!work) return <span>{t('executions.workReferenceUnavailable')}</span>;
   const url = issueLink(work, project?.repository);
+  if (work.type === 'github-issue' && showTitle) {
+    return <>
+      <IssueTitle projectId={item.projectId} repository={project?.repository} workReference={work} />
+      {!url && <span className="block text-xs text-tertiary">{t('shared.issueLinkUnavailable')}</span>}
+    </>;
+  }
   const identity = work.type === 'github-issue' ? `${t('workers.issue')} #${work.id}` : `${localizeText(work.type)} ${work.id}`;
-  return url ? <ExternalLink href={url}>{identity}</ExternalLink> : <span>{identity}{work.type === 'github-issue' && <span className="block text-xs text-tertiary">{t('shared.issueLinkUnavailable')}</span>}</span>;
+  return url ? <ExternalLink href={url}>{identity}</ExternalLink>
+    : <span>{identity}{work.type === 'github-issue' && <span className="block text-xs text-tertiary">{t('shared.issueLinkUnavailable')}</span>}</span>;
 }
 
 function ExecutionTimeline({ item }) {
@@ -191,7 +199,7 @@ function CurrentExecution({ item, projects, now, showStatus }) {
       </div>
       <div>
         <dt>{t('workers.gitHubIssue')}</dt>
-        <dd><WorkReference item={item} project={project} /></dd>
+        <dd><WorkReference item={item} project={project} showTitle /></dd>
       </div>
       <div>
         <dt>{t('shared.elapsed')}</dt>

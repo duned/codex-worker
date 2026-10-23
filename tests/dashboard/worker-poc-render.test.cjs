@@ -8,12 +8,14 @@ const frontendRequire=createRequire(path.join(frontend,'package.json'));
 const {buildSync}=frontendRequire('esbuild');
 const {renderToStaticMarkup}=frontendRequire('react-dom/server');
 const {createElement}=frontendRequire('react');
-const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
+const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
-vm.runInNewContext(output,{module:moduleResult,exports:moduleResult.exports,require:frontendRequire,URL});
+const issueTitleApi={useApiRead(path){const issueNumber=Number(/\/issues\/(\d+)$/.exec(path)?.[1]);return context.__workerPocIssueReads[path]??(Number.isSafeInteger(issueNumber)&&issueNumber>0?{data:{number:issueNumber,title:`Issue title ${issueNumber}`}}:{});},useApiMutation(){return {};},useSession(){return {};},useRuntime(){throw Error('Unexpected runtime access in static render.');}};
+const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL,__workerPocIssueReads:{}};
+vm.runInNewContext(output,context);
 const {WorkerDetail}=moduleResult.exports;
 const {props,worker,node,capability,current,completed}=require('./worker-poc-fixtures.cjs');
-const render=data=>renderToStaticMarkup(createElement(WorkerDetail,{...props,...data}));
+const render=data=>{context.__workerPocIssueReads=data?.issueReads??{};return renderToStaticMarkup(createElement(WorkerDetail,{...props,...data}));};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
  for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','https://github.com/owner/repo/issues/27','https://github.com/owner/repo/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
@@ -22,8 +24,13 @@ test('Worker detail renders real identity, current stage, outcomes, links and ca
  assert.ok(html.includes('aria-label="Configuration: Config OK"'));
  assert.ok(html.includes('aria-label="Scheduling: Active"'));
  assert.ok(!html.includes('other-execution'));assert.ok(!html.includes('8 active'));
- assert.ok(html.includes('Issue #27'));
+ assert.ok(html.includes('#27 · Issue title 27'));
  assert.ok(!html.includes('Upcoming'));
+});
+test('Current execution retains its Issue number when the title cannot be loaded',()=>{
+ const html=render({issueReads:{'/api/v1/projects/project-a/github/issues/27':{error:'Issue read unavailable'}}});
+ assert.ok(html.includes('#27 · title unavailable'));
+ assert.ok(html.includes('href="https://github.com/owner/repo/issues/27"'));
 });
 test('Readiness heartbeat uses the same current, stale and unknown status projection as Worker detail',()=>{
  const heartbeatText=html=>{const start=html.indexOf('poc-readiness-panel');const end=html.indexOf('poc-worker-extra',start);return html.slice(start,end<0?undefined:end);};
@@ -45,7 +52,7 @@ test('Configuration failure is independent, unknown/stale evidence is never heal
  assert.ok(stale.includes('aria-label="Heartbeat: Stale"'));
  assert.ok(stale.includes('aria-label="Configuration: Config unknown"'));
 });
-test('The five-stage rail highlights only the reported current stage and does not invent history',()=>{
+test('The execution rail highlights only the reported current stage and retains cumulative Reporting checks',()=>{
  for(const currentStage of ['Codex','Validation','Integration',null]){
   const html=render({executions:[{...current,currentStage}, {...completed,state:'Failed',durationMilliseconds:null,completedAtUtc:null,recoveryState:'LeaseExpiredUncertain'}]});
   const expected=currentStage==='Validation'?'Validating':currentStage==='Integration'?'Integrating':currentStage;
@@ -53,6 +60,10 @@ test('The five-stage rail highlights only the reported current stage and does no
   assert.ok(html.includes('Stages before the reported current stage are shown as completed when the execution lifecycle establishes they were passed; detailed stage history is not provided.'));
   assert.ok(html.includes('aria-current="step"')===!!currentStage);assert.ok(html.includes('Failed'));assert.ok(html.includes('Duration unavailable'));assert.ok(html.includes('LeaseExpiredUncertain'));assert.ok(html.includes('31/12/2025'));
  }
+ const reporting=render({executions:[{...current,currentStage:'Reporting'}]});
+ assert.ok(reporting.includes('aria-current="step"'));
+ assert.ok(reporting.includes('>Reporting<'));
+ assert.equal((reporting.match(/<svg viewBox="0 0 16 16" focusable="false"><path/g)||[]).length,5);
 });
 test('Capability tiles use each reported service version and authentication field',()=>{
  const service=(id,displayName,detectedVersion)=>({definition:{id,displayName,requiresAuthentication:true,requiresConfiguration:true},state:{installation:'Installed',health:'Healthy',authentication:'Satisfied',configuration:'Satisfied',detectedVersion},availableActions:[]});
@@ -144,6 +155,6 @@ test('Migration preview reuses Worker presentation without unfinished administra
 test('Canonical detail preserves multiple actual slots, linked concurrent stages and independent delivery revocation', () => {
  const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28' } };
  const html = render({ observations: [{ ...worker, activeExecutions: 2, availableCapacity: 0 }], executions: [current, second, completed], administration: { worker, delivery: { status: 'active' }, actions: [{ key: 'revoke-delivery', label: 'Revoke delivery authorization', reason: '' }], onAction: () => {}, onRefresh: () => {} } });
- for (const text of ['2 / 2', 'Current executions', 'Validating', 'Codex', 'Issue #28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
+ for (const text of ['2 / 2', 'Current executions', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
  assert.ok(!html.includes('Detail preview'));
 });

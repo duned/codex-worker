@@ -7,12 +7,20 @@ const { join, resolve } = require('node:path');
 const frontend = resolve('src/CodexServer/worker-poc'), requireFrontend = createRequire(join(frontend, 'package.json'));
 const { buildSync } = requireFrontend('esbuild');
 const directory = mkdtempSync(join(tmpdir(), 'dashboard-localization-'));
-buildSync({ stdin: { contents: `export * from './src/shared/i18n'; export * from './src/shared/preferences'; export * from './src/shared/Shell'; export * from './src/detail'; export * from './src/model'; export * from './src/features/executions/model';`, resolveDir: frontend }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', alias: { '@': join(frontend, 'src/untitled') }, external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/server', 'react-aria-components'], outfile: join(directory, 'localization.cjs') });
+buildSync({ stdin: { contents: `export * from './src/shared/i18n'; export * from './src/shared/preferences'; export * from './src/shared/Shell'; export * from './src/detail'; export * from './src/model'; export * from './src/features/executions/model';`, resolveDir: frontend }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', alias: { '@': join(frontend, 'src/untitled') }, external: ['../../shared/api/session', 'react', 'react/jsx-runtime', 'react-dom', 'react-dom/server', 'react-aria-components'], outfile: join(directory, 'localization.cjs') });
 // External React resolves from the product package, sharing the renderer's hook owner.
 const Module = require('node:module');
 const fs = require('node:fs');
 const compiled = new Module(join(frontend, 'localization-test.cjs'));
 compiled.paths = Module._nodeModulePaths(frontend);
+const originalRequire = compiled.require.bind(compiled);
+compiled.require = specifier => specifier === '../../shared/api/session' ? {
+  useApiRead(path) {
+    const issueNumber = Number(/\/issues\/(\d+)$/.exec(path)?.[1]);
+    return { data: Number.isSafeInteger(issueNumber) && issueNumber > 0 ? { number: issueNumber, title: `Issue title ${issueNumber}` } : undefined };
+  },
+  useApiMutation() { return {}; }, useSession() { return {}; }, useRuntime() { throw Error('Unexpected runtime access in localization render.'); }
+} : originalRequire(specifier);
 compiled._compile(fs.readFileSync(join(directory, 'localization.cjs'), 'utf8'), compiled.id);
 const { t, localizeText, statusLabel, resources, usePreferences, createPreferences, Application, WorkerDetail, timestamp, presentation } = compiled.exports;
 const { renderToStaticMarkup } = requireFrontend('react-dom/server');

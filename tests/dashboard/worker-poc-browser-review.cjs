@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { props } = require('./worker-poc-fixtures.cjs');
+const issue = (number, title) => ({ number, title, body: '', state: 'open', url: `https://github.com/owner/repo/issues/${number}`, labels: [], blockedBy: [], isEligible: true, eligibilityReasons: [] });
 const output = path.resolve(process.argv[2] || '/tmp/codex-worker-poc-review');
 const assets = path.resolve('src/CodexServer/obj/worker-poc');
 (async () => {
@@ -51,6 +52,7 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
       }
       const executions = noActiveExecution ? [props.executions.find(item => item.state === 'Completed')] : props.executions;
       const fixtures = { '/api/v1/workers/worker-a/credential-access': { status: 'active' }, '/api/v1/provisioning': [], '/api/v1/workers': empty ? [] : [registry()], '/api/v1/workers/worker-a': registry(),
+        '/api/v1/projects/project-a/github/issues/27': issue(27, 'Restore worker progress'), '/api/v1/projects/project-a/github/issues/26': issue(26, 'Resolve parser warning'),
         '/api/v1/workers/worker-a/diagnostics': { ...props.diagnostics, canActivate, activationBlockingReasons: canActivate ? [] : ['Current readiness unavailable'] },
         '/api/v1/nodes/worker-a/commands': commands, '/api/v1/nodes': props.nodes, '/api/v1/projects': props.projects, '/api/v1/executions': empty ? [] : executions };
       assert.ok(Object.hasOwn(fixtures, endpoint), `Unexpected API: ${endpoint}`);
@@ -67,9 +69,9 @@ const assets = path.resolve('src/CodexServer/obj/worker-poc');
         await page.getByRole('group', { name: `${label}: ${value}` }).waitFor();
       assert.deepEqual(await page.locator('.poc-worker-status-item').evaluateAll(items => items.map(item => item.getAttribute('aria-label'))),
         ['Connection: Connected', 'Heartbeat: Fresh', 'Configuration: Config OK', 'Scheduling: Inactive']);
-      await page.getByRole('link', { name: 'Issue #27' }).waitFor();
+      await page.getByRole('link', { name: '#27 · Restore worker progress' }).waitFor();
       await page.getByText('Pending', { exact: true }).waitFor();
-      assert.equal(await page.getByRole('link', { name: 'Issue #27' }).getAttribute('href'), 'https://github.com/owner/repo/issues/27');
+      assert.equal(await page.getByRole('link', { name: '#27 · Restore worker progress' }).getAttribute('href'), 'https://github.com/owner/repo/issues/27');
       assert.equal(await page.locator('#poc-legacy-owner,#view-title').count(), 0);
       assert.equal(await page.evaluate(() => !!window.codexWorkerPoc), false);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));

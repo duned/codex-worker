@@ -1287,6 +1287,7 @@ export const es = {
   "status.validating": "Validando",
   "status.integration": "Integración",
   "status.integrating": "Integrando",
+  "status.reporting": "Informando",
   "status.implementation": "Implementación",
   "status.blocked": "bloqueado",
   "status.not-revoked": "sin revocar",

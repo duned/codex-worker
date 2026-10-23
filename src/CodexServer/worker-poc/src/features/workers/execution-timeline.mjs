@@ -3,7 +3,8 @@ export const executionStages = [
   { id: 'preparing', label: 'Preparing' },
   { id: 'codex', label: 'Codex' },
   { id: 'validation', label: 'Validating' },
-  { id: 'integration', label: 'Integrating' }
+  { id: 'integration', label: 'Integrating' },
+  { id: 'reporting', label: 'Reporting' }
 ];
 
 const stageAliases = new Map([
@@ -11,7 +12,8 @@ const stageAliases = new Map([
   ['preparation', 'preparing'], ['preparing', 'preparing'],
   ['codex', 'codex'], ['implementing', 'codex'],
   ['validation', 'validation'], ['validating', 'validation'],
-  ['integration', 'integration'], ['integrating', 'integration']
+  ['integration', 'integration'], ['integrating', 'integration'],
+  ['reporting', 'reporting']
 ]);
 
 const completedBefore = new Map([
@@ -21,7 +23,8 @@ const completedBefore = new Map([
   ['validation', ['claimed', 'preparing', 'codex']],
   // Integration recovery can transition directly from Preparing to Integrating.
   // Without stage history, Codex and Validation cannot be claimed as completed.
-  ['integration', ['claimed', 'preparing']]
+  ['integration', ['claimed', 'preparing']],
+  ['reporting', ['claimed', 'preparing', 'codex', 'validation', 'integration']]
 ]);
 
 export function executionTimeline(currentStage) {

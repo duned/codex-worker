@@ -32,7 +32,8 @@ function IssueTitleRead({ projectId, repository, workReference, className }: {
     if (observed.number !== issueNumber) throw Error('Issue identity mismatch.');
     return observed;
   });
-  const text = read.data ? `#${workReference.id} · ${read.data.title}` : read.error
+  const title = read.data?.title.trim();
+  const text = title ? `#${workReference.id} · ${title}` : read.error || read.data
     ? `#${workReference.id} · ${t('projects.issueTitleUnavailable')}`
     : `#${workReference.id} · ${t('projects.loadingIssueTitle')}`;
   const href = issueLink(workReference, repository);
