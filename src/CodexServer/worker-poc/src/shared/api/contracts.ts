@@ -13,6 +13,7 @@ export interface ProjectSummary { id: string; name: string; repository: string; 
 export interface ExecutionSummary {
   id: string; projectId: string; assignedWorkerId?: string; state: string; createdAtUtc: string;
   currentStage?: string; startedAtUtc?: string; assignedAtUtc?: string; completedAtUtc?: string;
+  stageStartedAtUtc?: Record<string, string>;
   durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
   managedEligibilityState?: string; managedEligibilityReasons?: string[]; managedEligibilityCheckedAtUtc?: string;
   completionSummary?: string;

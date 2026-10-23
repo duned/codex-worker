@@ -3110,7 +3110,7 @@ public sealed class CodexServerTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE workers DROP COLUMN worker_execution_slots; ALTER TABLE workers DROP COLUMN telegram_json; ALTER TABLE workers DROP COLUMN configured_display_name; ALTER TABLE workers DROP COLUMN configured_maximum_capacity; ALTER TABLE workers DROP COLUMN configuration_revision; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
+            command.CommandText = "ALTER TABLE worker_bootstrap_tokens DROP COLUMN worker_id; ALTER TABLE worker_bootstrap_tokens DROP COLUMN operation; ALTER TABLE workers DROP COLUMN scheduling_policy; ALTER TABLE workers DROP COLUMN worker_execution_slots; ALTER TABLE workers DROP COLUMN telegram_json; ALTER TABLE workers DROP COLUMN configured_display_name; ALTER TABLE workers DROP COLUMN configured_maximum_capacity; ALTER TABLE workers DROP COLUMN configuration_revision; ALTER TABLE execution_requests DROP COLUMN stage_started_at_utc_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_checked_at_utc; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_reasons_json; ALTER TABLE execution_requests DROP COLUMN managed_eligibility_state; UPDATE schema_metadata SET schema_version=11 WHERE singleton=1;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -3122,6 +3122,7 @@ public sealed class CodexServerTests
         Assert.Null(worker.ConfiguredMaximumCapacity);
         Assert.Null(worker.WorkerExecutionSlots);
         Assert.Equal("eligible", (await upgraded.GetExecutionAsync(execution.Id))!.ManagedEligibilityState);
+        Assert.Null((await upgraded.GetExecutionAsync(execution.Id))!.StageStartedAtUtc);
     }
 
     [Trait("TestType", "Integration")]
@@ -3171,7 +3172,7 @@ public sealed class CodexServerTests
         var completed = await store.ReportExecutionAsync(first.Id, finalReport);
         var duplicate = await store.ReportExecutionAsync(first.Id, finalReport);
         Assert.Equal("Completed", completed!.State);
-        Assert.Equal(completed, duplicate);
+        Assert.Equivalent(completed, duplicate);
         Assert.Equal("Implementing", completed.CurrentStage);
         Assert.Equal("run-a", completed.WorkerExecutionId);
         Assert.Equal("passed", completed.ValidationResult);
@@ -3192,6 +3193,63 @@ public sealed class CodexServerTests
         Assert.Equal("Completed", persisted[0].State);
         Assert.Equal(120000, persisted[0].DurationMilliseconds);
         Assert.Equal(started.AddMinutes(2), persisted[0].CompletedAtUtc);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ExecutionStageTransitionsPersistServerTimestampsWithoutResettingRepeatedReports()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-10-23T12:00:00Z"));
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "stage-timings.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        var project = await store.CreateProjectAsync(new CentralProjectDefinition("Stage timing", "team/stage-timing", "main", "", []));
+        var workerId = Guid.NewGuid().ToString("N");
+        ServerWorkerCapability[] capabilities = [new("tool", "git"), .. AuthenticationCapabilities(project.Repository)];
+        await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "stage timing worker", "1.0", "test", 1, capabilities));
+        await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "1.0", "running", 0, 1, capabilities, []));
+        var execution = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id, new WorkReference("issue", "31")));
+        var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).Assignment);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        var startedAt = clock.GetUtcNow();
+
+        async Task ReportStageAsync(string stage)
+        {
+            await store.ReportExecutionAsync(execution.Id,
+                new WorkerExecutionReport(workerId, assignment.AssignmentId, "timed-run", "Running", stage, startedAt, Generation: lease.Generation));
+        }
+
+        await ReportStageAsync("Claiming");
+        clock.Advance(TimeSpan.FromSeconds(42));
+        await ReportStageAsync("Preparing");
+        clock.Advance(TimeSpan.FromSeconds(75));
+        await ReportStageAsync("Codex");
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await ReportStageAsync("Codex");
+        clock.Advance(TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(14));
+        await ReportStageAsync("Validation");
+        clock.Advance(TimeSpan.FromSeconds(9));
+        await ReportStageAsync("Integration");
+        clock.Advance(TimeSpan.FromSeconds(59));
+        await ReportStageAsync("Reporting");
+
+        var projected = await store.GetExecutionAsync(execution.Id);
+        var stageTimes = Assert.IsAssignableFrom<IReadOnlyDictionary<string, DateTimeOffset>>(projected!.StageStartedAtUtc);
+        Assert.Equal(6, stageTimes.Count);
+        Assert.Equal(startedAt, stageTimes["claimed"]);
+        Assert.Equal(startedAt.AddSeconds(42), stageTimes["preparing"]);
+        Assert.Equal(startedAt.AddSeconds(117), stageTimes["codex"]);
+        Assert.Equal(startedAt.AddSeconds(252), stageTimes["validation"]);
+        Assert.Equal(startedAt.AddSeconds(261), stageTimes["integration"]);
+        Assert.Equal(startedAt.AddSeconds(320), stageTimes["reporting"]);
+
+        var restarted = new SqliteRegistryStore(Path.Combine(temporary.Path, "stage-timings.db"));
+        await restarted.InitializeAsync();
+        var persisted = Assert.IsAssignableFrom<IReadOnlyDictionary<string, DateTimeOffset>>(
+            (await restarted.GetExecutionAsync(execution.Id))!.StageStartedAtUtc);
+        foreach (var (stage, timestamp) in stageTimes) Assert.Equal(timestamp, persisted[stage]);
     }
 
     [Trait("TestType", "Integration")]

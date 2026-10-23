@@ -1,5 +1,5 @@
 import { WorkerResources } from './features/workers/WorkerResources';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
 import { ExternalLink } from './shared/Actions';
 import { GuidDisplay } from './shared/GuidDisplay';
@@ -157,9 +157,9 @@ function WorkReference({ item, project, showTitle = false }) {
     : <span>{identity}{work.type === 'github-issue' && <span className="block text-xs text-tertiary">{t('shared.issueLinkUnavailable')}</span>}</span>;
 }
 
-function ExecutionTimeline({ item }) {
+function ExecutionTimeline({ item, now }) {
   useLanguage();
-  const stages = executionTimeline(item.currentStage);
+  const stages = executionTimeline(item.currentStage, item.stageStartedAtUtc, now);
   return <div className="poc-execution-timeline">
     <ol className="poc-stage-list" aria-label={t('workers.executionStages')}>
       {stages.map(stage => {
@@ -179,15 +179,25 @@ function ExecutionTimeline({ item }) {
           </span>
           <span className="poc-stage-name">{localizeText(stage.label)}</span>
           <span className="poc-stage-detail">{detail}</span>
+          {(stage.state === 'completed' || stage.state === 'current') &&
+            <span className="poc-stage-duration">{stage.duration ?? t('shared.durationUnavailable')}</span>}
         </li>;
       })}
     </ol>
-    <p className="poc-stage-history-note">{t('shared.onlyTheReportedCurrentStageIsAvailableStageHistoryIsNotProvided')}</p>
+    <p className="poc-stage-history-note">{t('workers.stageTimingNote')}</p>
   </div>;
 }
 
 function CurrentExecution({ item, projects, now, showStatus }) {
   useLanguage();
+  const [liveNow, setLiveNow] = useState(now);
+  const active = isActiveExecutionState(item.state);
+  useEffect(() => {
+    if (!active) return undefined;
+    const interval = window.setInterval(() => setLiveNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [active]);
+  const displayNow = Math.max(liveNow, now);
   const project = projects?.find(value => value.id === item.projectId);
   const stage = item.currentStage ? stageLabel(item.currentStage) : localizeText(item.state);
   return <article className="poc-current-execution">
@@ -203,10 +213,10 @@ function CurrentExecution({ item, projects, now, showStatus }) {
       </div>
       <div>
         <dt>{t('shared.elapsed')}</dt>
-        <dd>{duration(item, now)}</dd>
+        <dd>{duration(item, displayNow)}</dd>
       </div>
     </dl>
-    <ExecutionTimeline item={item} />
+    <ExecutionTimeline item={item} now={displayNow} />
     <p className="poc-current-execution-timing">{item.startedAtUtc ? `${t('executions.started')} ${relativeAge(item.startedAtUtc, now)}` : t('workers.executionStartNotReported')} · <a href={`/executions/${encodeURIComponent(item.id)}`}>{t('shared.executionDetails')}</a></p>
   </article>;
 }

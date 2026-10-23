@@ -48,6 +48,11 @@ export const projects = list<ProjectSummary>(value => { const item = fields(valu
 export const executions = list<ExecutionSummary>(value => {
   const item = fields(value, ['id', 'projectId', 'state', 'createdAtUtc']);
   optional(item, ['assignedWorkerId', 'currentStage', 'startedAtUtc', 'assignedAtUtc', 'completedAtUtc', 'recoveryState', 'recoveryReason', 'pendingReason', 'managedEligibilityState', 'managedEligibilityCheckedAtUtc', 'completionSummary'], [], ['durationMilliseconds']);
+  if (item.stageStartedAtUtc != null) {
+    const stages = record(item.stageStartedAtUtc);
+    const allowed = new Set(['claimed', 'preparing', 'codex', 'validation', 'integration', 'reporting']);
+    if (Object.entries(stages).some(([stage, timestamp]) => !allowed.has(stage) || typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp)))) throw new Error('Invalid stage timestamps.');
+  }
   if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
   if (item.workReference != null) optional(fields(item.workReference, ['type', 'id']), ['url']);
 });

@@ -97,7 +97,7 @@ public sealed class ManagedExecutionMaintenanceTests
         Assert.Equal("Released", completed?.Lease?.State);
         Assert.Null(completed?.FailureClassification);
         Assert.Equal("passed", completed?.IntegrationResult);
-        Assert.Equal(completed, await registry.ReportExecutionAsync(execution.Id, authorized));
+        Assert.Equivalent(completed, await registry.ReportExecutionAsync(execution.Id, authorized));
         var proof = new CompletionReconciliationProof(new string('A', 64), new string('b', 40), "main", "passed", false,
             ["done", "unrelated"], true, new string('C', 64), new string('D', 64), clock.Now);
         var report = new ExecutionMaintenanceReport("succeeded", "completion-reconciled",

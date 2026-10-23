@@ -52,18 +52,23 @@ test('Configuration failure is independent, unknown/stale evidence is never heal
  assert.ok(stale.includes('aria-label="Heartbeat: Stale"'));
  assert.ok(stale.includes('aria-label="Configuration: Config unknown"'));
 });
-test('The execution rail highlights only the reported current stage and retains cumulative Reporting checks',()=>{
+test('The execution rail keeps cumulative checks and renders durations only for completed or current stages',()=>{
  for(const currentStage of ['Codex','Validation','Integration',null]){
   const html=render({executions:[{...current,currentStage}, {...completed,state:'Failed',durationMilliseconds:null,completedAtUtc:null,recoveryState:'LeaseExpiredUncertain'}]});
   const expected=currentStage==='Validation'?'Validating':currentStage==='Integration'?'Integrating':currentStage;
   assert.ok(html.includes(expected||'Not reported'));assert.ok(html.includes('Claimed'));assert.ok(html.includes('Preparing'));assert.ok(html.includes('Codex'));assert.ok(html.includes('Validating'));assert.ok(html.includes('Integrating'));
-  assert.ok(html.includes('Stages before the reported current stage are shown as completed when the execution lifecycle establishes they were passed; detailed stage history is not provided.'));
+  assert.ok(html.includes('Durations use Server-recorded stage transitions; older executions may not have timing data.'));
   assert.ok(html.includes('aria-current="step"')===!!currentStage);assert.ok(html.includes('Failed'));assert.ok(html.includes('Duration unavailable'));assert.ok(html.includes('LeaseExpiredUncertain'));assert.ok(html.includes('31/12/2025'));
  }
  const reporting=render({executions:[{...current,currentStage:'Reporting'}]});
  assert.ok(reporting.includes('aria-current="step"'));
  assert.ok(reporting.includes('>Reporting<'));
  assert.equal((reporting.match(/<svg viewBox="0 0 16 16" focusable="false"><path/g)||[]).length,5);
+ assert.equal((reporting.match(/class="poc-stage-duration"/g)||[]).length,6);
+ const integrating=render({executions:[{...current,currentStage:'Integration'}]});
+ assert.equal((integrating.match(/<svg viewBox="0 0 16 16" focusable="false"><path/g)||[]).length,4);
+ assert.equal((integrating.match(/class="poc-stage-duration"/g)||[]).length,5);
+ assert.ok(integrating.includes('Duration unavailable'));
 });
 test('Capability tiles use each reported service version and authentication field',()=>{
  const service=(id,displayName,detectedVersion)=>({definition:{id,displayName,requiresAuthentication:true,requiresConfiguration:true},state:{installation:'Installed',health:'Healthy',authentication:'Satisfied',configuration:'Satisfied',detectedVersion},availableActions:[]});

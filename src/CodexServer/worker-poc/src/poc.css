@@ -152,6 +152,7 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-stage-name { margin-top: 7px; color: var(--color-text-tertiary); font-size: 12px; font-weight: 600; line-height: 17px; }
 .poc-stage-list li.is-current .poc-stage-name { color: var(--color-text-warning-primary); }
 .poc-stage-detail { max-width: 100%; margin-top: 3px; color: var(--color-text-tertiary); font-size: 10px; line-height: 14px; }
+.poc-stage-duration { max-width: 100%; margin-top: 1px; color: var(--color-text-tertiary); font-size: 10px; line-height: 14px; font-variant-numeric: tabular-nums; }
 .poc-stage-history-note { margin: 7px 0 0; color: var(--color-text-tertiary); font-size: 10px; line-height: 14px; text-align: center; }
 .poc-current-execution-timing { margin: 3px 0 0; color: var(--color-text-tertiary); font-size: 10px; text-align: right; }
 @keyframes poc-stage-dot-pulse { 50% { opacity: .72; transform: scale(.84); } }
@@ -275,9 +276,9 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
   .poc-panel-heading { padding-right: 16px; padding-left: 16px; }
   .poc-current-executions-list { padding-right: 16px; padding-left: 16px; }
   .poc-stage-list { min-width: 0; }
-  .poc-stage-name, .poc-stage-detail { overflow-wrap: anywhere; }
+  .poc-stage-name, .poc-stage-detail, .poc-stage-duration { overflow-wrap: anywhere; }
   .poc-stage-name { font-size: 10px; }
-  .poc-stage-detail { font-size: 9px; }
+  .poc-stage-detail, .poc-stage-duration { font-size: 9px; }
   .poc-service-grid { grid-template-columns: minmax(0, 1fr); }
   .poc-worker-meta { align-items: flex-start; }
   .poc-worker-statuses { margin: 2px 0 0; }

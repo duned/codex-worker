@@ -86,7 +86,8 @@ public sealed record ExecutionRequest(string Id, string ProjectId, WorkReference
     string? RecoveryState = null, string? RecoveryReason = null, string? RetryOfExecutionId = null, int AttemptNumber = 1,
     string? WorkspaceRecovery = null, string? PendingReason = null, IReadOnlyList<string>? MissingRequirements = null,
     string ManagedEligibilityState = "eligible", IReadOnlyList<string>? ManagedEligibilityReasons = null,
-    DateTimeOffset? ManagedEligibilityCheckedAtUtc = null);
+    DateTimeOffset? ManagedEligibilityCheckedAtUtc = null,
+    IReadOnlyDictionary<string, DateTimeOffset>? StageStartedAtUtc = null);
 public sealed record ExecutionLease(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record ExecutionLeaseRenewal(string WorkerId, long Generation);
@@ -523,8 +524,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 {
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
-    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc FROM execution_requests";
-    public const int CurrentSchemaVersion = 18;
+    private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json FROM execution_requests";
+    public const int CurrentSchemaVersion = 19;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -549,7 +550,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 18);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 19);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -690,6 +691,12 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             {
                 command.CommandText = "ALTER TABLE workers ADD COLUMN telegram_json TEXT NULL; UPDATE schema_metadata SET schema_version = 18 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                schemaVersion = 18;
+            }
+            if (schemaVersion == 18)
+            {
+                command.CommandText = "ALTER TABLE execution_requests ADD COLUMN stage_started_at_utc_json TEXT NULL; UPDATE schema_metadata SET schema_version = 19 WHERE singleton = 1;";
+                await command.ExecuteNonQueryAsync(cancellationToken);
             }
             command.CommandText = """
                 CREATE TABLE IF NOT EXISTS workers (
@@ -755,7 +762,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                         workspace_recovery TEXT NULL,
                         managed_eligibility_state TEXT NOT NULL DEFAULT 'eligible',
                         managed_eligibility_reasons_json TEXT NULL,
-                        managed_eligibility_checked_at_utc TEXT NULL
+                        managed_eligibility_checked_at_utc TEXT NULL,
+                        stage_started_at_utc_json TEXT NULL
                 );
                 CREATE TABLE IF NOT EXISTS execution_leases (
                     execution_id TEXT NOT NULL,
@@ -1973,11 +1981,12 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             reconciliation = true;
             command.Parameters.Clear();
         }
-        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=CASE WHEN $reconciliation THEN 'Reporting' ELSE COALESCE($stage,current_stage) END, recovery_state=CASE WHEN $reconciliation THEN 'CompletionReconciled' ELSE recovery_state END, started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=CASE WHEN $reconciliation THEN NULL ELSE COALESCE($failure,failure_classification) END, recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND (($reconciliation AND state IN ('Failed','Completed') AND worker_execution_id=$workerExecution AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state IN ('Released','Expired') AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id))) OR (state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id)) AND ($state!='Running' OR CASE $stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE -1 END >= CASE current_stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE 0 END)));";
+        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=CASE WHEN $reconciliation THEN 'Reporting' ELSE COALESCE($stage,current_stage) END, stage_started_at_utc_json=CASE WHEN $stageTimingKey IS NOT NULL AND json_type(COALESCE(stage_started_at_utc_json,'{}'), '$.' || $stageTimingKey) IS NULL THEN json_set(COALESCE(stage_started_at_utc_json,'{}'), '$.' || $stageTimingKey, $now) ELSE stage_started_at_utc_json END, recovery_state=CASE WHEN $reconciliation THEN 'CompletionReconciled' ELSE recovery_state END, started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=CASE WHEN $reconciliation THEN NULL ELSE COALESCE($failure,failure_classification) END, recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND (($reconciliation AND state IN ('Failed','Completed') AND worker_execution_id=$workerExecution AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state IN ('Released','Expired') AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id))) OR (state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id)) AND ($state!='Running' OR CASE $stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE -1 END >= CASE current_stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE 0 END)));";
         command.Parameters.AddWithValue("$reconciliation", reconciliation);
         command.Parameters.AddWithValue("$state", report.State);
         command.Parameters.AddWithValue("$workerExecution", report.WorkerExecutionId);
         command.Parameters.AddWithValue("$stage", (object?)report.Stage ?? DBNull.Value);
+        command.Parameters.AddWithValue("$stageTimingKey", (object?)StageTimingKey(report.Stage) ?? DBNull.Value);
         command.Parameters.AddWithValue("$started", (object?)report.StartedAtUtc?.ToString("O") ?? DBNull.Value);
         command.Parameters.AddWithValue("$completed", (object?)report.CompletedAtUtc?.ToString("O") ?? DBNull.Value);
         command.Parameters.AddWithValue("$duration", (object?)report.DurationMilliseconds ?? DBNull.Value);
@@ -2055,6 +2064,17 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 
     private static bool Printable(string value, int maxLength) => !string.IsNullOrWhiteSpace(value) && value.Length <= maxLength && !value.Any(char.IsControl);
 
+    private static string? StageTimingKey(string? stage) => stage switch
+    {
+        "Claiming" => "claimed",
+        "Preparing" => "preparing",
+        "Codex" or "Implementing" => "codex",
+        "Validation" => "validation",
+        "Integration" => "integration",
+        "Reporting" => "reporting",
+        _ => null
+    };
+
     private static ExecutionRequest ReadExecution(SqliteDataReader reader) => new(reader.GetString(0), reader.GetString(1),
         JsonSerializer.Deserialize<WorkReference>(reader.GetString(2), ProjectJson) ?? throw new InvalidDataException("Stored work reference is invalid."),
         DateTimeOffset.Parse(reader.GetString(3)), reader.GetString(4), reader.IsDBNull(5) ? null : reader.GetString(5),
@@ -2070,7 +2090,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         reader.IsDBNull(24) ? null : reader.GetString(24), reader.IsDBNull(25) ? null : reader.GetString(25),
         reader.IsDBNull(26) ? null : reader.GetString(26), reader.GetInt32(27), reader.IsDBNull(28) ? null : reader.GetString(28),
         null, null, reader.GetString(29), reader.IsDBNull(30) ? null : JsonSerializer.Deserialize<string[]>(reader.GetString(30), ProjectJson),
-        reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)));
+        reader.IsDBNull(31) ? null : DateTimeOffset.Parse(reader.GetString(31)),
+        reader.IsDBNull(32) ? null : JsonSerializer.Deserialize<Dictionary<string, DateTimeOffset>>(reader.GetString(32), ProjectJson));
 
     public async Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default)
     {
