@@ -556,6 +556,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
+        await RetrieveJournalAsync(settings, identity, cancellationToken);
     }
 
     public async Task<WorkerAssignmentResponseContract> RequestAssignmentAsync(WorkerServerSettings settings, bool workerEnabled, int availableCapacity,

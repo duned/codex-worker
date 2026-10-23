@@ -6,6 +6,7 @@ import { commands, workers, nodes as validateNodes, projects as validateProjects
 import type { AdministrationPresentation } from './WorkerPocPage';
 import { Notice } from '../../shared/Presentation';
 import { canonicalPath } from '../../app/routes';
+import { WorkerJournal } from './WorkerJournal';
 import { WorkerAdvanced } from './WorkerAdvanced';
 import { WorkerPreparation } from './WorkerPreparation';
 import { NodeProvisioning } from '../nodes/NodeProvisioning';
@@ -31,6 +32,7 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
       preparation={administration && observation ? <WorkerPreparation worker={observation} diagnostics={diagnostics.data} projects={projects.data} node={nodes.data?.find(item => item.id === resourceId)} /> : undefined}
       provisioning={administration ? <NodeProvisioning key={resourceId} nodeId={resourceId} repository={projects.data?.find(item => item.id === projectId)?.repository} /> : undefined}
       nodeCommands={nodeCommands.data ?? null} loading={!observations.data && !observations.error} now={Date.now()} administration={administration} readOnly={!administration} />
+    {observation && <WorkerJournal workerId={resourceId} />}
     {administration && observation && <WorkerAdvanced worker={observation} diagnostics={diagnostics.data} />}
   </div>;
 }

@@ -55,6 +55,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(configuration);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<AdministrationSessions>();
+        builder.Services.AddSingleton<WorkerJournalRequests>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
         // Server readiness uses the same managed authentication context as Server GitHub reads/writes.
@@ -997,6 +998,7 @@ public static partial class ServerApplication
         });
         MapExecutionMaintenance(app);
         MapWorkerUpdates(app);
+        MapWorkerJournal(app);
         return app;
     }
 

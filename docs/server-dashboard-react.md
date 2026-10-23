@@ -201,3 +201,18 @@ changes. The override directory, unrelated files, and
 systemd drop-in remain intact. Activation failure restores the generations before
 restarting the previous release. Run `cw dd` again to explicitly deploy a local
 development bundle after updating. Worker updates do not reset this override.
+
+### Recent Worker journal
+
+Worker detail includes an expandable recent journal view (100 lines by default,
+chronological timestamped text). The authenticated Server queues an ephemeral read
+request; the enrolled Worker retrieves it after its next heartbeat and returns a
+bounded, redacted result. The view polls while waiting and stops after 80 seconds.
+Results expire after 90 seconds and are never written to the registry.
+
+The source is the packaged Linux `codex-worker.service` system journal, read as the
+Worker service account without elevation. Other launch environments report an
+unsupported source; journal permission or command failures report a retrieval
+error. No executable, unit name, path or shell command can be supplied remotely.
+The API accepts 1–200 lines, caps each line and the total response, and uses existing
+administration authorization for reads and per-Worker authentication for delivery.
