@@ -7,7 +7,8 @@ using System.Net.Http.Json;
 public sealed partial class WorkerRegistrationClient
 {
     internal async Task<bool> ExecuteMaintenanceCommandAsync(WorkerServerSettings settings, ExecutionHistoryStore history,
-        WorkerRuntimeReadModel runtime, CancellationToken ct)
+        WorkerRuntimeReadModel runtime, CancellationToken ct,
+        Func<ExecutionMaintenanceCommand, Func<CancellationToken, Task<bool>>, CancellationToken, Task<ExecutionMaintenanceReport>>? reconcileCompletion = null)
     {
         var worker = await LoadRegisteredIdentityAsync(settings, ct);
         var endpoint = WorkerAuthentication.GetConnection(settings).Endpoint;
@@ -63,7 +64,7 @@ public sealed partial class WorkerRegistrationClient
                     {
                         receipt = receipt with { Report = await new ManagedExecutionMaintenance(history, runtime).ExecuteAsync(command, AuthorizeAsync,
                             (entry, token) => ReportExecutionAsync(settings, entry, entry.State == "Completed" ? "Completed" : "Failed", null,
-                                command.Request.Generation ?? 0, token), deadline.Token) };
+                                command.Request.Generation ?? 0, token), deadline.Token, reconcileCompletion) };
                     }
                     catch (OperationCanceledException)
                     {

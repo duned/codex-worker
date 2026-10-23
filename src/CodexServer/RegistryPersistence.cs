@@ -93,7 +93,7 @@ public sealed record ExecutionStateTransition(string State, string? AssignedWork
 public sealed record WorkerExecutionReport(string WorkerId, string AssignmentId, string WorkerExecutionId, string State,
     string? Stage = null, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,
     long? DurationMilliseconds = null, string? ValidationResult = null, string? IntegrationResult = null,
-    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0);
+    string? FailureClassification = null, bool Recoverable = false, string? Summary = null, long Generation = 0, string? CompletionReconciliationOperationId = null);
 public sealed record WorkerAssignmentRequest(string WorkerId, bool WorkerEnabled, int AvailableCapacity, IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
 public sealed record WorkAssignmentResponse(bool HasWork, WorkAssignment? Assignment,
     IReadOnlyDictionary<string, string>? IntegrationRecoveryRejections = null, string? Reason = null);
@@ -1926,7 +1926,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (report is null || !Printable(report.WorkerId, 128) || !Printable(report.AssignmentId, 200) || report.Generation <= 0 ||
             !Printable(report.WorkerExecutionId, 200) || report.Summary is { Length: > 4000 } ||
             report.Stage is { Length: > 80 } || report.ValidationResult is { Length: > 1000 } || report.IntegrationResult is { Length: > 1000 } ||
-            report.FailureClassification is { Length: > 100 }) throw new InvalidDataException("Worker execution report contract is invalid.");
+            report.FailureClassification is { Length: > 100 } ||
+            report.CompletionReconciliationOperationId is { } reconciliationId && !Guid.TryParseExact(reconciliationId, "N", out _)) throw new InvalidDataException("Worker execution report contract is invalid.");
         if (report.State is not ("Running" or "Completed" or "Failed")) throw new InvalidDataException("Worker execution report state is invalid.");
         if (report.State == "Running" && report.Stage is not ("Claiming" or "Preparing" or "Codex" or "Implementing" or "Validation" or "Integration" or "Reporting"))
             throw new InvalidDataException("Worker lifecycle stage is invalid.");
@@ -1936,7 +1937,43 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
         var previous = await ReadExecutionInTransactionAsync(connection, (SqliteTransaction)transaction, executionRequestId, cancellationToken);
-        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=COALESCE($stage,current_stage), started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=COALESCE($failure,failure_classification), recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND ((state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id)) AND ($state!='Running' OR CASE $stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE -1 END >= CASE current_stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE 0 END)));";
+        var reconciliation = false;
+        if (report.CompletionReconciliationOperationId is { } operationId)
+        {
+            command.CommandText = "SELECT body FROM execution_maintenance_commands WHERE id=$operation";
+            command.Parameters.AddWithValue("$operation", operationId);
+            var body = await command.ExecuteScalarAsync(cancellationToken) as string;
+            var operation = body is null ? null : JsonSerializer.Deserialize<CodexProvisioning.ExecutionMaintenanceCommand>(body);
+            if (operation is not { Status: "running", Request: { Action: "reconcile-completion", Apply: true } scope } ||
+                operation.DeadlineUtc is null || operation.DeadlineUtc <= _timeProvider.GetUtcNow() ||
+                !CodexProvisioning.ExecutionMaintenanceProtocol.Valid(scope) || scope.ServerExecutionId != executionRequestId ||
+                scope.WorkerId != report.WorkerId || scope.AssignmentId != report.AssignmentId || scope.Generation != report.Generation ||
+                scope.WorkerExecutionId?.ToString() != report.WorkerExecutionId || report.State != "Completed" ||
+                report.ValidationResult != "passed" || report.IntegrationResult != "passed" ||
+                previous is null || previous.State is not ("Failed" or "Completed") || previous.Lease?.State != "Released" ||
+                previous.Lease.Generation != report.Generation || previous.WorkerExecutionId != report.WorkerExecutionId ||
+                previous.ValidationResult != "passed" || previous.State == "Failed" && previous.FailureClassification != "InfrastructureFailure" ||
+                previous.State == "Completed" && previous.RecoveryState != "CompletionReconciled")
+                throw new ExecutionRequestOwnershipException();
+            // Recheck drain and conflicting Issue ownership in the same transaction as
+            // the terminal correction, after all remote completion checkpoints finish.
+            command.Parameters.Clear();
+            command.CommandText = """
+                SELECT EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND scheduling_policy='Draining')
+                    AND NOT EXISTS (SELECT 1 FROM execution_requests WHERE assigned_worker_id=$worker AND state IN ('Assigned','Running'))
+                    AND NOT EXISTS (SELECT 1 FROM execution_requests other JOIN execution_requests source ON source.id=$id
+                        WHERE other.id!=source.id AND other.project_id=source.project_id AND other.work_type IN ('issue','github-issue')
+                        AND CAST(other.work_id AS INTEGER)=CAST(source.work_id AS INTEGER) AND (other.created_at_utc>=source.created_at_utc OR other.state IN ('Queued','Assigned','Running','Completed')))
+                """;
+            command.Parameters.AddWithValue("$worker", report.WorkerId);
+            command.Parameters.AddWithValue("$id", executionRequestId);
+            if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 1)
+                throw new ExecutionRequestOwnershipException();
+            reconciliation = true;
+            command.Parameters.Clear();
+        }
+        command.CommandText = "UPDATE execution_requests SET state=$state, execution_id=COALESCE(execution_id,$workerExecution), worker_execution_id=$workerExecution, current_stage=CASE WHEN $reconciliation THEN 'Reporting' ELSE COALESCE($stage,current_stage) END, recovery_state=CASE WHEN $reconciliation THEN 'CompletionReconciled' ELSE recovery_state END, started_at_utc=COALESCE(started_at_utc,$started), completed_at_utc=COALESCE($completed,completed_at_utc), duration_ms=COALESCE($duration,duration_ms), validation_result=COALESCE($validation,validation_result), integration_result=COALESCE($integration,integration_result), failure_classification=CASE WHEN $reconciliation THEN NULL ELSE COALESCE($failure,failure_classification) END, recoverable=$recoverable, completion_summary=COALESCE($summary,completion_summary) WHERE id=$id AND assignment_id=$assignment AND assigned_worker_id=$worker AND (($reconciliation AND state IN ('Failed','Completed') AND worker_execution_id=$workerExecution AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Released' AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id))) OR (state IN ('Assigned','Running') AND EXISTS (SELECT 1 FROM execution_leases l WHERE l.execution_id=$id AND l.worker_id=$worker AND l.generation=$generation AND l.state='Active' AND l.expires_at_utc>$now AND l.generation=(SELECT MAX(generation) FROM execution_leases WHERE execution_id=$id)) AND ($state!='Running' OR CASE $stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE -1 END >= CASE current_stage WHEN 'Claiming' THEN 0 WHEN 'Preparing' THEN 1 WHEN 'Codex' THEN 2 WHEN 'Implementing' THEN 2 WHEN 'Validation' THEN 3 WHEN 'Integration' THEN 4 WHEN 'Reporting' THEN 5 ELSE 0 END)));";
+        command.Parameters.AddWithValue("$reconciliation", reconciliation);
         command.Parameters.AddWithValue("$state", report.State);
         command.Parameters.AddWithValue("$workerExecution", report.WorkerExecutionId);
         command.Parameters.AddWithValue("$stage", (object?)report.Stage ?? DBNull.Value);

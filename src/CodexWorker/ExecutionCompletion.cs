@@ -1,3 +1,4 @@
+using CodexProvisioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,7 +9,8 @@ namespace CodexWorker;
 internal sealed record ExecutionCompletion(IssueExecutionReport Report, string IssueFingerprint, string PolicyFingerprint,
     bool RemoteConfirmed = false, bool LabelsReported = false, bool CommentReported = false,
     bool IssueClosed = false, bool NotificationAttempted = false, bool CleanupCompleted = false, bool Finished = false,
-    bool TerminalIssueAcknowledged = false)
+    bool TerminalIssueAcknowledged = false, CompletionReconciliationProof? ReconciliationProof = null,
+    string? ReconciliationOperationId = null)
 {
     internal static string Fingerprint(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
     internal static string IssueIntent(GitHubIssue issue) => Fingerprint(JsonSerializer.Serialize(new { issue.Title, issue.Body }));
@@ -48,6 +50,11 @@ internal sealed record ExecutionCompletion(IssueExecutionReport Report, string I
                 report.Integration.IntegrationBranch != entry.BaseBranch || report.Integration.ResourceExecutionId is null ||
                 report.Integration.ResourceExecutionId == Guid.Empty || report.Integration.ResourceAttemptNumber is not > 0 ||
                 string.IsNullOrWhiteSpace(completion.IssueFingerprint) || string.IsNullOrWhiteSpace(completion.PolicyFingerprint) ||
+                completion.ReconciliationProof is null && completion.ReconciliationOperationId is not null ||
+                completion.ReconciliationProof is { } proof && (!ExecutionMaintenanceProtocol.Valid(proof) ||
+                    proof.Commit != report.Integration.CommitSha || proof.BaseBranch != entry.BaseBranch ||
+                    proof.ValidatedIssueFingerprint != completion.IssueFingerprint ||
+                    !Guid.TryParseExact(completion.ReconciliationOperationId, "N", out _)) ||
                 completion.TerminalIssueAcknowledged && (!completion.RemoteConfirmed || !completion.IssueClosed) ||
                 completion.CommentReported && !completion.LabelsReported || completion.IssueClosed && !completion.CommentReported ||
                 completion.NotificationAttempted && !completion.IssueClosed || completion.CleanupCompleted && !completion.NotificationAttempted ||
@@ -175,24 +182,36 @@ public sealed partial class Worker
         }
     }
 
+    private bool CompletionIssueStateCompatible(GitHubIssueState state, ExecutionCompletion completion)
+    {
+        bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+        return !Has(config.GitHub.ReadyLabel) && !Has(config.GitHub.FailedLabel) && !Has(config.GitHub.BlockedLabel) &&
+            !Has(config.GitHub.IntegrationConflictLabel) && !Has(config.GitHub.IntegrationRecoveryLabel) &&
+            Has(config.GitHub.WorkingLabel) != Has(config.GitHub.DoneLabel) &&
+            (!completion.LabelsReported || Has(config.GitHub.DoneLabel)) &&
+            (!completion.IssueClosed || !state.IsOpen) && (state.IsOpen || Has(config.GitHub.DoneLabel));
+    }
+
     private async Task ReportSuccessAsync(GitHubIssue issue, IssueExecutionReport report,
-        ExecutionCompletion completion, CancellationToken ct, bool repositoryGateHeld = false)
+        ExecutionCompletion completion, CancellationToken ct, bool repositoryGateHeld = false, string? approvedIssueFingerprint = null,
+        Func<CancellationToken, Task<bool>>? authorize = null)
     {
         if (history is null || report.ExecutionId is not { } executionId)
             throw new WorkerInfrastructureException("Completion execution identity is unavailable.");
+        async Task ConfirmAuthorityAsync()
+        {
+            if (authorize is not null && !await authorize(ct))
+                throw new WorkerInfrastructureException("Completion reconciliation authority changed; inspect before retry.");
+        }
         async Task<GitHubIssueState> ReadStateAsync()
         {
+            await ConfirmAuthorityAsync();
             var current = await github.GetCompletionIssueAsync(issue.Number, ct)
                 ?? throw new WorkerInfrastructureException("Completion Issue is unavailable; manual reconciliation is required.");
-            if (current.Number != issue.Number || ExecutionCompletion.IssueIntent(current) != completion.IssueFingerprint)
+            if (current.Number != issue.Number || ExecutionCompletion.IssueIntent(current) != (approvedIssueFingerprint ?? completion.IssueFingerprint))
                 throw new WorkerInfrastructureException("Issue title or body changed since validation; manual reconciliation is required.");
             var state = await github.ReadIssueStateAsync(issue.Number, ct);
-            bool Has(string label) => state.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
-            if (Has(config.GitHub.ReadyLabel) || Has(config.GitHub.FailedLabel) || Has(config.GitHub.BlockedLabel) ||
-                Has(config.GitHub.IntegrationConflictLabel) || Has(config.GitHub.IntegrationRecoveryLabel) ||
-                Has(config.GitHub.WorkingLabel) == Has(config.GitHub.DoneLabel) ||
-                completion.LabelsReported && !Has(config.GitHub.DoneLabel) ||
-                completion.IssueClosed && state.IsOpen || !state.IsOpen && !Has(config.GitHub.DoneLabel))
+            if (!CompletionIssueStateCompatible(state, completion))
                 throw new WorkerInfrastructureException("Issue state conflicts with pending success reporting; manual reconciliation is required.");
             return state;
         }
@@ -226,7 +245,10 @@ public sealed partial class Worker
         await SaveAsync();
         if (!completion.NotificationAttempted)
         {
-            report = report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) };
+            await ConfirmAuthorityAsync();
+            // Operator reconciliation uses the durable result; do not start Codex
+            // even for an optional quota refresh.
+            if (authorize is null) report = report with { QuotaAtEnd = await ReadQuotaAsync(final: true, CancellationToken.None) };
             completion = completion with { Report = report };
             // Telegram has no idempotency key or delivery query. Persist before sending: at most
             // one attempt, with possible omission if the Worker stops between checkpoint and send.
@@ -237,6 +259,7 @@ public sealed partial class Worker
         }
         if (!completion.CleanupCompleted)
         {
+            await ConfirmAuthorityAsync();
             var entry = await history.ReadExecutionAsync(executionId, ct)
                 ?? throw new WorkerInfrastructureException("Completion history disappeared.");
             if (!repositoryGateHeld) await _repositoryGate.WaitAsync(ct);

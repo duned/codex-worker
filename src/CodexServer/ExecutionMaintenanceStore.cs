@@ -135,6 +135,11 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
         if (operation.Request.Action != "inventory" && report.Observations.Any(o => o.ExecutionId != operation.Request.WorkerExecutionId ||
             o.ServerExecutionId != operation.Request.ServerExecutionId || o.AssignmentId != operation.Request.AssignmentId || o.Generation != operation.Request.Generation))
             throw new InvalidDataException("Observation does not match maintenance scope.");
+        if (report.CompletionProof is not null && operation.Request.Action != "reconcile-completion" ||
+            operation.Request.Action == "reconcile-completion" && report.Outcome == "succeeded" &&
+            (report.CompletionProof is null || report.Observations.Count != 1 ||
+                operation.Request.Apply && report.CompletionProof.Token != operation.Request.ExpectedProof))
+            throw new InvalidDataException("Completion proof does not match the authorized reconciliation.");
         operation = operation with { Status = report.Outcome, Report = report, CompletedAtUtc = Now };
         await SaveAsync(command, operation, ct);
         await transaction.CommitAsync(ct);

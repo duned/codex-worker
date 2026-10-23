@@ -126,6 +126,28 @@ public static partial class ServerApplication
             execution.WorkerExecutionId is not null && !string.Equals(execution.WorkerExecutionId, request.WorkerExecutionId.ToString(), StringComparison.OrdinalIgnoreCase))
             return "stale-ownership";
         if (request.Action == "inspect") return null;
+        if (request.Action == "reconcile-completion")
+        {
+            if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.CompletionCapability))
+                return "worker-completion-protocol-unavailable";
+            if (worker.SchedulingPolicy != WorkerSchedulingPolicy.Draining || worker.ActiveAssignments != 0)
+                return "worker-drain-required";
+            if (execution.State is not ("Failed" or "Completed") || execution.Lease.State != "Released" ||
+                execution.WorkerExecutionId is null || execution.ValidationResult != "passed" ||
+                execution.State == "Failed" && execution.FailureClassification != "InfrastructureFailure" ||
+                execution.State == "Completed" && execution.RecoveryState != "CompletionReconciled")
+                return "quarantined-completion-terminal-proof-required";
+            if (execution.WorkReference.Type is not ("issue" or "github-issue") ||
+                !int.TryParse(execution.WorkReference.Id, out var issueNumber) || issueNumber <= 0)
+                return "completion-issue-identity-missing";
+            var others = await registry.ListExecutionsAsync(new(ProjectId: execution.ProjectId, WorkType: "github-issue",
+                WorkId: execution.WorkReference.Id, Limit: 100), ct);
+            if (others.Count == 100) return "completion-ownership-review-bound-exceeded";
+            return others.Any(other => other.Id != execution.Id &&
+                (other.CreatedAtUtc >= execution.CreatedAtUtc || other.State is "Queued" or "Assigned" or "Running" or "Completed"))
+                ? "issue-execution-ownership-changed" : null;
+        }
+
         if (request.Action == "retry-report")
             return execution.State is "Completed" or "Failed" && execution.WorkerExecutionId is not null && execution.Lease.State == "Released" ||
                 execution.State is "Assigned" or "Running" && execution.Lease is { State: "Active" } lease && lease.ExpiresAtUtc > DateTimeOffset.UtcNow

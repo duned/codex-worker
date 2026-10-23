@@ -20,14 +20,18 @@ export interface ExecutionSummary {
 }
 export interface ExecutionMaintenanceRequest {
   operationId: string; workerId: string; serverExecutionId?: string | null; workerExecutionId?: string | null;
-  assignmentId?: string | null; generation?: number | null; action: 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report';
-  apply: boolean; timeoutSeconds: number; limit: number; offset: number;
+  assignmentId?: string | null; generation?: number | null; action: 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion';
+  expectedProof?: string; apply: boolean; timeoutSeconds: number; limit: number; offset: number;
 }
 export interface ExecutionMaintenanceObservation {
   executionId: string; serverExecutionId?: string; assignmentId?: string; generation?: number;
   state: string; recoveryState: string; reportingStatus: string; project: string; issueNumber: number; archived: boolean;
 }
-export interface ExecutionMaintenanceReport { outcome: string; reason: string; observations: ExecutionMaintenanceObservation[] }
+export interface CompletionReconciliationProof {
+  token: string; commit: string; baseBranch: string; validationResult: string; issueOpen: boolean; labels: string[];
+  issueContentChanged: boolean; validatedIssueFingerprint: string; currentIssueFingerprint: string; verifiedAtUtc: string;
+}
+export interface ExecutionMaintenanceReport { outcome: string; reason: string; observations: ExecutionMaintenanceObservation[]; completionProof?: CompletionReconciliationProof }
 export interface ExecutionMaintenanceCommand {
   request: ExecutionMaintenanceRequest; status: string; createdAtUtc: string; authorizedBy: string;
   deadlineUtc?: string; report?: ExecutionMaintenanceReport; completedAtUtc?: string;

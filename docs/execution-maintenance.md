@@ -195,7 +195,7 @@ Workers receive an explicit refusal rather than granting authority from cached h
 `POST /api/v1/maintenance/executions` accepts an operator-generated `operationId`
 (a GUID in `N` format), `workerId`, `action`, `apply` (default false), and a
 `timeoutSeconds` deadline (5–300, default 60). Exact actions (`inspect`, `cleanup`,
-`archive`, `retry-report`) also require `serverExecutionId`, `workerExecutionId`,
+`archive`, `retry-report`, `reconcile-completion`) also require `serverExecutionId`, `workerExecutionId`,
 `assignmentId` and `generation`. Server, assignment and Worker IDs use GUID `N`
 format; the local execution ID is a GUID. A reused operation ID must have the
 same complete request. Conflicting requests and concurrent outstanding operations
@@ -236,6 +236,35 @@ implementation, integration, Issue notification or GitHub mutation. Stale leases
 require the existing Server reconciliation protocol. 404/409 reporting results
 become durable, visible reconciliation dispositions; they are not silently retried.
 
+The execution detail dashboard also offers **Preview quarantined completion** for
+released infrastructure failures with passed validation on a drained, idle Worker
+advertising `protocol/execution-completion-reconciliation-v1`. The Worker must
+retain `managed-completion-quarantined` and a consistent durable completion payload;
+legacy commit-only records cannot authorize completion effects.
+
+`reconcile-completion` previews fresh exact validated commit ancestry on the
+authoritative remote base, validation, current Issue open/closed state and labels,
+and whether the title/body fingerprint changed since validation. Review this
+proof before confirming the exact execution and Issue. Apply includes the preview's
+`completionProof.token` as `expectedProof`; the Worker fetches remote proof again
+inside its repository gate and refuses changed preview evidence, changed policy,
+conflicting Issue labels, newer Issue attempts, or stale ownership. Preview also
+requires drain, so its evidence is obtained while execution scheduling is idle.
+
+An approved content change accepts the current title/body fingerprint for this
+operation only; it never writes either field. The existing success-reporting
+checkpoints replace only the configured working label with done, deduplicate the
+execution comment, close an eligible open Issue under the existing success policy,
+and acknowledge an already closed done Issue without replaying its GitHub effects.
+Unrelated labels survive. Codex, validation and base integration never run again.
+The original terminal Server result is corrected through the existing Worker report
+endpoint, fenced by the running maintenance operation and original released lease
+generation. A completed correction records `CompletionReconciled` and clears the
+infrastructure failure classification. The maintenance audit retains operator
+correlation, verified commit/base, Issue fingerprints and state, disposition and time.
+Interrupted operations require a fresh preview; durable completion checkpoints
+ensure already delivered effects are not repeated.
+
 Commands retain authorization/request correlation, deadline, terminal timestamps
 and outcomes in the Server database. Worker receipts retain started operations
 and terminal reports in local execution history. A lost report acknowledgement
@@ -245,7 +274,8 @@ quiescent Worker reconnects and records an interrupted disposition. Partial
 failure or timeout requires fresh inspection before a new operation ID is used.
 An out-of-date or disconnected Worker cannot apply commands; queued audit remains
 visible until it reconnects. Archive receipts, execution lineage and provenance
-remain retained; permanent purge and remote Issue maintenance are not supported.
+remain retained; permanent purge is not supported. Remote Issue mutation is limited
+to the verified completion reconciliation described above.
 
 ## Installed standalone batch command
 

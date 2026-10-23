@@ -204,7 +204,7 @@ function ExecutionDetail({ id, search }: { id: string; search: string }) {
     </ActionDialog>}
   </>;
 }
-type ManagedAction = 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report';
+type ManagedAction = 'inventory' | 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion';
 function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUnavailable, onReconcile }: {
   item: Execution; worker: WorkerObservation | undefined; workerLoading: boolean; workerUnavailable: boolean;
   workerNode?: import('../../shared/api/contracts').NodeSummary;
@@ -235,7 +235,8 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
     const request = action === 'inventory'
       ? { operationId: operation, workerId, action, apply: false, timeoutSeconds: 60, limit: 50, offset: 0 }
       : { operationId: operation, workerId, serverExecutionId: item.id, workerExecutionId: workerExecutionId ?? '', assignmentId: assignmentId ?? '', generation: generation ?? 0,
-        action, apply, timeoutSeconds: 60, limit: 1, offset: 0 };
+        action, apply, timeoutSeconds: 60, limit: 1, offset: 0,
+        ...(action === 'reconcile-completion' && apply ? { expectedProof: currentCommand?.report?.completionProof?.token } : {}) };
     setPending(true); setError(''); setMessage(''); setOperationId(operation); setOperationBefore({ id: operation, item });
     try {
       await runtime.mutate(base, '/api/v1/maintenance/executions', 'POST', request, value => {
@@ -320,9 +321,10 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
   const before = operationBefore && operationBefore.id === operationId ? operationBefore.item : undefined;
   const previewPassed = !!report && report.outcome === 'succeeded' &&
     (previewAction === 'cleanup' ? report.reason === 'integrated' :
-      previewAction === 'archive' ? report.reason === 'already-clean' : previewAction === 'retry-report' && report.reason === 'completion-report-preview');
+      previewAction === 'archive' ? report.reason === 'already-clean' : previewAction === 'retry-report' && report.reason === 'completion-report-preview' ||
+      previewAction === 'reconcile-completion' && report.reason === 'completion-reconciliation-preview' && !!report.completionProof);
   const archiveProofReady = archiveApplyAllowed(detail);
-  const applyAction = previewAction === 'cleanup' || previewAction === 'archive' || previewAction === 'retry-report' ? previewAction : undefined;
+  const applyAction = previewAction === 'cleanup' || previewAction === 'archive' || previewAction === 'retry-report' || previewAction === 'reconcile-completion' ? previewAction : undefined;
   const applyScope = applyAction ? maintenanceScope(item, applyAction, true, worker, workerNode, Date.now()) : undefined;
   const attention = attentionAssessment(item, worker, workerNode, Date.now(), workerLoading ? 'loading' : workerUnavailable ? 'unavailable' : 'current');
   const actions: { action: ManagedAction; label: string }[] = [
@@ -330,12 +332,13 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
     { action: 'inspect', label: t('maintenance.inspectWorkerRecord') },
     { action: 'cleanup', label: t('maintenance.previewCleanup') },
     { action: 'archive', label: t('maintenance.previewArchive') },
-    { action: 'retry-report', label: t('maintenance.previewReportRetry') }
+    { action: 'retry-report', label: t('maintenance.previewReportRetry') },
+    { action: 'reconcile-completion', label: t('maintenance.previewCompletion') }
   ];
   const available = actions.map(entry => ({ ...entry, eligibility: entry.action === 'inventory'
     ? maintenanceInventoryScope(item, worker, workerNode) : maintenanceScope(item, entry.action, false, worker, workerNode, Date.now()) }));
-  const applyTitle = dialogAction === 'cleanup' ? t('maintenance.confirmCleanup') : dialogAction === 'archive' ? t('maintenance.confirmArchive') : t('maintenance.confirmReportRetry');
-  const applyDescription = dialogAction === 'cleanup' ? t('maintenance.confirmCleanupDescription') : dialogAction === 'archive' ? t('maintenance.confirmArchiveDescription') : t('maintenance.confirmReportRetryDescription');
+  const applyTitle = dialogAction === 'reconcile-completion' ? t('maintenance.confirmCompletion') : dialogAction === 'cleanup' ? t('maintenance.confirmCleanup') : dialogAction === 'archive' ? t('maintenance.confirmArchive') : t('maintenance.confirmReportRetry');
+  const applyDescription = dialogAction === 'reconcile-completion' ? t('maintenance.confirmCompletionDescription', { execution: item.workerExecutionId ?? '', issue: item.workReference?.id ?? '', commit: report?.completionProof?.commit ?? '' }) : dialogAction === 'cleanup' ? t('maintenance.confirmCleanupDescription') : dialogAction === 'archive' ? t('maintenance.confirmArchiveDescription') : t('maintenance.confirmReportRetryDescription');
   const operationStatus = detail?.status ?? detail?.operation.status;
   return <section aria-labelledby="managed-maintenance-heading" className="space-y-4 pt-2">
     <header><h2 id="managed-maintenance-heading" className="text-lg font-semibold text-primary">{t('maintenance.managedExecutionMaintenance')}</h2><p className="mt-1 max-w-3xl text-sm text-secondary">{t('maintenance.serverAuthorityDescription')}</p></header>
@@ -363,14 +366,19 @@ function ManagedMaintenance({ item, worker, workerNode, workerLoading, workerUna
       {operation.isPending ? <p role="status" className="text-sm text-secondary">{t('maintenance.loadingOperation')}</p> : operation.error ? <Notice error>{t('maintenance.operationUnavailable')}</Notice> : detail && <>
         <div className="flex flex-wrap gap-2"><StatusBadge tone={statusTone(operationStatus ?? 'unknown')}>{statusLabel(operationStatus)}</StatusBadge>{report && <StatusBadge tone={statusTone(report.outcome)}>{statusLabel(report.outcome)}</StatusBadge>}</div>
         <p className="text-sm text-secondary">{report ? maintenanceReason(report.reason) : t('maintenance.operationWaitingForWorker')}</p>
+        {report?.completionProof && <div className="space-y-2 rounded-lg border border-secondary p-4 text-sm text-secondary">
+          <p>{t('maintenance.completionEvidence', { commit: report.completionProof.commit, base: report.completionProof.baseBranch, time: timestamp(report.completionProof.verifiedAtUtc) })}</p>
+          <p>{t('maintenance.completionIssueState', { state: statusLabel(report.completionProof.issueOpen ? 'open' : 'closed'), labels: report.completionProof.labels.join(', ') })}</p>
+          <p>{t(report.completionProof.issueContentChanged ? 'maintenance.completionContentChanged' : 'maintenance.completionContentUnchanged')}</p>
+        </div>}
         {currentCommand?.status === 'pending' && <Button color="secondary" isDisabled={pending || locked} onPress={() => { void cancelPendingOperation(); }}>{t('maintenance.cancelPendingOperation')}</Button>}
         {report && previewAction !== 'inventory' && <div className="grid gap-3 sm:grid-cols-2"><p className="rounded-lg bg-secondary p-3 text-sm text-secondary">{before ? t('maintenance.beforeOutcome', { state: statusLabel(before.state), recovery: statusLabel(before.recoveryState) }) : t('maintenance.beforeStateUnavailable')}</p><p className="rounded-lg bg-secondary p-3 text-sm text-secondary">{t('maintenance.afterOutcome', { state: statusLabel(detail.observations[0]?.observation.state ?? detail.execution?.state ?? item.state), recovery: statusLabel(detail.observations[0]?.observation.recoveryState ?? detail.execution?.recoveryState ?? item.recoveryState) })}</p></div>}
         {detail.workerStatus !== 'online' && detail.workerStatus !== 'draining' && <Notice>{t('maintenance.workerOfflineStatus')}</Notice>}
         {!!detail.observations.length && <ul className="divide-y divide-secondary rounded-lg border border-secondary">{detail.observations.map(row => <li key={row.observation.executionId} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm"><span className="break-all">{row.observation.project} · #{row.observation.issueNumber}</span><span className="flex flex-wrap gap-2"><StatusBadge tone={stateTone(row.observation.state)} active={isActiveExecutionState(row.observation.state)}>{statusLabel(row.observation.state)}</StatusBadge><StatusBadge tone={row.status === 'confirmed' ? 'success' : 'warning'}>{statusLabel(row.status)}</StatusBadge><StatusBadge tone={statusTone(row.observation.reportingStatus)}>{statusLabel(row.observation.reportingStatus)}</StatusBadge></span></li>)}</ul>}
-        {previewPassed && applyScope && applyAction && <div className="flex flex-wrap items-center gap-3"><p className="text-sm text-secondary">{!applyScope.allowed ? t(applyScope.reason as TranslationKey) : applyAction === 'archive' && !archiveProofReady ? t('maintenance.archivePreviewRequiresCleanHistory') : t('maintenance.previewAllowsApply')}</p>{applyScope.allowed && (applyAction !== 'archive' || archiveProofReady) && <Button color={applyAction === 'cleanup' || applyAction === 'archive' ? 'primary-destructive' : 'primary'} isDisabled={frozen} onPress={() => beginApply(applyAction)}>{applyAction === 'cleanup' ? t('maintenance.applyCleanup') : applyAction === 'archive' ? t('maintenance.applyArchive') : t('maintenance.applyReportRetry')}</Button>}</div>}
+        {previewPassed && applyScope && applyAction && <div className="flex flex-wrap items-center gap-3"><p className="text-sm text-secondary">{!applyScope.allowed ? t(applyScope.reason as TranslationKey) : applyAction === 'archive' && !archiveProofReady ? t('maintenance.archivePreviewRequiresCleanHistory') : t('maintenance.previewAllowsApply')}</p>{applyScope.allowed && (applyAction !== 'archive' || archiveProofReady) && <Button color={applyAction === 'cleanup' || applyAction === 'archive' ? 'primary-destructive' : 'primary'} isDisabled={frozen} onPress={() => beginApply(applyAction)}>{applyAction === 'reconcile-completion' ? t('maintenance.applyCompletion') : applyAction === 'cleanup' ? t('maintenance.applyCleanup') : applyAction === 'archive' ? t('maintenance.applyArchive') : t('maintenance.applyReportRetry')}</Button>}</div>}
       </>}
     </section></TableCard.Root>}
-    {dialogAction && dialogApply && <ConfirmationDialog isOpen title={applyTitle} description={applyDescription} actionLabel={dialogAction === 'cleanup' ? t('maintenance.applyCleanup') : dialogAction === 'archive' ? t('maintenance.applyArchive') : t('maintenance.applyReportRetry')} destructive={dialogAction === 'cleanup' || dialogAction === 'archive'} onClose={closeDialog} onSubmit={confirmedApply} disabled={pending || frozen} />}
+    {dialogAction && dialogApply && <ConfirmationDialog isOpen title={applyTitle} description={applyDescription} actionLabel={dialogAction === 'reconcile-completion' ? t('maintenance.applyCompletion') : dialogAction === 'cleanup' ? t('maintenance.applyCleanup') : dialogAction === 'archive' ? t('maintenance.applyArchive') : t('maintenance.applyReportRetry')} destructive={dialogAction === 'cleanup' || dialogAction === 'archive'} onClose={closeDialog} onSubmit={confirmedApply} disabled={pending || frozen} />}
   </section>;
 }
 function sameMaintenanceIdentity(before: Execution, current: Execution) {

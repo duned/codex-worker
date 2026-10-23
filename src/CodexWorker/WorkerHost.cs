@@ -552,7 +552,15 @@ public sealed class WorkerHost
                     await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, executionToken))
                     continue;
                 if (managed && active.Count == 0 && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&
-                    await _registration.ExecuteMaintenanceCommandAsync(_global.Server, history, runtimeReadModel, executionToken))
+                    await _registration.ExecuteMaintenanceCommandAsync(_global.Server, history, runtimeReadModel, executionToken,
+                        async (command, authorize, token) =>
+                        {
+                            var entry = await history.ReadExecutionAsync(command.Request.WorkerExecutionId ?? Guid.Empty, token);
+                            var project = runtimes.SingleOrDefault(p => p.Configuration.Project.Name == entry?.Project &&
+                                p.Configuration.Project.Repository == entry.Repository);
+                            return project is null ? new("refused", "project-unavailable", []) :
+                                await project.Worker.ReconcileManagedCompletionAsync(command, authorize, token);
+                        }))
                     continue;
                 if (_global.Projects.Ownership == "managed" && active.Count == 0 && !runtimeReadModel.Registry.WorkerDraining &&
                     managedConfiguration?.Status.SynchronizationStatus == "synchronized")

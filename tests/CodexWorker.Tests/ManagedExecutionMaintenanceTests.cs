@@ -16,6 +16,72 @@ public sealed class ManagedExecutionMaintenanceTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task CompletionCorrectionUsesOriginalGenerationAndExplicitRunningMaintenanceAuthority()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var path = Path.Combine(temporary.Path, "server.db");
+        var registry = new SqliteRegistryStore(path, timeProvider: clock);
+        await registry.InitializeAsync();
+        var commands = new ExecutionMaintenanceStore(path, clock);
+        await commands.InitializeAsync();
+        var worker = Guid.NewGuid().ToString("N");
+        var capabilities = WorkerAuthenticationRequirements.ForRepository("o/r").Select(r =>
+            new CodexServer.WorkerCapability(r.Type, r.Name, Scope: r.Scope)).Concat([
+                new CodexServer.WorkerCapability("tool", "git"), new CodexServer.WorkerCapability("agent-provider", "codex"),
+                new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.Capability),
+                new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.CompletionCapability)]).ToArray();
+        await registry.RegisterWorkerAsync(new(2, worker, "worker", "1", "linux", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 1, capabilities, []));
+        var project = await registry.CreateProjectAsync(new("p", "o/r", "main", "", []));
+        var execution = await registry.EnqueueExecutionAsync(new(project.Id, new WorkReference("issue", "1")));
+        var assignment = Assert.IsType<WorkAssignment>((await registry.RequestAssignmentAsync(new(worker, true, 1,
+            new Dictionary<string, int> { [project.Id] = 1 }))).Assignment);
+        var localId = Guid.NewGuid();
+        var generation = assignment.Lease?.Generation ?? 0;
+        await registry.ReportExecutionAsync(execution.Id, new(worker, assignment.AssignmentId, localId.ToString(), "Failed",
+            ValidationResult: "passed", FailureClassification: "InfrastructureFailure", Generation: generation));
+        var success = new WorkerExecutionReport(worker, assignment.AssignmentId, localId.ToString(), "Completed",
+            ValidationResult: "passed", IntegrationResult: "passed", Generation: generation);
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, success));
+        await registry.SetWorkerSchedulingPolicyAsync(worker, WorkerSchedulingPolicy.Draining);
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), worker, execution.Id, localId,
+            assignment.AssignmentId, generation, "reconcile-completion", true, ExpectedProof: new string('A', 64));
+        Assert.True(ExecutionMaintenanceProtocol.Valid(request));
+        Assert.False(ExecutionMaintenanceProtocol.Valid(request with { ExpectedProof = null }));
+        Assert.Null(await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None));
+        Assert.Equal("stale-ownership", await ServerApplication.MaintenanceAuthorityReasonAsync(request with { Generation = generation + 1 }, registry, CancellationToken.None));
+        await commands.CreateAsync(request, "operator:test");
+        var authorized = success with { CompletionReconciliationOperationId = request.OperationId };
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, authorized));
+        await commands.ClaimAsync(worker);
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, authorized with { Generation = generation + 1 }));
+        await registry.SetWorkerSchedulingPolicyAsync(worker, WorkerSchedulingPolicy.Enabled);
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, authorized));
+        await registry.SetWorkerSchedulingPolicyAsync(worker, WorkerSchedulingPolicy.Draining);
+        var completed = await registry.ReportExecutionAsync(execution.Id, authorized);
+        Assert.Equal("Completed", completed?.State);
+        Assert.Equal("Released", completed?.Lease?.State);
+        Assert.Null(completed?.FailureClassification);
+        Assert.Equal("passed", completed?.IntegrationResult);
+        Assert.Equal(completed, await registry.ReportExecutionAsync(execution.Id, authorized));
+        var proof = new CompletionReconciliationProof(new string('A', 64), new string('b', 40), "main", "passed", false,
+            ["done", "unrelated"], true, new string('C', 64), new string('D', 64), clock.Now);
+        var report = new ExecutionMaintenanceReport("succeeded", "completion-reconciled",
+            [new(localId, execution.Id, assignment.AssignmentId, generation, "Completed", "completion-reconciled", "acknowledged", "p", 1)], proof);
+        await Assert.ThrowsAsync<InvalidDataException>(() => commands.ReportAsync(request.OperationId, worker,
+            report with { CompletionProof = proof with { Token = new string('F', 64) } }));
+        var receipt = await commands.ReportAsync(request.OperationId, worker, report);
+        Assert.Equal(JsonSerializer.Serialize(receipt), JsonSerializer.Serialize(await commands.ReportAsync(request.OperationId, worker, report)));
+        Assert.Equal("operator:test", receipt?.AuthorizedBy);
+        Assert.Equal(clock.Now, receipt?.CompletedAtUtc);
+        Assert.Single(await commands.ListAsync(worker, 10, 0));
+        await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, authorized));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task DurableDispatchSerializesConcurrentCommandsAndNeverReplaysExpiredWork()
     {
         using var temporary = new TemporaryDirectory();
@@ -73,7 +139,8 @@ public sealed class ManagedExecutionMaintenanceTests
             var capabilities = WorkerAuthenticationRequirements.ForRepository("o/r").Select(r =>
                 new CodexServer.WorkerCapability(r.Type, r.Name, Scope: r.Scope)).Concat([
                     new CodexServer.WorkerCapability("tool", "git"), new CodexServer.WorkerCapability("agent-provider", "codex"),
-                    new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.Capability)]).ToArray();
+                    new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.Capability),
+                new CodexServer.WorkerCapability("protocol", ExecutionMaintenanceProtocol.CompletionCapability)]).ToArray();
             var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
             Assert.True(await registry.BootstrapWorkerAsync(bootstrap, new(2, worker, "worker", "1", "linux", 1, capabilities), token));
             await registry.HeartbeatWorkerAsync(new(1, worker, "1", "running", 0, 1, capabilities, []));

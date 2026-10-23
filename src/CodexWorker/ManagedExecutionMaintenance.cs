@@ -5,7 +5,8 @@ using CodexProvisioning;
 internal sealed class ManagedExecutionMaintenance(ExecutionHistoryStore history, WorkerRuntimeReadModel runtime)
 {
     internal async Task<ExecutionMaintenanceReport> ExecuteAsync(ExecutionMaintenanceCommand command,
-        Func<CancellationToken, Task<bool>> authorize, Func<ExecutionHistoryEntry, CancellationToken, Task> retryReport, CancellationToken ct)
+        Func<CancellationToken, Task<bool>> authorize, Func<ExecutionHistoryEntry, CancellationToken, Task> retryReport, CancellationToken ct,
+        Func<ExecutionMaintenanceCommand, Func<CancellationToken, Task<bool>>, CancellationToken, Task<ExecutionMaintenanceReport>>? reconcileCompletion = null)
     {
         if (!ExecutionMaintenanceProtocol.Valid(command.Request) || command.Status != "running" || command.DeadlineUtc is null)
             throw new InvalidDataException("Invalid managed maintenance command.");
@@ -22,6 +23,13 @@ internal sealed class ManagedExecutionMaintenance(ExecutionHistoryStore history,
         if (current is null) return new("refused", "worker-record-missing", []);
         if (current.ServerExecutionId != request.ServerExecutionId || current.AssignmentId != request.AssignmentId || current.OwnershipGeneration != request.Generation)
             return new("refused", "worker-identity-mismatch", []);
+        if (request.Action == "reconcile-completion")
+        {
+            using var maintenance = runtime.Registry.TryBeginServerMaintenance();
+            if (maintenance is null) return new("refused", "worker-drain-required", [await ObserveAsync(current, ct)]);
+            return reconcileCompletion is null ? new("refused", "project-unavailable", []) :
+                await reconcileCompletion(command, authorize, ct);
+        }
         if (request.Action == "retry-report")
         {
             if (current.CompletedAtUtc is null || current.State is not ("Completed" or "Blocked" or "Failed" or "IntegrationConflict" or "InfrastructureFailure" or "Cancelled"))

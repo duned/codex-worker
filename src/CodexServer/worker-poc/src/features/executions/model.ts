@@ -27,7 +27,7 @@ export const execution: Validator<Execution> = value => {
 };
 export const executionList: Validator<Execution[]> = value => executions(value).map(execution);
 const guidN = /^[a-fA-F0-9]{32}$/;
-const maintenanceActions = ['inventory', 'inspect', 'cleanup', 'archive', 'retry-report'] as const;
+const maintenanceActions = ['inventory', 'inspect', 'cleanup', 'archive', 'retry-report', 'reconcile-completion'] as const;
 const maintenanceStatuses = new Set(['pending', 'running', 'uncertain', 'succeeded', 'refused', 'failed', 'cancelled']);
 function maintenanceObservation(value: unknown): ExecutionMaintenanceObservation {
   const item = record(value);
@@ -60,7 +60,19 @@ export const maintenanceCommand: Validator<ExecutionMaintenanceCommand> = value 
     const current = record(item.report);
     if (!['succeeded', 'refused', 'failed', 'uncertain'].includes(String(current.outcome)) || typeof current.reason !== 'string' ||
         !/^[a-zA-Z0-9-]{1,100}$/.test(current.reason) || !Array.isArray(current.observations) || current.observations.length > Number(request.limit)) throw new Error('Invalid maintenance report.');
-    report = { outcome: String(current.outcome), reason: current.reason, observations: current.observations.map(maintenanceObservation) };
+    let completionProof: import('../../shared/api/contracts').CompletionReconciliationProof | undefined;
+    if (current.completionProof != null) {
+      const proof = record(current.completionProof);
+      if (typeof proof.token !== 'string' || !/^[A-Fa-f0-9]{64}$/.test(proof.token) ||
+          typeof proof.commit !== 'string' || !/^(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})$/.test(proof.commit) ||
+          typeof proof.baseBranch !== 'string' || proof.baseBranch.length > 250 || proof.validationResult !== 'passed' ||
+          typeof proof.issueOpen !== 'boolean' || typeof proof.issueContentChanged !== 'boolean' ||
+          !Array.isArray(proof.labels) || proof.labels.length > 100 || proof.labels.some(label => typeof label !== 'string' || label.length > 100) ||
+          !['validatedIssueFingerprint', 'currentIssueFingerprint'].every(key => typeof proof[key] === 'string' && /^[A-Fa-f0-9]{64}$/.test(String(proof[key]))) ||
+          typeof proof.verifiedAtUtc !== 'string' || !Number.isFinite(Date.parse(proof.verifiedAtUtc))) throw new Error('Invalid completion proof.');
+      completionProof = proof as unknown as import('../../shared/api/contracts').CompletionReconciliationProof;
+    }
+    report = { completionProof, outcome: String(current.outcome), reason: current.reason, observations: current.observations.map(maintenanceObservation) };
   }
   return { request: request as unknown as ExecutionMaintenanceCommand['request'], status, createdAtUtc: item.createdAtUtc,
     authorizedBy: item.authorizedBy, deadlineUtc: item.deadlineUtc as string | undefined, completedAtUtc: item.completedAtUtc as string | undefined, report };
@@ -88,6 +100,16 @@ export const maintenanceDetail: Validator<ExecutionMaintenanceDetail> = value =>
 };
 export function maintenanceReason(code: string) {
   const reasons: Record<string, TranslationKey> = {
+    'completion-reconciliation-preview': 'maintenance.reason.completionPreview',
+    'completion-reconciled': 'maintenance.reason.completionReconciled',
+    'validated-commit-missing-on-remote-base': 'maintenance.reason.completionCommitMissing',
+    'completion-preview-changed': 'maintenance.reason.completionPreviewChanged',
+    'completion-issue-state-conflict': 'maintenance.reason.completionIssueConflict',
+    'completion-provenance-missing': 'maintenance.reason.completionProvenanceMissing',
+    'completion-policy-changed': 'maintenance.reason.completionPolicyChanged',
+    'quarantined-completion-required': 'maintenance.reason.completionQuarantineRequired',
+    'issue-execution-ownership-changed': 'maintenance.reason.completionOwnershipChanged',
+
     'already-clean': 'maintenance.reason.alreadyClean', integrated: 'maintenance.reason.integrated', 'archive-resources-remain': 'maintenance.reason.archiveResourcesRemain',
     'execution-active': 'maintenance.reason.executionActive', 'recovery-or-attempt-active': 'maintenance.reason.recoveryActive', 'lineage-inconsistent': 'maintenance.reason.lineageInconsistent',
     'incomplete-recovery-metadata': 'maintenance.reason.provenanceIncomplete', 'inspection-unavailable': 'maintenance.reason.inspectionUnavailable',
@@ -195,7 +217,7 @@ export function maintenanceInventoryScope(item: Execution, worker: WorkerObserva
     return { allowed: false, reason: 'maintenance.protocolUnavailable' };
   return { allowed: true, reason: undefined };
 }
-export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' | 'archive' | 'retry-report', apply: boolean,
+export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion', apply: boolean,
   worker: WorkerObservation | undefined, node: NodeSummary | undefined, now: number) {
   if (!guidN.test(item.id) || !guidN.test(item.assignedWorkerId ?? '') || !guidN.test(item.workerExecutionId ?? '') ||
       !guidN.test(item.assignmentId ?? '') || !item.lease || !Number.isSafeInteger(item.lease.generation) || item.lease.generation < 1)
@@ -205,10 +227,14 @@ export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' 
   if (!worker) return { allowed: false, reason: 'maintenance.workerUnavailable' };
   if (item.lease.workerId !== item.assignedWorkerId || item.lease.executionId !== item.id)
     return { allowed: false, reason: 'maintenance.ownershipMismatch' };
-  if (action === 'cleanup' || action === 'archive') {
+  if (action === 'cleanup' || action === 'archive' || action === 'reconcile-completion') {
     if (!['Completed', 'Failed'].includes(item.state) || item.lease.state !== 'Released') return { allowed: false, reason: 'maintenance.terminalLeaseRequired' };
     if (apply && (worker.schedulingPolicy !== 'Draining' || worker.activeAssignments !== 0)) return { allowed: false, reason: 'maintenance.drainRequired' };
   }
+  if (action === 'reconcile-completion' && (!worker.capabilities?.some(c => c.type === 'protocol' && c.name === 'execution-completion-reconciliation-v1') || worker.schedulingPolicy !== 'Draining' || worker.activeAssignments !== 0 ||
+      item.validationResult !== 'passed' || item.state === 'Failed' && item.failureClassification !== 'InfrastructureFailure' ||
+      item.state === 'Completed' && item.recoveryState !== 'CompletionReconciled'))
+    return { allowed: false, reason: 'maintenance.completionUnavailable' };
   if (action === 'archive') {
     const completed = Date.parse(item.completedAtUtc ?? '');
     const ambiguous = ['LeaseExpiredUncertain', 'OperatorRetryQueued'].includes(item.recoveryState ?? '');
