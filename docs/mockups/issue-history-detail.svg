@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1120" viewBox="0 0 1440 1120" role="img" aria-labelledby="title desc">
+<title id="title">GitHub issue history · Ephimeral Quest · Codex Worker</title>
+<desc id="desc">Dark Codex Worker dashboard mockup for a project issue, showing GitHub and Server status, issue details, available actions and execution history.</desc>
+<defs>
+  <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#0b1020"/></linearGradient>
+  <linearGradient id="sidebar" x2="0" y2="1"><stop stop-color="#121725"/><stop offset="1" stop-color="#101521"/></linearGradient>
+  <linearGradient id="accent" x2="1" y2="1"><stop stop-color="#7f56d9"/><stop offset="1" stop-color="#9e77ed"/></linearGradient>
+  <style>
+    .ui{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f5f5f6}
+    .h1{font-size:27px;font-weight:650}.h2{font-size:16px;font-weight:650}.h3{font-size:14px;font-weight:650}
+    .brand{font-size:15px;font-weight:700}.nav{font-size:14px;fill:#a5a7b2}.nav-active{font-size:14px;fill:#f5f5f6;font-weight:600}
+    .icon{font-size:16px;fill:#9498a6}.icon-active{font-size:16px;fill:#b692f6}
+    .body{font-size:13px;fill:#d0d5dd}.small{font-size:12px;fill:#9498a6}.small-strong{font-size:12px;fill:#d0d5dd;font-weight:600}
+    .muted{font-size:13px;fill:#9498a6}.faint{font-size:11px;fill:#717585}
+    .label{font-size:10px;fill:#85899a;font-weight:700;letter-spacing:1px}.chip{font-size:11px;font-weight:650}
+    .card{fill:#171d2b;stroke:#282e3d}.surface{fill:#1d2433;stroke:#303748}.rule{stroke:#282d3b}
+    .link{fill:#b692f6;font-size:13px}.link-small{fill:#b692f6;font-size:11px}
+  </style>
+</defs>
+<rect width="1440" height="1120" fill="url(#bg)"/><rect width="244" height="1120" fill="url(#sidebar)"/>
+<rect x="25" y="24" width="34" height="34" rx="10" fill="url(#accent)"/><path d="M35 42h14M42 35v14" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+<text x="70" y="39" class="ui brand">Codex Worker</text><text x="70" y="54" class="ui faint">CONTROL CENTER</text>
+<text x="26" y="144" class="ui icon">⌂</text><text x="53" y="144" class="ui nav">Home</text>
+<text x="26" y="194" class="ui icon">▦</text><text x="53" y="194" class="ui nav">Projects</text>
+<text x="26" y="244" class="ui icon">◉</text><text x="53" y="244" class="ui nav">Workers</text>
+<text x="26" y="294" class="ui icon">▤</text><text x="53" y="294" class="ui nav">Executions</text>
+<rect x="13" y="319" width="218" height="40" rx="8" fill="#27213a"/><rect x="13" y="319" width="3" height="40" rx="1.5" fill="#9e77ed"/>
+<text x="26" y="344" class="ui icon-active">◉</text><text x="53" y="344" class="ui nav-active">Issues</text>
+<text x="26" y="394" class="ui icon">⚙</text><text x="53" y="394" class="ui nav">Settings</text>
+<line x1="20" y1="1028" x2="224" y2="1028" stroke="#282d3b"/>
+<circle cx="31" cy="1056" r="5" fill="#32d583"/><text x="46" y="1060" class="ui small-strong">Server live</text>
+<text x="25" y="1083" class="ui faint">Last updated</text><text x="25" y="1102" class="ui small">23/10/2026 18:25:00</text>
+
+<text x="280" y="31" class="ui small">Issues  /  Ephimeral Quest  /  #64</text>
+<text x="280" y="72" class="ui h1">Issue #64 · Expose authenticated game HTTP and SSE endpoints</text>
+<text x="280" y="99" class="ui muted">duned/ephimeral-quest  ↗  ·  Tracked across GitHub and Codex Server</text>
+<rect x="1135" y="45" width="126" height="40" rx="8" fill="#7f56d9"/><text x="1198" y="70" text-anchor="middle" class="ui small-strong">Enqueue issue</text>
+<rect x="1270" y="45" width="140" height="40" rx="8" class="surface"/><text x="1340" y="70" text-anchor="middle" class="ui small-strong">Refresh status</text>
+
+<rect x="280" y="125" width="550" height="136" rx="10" class="card"/>
+<text x="304" y="154" class="ui h2">GitHub issue</text>
+<rect x="304" y="171" width="67" height="23" rx="11.5" fill="#153328"/><text x="337.5" y="187" text-anchor="middle" class="ui chip" fill="#6ce9a6">Open</text>
+<rect x="380" y="171" width="100" height="23" rx="11.5" fill="#27213a"/><text x="430" y="187" text-anchor="middle" class="ui chip" fill="#c6a7ff">codex-ready</text>
+<text x="304" y="220" class="ui small">Updated 23/10/2026 16:42 · View on GitHub ↗</text>
+<text x="806" y="220" text-anchor="end" class="ui link-small">Refresh from GitHub</text>
+
+<rect x="850" y="125" width="560" height="136" rx="10" class="card"/>
+<text x="874" y="154" class="ui h2">Codex Server</text>
+<rect x="874" y="171" width="91" height="23" rx="11.5" fill="#202840"/><text x="919.5" y="187" text-anchor="middle" class="ui chip" fill="#84caff">Queued</text>
+<text x="874" y="220" class="ui small">Ready for scheduling · Last synchronized 23/10/2026 16:43</text>
+<text x="1386" y="220" text-anchor="end" class="ui link-small">View executions →</text>
+
+<rect x="280" y="280" width="710" height="286" rx="10" class="card"/>
+<text x="304" y="313" class="ui h2">Issue description</text>
+<text x="304" y="348" class="ui body">Expose authenticated game HTTP and SSE endpoints for the public runtime.</text>
+<text x="304" y="372" class="ui body">The browser client should be able to connect to the game session, receive</text>
+<text x="304" y="396" class="ui body">live updates and submit player actions using the existing authentication flow.</text>
+<line x1="304" y1="421" x2="966" y2="421" class="rule"/>
+<text x="304" y="450" class="ui label">LABELS</text>
+<rect x="304" y="464" width="91" height="23" rx="11.5" fill="#27213a"/><text x="349.5" y="480" text-anchor="middle" class="ui chip" fill="#c6a7ff">codex-ready</text>
+<rect x="402" y="464" width="73" height="23" rx="11.5" fill="#202840"/><text x="438.5" y="480" text-anchor="middle" class="ui chip" fill="#84caff">11.4.6</text>
+<text x="304" y="526" class="ui small">Opened by duned · 22/10/2026 09:16</text>
+<text x="964" y="526" text-anchor="end" class="ui link-small">Open full issue on GitHub ↗</text>
+
+<rect x="1010" y="280" width="400" height="286" rx="10" class="card"/>
+<text x="1034" y="313" class="ui h2">Issue details</text>
+<text x="1034" y="352" class="ui faint">Assignee</text><text x="1190" y="352" class="ui small-strong">duned</text>
+<line x1="1034" y1="367" x2="1386" y2="367" class="rule"/>
+<text x="1034" y="396" class="ui faint">Milestone</text><text x="1190" y="396" class="ui small-strong">11.4 · Runtime API</text>
+<line x1="1034" y1="411" x2="1386" y2="411" class="rule"/>
+<text x="1034" y="440" class="ui faint">Project</text><text x="1190" y="440" class="ui link">Ephimeral Quest ↗</text>
+<line x1="1034" y1="455" x2="1386" y2="455" class="rule"/>
+<text x="1034" y="484" class="ui faint">Issue number</text><text x="1190" y="484" class="ui small-strong">#64</text>
+<text x="1034" y="532" class="ui faint">GitHub is the source of issue content and state.</text>
+
+<text x="280" y="618" class="ui h2">Execution history</text>
+<text x="465" y="618" class="ui small">All Server executions for this project and issue</text>
+<text x="1320" y="618" class="ui link-small">Open executions →</text>
+<rect x="280" y="638" width="1130" height="330" rx="10" class="card"/>
+<rect x="281" y="639" width="1128" height="45" rx="10" fill="#1d2433"/>
+<text x="302" y="667" class="ui label">EXECUTION</text><text x="570" y="667" class="ui label">STATUS / OUTCOME</text>
+<text x="820" y="667" class="ui label">WORKER</text><text x="1050" y="667" class="ui label">STARTED</text><text x="1270" y="667" class="ui label">DURATION</text>
+<line x1="281" y1="684" x2="1409" y2="684" class="rule"/>
+<text x="302" y="718" class="ui link">#64 · exec 3e59ffe2 ↗</text><text x="302" y="739" class="ui faint">Issue execution · 23/10/2026 07:22</text>
+<rect x="570" y="699" width="57" height="23" rx="11.5" fill="#3c2026"/><text x="598.5" y="715" text-anchor="middle" class="ui chip" fill="#fda29b">Failed</text>
+<text x="638" y="715" class="ui small">Infrastructure failure</text><text x="820" y="718" class="ui small">Codex Worker · VM2</text>
+<text x="1050" y="718" class="ui small">23/10/2026 07:22</text><text x="1270" y="718" class="ui small">3s</text>
+<line x1="281" y1="755" x2="1409" y2="755" class="rule"/>
+<text x="302" y="789" class="ui link">#64 · exec b4a6f10c ↗</text><text x="302" y="810" class="ui faint">Issue execution · 22/10/2026 18:30</text>
+<rect x="570" y="770" width="82" height="23" rx="11.5" fill="#153328"/><text x="611" y="786" text-anchor="middle" class="ui chip" fill="#6ce9a6">Completed</text>
+<text x="820" y="789" class="ui small">Codex Worker · VM2</text><text x="1050" y="789" class="ui small">22/10/2026 18:30</text><text x="1270" y="789" class="ui small">18m 42s</text>
+<line x1="281" y1="826" x2="1409" y2="826" class="rule"/>
+<text x="302" y="860" class="ui link">#64 · exec 9f3cd1ab ↗</text><text x="302" y="881" class="ui faint">Issue execution · 21/10/2026 11:03</text>
+<rect x="570" y="841" width="75" height="23" rx="11.5" fill="#202840"/><text x="607.5" y="857" text-anchor="middle" class="ui chip" fill="#84caff">Running</text>
+<text x="820" y="860" class="ui small">Codex Worker · VM2</text><text x="1050" y="860" class="ui small">21/10/2026 11:03</text><text x="1270" y="860" class="ui small">12m 09s</text>
+<line x1="281" y1="897" x2="1409" y2="897" class="rule"/>
+<text x="302" y="934" class="ui faint">Showing the latest executions for this project issue</text>
+<text x="1310" y="934" text-anchor="end" class="ui link-small">View all →</text>
+
+<rect x="280" y="992" width="1130" height="72" rx="10" fill="#171d2b" stroke="#282e3d"/>
+<circle cx="305" cy="1027" r="5" fill="#84caff"/><text x="322" y="1024" class="ui small-strong">Actions depend on current GitHub and Server state.</text>
+<text x="322" y="1045" class="ui small">Enqueue is available only when the issue is eligible and not already queued or running.</text>
+</svg>
