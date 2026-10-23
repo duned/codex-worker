@@ -15,8 +15,10 @@ public sealed class ManagedExecutionMaintenanceTests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task CompletionCorrectionUsesOriginalGenerationAndExplicitRunningMaintenanceAuthority()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletionCorrectionUsesOriginalGenerationAndExplicitRunningMaintenanceAuthority(bool expired)
     {
         using var temporary = new TemporaryDirectory();
         var clock = new Clock();
@@ -39,8 +41,39 @@ public sealed class ManagedExecutionMaintenanceTests
             new Dictionary<string, int> { [project.Id] = 1 }))).Assignment);
         var localId = Guid.NewGuid();
         var generation = assignment.Lease?.Generation ?? 0;
-        await registry.ReportExecutionAsync(execution.Id, new(worker, assignment.AssignmentId, localId.ToString(), "Failed",
-            ValidationResult: "passed", FailureClassification: "InfrastructureFailure", Generation: generation));
+        if (expired)
+        {
+            await registry.ReportExecutionAsync(execution.Id, new(worker, assignment.AssignmentId, localId.ToString(), "Running",
+                Stage: "Integration", Generation: generation));
+            clock.Now += TimeSpan.FromHours(1);
+            await registry.ExpireLeasesAsync();
+            await registry.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 1, capabilities, []));
+            // Reproduce a legacy/incomplete projection with no Worker execution identity.
+            await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}");
+            await connection.OpenAsync();
+            await using var clear = connection.CreateCommand();
+            clear.CommandText = "UPDATE execution_requests SET worker_execution_id=NULL WHERE id=$id";
+            clear.Parameters.AddWithValue("$id", execution.Id);
+            await clear.ExecuteNonQueryAsync();
+            var inventory = Inventory(worker);
+            await commands.CreateAsync(inventory, "operator:inventory");
+            await commands.ClaimAsync(worker);
+            var observation = new ExecutionMaintenanceObservation(localId, execution.Id, assignment.AssignmentId, generation,
+                "InfrastructureFailure", "managed-completion-quarantined", "pending", "p", 1);
+            var evidence = new ExecutionMaintenanceReport("succeeded", "inventory", [observation]);
+            var inventoryReceipt = Assert.IsType<ExecutionMaintenanceCommand>(await commands.ReportAsync(inventory.OperationId, worker, evidence));
+            await registry.RestoreCompletionProvenanceAsync(inventoryReceipt with { Report = evidence with { Observations = [observation, observation with { ExecutionId = Guid.NewGuid() }] } });
+            Assert.Null((await registry.GetExecutionAsync(execution.Id))?.WorkerExecutionId);
+            await registry.RestoreCompletionProvenanceAsync(inventoryReceipt with { Report = evidence with { Observations = [observation with { Generation = generation + 1 }] } });
+            Assert.Null((await registry.GetExecutionAsync(execution.Id))?.WorkerExecutionId);
+            await registry.RestoreCompletionProvenanceAsync(inventoryReceipt);
+            Assert.Equal(localId.ToString(), (await registry.GetExecutionAsync(execution.Id))?.WorkerExecutionId);
+        }
+        else
+        {
+            await registry.ReportExecutionAsync(execution.Id, new(worker, assignment.AssignmentId, localId.ToString(), "Failed",
+                ValidationResult: "passed", FailureClassification: "InfrastructureFailure", Generation: generation));
+        }
         var success = new WorkerExecutionReport(worker, assignment.AssignmentId, localId.ToString(), "Completed",
             ValidationResult: "passed", IntegrationResult: "passed", Generation: generation);
         await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, success));
@@ -75,7 +108,7 @@ public sealed class ManagedExecutionMaintenanceTests
         Assert.Equal(JsonSerializer.Serialize(receipt), JsonSerializer.Serialize(await commands.ReportAsync(request.OperationId, worker, report)));
         Assert.Equal("operator:test", receipt?.AuthorizedBy);
         Assert.Equal(clock.Now, receipt?.CompletedAtUtc);
-        Assert.Single(await commands.ListAsync(worker, 10, 0));
+        Assert.Equal(expired ? 2 : 1, (await commands.ListAsync(worker, 10, 0)).Count);
         await Assert.ThrowsAsync<ExecutionRequestOwnershipException>(() => registry.ReportExecutionAsync(execution.Id, authorized));
     }
 

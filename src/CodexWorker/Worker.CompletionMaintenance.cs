@@ -40,6 +40,10 @@ public sealed partial class Worker
             if (completion.PolicyFingerprint != ExecutionCompletion.Policy(config) || entry.BaseBranch != config.Git.BaseBranch ||
                 !config.Git.AutoMerge) return Refuse("completion-policy-changed");
             var others = await history.ReadAllAsync(ct);
+            if (others.Any(other => other.ExecutionId != entry.ExecutionId &&
+                other.ServerExecutionId == entry.ServerExecutionId && other.AssignmentId == entry.AssignmentId &&
+                other.OwnershipGeneration == entry.OwnershipGeneration))
+                return Refuse("ambiguous-completion-ownership");
             if (others.Any(other => other.ExecutionId != entry.ExecutionId && other.Project == entry.Project &&
                 other.Repository == entry.Repository && other.IssueNumber == entry.IssueNumber &&
                 (other.CompletedAtUtc is null || other.AttemptNumber >= entry.AttemptNumber || other.State == "Completed")))

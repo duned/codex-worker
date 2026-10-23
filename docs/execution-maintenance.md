@@ -237,7 +237,8 @@ require the existing Server reconciliation protocol. 404/409 reporting results
 become durable, visible reconciliation dispositions; they are not silently retried.
 
 The execution detail dashboard also offers **Preview quarantined completion** for
-released infrastructure failures with passed validation on a drained, idle Worker
+released infrastructure failures with passed validation, or expired uncertain
+executions with exact original ownership, on a drained, idle Worker
 advertising `protocol/execution-completion-reconciliation-v1`. The Worker must
 retain `managed-completion-quarantined` and a consistent durable completion payload;
 legacy commit-only records cannot authorize completion effects.
@@ -258,7 +259,7 @@ execution comment, close an eligible open Issue under the existing success polic
 and acknowledge an already closed done Issue without replaying its GitHub effects.
 Unrelated labels survive. Codex, validation and base integration never run again.
 The original terminal Server result is corrected through the existing Worker report
-endpoint, fenced by the running maintenance operation and original released lease
+endpoint, fenced by the running maintenance operation and original released or expired lease
 generation. A completed correction records `CompletionReconciled` and clears the
 infrastructure failure classification. The maintenance audit retains operator
 correlation, verified commit/base, Issue fingerprints and state, disposition and time.
@@ -314,3 +315,36 @@ Read the retained reason at `GET /api/executions/<id>/legacy-review` or with
 `codex-worker executions show <id>`. Original outcomes and recovery metadata remain
 intact; uncertain integrations and retained recoverable sessions require their
 existing recovery protocols.
+
+### Expired completion provenance
+
+Assignment creation persists the Server execution, assigned Worker, assignment ID
+and lease generation. Worker history retains those same IDs alongside its local
+execution ID and durable completion checkpoints. Stage/terminal reports populate
+the Server's Worker execution ID and validation result. If reporting loses the
+lease during Integration or Reporting, expiry retains the original assignment and
+lease as `LeaseExpiredUncertain`; it does not establish a completed outcome.
+
+An expired uncertain lease can use the same completion preview/confirmation flow.
+The Worker must still prove its quarantined validated completion and exact remote
+integration; absent Server validation projection is not validation authority.
+Worker execution IDs use standard hyphenated GUID JSON, unlike the Server's
+32-character string identities. Dashboard scope and operation-history parsing
+accept both supported Worker GUID representations.
+
+If only the Server's Worker execution ID is absent, inspect Worker inventory and
+refresh the execution. A successful complete, unfiltered inventory (offset zero,
+with fewer results than its requested limit) can restore that ID only when exactly
+one observation identifies the original Server execution, Worker, assignment and
+latest expired generation. The retained inventory operation audits the evidence.
+No Issue number or commit is used to establish ownership. Conflicting existing
+IDs, ambiguous observations and missing assignment/generation remain fail-closed.
+A truncated inventory cannot restore identity; inspect it with a larger supported
+limit (maximum 100). If a complete inventory cannot be obtained, preserve resources
+for operator investigation. This never reruns implementation, validation or integration.
+
+Pending means accepted but not yet claimed by the Worker. Refresh the operation
+and check Worker connectivity; an undispatched operation can be cancelled. Running
+operations past their deadline are uncertain and must be inspected, never replayed.
+An unavailable history is not proof that a command was rejected: refresh the Server
+connection and inspect the operation by its retained ID before submitting another.

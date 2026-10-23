@@ -2624,6 +2624,7 @@ public sealed class WorkerV011Tests
     [InlineData("missing-provenance")]
     [InlineData("authority-lost")]
     [InlineData("lost-comment-response")]
+    [InlineData("ambiguous-ownership")]
     public async Task QuarantinedMetadataChangeCanOnlyResumeWithFreshExactProof(string scenario)
     {
         using var database = new TempHistoryDatabase();
@@ -2675,6 +2676,8 @@ public sealed class WorkerV011Tests
         var validationCalls = h.Validation.Calls;
         var integrationCalls = h.Git.Integrations;
         command = command with { Request = request with { Apply = true, ExpectedProof = preview.CompletionProof.Token } };
+        if (scenario == "ambiguous-ownership")
+            await history.CreateAsync(pending with { ExecutionId = Guid.NewGuid() });
         if (scenario == "missing-commit") h.Git.RemoteContainsIntegration = false;
         if (scenario == "stale-generation") command = command with { Request = command.Request with { Generation = 8 } };
         if (scenario == "issue-conflict") h.GitHub.CompletionLabels = ["ready", "unrelated"];

@@ -27,11 +27,13 @@ export const execution: Validator<Execution> = value => {
 };
 export const executionList: Validator<Execution[]> = value => executions(value).map(execution);
 const guidN = /^[a-fA-F0-9]{32}$/;
+// Worker execution IDs are serialized from Guid using the standard hyphenated format.
+const workerGuid = /^(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})$/;
 const maintenanceActions = ['inventory', 'inspect', 'cleanup', 'archive', 'retry-report', 'reconcile-completion'] as const;
 const maintenanceStatuses = new Set(['pending', 'running', 'uncertain', 'succeeded', 'refused', 'failed', 'cancelled']);
 function maintenanceObservation(value: unknown): ExecutionMaintenanceObservation {
   const item = record(value);
-  if (typeof item.executionId !== 'string' || !guidN.test(item.executionId) ||
+  if (typeof item.executionId !== 'string' || !workerGuid.test(item.executionId) ||
       !['state', 'recoveryState', 'reportingStatus', 'project'].every(key => typeof item[key] === 'string' && String(item[key]).length <= (key === 'project' ? 200 : 100)) ||
       !Number.isSafeInteger(item.issueNumber) || Number(item.issueNumber) < 1 || typeof item.archived !== 'boolean' ||
       item.serverExecutionId != null && (typeof item.serverExecutionId !== 'string' || !guidN.test(item.serverExecutionId)) ||
@@ -52,7 +54,7 @@ export const maintenanceCommand: Validator<ExecutionMaintenanceCommand> = value 
       typeof item.createdAtUtc !== 'string' || typeof item.authorizedBy !== 'string' || item.authorizedBy.length > 200 ||
       item.deadlineUtc != null && typeof item.deadlineUtc !== 'string' || item.completedAtUtc != null && typeof item.completedAtUtc !== 'string') throw new Error('Invalid maintenance command.');
   if (request.action !== 'inventory' && (typeof request.serverExecutionId !== 'string' || !guidN.test(request.serverExecutionId) ||
-      typeof request.workerExecutionId !== 'string' || !guidN.test(request.workerExecutionId) ||
+      typeof request.workerExecutionId !== 'string' || !workerGuid.test(request.workerExecutionId) ||
       typeof request.assignmentId !== 'string' || !guidN.test(request.assignmentId) ||
       !Number.isSafeInteger(request.generation) || Number(request.generation) < 1)) throw new Error('Invalid maintenance scope.');
   let report;
@@ -193,7 +195,7 @@ export function attentionAssessment(item: Execution, worker: WorkerObservation |
     return result('stale-lease', 'attention.expiredLease', reconcile ? 'attention.reconcileExecution' : 'attention.reviewExecution');
   const workerRelevant = active || unresolvedRecovery;
   const incompleteProof = !guidN.test(item.id) || !guidN.test(item.assignedWorkerId ?? '') || !item.assignmentId || !guidN.test(item.assignmentId) ||
-    !item.workerExecutionId || !guidN.test(item.workerExecutionId) || !item.lease || !guidN.test(item.lease.workerId) ||
+    !item.workerExecutionId || !workerGuid.test(item.workerExecutionId) || !item.lease || !guidN.test(item.lease.workerId) ||
     item.lease.workerId !== item.assignedWorkerId || item.lease.executionId !== item.id || !Number.isSafeInteger(item.lease.generation) || item.lease.generation < 1;
   if (workerRelevant && incompleteProof) return result('provenance-uncertain', 'attention.provenanceIncomplete', 'attention.inspectExecution');
   if (workerRelevant && !worker) return result('worker-unknown', workerInventoryStatus === 'loading' ? 'attention.workerStateLoading' :
@@ -219,20 +221,24 @@ export function maintenanceInventoryScope(item: Execution, worker: WorkerObserva
 }
 export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' | 'archive' | 'retry-report' | 'reconcile-completion', apply: boolean,
   worker: WorkerObservation | undefined, node: NodeSummary | undefined, now: number) {
-  if (!guidN.test(item.id) || !guidN.test(item.assignedWorkerId ?? '') || !guidN.test(item.workerExecutionId ?? '') ||
-      !guidN.test(item.assignmentId ?? '') || !item.lease || !Number.isSafeInteger(item.lease.generation) || item.lease.generation < 1)
+  if (!guidN.test(item.id)) return { allowed: false, reason: 'maintenance.missingServerIdentity' };
+  if (!guidN.test(item.assignedWorkerId ?? '')) return { allowed: false, reason: 'maintenance.missingWorkerProvenance' };
+  if (!workerGuid.test(item.workerExecutionId ?? '')) return { allowed: false, reason: 'maintenance.missingWorkerExecutionIdentity' };
+  if (!guidN.test(item.assignmentId ?? '')) return { allowed: false, reason: 'maintenance.missingAssignmentIdentity' };
+  if (!item.lease || !Number.isSafeInteger(item.lease.generation) || item.lease.generation < 1)
     return { allowed: false, reason: 'maintenance.missingProvenance' };
   const inventory = maintenanceInventoryScope(item, worker, node);
   if (!inventory.allowed) return inventory;
   if (!worker) return { allowed: false, reason: 'maintenance.workerUnavailable' };
   if (item.lease.workerId !== item.assignedWorkerId || item.lease.executionId !== item.id)
     return { allowed: false, reason: 'maintenance.ownershipMismatch' };
+  const expiredCompletion = action === 'reconcile-completion' && item.state === 'Failed' && item.recoveryState === 'LeaseExpiredUncertain' && item.lease.state === 'Expired' && (item.validationResult == null || item.validationResult === 'passed');
   if (action === 'cleanup' || action === 'archive' || action === 'reconcile-completion') {
-    if (!['Completed', 'Failed'].includes(item.state) || item.lease.state !== 'Released') return { allowed: false, reason: 'maintenance.terminalLeaseRequired' };
+    if (!['Completed', 'Failed'].includes(item.state) || item.lease.state !== 'Released' && !expiredCompletion) return { allowed: false, reason: 'maintenance.terminalLeaseRequired' };
     if (apply && (worker.schedulingPolicy !== 'Draining' || worker.activeAssignments !== 0)) return { allowed: false, reason: 'maintenance.drainRequired' };
   }
   if (action === 'reconcile-completion' && (!worker.capabilities?.some(c => c.type === 'protocol' && c.name === 'execution-completion-reconciliation-v1') || worker.schedulingPolicy !== 'Draining' || worker.activeAssignments !== 0 ||
-      item.validationResult !== 'passed' || item.state === 'Failed' && item.failureClassification !== 'InfrastructureFailure' ||
+      !expiredCompletion && (item.validationResult !== 'passed' || item.state === 'Failed' && item.failureClassification !== 'InfrastructureFailure') ||
       item.state === 'Completed' && item.recoveryState !== 'CompletionReconciled'))
     return { allowed: false, reason: 'maintenance.completionUnavailable' };
   if (action === 'archive') {

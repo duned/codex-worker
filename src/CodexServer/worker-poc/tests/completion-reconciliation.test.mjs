@@ -46,3 +46,18 @@ test('completion preview retains authoritative evidence and rejects malformed pr
       completionProof: { ...command.report.completionProof, ...patch } } }));
   }
 });
+
+test('expired uncertain execution uses standard Worker GUIDs and fresh Worker completion proof', () => {
+  const dashed = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+  const expired = { ...item, workerExecutionId: dashed, validationResult: undefined, failureClassification: undefined,
+    recoveryState: 'LeaseExpiredUncertain', lease: { ...item.lease, state: 'Expired' } };
+  assert.equal(maintenanceScope(expired, 'reconcile-completion', false, worker, node, now).allowed, true);
+  assert.equal(maintenanceScope({ ...expired, validationResult: 'failed' }, 'reconcile-completion', false, worker, node, now).allowed, false);
+  assert.equal(maintenanceScope(expired, 'cleanup', true, worker, node, now).allowed, false);
+  const wire = { ...command, request: { ...command.request, workerExecutionId: dashed }, report: { ...command.report,
+    observations: [{ executionId: dashed, serverExecutionId: id, assignmentId, generation: 7, state: 'InfrastructureFailure',
+      recoveryState: 'managed-completion-quarantined', reportingStatus: 'pending', project: 'p', issueNumber: 65, archived: false }] } };
+  assert.equal(maintenanceCommand(wire).report.observations[0].executionId, dashed);
+  assert.equal(maintenanceCommand({ ...wire, request: { ...wire.request, action: 'inventory' } }).status, 'succeeded');
+  assert.throws(() => maintenanceCommand({ ...wire, request: { ...wire.request, workerExecutionId: 'not-a-guid' } }));
+});

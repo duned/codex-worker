@@ -100,6 +100,7 @@ public static partial class ServerApplication
             try
             {
                 var result = await commands.ReportAsync(id, workerId, report, context.RequestAborted);
+                if (result is not null) await registry.RestoreCompletionProvenanceAsync(result, context.RequestAborted);
                 return result is null ? Results.NotFound(new { reason = "maintenance-record-missing" }) : Results.Ok(result);
             }
             catch (InvalidDataException ex) { return Results.BadRequest(new { reason = ex.Message }); }
@@ -132,9 +133,8 @@ public static partial class ServerApplication
                 return "worker-completion-protocol-unavailable";
             if (worker.SchedulingPolicy != WorkerSchedulingPolicy.Draining || worker.ActiveAssignments != 0)
                 return "worker-drain-required";
-            if (execution.State is not ("Failed" or "Completed") || execution.Lease.State != "Released" ||
-                execution.WorkerExecutionId is null || execution.ValidationResult != "passed" ||
-                execution.State == "Failed" && execution.FailureClassification != "InfrastructureFailure" ||
+            if (execution.State is not ("Failed" or "Completed") || execution.Lease.State is not ("Released" or "Expired") ||
+                execution.WorkerExecutionId is null || !SqliteRegistryStore.CompletionMaintenanceEligible(execution) ||
                 execution.State == "Completed" && execution.RecoveryState != "CompletionReconciled")
                 return "quarantined-completion-terminal-proof-required";
             if (execution.WorkReference.Type is not ("issue" or "github-issue") ||
