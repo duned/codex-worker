@@ -89,10 +89,22 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
-                executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
-                    execution.Resumed, execution.AttemptNumber, ct),
+                CodexCapacityRetry.RunAsync(() => executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
+                    execution.Resumed, execution.AttemptNumber, ct), async token =>
+                {
+                    var clock = timeProvider ?? TimeProvider.System;
+                    if (execution.CodexRecovery is { } recovery)
+                        execution.CodexRecovery = recovery with { RetryAfterUtc = clock.GetUtcNow().AddMinutes(5) };
+                    await SaveAndReportAsync(CreateEntry(execution, null, null, CodexFailure.ModelCapacity), execution.State, token);
+                    output.Warning($"Execution {execution.ExecutionId} · selected model is at capacity; retrying in five minutes. No fallback model is configured.");
+                    await Task.Delay(TimeSpan.FromMinutes(5), clock, token);
+                    if (isAuthoritative is not null && !await isAuthoritative(execution, token))
+                        throw new OperationCanceledException("Managed execution ownership is no longer authoritative.", token);
+                }, ct),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
                 warning: x => x.Status == "blocked", ct: ct);
+            if (execution.CodexRecovery is { } completedRecovery)
+                execution.CodexRecovery = completedRecovery with { RetryAfterUtc = null };
             if (outcome.Status == "failed")
                 output.FailureReason(execution.ExecutionId, "Codex reported incomplete task", outcome.Summary,
                     config.Environment.Variables.Values.ToArray());

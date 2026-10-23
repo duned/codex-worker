@@ -7,10 +7,14 @@ namespace CodexWorker;
 /// <summary>Only positively identified external failures are automatically resumed.</summary>
 internal sealed record CodexFailure(string Category, string Reason, bool Recoverable)
 {
+    internal const string ModelCapacity = "Codex model capacity";
+
     internal static CodexFailure Classify(string evidence, bool timedOut = false)
     {
         var text = evidence.ToLowerInvariant();
         if (timedOut) return new("Codex timeout", "Codex preflight/execution timed out; check network/service availability", true);
+        if (text.Contains("selected model is at capacity", StringComparison.Ordinal))
+            return new(ModelCapacity, "Selected model is at capacity; preserving execution and retrying the same model after cooldown", true);
         if (Contains(text, "usage limit", "rate limit", "rate_limit", "quota exceeded", "insufficient_quota", "subscription limit", "usage_limit"))
             return new("Codex usage limit", "Codex usage/rate/subscription limit reached; restore quota or wait for the limit to reset", true);
         if (Contains(text, "unauthorized", "authentication required", "not logged in", "please log in", "token expired", "refresh token", "invalid_api_key", "401 unauthorized"))
@@ -45,6 +49,7 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
             if (text.StartsWith("error", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("You've hit", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("You have hit", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Selected model is at capacity", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Rate limit", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Authentication required", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("Your authentication token", StringComparison.OrdinalIgnoreCase) ||

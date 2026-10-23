@@ -13,6 +13,7 @@ public sealed class CodexInterruptionTests
     [InlineData("Failed to refresh token", "Codex authentication", true)]
     [InlineData("error sending request: connection reset", "Codex service/network", true)]
     [InlineData("503 Service Unavailable", "Codex service/network", true)]
+    [InlineData("Selected model is at capacity. Please try a different model.", "Codex model capacity", true)]
     [InlineData("process exited 1", "Codex CLI/process failure", false)]
     public void ClassificationUsesEvidenceAndUnknownFailuresRequireInspection(string evidence, string category, bool recoverable)
     {
