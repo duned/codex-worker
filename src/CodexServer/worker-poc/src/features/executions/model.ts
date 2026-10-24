@@ -224,7 +224,7 @@ export function maintenanceScope(item: Execution, action: 'inspect' | 'cleanup' 
   if (!guidN.test(item.id)) return { allowed: false, reason: 'maintenance.missingServerIdentity' };
   if (!guidN.test(item.assignedWorkerId ?? '')) return { allowed: false, reason: 'maintenance.missingWorkerProvenance' };
   if (!workerGuid.test(item.workerExecutionId ?? '')) return { allowed: false, reason: 'maintenance.missingWorkerExecutionIdentity' };
-  if (!guidN.test(item.assignmentId ?? '')) return { allowed: false, reason: 'maintenance.missingAssignmentIdentity' };
+  if (!guidN.test(item.assignmentId ?? '')) return { allowed: false, reason: 'maintenance.missingProvenance' };
   if (!item.lease || !Number.isSafeInteger(item.lease.generation) || item.lease.generation < 1)
     return { allowed: false, reason: 'maintenance.missingProvenance' };
   const inventory = maintenanceInventoryScope(item, worker, node);

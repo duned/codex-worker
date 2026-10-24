@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
-  activeIssueExecution, canEnqueueIssue, historyOffset, issueExecutionMatches,
-  issueHistoryPageSize, issueHistoryPath, issueServerState, issueStatusPath, executionOutcome
+  activeIssueExecution, canEnqueueIssue, historyOffset, issueDoneLabel, issueExecutionMatches,
+  issueHistoryPageSize, issueHistoryPath, issuePageState, issueStatusPath, executionOutcome
 } from '../src/features/projects/issue-history-model.mjs';
 
 const projectId = 'project-alpha';
-const execution = (id, state, project = projectId, issue = '42') => ({
-  id, projectId: project, state, workReference: { type: 'github-issue', id: issue }
+const execution = (id, state, project = projectId, issue = '42', dates = {}) => ({
+  id, projectId: project, state, workReference: { type: 'github-issue', id: issue }, ...dates
+});
+const pageState = overrides => issuePageState({
+  projectAvailable: true, projectEnabled: true, issueAvailable: true, serverAvailable: true, issueEligible: true,
+  githubState: 'OPEN', labels: ['codex-ready'], doneLabel: issueDoneLabel, items: [], projectId, issueNumber: 42,
+  ...overrides
 });
 
 test('issue history identity combines project ID and numeric GitHub issue number', () => {
@@ -34,15 +39,18 @@ test('history request is scoped to the project and issue and exposes bounded old
   assert.equal(historyOffset('?historyOffset=-5'), 0);
 });
 
-test('enqueue eligibility blocks duplicate queued or active work and keeps project scope', () => {
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [], projectId, issueNumber: 42 }), true);
-  assert.equal(canEnqueueIssue({ projectEnabled: false, issueEligible: true, items: [], projectId, issueNumber: 42 }), false);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: false, items: [], projectId, issueNumber: 42 }), false);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [execution('q', 'Queued')], projectId, issueNumber: 42 }), false);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [execution('r', 'Running')], projectId, issueNumber: 42 }), false);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [execution('other', 'Running', 'project-beta')], projectId, issueNumber: 42 }), true);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [], projectId, issueNumber: 42, locked: true }), false);
-  assert.equal(canEnqueueIssue({ projectEnabled: true, issueEligible: true, items: [], projectId, issueNumber: 42, available: false }), false);
+test('enqueue is limited to open eligible Issues without duplicate active work', () => {
+  const base = { projectEnabled: true, issueEligible: true, githubState: 'OPEN', items: [], projectId, issueNumber: 42 };
+  assert.equal(canEnqueueIssue(base), true);
+  assert.equal(canEnqueueIssue({ ...base, projectEnabled: false }), false);
+  assert.equal(canEnqueueIssue({ ...base, issueEligible: false }), false);
+  assert.equal(canEnqueueIssue({ ...base, githubState: 'CLOSED' }), false);
+  assert.equal(canEnqueueIssue({ ...base, completed: true }), false);
+  assert.equal(canEnqueueIssue({ ...base, items: [execution('q', 'Queued')] }), false);
+  assert.equal(canEnqueueIssue({ ...base, items: [execution('r', 'Running')] }), false);
+  assert.equal(canEnqueueIssue({ ...base, items: [execution('other', 'Running', 'project-beta')] }), true);
+  assert.equal(canEnqueueIssue({ ...base, locked: true }), false);
+  assert.equal(canEnqueueIssue({ ...base, available: false }), false);
 });
 
 test('history outcome prefers completion summary, then failure and validation evidence', () => {
@@ -53,30 +61,83 @@ test('history outcome prefers completion summary, then failure and validation ev
   assert.equal(executionOutcome({}), undefined);
 });
 
-test('GitHub issue state and Codex Server scheduling state remain independent', () => {
-  const queued = [execution('q', 'Queued')];
-  assert.equal(activeIssueExecution(queued, projectId, 42).state, 'Queued');
-  assert.equal(issueServerState({ projectAvailable: true, projectEnabled: true, issueAvailable: true,
-    issueEligible: true, items: queued, projectId, issueNumber: 42 }).state, 'queued');
-  assert.equal(issueServerState({ projectAvailable: true, projectEnabled: true, issueAvailable: true,
-    issueEligible: true, items: [execution('a', 'Assigned')], projectId, issueNumber: 42 }).state, 'assigned');
-  assert.equal(issueServerState({ projectAvailable: true, projectEnabled: true, issueAvailable: true,
-    issueEligible: false, items: [], projectId, issueNumber: 42 }).state, 'blocked');
-  assert.equal(issueServerState({ projectAvailable: true, projectEnabled: true, issueAvailable: true,
-    issueEligible: true, items: [], projectId, issueNumber: 42 }).state, 'no-record');
-  assert.equal(issueServerState({ projectAvailable: false, projectEnabled: false, issueAvailable: true,
-    issueEligible: true, items: [], projectId, issueNumber: 42 }).state, 'unknown');
-  assert.equal(issueServerState({ projectAvailable: true, projectEnabled: true, issueAvailable: true,
-    issueEligible: true, items: [execution('r', 'Running')], projectId, issueNumber: 42 }).state, 'running');
+test('Issue status projection treats closed Issues with the configured done label as successful', () => {
+  const completed = pageState({
+    githubState: 'CLOSED', labels: ['triaged', 'CoDeX-DoNe'], issueEligible: false, projectEnabled: false,
+    items: [execution('run-1', 'Failed')]
+  });
+  assert.equal(completed.state, 'completed');
+  assert.equal(completed.completed, true);
+  assert.equal(completed.active, undefined);
+  assert.equal(issueDoneLabel, 'codex-done');
+
+  const projectConfiguredLabel = pageState({ githubState: 'closed', doneLabel: 'shipped', labels: ['SHIPPED'] });
+  assert.equal(projectConfiguredLabel.state, 'completed');
+  assert.equal(projectConfiguredLabel.completed, true);
 });
 
-test('Issue detail renders GitHub state and Codex execution state from their separate sources', () => {
+test('Issue status projection keeps open, queued, running and retryable states distinct', () => {
+  assert.equal(pageState().state, 'ready');
+  const queued = [execution('q', 'Queued')];
+  assert.equal(activeIssueExecution(queued, projectId, 42).state, 'Queued');
+  assert.equal(pageState({ items: queued }).state, 'queued');
+  assert.equal(pageState({ items: [execution('a', 'Assigned')] }).state, 'assigned');
+  assert.equal(pageState({ items: [execution('r', 'Running')] }).state, 'running');
+  assert.equal(pageState({ items: [execution('f', 'Failed', projectId, '42', { createdAtUtc: '2026-01-01T00:00:00Z', completedAtUtc: '2026-01-01T00:01:00Z' })] }).state, 'failed');
+  assert.equal(pageState({ items: [
+    execution('f', 'Failed', projectId, '42', { createdAtUtc: '2026-01-01T00:00:00Z', completedAtUtc: '2026-01-01T00:01:00Z' }),
+    execution('c', 'Completed', projectId, '42', { createdAtUtc: '2026-01-02T00:00:00Z', completedAtUtc: '2026-01-02T00:01:00Z' })
+  ] }).state, 'ready');
+});
+
+test('Issue status projection distinguishes blocked, closed without done label, and unavailable states', () => {
+  assert.equal(pageState({ issueEligible: false }).state, 'blocked');
+  assert.equal(pageState({ projectEnabled: false }).state, 'blocked');
+  const closed = pageState({ githubState: 'CLOSED', labels: ['codex-ready'] });
+  assert.equal(closed.state, 'closed');
+  assert.equal(closed.completed, false);
+  assert.equal(pageState({ serverAvailable: false }).state, 'unknown');
+});
+
+test('Issue description renders safe Markdown blocks and excludes unsafe link protocols', async () => {
+  const { parseIssueMarkdown, safeMarkdownHref } = await import('../src/features/projects/issue-markdown.mjs');
+  const blocks = parseIssueMarkdown('# Summary\n\nA [safe link](https://example.com) and `code`.\n\n- First\n- Second\n\n1. Third\n2. Fourth\n\n> Quote\n\n```js\nalert(1)\n```');
+  assert.deepEqual(blocks.map(block => block.type), ['heading', 'paragraph', 'list', 'list', 'quote', 'code']);
+  assert.equal(blocks[1].children.find(token => token.type === 'link').href, 'https://example.com/');
+  assert.equal(blocks[1].children.some(token => token.type === 'code'), true);
+  assert.equal(blocks[2].items.length, 2);
+  assert.equal(blocks[3].ordered, true);
+  assert.equal(blocks[3].items.length, 2);
+  assert.equal(blocks[4].children[0].type, 'paragraph');
+  assert.equal(blocks[5].language, 'js');
+  assert.equal(safeMarkdownHref('javascript:alert(1)'), undefined);
+  assert.equal(safeMarkdownHref('data:text/html,<script>alert(1)</script>'), undefined);
+  assert.equal(safeMarkdownHref('//evil.example/path'), undefined);
+  assert.equal(safeMarkdownHref('/issues/42'), '/issues/42');
+  assert.deepEqual(parseIssueMarkdown('<img src=x onerror=alert(1)>')[0].children, [{ type: 'text', value: '<img src=x onerror=alert(1)>' }]);
+
+  const renderer = readFileSync(resolve(import.meta.dirname, '../src/features/projects/IssueMarkdown.tsx'), 'utf8');
+  assert.match(renderer, /parseIssueMarkdown/);
+  assert.doesNotMatch(renderer, /dangerouslySetInnerHTML/);
+});
+
+test('Issue page puts a viewport-scrolling description beside the compact status summary', () => {
   const page = readFileSync(resolve(import.meta.dirname, '../src/features/projects/IssueHistoryPage.tsx'), 'utf8');
-  assert.match(page, /<SourcePanel title=\{t\('issues\.githubIssue'\)\}/);
-  assert.match(page, /<StatusBadge tone=\{currentIssue\.state\.toLowerCase\(\) === 'open' \? 'success' : 'gray'\}>\{localizeText\(currentIssue\.state\)\}/);
-  assert.match(page, /<SourcePanel title=\{t\('issues\.codexServer'\)\}/);
-  assert.match(page, /<StatusBadge tone=\{serverTone\(current\.state\)\} active=\{current\.state === 'running'\}>\{serverLabel\(current\.state\)\}/);
-  assert.match(page, /issueRead\.error && <Notice error>/);
-  assert.match(page, /statusRead\.error && <Notice error>/);
-  assert.match(page, /executionOutcome\(item\)/);
+  assert.match(page, /max-h-\[100vh\].*overflow-y-auto/);
+  assert.match(page, /<IssueMarkdown source=\{currentIssue\.body\}/);
+  assert.match(page, /<IssueStatusSummary/);
+  assert.match(page, /current\.completed/);
+  assert.match(page, /onRefreshGitHub/);
+  assert.match(page, /t\('issues\.refreshGitHub'\)/);
+  assert.match(page, /historyItems\.length === 0 \? <ViewState title=\{offset \? t\('issues\.noHistoryOnPage'\) : t\('issues\.noHistory'\)\}/);
+});
+
+test('execution history keeps outcomes behind a keyboard and touch accessible popover', () => {
+  const page = readFileSync(resolve(import.meta.dirname, '../src/features/projects/IssueHistoryPage.tsx'), 'utf8');
+  assert.match(page, /<StatusBadge tone=\{statusColor\(item\.state\)\}/);
+  assert.match(page, /outcome \? <DialogTrigger>/);
+  assert.match(page, /<Popover placement="bottom end"/);
+  assert.match(page, /aria-label=\{t\('issues\.viewOutcomeDetailsFor'/);
+  assert.match(page, /!min-h-10 !min-w-10/);
+  assert.match(page, /t\('issues\.outcomeUnavailable'\)/);
 });

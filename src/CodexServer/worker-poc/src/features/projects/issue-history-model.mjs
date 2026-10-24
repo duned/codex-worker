@@ -1,5 +1,7 @@
 const activeStates = new Set(['Queued', 'Assigned', 'Running']);
 const issueTypes = new Set(['issue', 'github-issue']);
+const failedStates = new Set(['Failed']);
+export const issueDoneLabel = 'codex-done';
 
 export const issueHistoryPageSize = 25;
 
@@ -23,21 +25,37 @@ export function activeIssueExecution(items, projectId, issueNumber) {
   return issueExecutions(items, projectId, issueNumber).find(item => activeStates.has(item.state));
 }
 
-export function canEnqueueIssue({ projectEnabled, issueEligible, items, projectId, issueNumber, locked = false, available = true }) {
-  return available && projectEnabled && issueEligible && !locked &&
+export function canEnqueueIssue({ projectEnabled, issueEligible, githubState = 'open', completed = false, items, projectId, issueNumber, locked = false, available = true }) {
+  return available && projectEnabled && issueEligible && githubState?.toLowerCase() === 'open' && !completed && !locked &&
     !activeIssueExecution(items, projectId, issueNumber);
 }
 
-export function issueServerState({ projectAvailable, projectEnabled, issueAvailable, issueEligible, items, projectId, issueNumber }) {
+export function issuePageState({ projectAvailable, projectEnabled, issueAvailable, serverAvailable = true, issueEligible,
+  githubState, labels = /** @type {string[]} */ ([]), doneLabel = issueDoneLabel, items, projectId, issueNumber }) {
   const matching = issueExecutions(items, projectId, issueNumber);
   const active = activeIssueExecution(matching, projectId, issueNumber);
+  const closed = githubState?.toLowerCase() === 'closed';
+  const completed = closed && !!doneLabel && labels.some(label => label.toLowerCase() === doneLabel.toLowerCase());
+  if (completed) return { state: 'completed', active, matching, completed: true };
+  if (closed) return { state: 'closed', active, matching, completed: false };
+  if (!projectAvailable || !issueAvailable || !serverAvailable) return { state: 'unknown', active: undefined, matching, completed: false };
   if (active) return {
     state: active.state === 'Running' ? 'running' : active.state === 'Assigned' ? 'assigned' : 'queued',
-    active, matching
+    active, matching, completed: false
   };
-  if (!projectAvailable || !issueAvailable) return { state: 'unknown', active: undefined, matching };
-  if (!projectEnabled || !issueEligible) return { state: 'blocked', active: undefined, matching };
-  return { state: matching.length ? 'ready' : 'no-record', active: undefined, matching };
+  if (!projectEnabled || !issueEligible) return { state: 'blocked', active: undefined, matching, completed: false };
+  const latest = latestExecution(matching);
+  if (latest && failedStates.has(latest.state)) return { state: 'failed', active: undefined, matching, completed: false, latest };
+  return { state: 'ready', active: undefined, matching, completed: false };
+}
+
+function latestExecution(items) {
+  return [...items].sort((left, right) => Date.parse(executionActivity(right)) - Date.parse(executionActivity(left)))[0];
+}
+
+function executionActivity(item) {
+  return [item.completedAtUtc, item.startedAtUtc, item.assignedAtUtc, item.createdAtUtc]
+    .find(value => typeof value === 'string' && Number.isFinite(Date.parse(value))) ?? item.createdAtUtc;
 }
 
 export function issueHistoryPath(projectId, issueNumber, offset = 0, limit = issueHistoryPageSize) {

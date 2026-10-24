@@ -1,5 +1,7 @@
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { Dialog, DialogTrigger, Heading, Popover } from 'react-aria-components';
+import { InfoCircle } from '@untitledui/icons';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { useApiRead } from '../../shared/api/session';
 import { workers } from '../../shared/api/validation';
@@ -12,9 +14,10 @@ import { executionList, type Execution } from '../executions/model';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { IssueEditor } from './Issues';
 import { issue, project, type Issue, type Project } from './contracts';
-import { issueHistoryPageSize, issueHistoryPath, issueExecutions, issueStatusPath, historyOffset, canEnqueueIssue, issueServerState, executionOutcome } from './issue-history-model.mjs';
+import { issueDoneLabel, issueHistoryPageSize, issueHistoryPath, issueExecutions, issueStatusPath, historyOffset, canEnqueueIssue, issuePageState, executionOutcome } from './issue-history-model.mjs';
 import { issuePath, projectPath } from './model';
 import { fenceKey, useProjects } from './Workspace';
+import { IssueMarkdown } from './IssueMarkdown';
 
 function validIssueNumber(value: string | undefined) {
   if (!value || !/^[1-9]\d*$/.test(value)) return undefined;
@@ -51,11 +54,15 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
     ? issueExecutions(historyRead.retainedData, projectId, issueNumber)
     : undefined;
   const statusItems = statusRead.retainedData ?? [];
-  const current = issueServerState({
+  const current = issuePageState({
     projectAvailable: !!currentProject,
     projectEnabled: currentProject?.enabled === true,
     issueAvailable: !!currentIssue,
+    serverAvailable: !!statusRead.retainedData,
     issueEligible: currentIssue?.isEligible === true,
+    githubState: currentIssue?.state,
+    labels: currentIssue?.labels ?? [],
+    doneLabel: issueDoneLabel,
     items: statusItems,
     projectId,
     issueNumber
@@ -63,6 +70,8 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
   const enqueueAllowed = !!currentProject && !!currentIssue && canEnqueueIssue({
     projectEnabled: currentProject.enabled,
     issueEligible: currentIssue.isEligible,
+    githubState: currentIssue.state,
+    completed: current.completed,
     items: statusItems,
     projectId,
     issueNumber,
@@ -109,7 +118,7 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
       ]}
       actions={<div className="flex flex-wrap gap-2">
         <Button isDisabled={!enqueueAllowed || !!workspace.issueDraft} onPress={() => openIssueAction('enqueue')}>{t('issues.enqueue')}</Button>
-        {current.active?.state === 'Queued' && currentProject && currentIssue && <Button color="secondary" isDisabled={workspace.locked(projectId) || !!workspace.issueDraft} onPress={() => openIssueAction('refresh')}>{t('issues.refreshEligibility')}</Button>}
+        {!current.completed && current.active?.state === 'Queued' && currentProject && currentIssue && <Button color="secondary" isDisabled={workspace.locked(projectId) || !!workspace.issueDraft} onPress={() => openIssueAction('refresh')}>{t('issues.refreshEligibility')}</Button>}
         <Button color="secondary" isDisabled={refreshing} onPress={() => { void refresh(); }}>{refreshing ? t('issues.refreshing') : t('issues.refreshStatus')}</Button>
       </div>}
     />
@@ -120,72 +129,44 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
       {issueUrl && <ExternalLink href={issueUrl}>{t('issues.openGitHub')}</ExternalLink>}
     </div>
 
-    <div className="grid gap-4 lg:grid-cols-2">
-      <SourcePanel title={t('issues.githubIssue')} source={t('issues.githubSource')}>
-        {!currentIssue ? <ViewState title={issueRead.error ? t('issues.githubUnavailable') : t('issues.loadingGitHub')} error={!!issueRead.error}>
-          {issueRead.error && <Button color="secondary" onPress={() => { void issueRead.refetch(); }}>{t('issues.retryGitHub')}</Button>}
-        </ViewState> : <div className="space-y-4 rounded-xl border border-secondary bg-primary p-5 shadow-xs">
-          {issueRead.error && <Notice error>{t('issues.githubStale')}</Notice>}
-          <div className="flex flex-wrap gap-2">
-            <StatusBadge tone={currentIssue.state.toLowerCase() === 'open' ? 'success' : 'gray'}>{localizeText(currentIssue.state)}</StatusBadge>
-            {currentIssue.labels.map(label => <StatusBadge key={label} tone="purple" compact>{label}</StatusBadge>)}
-          </div>
-          <p className="text-sm text-secondary">{t('issues.githubUpdated', { time: timestamp(currentIssue.updatedAtUtc) })}</p>
-          {currentIssue.eligibilityReasons.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-warning-primary">{currentIssue.eligibilityReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <span className="text-tertiary">{t('issues.githubIsSource')}</span>
-            <div className="flex flex-wrap gap-3">
-              {issueUrl && <ExternalLink href={issueUrl}>{t('issues.openGitHub')}</ExternalLink>}
-              <button type="button" className="min-h-10 rounded px-2 font-medium text-brand-secondary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" onClick={() => { void issueRead.refetch(); }}>{t('issues.refreshGitHub')}</button>
-            </div>
-          </div>
-        </div>}
-      </SourcePanel>
-
-      <SourcePanel title={t('issues.codexServer')} source={t('issues.serverSource')}>
-        {statusRead.error && !statusRead.retainedData ? <ViewState title={t('issues.serverStatusUnavailable')} error>
-          <Button color="secondary" onPress={() => { void statusRead.refetch(); }}>{t('issues.retryServer')}</Button>
-        </ViewState> : !statusRead.retainedData ? <ViewState title={t('issues.loadingServerStatus')} /> : <div className="space-y-4 rounded-xl border border-secondary bg-primary p-5 shadow-xs">
-          {statusRead.error && <Notice error>{t('issues.serverStatusStale')}</Notice>}
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge tone={serverTone(current.state)} active={current.state === 'running'}>{serverLabel(current.state)}</StatusBadge>
-            {current.active && <Link className="break-all text-sm font-medium text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(current.active.id)}`}>{t('issues.currentExecution', { id: current.active.id })}</Link>}
-          </div>
-          {currentIssue && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary">{t('issues.serverEligibility')}<StatusBadge tone={currentIssue.isEligible ? 'success' : 'warning'} compact>{currentIssue.isEligible ? t('issues.eligible') : t('issues.ineligible')}</StatusBadge></p>}
-          <p className="text-sm text-secondary">{serverExplanation(current.state, currentProject, currentIssue)}</p>
-          <p className="text-sm text-tertiary">{latestActivity ? t('issues.lastServerActivity', { time: timestamp(latestActivity) }) : current.matching.length ? t('issues.serverActivityUnavailable') : t('issues.noServerUpdate')}</p>
-          {current.state === 'unknown' && (projectRead.error || issueRead.error) && <p className="text-sm text-warning-primary">{t('issues.serverStateNeedsSources')}</p>}
-          <Link className="text-sm font-medium text-brand-secondary hover:underline" to={`/executions?project=${encodeURIComponent(projectId)}&issue=${issueNumber}`}>{t('issues.viewExecutions')}</Link>
-        </div>}
-      </SourcePanel>
-    </div>
-
-    <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
-      <section aria-labelledby="issue-description-heading" className="min-w-0 rounded-xl border border-secondary bg-primary p-5 shadow-xs">
+    <div className="mt-6 grid items-start gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
+      <section aria-labelledby="issue-description-heading" className="max-h-[100vh] min-w-0 overflow-y-auto rounded-xl border border-secondary bg-primary p-5 shadow-xs">
         <h2 id="issue-description-heading" className="text-lg font-semibold text-primary">{t('issues.description')}</h2>
         {!currentIssue ? <p className="mt-4 text-sm text-tertiary">{issueRead.error ? t('issues.descriptionUnavailable') : t('issues.loadingGitHub')}</p> : <>
           {issueRead.error && <Notice error>{t('issues.githubStale')}</Notice>}
-          <div className="mt-4 whitespace-pre-wrap break-words text-sm leading-6 text-secondary">{currentIssue.body || t('issues.noDescription')}</div>
-          <div className="mt-5 border-t border-secondary pt-4">
-            <h3 className="text-sm font-semibold text-primary">{t('issues.labels')}</h3>
-            <div className="mt-2 flex flex-wrap gap-2">{currentIssue.labels.length ? currentIssue.labels.map(label => <StatusBadge key={label} tone="purple" compact>{label}</StatusBadge>) : <span className="text-sm text-tertiary">{t('issues.none')}</span>}</div>
-          </div>
+          <div className="mt-4">{currentIssue.body ? <IssueMarkdown source={currentIssue.body} /> : <p className="text-sm text-tertiary">{t('issues.noDescription')}</p>}</div>
         </>}
       </section>
-      <section aria-labelledby="issue-details-heading" className="min-w-0 rounded-xl border border-secondary bg-primary p-5 shadow-xs">
-        <h2 id="issue-details-heading" className="text-lg font-semibold text-primary">{t('issues.issueDetails')}</h2>
-        {currentIssue ? <dl className="mt-4 divide-y divide-secondary text-sm">
-          <DetailField label={t('issues.author')} value={currentIssue.author || t('issues.notReported')} />
-          <DetailField label={t('issues.assignees')} value={currentIssue.assignees.length ? currentIssue.assignees.join(', ') : t('issues.unassigned')} />
-          <DetailField label={t('issues.milestone')} value={currentIssue.milestone || t('issues.none')} />
-          <DetailField label={t('issues.project')} value={currentProject?.name ?? projectId} />
-          <DetailField label={t('issues.issueNumber')} value={`#${issueNumber}`} />
-          <DetailField label={t('issues.created')} value={timestamp(currentIssue.createdAtUtc)} />
-          <DetailField label={t('issues.updated')} value={timestamp(currentIssue.updatedAtUtc)} />
-        </dl> : <p className="mt-4 text-sm text-tertiary">{issueRead.error ? t('issues.metadataUnavailable') : t('issues.loadingGitHub')}</p>}
-        {projectRead.error && <div className="mt-4"><Notice error>{t('issues.projectUnavailable')}</Notice><Button className="mt-2" color="secondary" onPress={() => { void projectRead.refetch(); }}>{t('issues.retryProject')}</Button></div>}
-      </section>
+      <IssueStatusSummary
+        issue={currentIssue}
+        project={currentProject}
+        state={current}
+        issueError={issueRead.error}
+        statusError={statusRead.error}
+        statusUnavailable={!statusRead.retainedData}
+        statusLoading={statusRead.loading}
+        latestActivity={latestActivity}
+        issueUrl={issueUrl}
+        projectId={projectId}
+        issueNumber={issueNumber}
+        onRefreshGitHub={() => { void issueRead.refetch(); }}
+        onRefreshServer={() => { void statusRead.refetch(); }}
+      />
     </div>
+
+    <section aria-labelledby="issue-details-heading" className="mt-4 rounded-xl border border-secondary bg-primary p-4 shadow-xs">
+      <h2 id="issue-details-heading" className="text-sm font-semibold text-primary">{t('issues.issueDetails')}</h2>
+      {currentIssue ? <dl className="mt-3 grid grid-cols-1 gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <MetadataItem label={t('issues.author')} value={currentIssue.author || t('issues.notReported')} />
+        <MetadataItem label={t('issues.assignees')} value={currentIssue.assignees.length ? currentIssue.assignees.join(', ') : t('issues.unassigned')} />
+        <MetadataItem label={t('issues.milestone')} value={currentIssue.milestone || t('issues.none')} />
+        <MetadataItem label={t('issues.project')} value={currentProject?.name ?? projectId} />
+        <MetadataItem label={t('issues.created')} value={timestamp(currentIssue.createdAtUtc)} />
+        <MetadataItem label={t('issues.updated')} value={timestamp(currentIssue.updatedAtUtc)} />
+        <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs text-tertiary">{t('issues.labels')}</dt><dd className="mt-1 flex flex-wrap gap-1.5">{currentIssue.labels.length ? currentIssue.labels.map(label => <StatusBadge key={label} tone="purple" compact>{label}</StatusBadge>) : <span className="text-sm text-secondary">{t('issues.none')}</span>}</dd></div>
+      </dl> : <p className="mt-2 text-sm text-tertiary">{issueRead.error ? t('issues.metadataUnavailable') : t('issues.loadingGitHub')}</p>}
+      {projectRead.error && <div className="mt-3 flex flex-wrap items-center gap-2"><Notice error>{t('issues.projectUnavailable')}</Notice><Button color="secondary" onPress={() => { void projectRead.refetch(); }}>{t('issues.retryProject')}</Button></div>}
+    </section>
 
     <section aria-labelledby="issue-execution-history-heading" className="mt-8">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
@@ -220,13 +201,50 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
   </>;
 }
 
-function SourcePanel({ title, source, children }: { title: string; source: string; children: ReactNode }) {
+function IssueStatusSummary({ issue: item, project: currentProject, state, issueError, statusError, statusUnavailable, statusLoading,
+  latestActivity, issueUrl, projectId, issueNumber, onRefreshGitHub, onRefreshServer }: {
+  issue?: Issue; project?: Project; state: { state: string; active?: ExecutionSummary; matching: ExecutionSummary[]; completed: boolean; latest?: ExecutionSummary };
+  issueError: unknown; statusError: unknown; statusUnavailable: boolean; statusLoading: boolean; latestActivity?: string;
+  issueUrl?: string; projectId: string; issueNumber: number; onRefreshGitHub: () => void; onRefreshServer: () => void;
+}) {
   useLanguage();
-  return <section aria-label={title} className="min-w-0"><h2 className="mb-3 text-lg font-semibold text-primary">{title}<span className="ml-2 text-xs font-normal uppercase tracking-wide text-tertiary">{source}</span></h2>{children}</section>;
+  const summaryText = issueStateExplanation(state.state, currentProject, item);
+  return <aside aria-labelledby="issue-state-heading" className="min-w-0 rounded-xl border border-secondary bg-primary p-5 shadow-xs">
+    <h2 id="issue-state-heading" className="text-lg font-semibold text-primary">{t('issues.stateSummary')}</h2>
+    {item && !!issueError && <div className="mt-3"><Notice error>{t('issues.githubStale')}</Notice></div>}
+    {!!statusError && statusUnavailable && <div className="mt-3"><Notice error>{t('issues.serverStatusUnavailable')}</Notice></div>}
+    {!!statusError && !statusUnavailable && <div className="mt-3"><Notice error>{t('issues.serverStatusStale')}</Notice></div>}
+    {!item ? <div className="mt-4"><ViewState title={issueError ? t('issues.githubUnavailable') : t('issues.loadingGitHub')} error={!!issueError}>
+      {!!issueError && <Button color="secondary" onPress={onRefreshGitHub}>{t('issues.retryGitHub')}</Button>}
+    </ViewState></div> : <div className="mt-4 space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge tone={issueStateTone(state.state)} active={state.state === 'running'}>{issueStateLabel(state.state)}</StatusBadge>
+        <StatusBadge tone={item.state.toLowerCase() === 'open' ? 'success' : 'gray'} compact>{localizeText(item.state)}</StatusBadge>
+      </div>
+      <p className="text-sm text-secondary">{summaryText}</p>
+      {state.state === 'completed' && <p className="text-sm text-success-primary">{t('issues.completedLabelPresent', { label: issueDoneLabel })}</p>}
+      {state.state === 'closed' && <p className="text-sm text-warning-primary">{t('issues.closedDoneLabelMissing', { label: issueDoneLabel })}</p>}
+      {state.state === 'blocked' && currentProject?.enabled && !item.isEligible && item.eligibilityReasons.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-warning-primary">{item.eligibilityReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+      {state.active && state.state !== 'completed' && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverExecution')}</span><StatusBadge tone={serverTone(state.active.state)} active={state.active.state === 'Running'} compact>{localizeText(state.active.state)}</StatusBadge><Link className="break-all font-medium text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(state.active.id)}`}>{t('issues.currentExecution', { id: state.active.id })}</Link></p>}
+      {(state.state === 'ready' || state.state === 'failed') && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverEligibility')}</span><StatusBadge tone="success" compact>{t('issues.eligible')}</StatusBadge></p>}
+      {state.state === 'blocked' && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverEligibility')}</span><StatusBadge tone="warning" compact>{!currentProject?.enabled ? t('issues.projectDisabledShort') : t('issues.ineligible')}</StatusBadge></p>}
+      {state.state === 'closed' && !statusUnavailable && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverEligibility')}</span><StatusBadge tone={item.isEligible ? 'success' : 'warning'} compact>{item.isEligible ? t('issues.eligible') : t('issues.ineligible')}</StatusBadge></p>}
+      {state.state === 'failed' && state.latest && <p className="text-sm text-warning-primary">{t('issues.latestExecutionFailed')} <Link className="font-medium text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(state.latest.id)}`}>{t('issues.executionIdentity', { id: state.latest.id })}</Link></p>}
+      {latestActivity && state.matching.length > 0 && <p className="text-xs text-tertiary">{t('issues.lastServerActivity', { time: timestamp(latestActivity) })}</p>}
+      {state.state === 'unknown' && !statusError && <p className="text-sm text-tertiary">{statusUnavailable ? statusLoading ? t('issues.loadingServerStatus') : t('issues.serverStatusUnavailable') : t('issues.serverStateNeedsSources')}</p>}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-secondary pt-3 text-sm">
+        {issueUrl && <ExternalLink href={issueUrl}>{t('issues.openGitHub')}</ExternalLink>}
+        <button type="button" className="min-h-10 rounded px-2 font-medium text-brand-secondary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" onClick={onRefreshGitHub}>{t('issues.refreshGitHub')}</button>
+        {!!statusError && <button type="button" className="min-h-10 rounded px-2 font-medium text-brand-secondary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2" onClick={onRefreshServer}>{t('issues.retryServer')}</button>}
+        <Link className="font-medium text-brand-secondary hover:underline" to={`/executions?project=${encodeURIComponent(projectId)}&issue=${issueNumber}`}>{t('issues.viewExecutions')}</Link>
+      </div>
+      <p className="text-xs text-tertiary">{t('issues.githubUpdated', { time: timestamp(item.updatedAtUtc) })}</p>
+    </div>}
+  </aside>;
 }
 
-function DetailField({ label, value }: { label: string; value: string }) {
-  return <div className="grid gap-1 py-3 sm:grid-cols-[minmax(7rem,0.7fr)_minmax(0,1.3fr)]"><dt className="text-tertiary">{label}</dt><dd className="break-words font-medium text-secondary">{value}</dd></div>;
+function MetadataItem({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><dt className="text-xs text-tertiary">{label}</dt><dd className="mt-1 break-words font-medium text-secondary">{value}</dd></div>;
 }
 
 function ExecutionHistoryRow({ item, workers: workerItems }: { item: Execution; workers: { workerId: string; displayName?: string }[] }) {
@@ -234,7 +252,15 @@ function ExecutionHistoryRow({ item, workers: workerItems }: { item: Execution; 
   const outcome = executionOutcome(item);
   return <div role="row" className="grid min-w-0 gap-3 p-4 sm:grid-cols-[minmax(12rem,1.2fr)_minmax(9rem,0.9fr)_minmax(8rem,0.8fr)_minmax(9rem,0.8fr)_minmax(7rem,0.6fr)] sm:items-center">
     <div role="cell" className="min-w-0"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.execution')}</p><Link className="mt-1 block break-all font-medium text-brand-secondary hover:underline sm:mt-0" to={`/executions/${encodeURIComponent(item.id)}`}>{t('issues.executionIdentity', { id: item.id })}</Link><p className="mt-1 text-xs text-tertiary">{t('issues.executionRequestTime', { time: timestamp(item.createdAtUtc) })}</p></div>
-    <div role="cell"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.statusOutcome')}</p><div className="mt-1 flex flex-wrap items-center gap-2 sm:mt-0"><StatusBadge tone={statusColor(item.state)} active={isActiveExecutionState(item.state)}>{localizeText(item.state)}</StatusBadge><span className="text-sm text-secondary">{outcome ? localizeText(outcome) : t('issues.outcomeUnavailable')}</span></div></div>
+    <div role="cell"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.statusOutcome')}</p><div className="mt-1 flex flex-wrap items-center gap-2 sm:mt-0"><StatusBadge tone={statusColor(item.state)} active={isActiveExecutionState(item.state)}>{localizeText(item.state)}</StatusBadge>{outcome ? <DialogTrigger>
+      <Button color="tertiary" size="sm" className="!min-h-10 !min-w-10 !p-2 text-current" iconLeading={InfoCircle} aria-label={t('issues.viewOutcomeDetailsFor', { id: item.id })} />
+      <Popover placement="bottom end" className="z-50 max-w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-secondary bg-primary p-4 shadow-lg">
+        <Dialog className="max-h-[min(70vh,28rem)] overflow-y-auto outline-none">
+          <Heading slot="title" className="mb-3 text-sm font-semibold text-primary">{t('issues.executionOutcomeDetails')}</Heading>
+          <p className="whitespace-pre-wrap break-words text-sm text-secondary">{localizeText(outcome)}</p>
+        </Dialog>
+      </Popover>
+    </DialogTrigger> : <span className="text-xs text-tertiary">{t('issues.outcomeUnavailable')}</span>}</div></div>
     <div role="cell"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.worker')}</p><p className="mt-1 break-words text-sm text-secondary sm:mt-0">{worker?.displayName ?? item.assignedWorkerId ?? t('issues.workerUnassigned')}</p></div>
     <div role="cell"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.started')}</p><p className="mt-1 text-sm text-secondary sm:mt-0">{item.startedAtUtc ? timestamp(item.startedAtUtc) : t('issues.notStarted')}</p></div>
     <div role="cell"><p className="text-xs font-semibold uppercase tracking-wide text-tertiary sm:hidden">{t('issues.duration')}</p><p className="mt-1 text-sm text-secondary sm:mt-0">{duration(item, Date.now())}</p></div>
@@ -247,22 +273,32 @@ function executionActivity(item: ExecutionSummary) {
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? item.createdAtUtc;
 }
 
-function serverTone(state: string): 'gray' | 'success' | 'warning' | 'error' | 'info' {
-  return state === 'running' || state === 'assigned' || state === 'queued' ? 'info' : state === 'ready' ? 'success' : state === 'blocked' ? 'warning' : 'gray';
+function issueStateTone(state: string): 'gray' | 'success' | 'warning' | 'error' | 'info' {
+  if (state === 'completed' || state === 'ready') return 'success';
+  if (state === 'failed') return 'error';
+  if (state === 'blocked' || state === 'closed') return 'warning';
+  if (state === 'running' || state === 'assigned' || state === 'queued') return 'info';
+  return 'gray';
 }
 
-function serverLabel(state: string) {
+function issueStateLabel(state: string) {
   const labels: Record<string, string> = {
     running: t('issues.running'), assigned: t('issues.assigned'), queued: t('issues.queued'), blocked: t('issues.blocked'),
-    ready: t('issues.ready'), 'no-record': t('issues.noServerRecord'), unknown: t('issues.serverUnknown')
+    ready: t('issues.ready'), failed: t('issues.failedRetryable'), closed: t('issues.closedNotDone'), completed: t('issues.completed'), unknown: t('issues.serverUnknown')
   };
   return labels[state] ?? t('issues.serverUnknown');
 }
 
-function serverExplanation(state: string, project: Project | undefined, item: Issue | undefined) {
+function issueStateExplanation(state: string, project: Project | undefined, item: Issue | undefined) {
+  if (state === 'completed') return t('issues.completedSummary');
+  if (state === 'closed') return t('issues.closedSummary');
   if (state === 'running' || state === 'assigned' || state === 'queued') return t('issues.activeExecutionState');
   if (state === 'blocked') return !project?.enabled ? t('issues.projectDisabled') : t('issues.issueIneligible');
+  if (state === 'failed') return t('issues.failedRetryableSummary');
   if (state === 'ready') return t('issues.readyForScheduling');
-  if (state === 'no-record') return t('issues.noServerRecordReady', { eligibility: item?.isEligible ? t('issues.eligible') : t('issues.ineligible') });
-  return t('issues.serverStateUnavailable');
+  return item ? t('issues.serverStateUnavailable') : t('issues.githubUnavailable');
+}
+
+function serverTone(state: string): 'gray' | 'success' | 'warning' | 'error' | 'info' {
+  return state === 'Running' || state === 'Assigned' || state === 'Queued' ? 'info' : state === 'Completed' ? 'success' : state === 'Failed' ? 'error' : 'gray';
 }
