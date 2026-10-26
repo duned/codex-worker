@@ -17,6 +17,8 @@ public interface IRegistryStore
     Task RestoreCompletionProvenanceAsync(CodexProvisioning.ExecutionMaintenanceCommand inventory, CancellationToken ct = default);
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
+    async Task<ServerResourceStatus> GetResourceStatusAsync(CancellationToken cancellationToken = default) =>
+        new(await IsAvailableAsync(cancellationToken), null);
     Task<string> CreateWorkerBootstrapTokenAsync(TimeSpan lifetime, CancellationToken cancellationToken = default);
     Task<string> CreateWorkerAuthorizationAsync(string workerId, string operation, TimeSpan lifetime, CancellationToken cancellationToken = default);
     Task<bool> RevokeWorkerBootstrapTokenAsync(string token, CancellationToken cancellationToken = default);
@@ -804,6 +806,29 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "CREATE TABLE IF NOT EXISTS worker_updates (operation_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(worker_id), operation_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ix_worker_updates_worker ON worker_updates(worker_id);";
             await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        // Transactional triggers cover every writer, including deletes and cascading mutations.
+        await using (var freshness = connection.CreateCommand())
+        {
+            freshness.Transaction = (SqliteTransaction)transaction;
+            freshness.CommandText = """
+                CREATE TABLE IF NOT EXISTS resource_freshness (
+                    category TEXT PRIMARY KEY, version INTEGER NOT NULL);
+                INSERT OR IGNORE INTO resource_freshness VALUES ('projects', 0), ('workers', 0), ('executions', 0);
+                """;
+            await freshness.ExecuteNonQueryAsync(cancellationToken);
+            foreach (var (table, category) in new[] { ("projects", "projects"), ("workers", "workers"),
+                ("execution_requests", "executions"), ("execution_leases", "executions"),
+                ("execution_metadata", "executions"), ("worker_auth_tokens", "workers") })
+            {
+                foreach (var operation in new[] { "INSERT", "UPDATE", "DELETE" })
+                {
+                    // Worker inventory also projects active execution assignments.
+                    var categories = category == "executions" ? "'executions','workers'" : $"'{category}'";
+                    freshness.CommandText = $"CREATE TRIGGER IF NOT EXISTS freshness_{table}_{operation} AFTER {operation} ON {table} BEGIN UPDATE resource_freshness SET version=version+1 WHERE category IN ({categories}); END;";
+                    await freshness.ExecuteNonQueryAsync(cancellationToken);
+                }
+            }
         }
         await transaction.CommitAsync(cancellationToken);
     }
@@ -2421,6 +2446,24 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             heartbeat?.ConfigurationSynchronization, heartbeat?.ConfigurationVersion, heartbeat?.CapabilityInventory ?? request.CapabilityInventory,
             schedulingPolicy, activeAssignments, authenticationCredentialStatus, authenticationCredentialRevokedAtUtc, heartbeat?.ManagedDiagnostics, heartbeat?.HostResources,
             configuredMaximumCapacity, configurationRevision, workerExecutionSlots, telegram);
+    }
+
+    public async Task<ServerResourceStatus> GetResourceStatusAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT schema_version,
+                (SELECT version FROM resource_freshness WHERE category='projects'),
+                (SELECT version FROM resource_freshness WHERE category='workers'),
+                (SELECT version FROM resource_freshness WHERE category='executions')
+            FROM schema_metadata WHERE singleton=1;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken) || reader.GetInt32(0) != CurrentSchemaVersion)
+            return new(false, null);
+        return new(true, new(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

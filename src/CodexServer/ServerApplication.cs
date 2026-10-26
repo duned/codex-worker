@@ -12,7 +12,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc);
+public sealed record ResourceFreshness(long Projects, long Workers, long Executions);
+public sealed record ServerResourceStatus(bool PersistenceAvailable, ResourceFreshness? Freshness);
+public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc)
+{
+    public string ProcessHealth { get; init; } = "healthy";
+    public string ControlPlaneReadiness { get; init; } = "ready";
+    public bool PersistenceAvailable { get; init; }
+    public ResourceFreshness? Freshness { get; init; }
+}
 public sealed record ServerVersion(string Version, string Product);
 public sealed record ServerHealth(string Status, bool PersistenceAvailable, bool ControlPlaneInitialized = true);
 public sealed record ProjectUpdateRequest(CentralProjectDefinition Definition, long ExpectedRevision);
@@ -33,6 +41,11 @@ public sealed class ServerHealthService(IRegistryStore registryStore) : IServerH
 
 public static partial class ServerApplication
 {
+    private static readonly System.Diagnostics.Metrics.Meter StatusMeter = new("CodexServer.Status");
+    private static readonly System.Diagnostics.Metrics.Histogram<double> StatusRequestDuration =
+        StatusMeter.CreateHistogram<double>("codex.server.status.duration", "ms",
+            "Status HTTP processing including response serialization; excludes client/network time.");
+
     internal static WebApplicationBuilder CreateBuilder(string[] args) =>
         WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -156,6 +169,20 @@ public static partial class ServerApplication
             if (sessions.Validate(context, mutation: true) is null) return Results.Unauthorized();
             sessions.Logout(context);
             return Results.NoContent();
+        });
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Path != "/api/status")
+            {
+                await next(context);
+                return;
+            }
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            try { await next(context); }
+            finally
+            {
+                StatusRequestDuration.Record(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
         });
         app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
         app.MapGet("/readyz", async (IServerHealthService healthService, HttpContext context) =>
@@ -291,7 +318,28 @@ public static partial class ServerApplication
             catch (InvalidDataException ex) { return Results.BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
         });
-        app.MapGet("/api/status", (ServerStatus status) => Results.Ok(status));
+        app.MapGet("/api/status", async (ServerStatus status, IRegistryStore store, HttpContext context) =>
+        {
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            ServerResourceStatus resources;
+            try
+            {
+                resources = await store.GetResourceStatusAsync(context.RequestAborted);
+            }
+            catch (Exception exception) when (exception is Microsoft.Data.Sqlite.SqliteException or IOException)
+            {
+                resources = new(false, null);
+            }
+            var projection = status with
+            {
+                State = resources.PersistenceAvailable ? "ready" : "not-ready",
+                ControlPlaneReadiness = resources.PersistenceAvailable ? "ready" : "not-ready",
+                PersistenceAvailable = resources.PersistenceAvailable,
+                Freshness = resources.Freshness
+            };
+            context.Response.Headers["Server-Timing"] = $"registry;dur={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}";
+            return Results.Ok(projection);
+        });
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
         // The public handoff is produced on the node; authorization uses the existing registry.
         app.MapPost("/api/v1/workers/onboarding/authorize", async (WorkerPairingRequest request, HttpContext context,

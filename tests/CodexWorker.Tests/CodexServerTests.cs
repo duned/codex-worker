@@ -22,6 +22,56 @@ public sealed class CodexServerTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task ResourceStatusReadsPersistedMarkersWithoutLoadingCollectionPayloads()
+    {
+        using var directory = new TemporaryDirectory();
+        var database = Path.Combine(directory.Path, "registry.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var initial = await store.GetResourceStatusAsync();
+        Assert.True(initial.PersistenceAvailable);
+        Assert.NotNull(initial.Freshness);
+        var project = await store.CreateProjectAsync(new("Freshness", "team/freshness", "main", ""));
+        var created = await store.GetResourceStatusAsync();
+        Assert.NotNull(created.Freshness);
+        Assert.True(created.Freshness.Projects > initial.Freshness.Projects);
+        Assert.Equal(initial.Freshness.Workers, created.Freshness.Workers);
+        Assert.Equal(initial.Freshness.Executions, created.Freshness.Executions);
+
+        await store.RegisterWorkerAsync(new(1, Guid.NewGuid().ToString("N"), "worker", "1.0", "test", 2,
+            Array.Empty<WorkerCapability>()));
+        var registered = await store.GetResourceStatusAsync();
+        Assert.NotNull(registered.Freshness);
+        Assert.True(registered.Freshness.Workers > created.Freshness.Workers);
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var queued = await store.GetResourceStatusAsync();
+        Assert.NotNull(queued.Freshness);
+        Assert.True(queued.Freshness.Executions > registered.Freshness.Executions);
+
+        // Keep valid JSON for SQLite's repository expression index, but use an invalid
+        // property type to prove status never deserializes the project collection.
+        await using var connection = new SqliteConnection($"Data Source={database}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE projects SET configuration_json=json_set(configuration_json, '$.maxParallelTasks', 'invalid');
+            """;
+        await command.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<JsonException>(() => store.GetProjectAsync(project.Id));
+        var updated = await new SqliteRegistryStore(database).GetResourceStatusAsync();
+        Assert.NotNull(updated.Freshness);
+        Assert.True(updated.Freshness.Projects > created.Freshness.Projects);
+        command.CommandText = "DELETE FROM projects;";
+        await command.ExecuteNonQueryAsync();
+        var deleted = await store.GetResourceStatusAsync();
+        Assert.NotNull(deleted.Freshness);
+        Assert.True(deleted.Freshness.Projects > updated.Freshness.Projects);
+        Assert.NotEmpty(project.Id);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task ProjectValidationCommandsPersistThroughCreateUpdateAndReload()
     {
         using var directory = new TemporaryDirectory();
@@ -2099,6 +2149,10 @@ public sealed class CodexServerTests
             Assert.Equal("ready", status.RootElement.GetProperty("state").GetString());
             Assert.Equal(ServerApplication.DisplayVersion, status.RootElement.GetProperty("version").GetString());
             Assert.True(status.RootElement.TryGetProperty("startedAtUtc", out _));
+            Assert.True(status.RootElement.GetProperty("persistenceAvailable").GetBoolean());
+            Assert.Equal("ready", status.RootElement.GetProperty("controlPlaneReadiness").GetString());
+            Assert.Equal(JsonValueKind.Number, status.RootElement.GetProperty("freshness").GetProperty("projects").ValueKind);
+            Assert.True(statusResponse.Headers.Contains("Server-Timing"));
 
             using var versionResponse = await client.GetAsync("/api/version");
             using var version = JsonDocument.Parse(await versionResponse.Content.ReadAsStringAsync());
