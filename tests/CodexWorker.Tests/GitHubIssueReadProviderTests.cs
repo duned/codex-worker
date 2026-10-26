@@ -8,6 +8,36 @@ public sealed class GitHubIssueReadProviderTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task HistoricalListsUseLocalTitlesAfterInvalidationWithRepositoryIsolation()
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        var other = await registry.CreateProjectAsync(new("Other", "team/other", "main", ""));
+        await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", "1"), project.Revision));
+        await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", "2", Title: "Saved title"), project.Revision));
+        await registry.EnqueueExecutionAsync(new(other.Id, new("github-issue", "1"), other.Revision));
+        await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", "3", Title: "Old title"), project.Revision));
+        var source = new Source();
+        var provider = new GitHubIssueReadProvider(source, directory.Database);
+        await using (provider.BeginMutationOperation())
+            Assert.NotNull(await provider.GetIssueAsync(project, 1));
+        Assert.NotNull(await provider.GetIssueAsync(project, 3));
+        var requests = source.Batches.Count;
+        foreach (var list in new[] { await registry.ListExecutionsAsync(new()), await registry.GetExecutionsAsync() })
+        {
+            Assert.Equal("Issue 1", Assert.Single(list, item => item.ProjectId == project.Id && item.WorkReference.Id == "1").WorkReference.Title);
+            Assert.Equal("Issue 3", Assert.Single(list, item => item.WorkReference.Id == "3").WorkReference.Title);
+            Assert.Equal("Saved title", Assert.Single(list, item => item.WorkReference.Id == "2").WorkReference.Title);
+            Assert.Null(Assert.Single(list, item => item.ProjectId == other.Id).WorkReference.Title);
+        }
+        Assert.Equal(requests, source.Batches.Count);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task ExecutionListsRetainVerifiedTitleWithoutReadingGitHub()
     {
         using var directory = new TemporaryDirectory();

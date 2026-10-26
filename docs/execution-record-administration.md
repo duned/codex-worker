@@ -130,3 +130,12 @@ Legacy reconstruction failures now have a durable diagnostic at
 `GET /api/executions/<id>/legacy-review` and in `executions show`. Startup emits
 aggregate counts and rechecks evidence rather than repeating every old warning.
 These dispositions do not change execution outcomes or authorize cleanup.
+
+Execution list Issue titles are decorated in one local batch from the Server's persisted,
+repository-scoped GitHub Issue snapshots. Full Issue reads already performed by Issue
+and execution/detail flows populate or refresh this reusable display data; lists never
+fetch GitHub metadata. Cached titles take precedence over saved execution titles, with
+the existing unavailable-title display retained when neither exists. Expired snapshots
+and snapshots invalidated after mutations retain their display titles, but must be
+refreshed by the normal read provider before use as current Issue state. This display
+projection does not authorize eligibility, labels, enqueueing or completion.

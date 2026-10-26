@@ -85,7 +85,7 @@ public sealed class GitHubIssueReadProvider(IGitHubIssueSnapshotSource source, s
             foreach (var repository in operation.Snapshots.Keys.Select(key => key.Repository).Distinct())
             {
                 await using var command = connection.CreateCommand();
-                command.CommandText = "UPDATE github_issue_reads SET snapshot=NULL,fetched_at=NULL WHERE repository=$repository";
+                command.CommandText = "UPDATE github_issue_reads SET fetched_at=NULL WHERE repository=$repository";
                 command.Parameters.AddWithValue("$repository", repository);
                 await command.ExecuteNonQueryAsync(CancellationToken.None);
             }
@@ -164,7 +164,7 @@ public sealed class GitHubIssueReadProvider(IGitHubIssueSnapshotSource source, s
                 if (await reader.ReadAsync(cancellationToken))
                 {
                     identity = reader.GetString(0);
-                    if (operation?.Refresh != true && !reader.IsDBNull(2))
+                    if (operation?.Refresh != true && !reader.IsDBNull(1) && !reader.IsDBNull(2))
                     {
                         var cached = JsonSerializer.Deserialize<GitHubIssueSnapshot>(reader.GetString(2))
                             ?? throw new InvalidDataException("GitHub snapshot cache was invalid.");
