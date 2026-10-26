@@ -7,7 +7,7 @@ const { join, resolve } = require('node:path');
 const dir = mkdtempSync(join(tmpdir(), 'projects-regression-'));
 const entry = resolve('src/CodexServer/worker-poc/src');
 buildSync({ stdin: { contents: `export * from '${entry}/features/projects/model'; export * from '${entry}/features/projects/contracts'; export * from '${entry}/features/projects/Readiness'; export * from '${entry}/shared/api/runtime'; export * from '${entry}/shared/api/client';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(dir, 'test.cjs'), alias: { '@': resolve(entry, 'untitled') } });
-const { savedDefinition, sameDefinition, definitionOf, newDefinition, project, issue, readiness, matchesIssue, changeRequest, issueUrl, DashboardRuntime, HttpClient } = require(join(dir, 'test.cjs'));
+const { savedDefinition, sameDefinition, definitionOf, newDefinition, project, issue, readiness, matchesIssue, changeRequest, DashboardRuntime, HttpClient } = require(join(dir, 'test.cjs'));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const p = { id: 'project-a', name: 'Sample project', repository: 'owner/repo', defaultBranch: 'main', description: '', requirements: [], revision: 2, enabled: true, issueReadyLabel: 'ready', issueBlockedLabel: 'blocked', automaticDiscovery: { enabled: false, intervalSeconds: 300, pageSize: 25, deadlineSeconds: 120 }, maxParallelTasks: null };
 const i = { number: 27, title: 'Fix parsing', body: 'Details', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], assignees: [], blockedBy: [{ number: 28, title: 'Prerequisite', state: 'open', url: 'https://github.com/owner/repo/issues/28' }], isEligible: false, eligibilityReasons: ['Blocked by #28'] };
@@ -81,7 +81,6 @@ test('native relationship and configured label reconciliation uses observable Is
   assert.ok(matchesIssue(i, { kind: 'edit', title: i.title, body: i.body }));
   assert.equal(matchesIssue(i, { kind: 'enqueue' }), false);
   assert.deepEqual(changeRequest(p.id, 27, { kind: 'dependency', blockerIssueNumber: 28, applied: false }), { path: '/api/v1/projects/project-a/github/issues/27/dependencies/blocked-by', method: 'PUT', body: { blockerIssueNumber: 28, applied: false } });
-  assert.equal(issueUrl(p.repository, { ...i, url: 'javascript:private' }), 'https://github.com/owner/repo/issues/27');
 });
 test('Worker readiness retains stale/current revision, materialization and eligibility separately', () => {
   const d = { aiAgentReady: true, gitHubReady: false, gitReady: false, configurationSynchronization: 'synchronized', provisioningState: 'not-required', projects: [{ projectId: p.id, projectName: p.name, isEligible: true, missingRequirements: [], workerReportedRevision: 1, materializationState: 'failed', observationStatus: 'stale-heartbeat' }] };

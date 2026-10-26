@@ -54,10 +54,6 @@ export const access = (value: unknown) => {
   const p = record(value); strings(p, ['repository', 'checkedAtUtc']); nullableText(p, ['diagnostic']); bool(p, 'cliAuthenticated'); bool(p, 'repositoryReadable');
   return { cliAuthenticated: p.cliAuthenticated === true, repositoryReadable: p.repositoryReadable === true, checkedAtUtc: String(p.checkedAtUtc) };
 };
-export function issueUrl(repository: string, item: BlockingIssue) {
-  // Use the canonical identity, never a provider-supplied navigation authority.
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ? `https://github.com/${repository}/issues/${item.number}` : undefined;
-}
 export const blockingIssue: Validator<BlockingIssue> = value => {
   const i = record(value); strings(i, ['title', 'state', 'url']); integer(i, 'number', 1, 2147483647); return value as BlockingIssue;
 };

@@ -8,17 +8,18 @@ const frontendRequire=createRequire(path.join(frontend,'package.json'));
 const {buildSync}=frontendRequire('esbuild');
 const {renderToStaticMarkup}=frontendRequire('react-dom/server');
 const {createElement}=frontendRequire('react');
-const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
+const {MemoryRouter}=frontendRequire('react-router-dom');
+const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react-router-dom','../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
 const issueTitleApi={useApiRead(path){const issueNumber=Number(/\/issues\/(\d+)$/.exec(path)?.[1]);return context.__workerPocIssueReads[path]??(Number.isSafeInteger(issueNumber)&&issueNumber>0?{data:{number:issueNumber,title:`Issue title ${issueNumber}`}}:{});},useApiMutation(){return {};},useSession(){return {};},useRuntime(){throw Error('Unexpected runtime access in static render.');}};
 const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL,__workerPocIssueReads:{}};
 vm.runInNewContext(output,context);
 const {WorkerDetail}=moduleResult.exports;
 const {props,worker,node,capability,current,completed}=require('./worker-poc-fixtures.cjs');
-const render=data=>{context.__workerPocIssueReads=data?.issueReads??{};return renderToStaticMarkup(createElement(WorkerDetail,{...props,...data}));};
+const render=data=>{context.__workerPocIssueReads=data?.issueReads??{};return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
- for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','https://github.com/owner/repo/issues/27','https://github.com/owner/repo/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
+ for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
  assert.ok(html.includes('aria-label="Connection: Connected"'));
  assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
  assert.ok(html.includes('aria-label="Configuration: Config OK"'));
@@ -30,7 +31,7 @@ test('Worker detail renders real identity, current stage, outcomes, links and ca
 test('Current execution retains its Issue number when the title cannot be loaded',()=>{
  const html=render({issueReads:{'/api/v1/projects/project-a/github/issues/27':{error:'Issue read unavailable'}}});
  assert.ok(html.includes('#27 · title unavailable'));
- assert.ok(html.includes('href="https://github.com/owner/repo/issues/27"'));
+ assert.ok(html.includes('href="/projects/project-a/issues/27"'));
 });
 test('Readiness heartbeat uses the same current, stale and unknown status projection as Worker detail',()=>{
  const heartbeatText=html=>{const start=html.indexOf('poc-readiness-panel');const end=html.indexOf('poc-worker-extra',start);return html.slice(start,end<0?undefined:end);};
@@ -137,7 +138,10 @@ test('Capabilities expose pending and failed operations without provisioning mut
 });
 test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
  const html=render({observations:[{...worker,displayName:'<script>bad</script>'}],executions:[{...current,workReference:{type:'github-issue',id:'27',url:'javascript:alert(1)'}}],projects:null});
- assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));assert.ok(!html.includes('javascript:'));assert.ok(html.includes('Issue link unavailable'));
+ assert.ok(html.includes('&lt;script&gt;bad&lt;/script&gt;'));assert.ok(!html.includes('javascript:'));assert.ok(html.includes('href="/projects/project-a/issues/27"'));
+ const unavailable=render({executions:[{...current,projectId:null}],projects:null});
+ assert.ok(unavailable.includes('Issue link unavailable'));
+ assert.ok(!unavailable.includes('href="https://github.com/'));
 });
 
 test('Control rail preserves guarded actions, disabled reasons and current control explanations',()=>{

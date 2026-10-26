@@ -7,7 +7,7 @@ const { join, resolve } = require('node:path');
 const frontend = resolve('src/CodexServer/worker-poc'), requireFrontend = createRequire(join(frontend, 'package.json'));
 const { buildSync } = requireFrontend('esbuild');
 const directory = mkdtempSync(join(tmpdir(), 'dashboard-localization-'));
-buildSync({ stdin: { contents: `export * from './src/shared/i18n'; export * from './src/shared/preferences'; export * from './src/shared/Shell'; export * from './src/detail'; export * from './src/model'; export * from './src/features/executions/model';`, resolveDir: frontend }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', alias: { '@': join(frontend, 'src/untitled') }, external: ['../../shared/api/session', 'react', 'react/jsx-runtime', 'react-dom', 'react-dom/server', 'react-aria-components'], outfile: join(directory, 'localization.cjs') });
+buildSync({ stdin: { contents: `export * from './src/shared/i18n'; export * from './src/shared/preferences'; export * from './src/shared/Shell'; export * from './src/detail'; export * from './src/model'; export * from './src/features/executions/model';`, resolveDir: frontend }, bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', alias: { '@': join(frontend, 'src/untitled') }, external: ['react-router-dom', '../../shared/api/session', 'react', 'react/jsx-runtime', 'react-dom', 'react-dom/server', 'react-aria-components'], outfile: join(directory, 'localization.cjs') });
 // External React resolves from the product package, sharing the renderer's hook owner.
 const Module = require('node:module');
 const fs = require('node:fs');
@@ -25,6 +25,7 @@ compiled._compile(fs.readFileSync(join(directory, 'localization.cjs'), 'utf8'), 
 const { t, localizeText, statusLabel, resources, usePreferences, createPreferences, Application, WorkerDetail, timestamp, presentation } = compiled.exports;
 const { renderToStaticMarkup } = requireFrontend('react-dom/server');
 const { createElement } = requireFrontend('react');
+const { MemoryRouter } = requireFrontend('react-router-dom');
 const { props } = require('./worker-poc-fixtures.cjs');
 after(() => rmSync(directory, { recursive: true, force: true }));
 afterEach(() => usePreferences.getState().setLanguage('en'));
@@ -60,7 +61,7 @@ test('switching localizes representative shell, worker, errors and dialog copy w
   const html = shell();
   for (const text of ['Inicio', 'Proyectos', 'Ejecuciones', 'Ajustes', 'Idioma', 'Inicio de sesión de administración', 'Su sesión caducó', 'Iniciar sesión']) assert.ok(html.includes(text), text);
   assert.ok(!html.includes('Administration sign in'));
-  const worker = renderToStaticMarkup(createElement(WorkerDetail, props));
+  const worker = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(WorkerDetail, props)));
   for (const text of ['Detalle del agente', 'Preparación', 'Ejecuciones recientes', 'Validando']) assert.ok(worker.includes(text), text);
   assert.ok(worker.includes('Vigencia del latido'));
   for (const text of ['Conexión: Conectado', 'Latido: Reciente', 'Configuración: Config. correcta', 'Planificación: Activo']) assert.ok(worker.includes(text), text);

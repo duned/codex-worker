@@ -44,7 +44,7 @@ test('the shared execution table keeps Executions columns, formatting, status an
     ['Exec. ID', 'Project', 'GitHub Issue', 'Created', 'State', 'Finished', 'Worker']);
   assert.match(markup, /href="\/executions\/11111111111111111111111111111111"/);
   assert.match(markup, /href="\/projects\/project%20one"[^>]*>Example project<\/a>/);
-  assert.match(markup, /href="https:\/\/github\.com\/example\/tasks\/issues\/42"/);
+  assert.match(markup, /href="\/projects\/project%20one\/issues\/42"/);
   assert.match(markup, /href="\/workers\/worker%20one"[^>]*>Worker One<\/a>/);
   assert.match(markup, /aria-label="Created \d{2}\/\d{2}\/2026 at \d{2}:\d{2}"/);
   assert.match(markup, /aria-label="Finished \d{2}\/\d{2}\/2026 at \d{2}:\d{2}"/);
@@ -59,4 +59,12 @@ test('Home feeds only its latest-50 completed result set to the shared table and
   assert.match(home, /useApiRead\('\/api\/v1\/executions\?limit=50&offset=0', executions\)/);
   assert.match(home, /<ExecutionTable items=\{completed\} projects=\{catalog\.data \?\? \[\]\} workers=\{registry\.data \?\? \[\]\}/);
   assert.match(home, /href="\/executions" color="link-color"/);
+});
+
+test('execution Issue links distinguish overlapping numbers across projects', () => {
+  const base = { state: 'Queued', createdAtUtc: '2026-01-15T12:34:00.000Z', workReference: { type: 'github-issue', id: '42' } };
+  const markup = render([{ ...base, id: 'a', projectId: 'first' }, { ...base, id: 'b', projectId: 'second' }], [], []);
+  assert.match(markup, /href="\/projects\/first\/issues\/42"/);
+  assert.match(markup, /href="\/projects\/second\/issues\/42"/);
+  assert.doesNotMatch(markup, /github.com/);
 });

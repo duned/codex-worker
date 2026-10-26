@@ -17,15 +17,16 @@ test('Worker execution projection excludes other Workers and preserves reported 
  assert.deepEqual(workerExecutions(null,'a'),[]);
  assert.equal(items[0].id,'other');
 });
-test('Issue links use canonical references or safe repository identities',async()=>{
+test('Issue links use configured project identity and never fall back to external URLs',async()=>{
  const {issueLink}=await model;
  const work={type:'github-issue',id:'27',url:'https://github.com/original/repo/issues/27'};
- assert.equal(issueLink(work,'new/repo'),work.url);
- assert.equal(issueLink({...work,url:null},'owner/repo'),'https://github.com/owner/repo/issues/27');
- for(const url of ['javascript:alert(1)','https://evil.example/a/b/issues/27','https://github.com/a/b/issues/28','https://github.com/a/b/issues/27?token=secret','https://user:secret@github.com/a/b/issues/27'])assert.equal(issueLink({...work,url},null),null);
- for(const repository of ['../repo','owner/..','owner/repo/extra','owner/repo?query','https://github.com/owner/repo'])assert.equal(issueLink({...work,url:null},repository),null);
- assert.equal(issueLink({type:'task',id:'27'},'owner/repo'),null);
- assert.equal(issueLink({...work,id:'0'},'owner/repo'),null);
+ assert.equal(issueLink(work,'project-a'),'/projects/project-a/issues/27');
+ assert.equal(issueLink(work,'project-b'),'/projects/project-b/issues/27');
+ assert.equal(issueLink(work,'project/a'),'/projects/project%2Fa/issues/27');
+ assert.equal(issueLink({...work,url:'javascript:alert(1)'},'project-a'),'/projects/project-a/issues/27');
+ for(const projectId of [null,undefined,'',' '])assert.equal(issueLink(work,projectId),null);
+ assert.equal(issueLink({type:'task',id:'27'},'project-a'),null);
+ for(const id of [null,undefined,'0','-1','1.5','2147483648'])assert.equal(issueLink({...work,id},'project-a'),null);
 });
 test('Timing uses reported duration or valid real timestamps without guessing terminal completion',async()=>{
  const {duration,timestamp}=await model;

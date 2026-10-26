@@ -8,10 +8,11 @@ const frontend = path.resolve(import.meta.dirname, '..');
 const frontendRequire = createRequire(path.join(frontend, 'package.json'));
 const { build } = frontendRequire('esbuild');
 const { createElement } = frontendRequire('react');
+const { MemoryRouter } = frontendRequire('react-router-dom');
 const { renderToStaticMarkup } = frontendRequire('react-dom/server');
 const { outputFiles } = await build({
   stdin: {
-    contents: "export { IssueTitle } from './src/features/projects/IssueTitle.tsx';",
+    contents: "export { IssueTitle } from './src/features/projects/IssueTitle.tsx'; export { issueDetailRoute, issueLink } from './src/model.js';",
     resolveDir: frontend,
     sourcefile: 'issue-title-test.tsx',
     loader: 'tsx'
@@ -22,7 +23,7 @@ const { outputFiles } = await build({
   platform: 'node',
   jsx: 'automatic',
   alias: { '@': path.join(frontend, 'src/untitled') },
-  external: ['react', 'react/jsx-runtime', 'react-aria-components', '@untitledui/icons', 'tailwind-merge'],
+  external: ['react-router-dom', 'react', 'react/jsx-runtime', 'react-aria-components', '@untitledui/icons', 'tailwind-merge'],
   plugins: [{
     name: 'mock-issue-title-read',
     setup(build) {
@@ -39,19 +40,19 @@ const output = outputFiles[0].text;
 const moduleResult = { exports: {} };
 const context = { module: moduleResult, exports: moduleResult.exports, require: frontendRequire, URL };
 vm.runInNewContext(output, context);
-const { IssueTitle } = moduleResult.exports;
+const { IssueTitle, issueDetailRoute, issueLink } = moduleResult.exports;
 const workReference = { type: 'github-issue', id: '27', url: 'https://github.com/owner/repo/issues/27' };
-const render = query => {
+const render = (query, projectId = 'project-a') => {
   context.__issueTitleRead = query;
-  return renderToStaticMarkup(createElement(IssueTitle, {
-    projectId: 'project-a', repository: 'owner/repo', workReference
-  }));
+  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(IssueTitle, {
+    projectId, repository: 'owner/repo', workReference
+  })));
 };
 
-test('running Issue title shows the title, Issue number, and existing GitHub URL', () => {
+test('running Issue title shows the title, Issue number, and internal Issue URL', () => {
   const html = render({ data: { number: 27, title: 'Keep execution progress visible' } });
 
-  assert.match(html, /href="https:\/\/github\.com\/owner\/repo\/issues\/27"/);
+  assert.match(html, /href="\/projects\/project-a\/issues\/27"/);
   assert.match(html, /#27 · Keep execution progress visible/);
 });
 
@@ -62,6 +63,26 @@ test('missing or blank Issue titles keep the Issue number and localized fallback
   ]) {
     const html = render(query);
     assert.match(html, /#27 · title unavailable/);
-    assert.match(html, /href="https:\/\/github\.com\/owner\/repo\/issues\/27"/);
+    assert.match(html, /href="\/projects\/project-a\/issues\/27"/);
   }
+});
+
+test('Issue routes use encoded project identity and reject missing or invalid identity', () => {
+  assert.equal(issueDetailRoute('project / a', 27), '/projects/project%20%2F%20a/issues/27');
+  assert.notEqual(issueLink(workReference, 'project-a'), issueLink(workReference, 'project-b'));
+  for (const projectId of [undefined, null, '', '   ']) assert.equal(issueLink(workReference, projectId), null);
+  for (const number of [undefined, null, 0, -1, '01', 'invalid', 2147483648]) assert.equal(issueDetailRoute('project-a', number), null);
+  assert.equal(issueLink({ type: 'other', id: '27' }, 'project-a'), null);
+});
+
+test('the same Issue number renders a distinct destination for each configured project', () => {
+  const html = render({ data: { number: 27, title: 'Another repository' } }, 'project-b');
+  assert.match(html, /href="\/projects\/project-b\/issues\/27"/);
+  assert.doesNotMatch(html, /github.com|target="_blank"/);
+});
+
+test('missing project identity renders unavailable text without an external fallback', () => {
+  const html = render({}, '');
+  assert.match(html, /#27 · title unavailable/);
+  assert.doesNotMatch(html, /href=/);
 });

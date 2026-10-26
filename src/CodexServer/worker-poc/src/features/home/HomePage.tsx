@@ -37,10 +37,9 @@ export function HomePage() {
   ];
   const linkClass = 'text-brand-secondary hover:underline';
   function issue(item: ExecutionSummary) {
-    const project = catalog.data?.find(project => project.id === item.projectId);
-    const href = issueLink(item.workReference, project?.repository);
+    const href = issueLink(item.workReference, item.projectId);
     const label = item.workReference ? `${item.workReference.type === 'github-issue' ? t("home.issue") : `${item.workReference.type} `}${item.workReference.id}` : t("home.issueUnavailable");
-    return <span>{href ? <ExternalLink href={href}>{label}</ExternalLink> : label}<span className="text-tertiary">{' '}{t("home.titleUnavailable")}</span></span>;
+    return <span>{href ? <Link to={href}>{label}</Link> : label}<span className="text-tertiary">{' '}{t("home.titleUnavailable")}</span></span>;
   }
   function executionRow(item: ExecutionSummary, active = false) {
     const state = presentation(item);

@@ -1,7 +1,7 @@
 import { WorkerResources } from './features/workers/WorkerResources';
 import { useEffect, useState } from 'react';
 import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
-import { ExternalLink } from './shared/Actions';
+import { Link } from 'react-router-dom';
 import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
@@ -145,7 +145,7 @@ function WorkReference({ item, project, showTitle = false }) {
   useLanguage();
   const work = item.workReference;
   if (!work) return <span>{t('executions.workReferenceUnavailable')}</span>;
-  const url = issueLink(work, project?.repository);
+  const url = issueLink(work, item.projectId);
   if (work.type === 'github-issue' && showTitle) {
     return <>
       <IssueTitle projectId={item.projectId} repository={project?.repository} workReference={work} />
@@ -153,7 +153,7 @@ function WorkReference({ item, project, showTitle = false }) {
     </>;
   }
   const identity = work.type === 'github-issue' ? `${t('workers.issue')} #${work.id}` : `${localizeText(work.type)} ${work.id}`;
-  return url ? <ExternalLink href={url}>{identity}</ExternalLink>
+  return url ? <Link to={url}>{identity}</Link>
     : <span>{identity}{work.type === 'github-issue' && <span className="block text-xs text-tertiary">{t('shared.issueLinkUnavailable')}</span>}</span>;
 }
 

@@ -1,5 +1,5 @@
 import { t, useLanguage } from '../../shared/i18n';
-import { ExternalLink } from '../../shared/Actions';
+import { Link } from 'react-router-dom';
 import { useApiRead } from '../../shared/api/session';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { issue } from './contracts';
@@ -16,10 +16,13 @@ export function IssueTitle({ projectId, repository, workReference, className }: 
   if (workReference?.type !== 'github-issue' || !/^[1-9]\d*$/.test(workReference.id) || Number(workReference.id) > 2147483647) {
     return <span className={className}>{workReference ? `${workReference.type} ${workReference.id}` : t('executions.workReferenceUnavailable')}</span>;
   }
+  if (!issueLink(workReference, projectId)) {
+    return <span className={className}>#{workReference.id} · {t('projects.issueTitleUnavailable')}</span>;
+  }
   return <IssueTitleRead projectId={projectId} repository={repository} workReference={workReference} className={className} />;
 }
 
-function IssueTitleRead({ projectId, repository, workReference, className }: {
+function IssueTitleRead({ projectId, workReference, className }: {
   projectId: string;
   repository?: string;
   workReference: NonNullable<ExecutionSummary['workReference']>;
@@ -36,8 +39,8 @@ function IssueTitleRead({ projectId, repository, workReference, className }: {
   const text = title ? `#${workReference.id} · ${title}` : read.error || read.data
     ? `#${workReference.id} · ${t('projects.issueTitleUnavailable')}`
     : `#${workReference.id} · ${t('projects.loadingIssueTitle')}`;
-  const href = issueLink(workReference, repository);
-  return href ? <ExternalLink href={href} className={className}>{text}</ExternalLink> : <span className={className}>{text}</span>;
+  const href = issueLink(workReference, projectId);
+  return href ? <Link to={href} className={className}>{text}</Link> : <span className={className}>{text}</span>;
 }
 
 export function projectRepositoryUrl(project: { repository: string }) {
