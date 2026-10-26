@@ -31,8 +31,11 @@ export function useSession() {
 export function useApiRead<T>(path: string, validate: Validator<T>) {
   const runtime = useRuntime(), session = useSession();
   const query = useQuery({ queryKey: queryKeys.read(session.generation, path), enabled: session.authenticated,
+    // Only the three marker-backed collections stay fresh across navigation.
+    // Other resources have no background freshness contract: refresh on entry.
+    refetchOnMount: /^\/api\/v1\/(projects|workers|executions)(\?|$)/.test(path) || path === '/api/status' ? true : 'always',
     queryFn: ({ signal }) => runtime.read(path, signal, validate) });
-  return { data: session.authenticated && !query.isError ? query.data : undefined,
+  return { data: session.authenticated ? query.data : undefined,
     retainedData: session.authenticated ? query.data : undefined,
     updatedAt: query.dataUpdatedAt, error: query.error?.message, hasError: query.isError, loading: query.isPending,
     fetching: query.isFetching, stale: query.isStale, refetch: query.refetch };

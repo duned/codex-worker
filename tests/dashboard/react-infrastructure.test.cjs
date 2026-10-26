@@ -13,18 +13,15 @@ const deferred = () => { let resolve, reject; const promise = new Promise((yes, 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const document = () => ({ csrfToken: 'fixture-csrf', expiresAtUtc: new Date(Date.now() + 3600000).toISOString() });
 function setup(handler = async () => new Response('[]')) {
-  const calls = [], streamRequests = [];
+  const calls = [];
   const runtime = new DashboardRuntime(undefined, new HttpClient(async (path, options) => {
     calls.push({ path, options });
-    if (path === '/api/v1/events/stream') {
-      const request = deferred(); streamRequests.push({ ...request, options });
-      options.signal.addEventListener('abort', () => request.reject(new DOMException('Aborted', 'AbortError')), { once: true });
-      return request.promise;
-    }
     if (path === '/api/v1/administration/session' && options.method === 'GET') return Response.json(document());
     return handler(path, options);
   }));
-  return { runtime, calls, streamRequests };
+  // Test cleanup owns cache lifetime; cancelled queries must not retain Node timers.
+  runtime.queries.setQueryDefaults(['private'], { gcTime: Infinity });
+  return { runtime, calls };
 }
 test('logout cancels reads, clears private cache and fences late bodies across relogin', async () => {
   const read = deferred();
@@ -113,41 +110,22 @@ test('Query deduplicates observers, cancels unused reads, and never retries reje
     } finally { rejected.runtime.dispose(); }
   } finally { s.runtime.dispose(); }
 });
-test('one stream validates snapshots, releases reader on page suspension and serializes replacements', async () => {
-  const s = setup(); let streamController, cancelled = 0, unsubscribe;
-  try {
-    await s.runtime.session('GET'); await flush();
-    assert.equal(s.streamRequests.length, 1);
-    // Observe the snapshot like a mounted Worker screen. An unobserved query
-    // intentionally has gcTime: 0 and can disappear before a setImmediate.
-    const observer = new QueryObserver(s.runtime.queries, { queryKey: queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers'), enabled: false });
-    unsubscribe = observer.subscribe(() => {});
-    s.streamRequests[0].resolve(new Response(new ReadableStream({ start(controller) { streamController = controller; }, cancel() { cancelled++; } })));
-    await flush();
-    streamController.enqueue(new TextEncoder().encode('event: workers\ndata: [{"workerId":"worker-a","availability":"Available"}]\n\n'));
-    await flush();
-    assert.equal(s.runtime.queries.getQueryData(queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers'))[0].workerId, 'worker-a');
-    assert.equal(s.runtime.snapshot().live, 'Live · connected');
-    s.runtime.suspend(); await flush();
-    assert.equal(cancelled, 1);
-    assert.equal(s.runtime.queries.getQueryCache().getAll().length, 0);
-    await s.runtime.session('GET'); await flush();
-    assert.equal(s.streamRequests.length, 2);
-    assert.equal(s.streamRequests[0].options.signal.aborted, true);
-  } finally { unsubscribe?.(); s.runtime.dispose(); }
-});
-test('single fallback poll owner ends on suspension; disconnected streams do not cause overlapping reads', async t => {
+test('status polling stops on suspension and resumes with an explicit session restore', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const read = deferred(); const s = setup(() => read.promise);
+  const s = setup(async () => Response.json({ state: 'ready', startedAtUtc: '2026-01-01T00:00:00Z', persistenceAvailable: true, freshness: { projects: 1, workers: 1, executions: 1 } }));
   try {
     await s.runtime.session('GET');
-    const query = new QueryObserver(s.runtime.queries, { queryKey: queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers'), queryFn: ({ signal }) => s.runtime.read('/api/v1/workers', signal, workers) });
-    const off = query.subscribe(() => {});
-    t.mock.timers.tick(5000); await flush();
-    assert.equal(s.calls.filter(call => call.path === '/api/v1/workers').length, 1);
-    s.runtime.suspend(); read.resolve(Response.json([])); await flush();
-    off(); t.mock.timers.tick(10000); await flush();
-    assert.equal(s.calls.filter(call => call.path === '/api/v1/workers').length, 1);
+    t.mock.timers.tick(0); await flush();
+    assert.equal(s.calls.filter(call => call.path === '/api/status').length, 1);
+    assert.equal(s.runtime.snapshot().live, 'Live · connected');
+    s.runtime.suspend();
+    t.mock.timers.tick(10000); await flush();
+    assert.equal(s.calls.filter(call => call.path === '/api/status').length, 1);
+    assert.equal(s.runtime.queries.getQueryCache().getAll().length, 0);
+    await s.runtime.session('GET');
+    t.mock.timers.tick(0); await flush();
+    assert.equal(s.calls.filter(call => call.path === '/api/status').length, 2);
+    assert.equal(s.calls.filter(call => call.path === '/api/v1/events/stream').length, 0);
   } finally { s.runtime.dispose(); t.mock.timers.reset(); }
 });
 test('safe client diagnostics and response validation never expose response bodies', async () => {
@@ -170,7 +148,7 @@ test('preferences reload only versioned theme and language; corrupt/unavailable 
   const unavailable = createPreferences({ getItem() { throw Error(); }, setItem() { throw Error(); }, removeItem() { throw Error(); } });
   unavailable.getState().setTheme('light'); assert.equal(unavailable.getState().theme, 'light');
 });
-test('expiration cancels the stream and clears cached observations without automatic sign-in', async t => {
+test('expiration cancels status polling and clears cached observations without automatic sign-in', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const s = setup();
   try {
@@ -179,44 +157,21 @@ test('expiration cancels the stream and clears cached observations without autom
     t.mock.timers.tick(3600001); await flush();
     assert.equal(s.runtime.snapshot().authenticated, false);
     assert.equal(s.runtime.queries.getQueryCache().getAll().length, 0);
-    assert.equal(s.streamRequests[0].options.signal.aborted, true);
+    const count = s.calls.length;
+    t.mock.timers.tick(10000); await flush();
+    assert.equal(s.calls.length, count);
     assert.equal(s.calls.filter(call => call.path === '/api/v1/administration/session').length, 1);
   } finally { s.runtime.dispose(); t.mock.timers.reset(); }
 });
-test('malformed and oversized SSE snapshots become unavailable without leaking event content', async () => {
-  for (const event of ['data: {"credential":"private-event"}\n\n', 'x'.repeat(1024 * 1024 + 1)]) {
-    const s = setup(); let controller;
-    try {
-      await s.runtime.session('GET'); await flush();
-      s.streamRequests[0].resolve(new Response(new ReadableStream({ start(value) { controller = value; } })));
-      await flush(); controller.enqueue(new TextEncoder().encode(event)); await flush();
-      assert.match(s.runtime.snapshot().live, /processing failed/);
-      assert.ok(!s.runtime.snapshot().live.includes('private-event'));
-      assert.equal(s.runtime.queries.getQueryData(queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers')), undefined);
-    } finally { s.runtime.dispose(); }
-  }
-});
-test('Worker stream replaces an older in-flight query and cannot be overwritten by its late response', async () => {
-  const read = deferred(), s = setup(() => read.promise); let controller;
+test('status authorization rejection clears the session and never reconnects or auto-logins', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const s = setup(async () => new Response(null, { status: 401 }));
   try {
-    await s.runtime.session('GET'); await flush();
-    const key = queryKeys.read(s.runtime.snapshot().generation, '/api/v1/workers');
-    const observer = new QueryObserver(s.runtime.queries, { queryKey: key, queryFn: ({ signal }) => s.runtime.read('/api/v1/workers', signal, workers) });
-    const off = observer.subscribe(() => {});
-    s.streamRequests[0].resolve(new Response(new ReadableStream({ start(value) { controller = value; } })));
-    await flush(); controller.enqueue(new TextEncoder().encode('data: [{"workerId":"current","availability":"online"}]\n\n')); await flush();
-    read.resolve(Response.json([{ workerId: 'old', availability: 'offline' }])); await flush();
-    assert.equal(s.runtime.queries.getQueryData(key)[0].workerId, 'current'); off();
-  } finally { s.runtime.dispose(); }
-});
-test('SSE authorization rejection clears the session and never reconnects or auto-logins', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] }); const s = setup();
-  try {
-    await s.runtime.session('GET'); await flush();
-    s.streamRequests[0].resolve(new Response(null, { status: 401 })); await flush();
+    await s.runtime.session('GET');
+    t.mock.timers.tick(0); await flush();
     assert.equal(s.runtime.snapshot().authenticated, false);
     t.mock.timers.tick(10000); await flush();
-    assert.equal(s.streamRequests.length, 1);
+    assert.equal(s.calls.filter(call => call.path === '/api/status').length, 1);
     assert.equal(s.calls.filter(call => call.path === '/api/v1/administration/session').length, 1);
   } finally { s.runtime.dispose(); t.mock.timers.reset(); }
 });

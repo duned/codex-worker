@@ -76,7 +76,7 @@ export interface NodeCommandSummary {
 }
 
 export interface ServerGitHubConnection { commands: NodeCommandSummary[]; provisioningEnabled: boolean; elevationAllowed: boolean }
-export interface ServerStatus { state: string; version?: string; startedAtUtc: string }
+export interface ServerStatus { state: string; version?: string; startedAtUtc: string; persistenceAvailable?: boolean; freshness?: { projects: number; workers: number; executions: number } | null }
 
 export interface WorkerProjectReadiness {
   projectId: string; projectName: string; isEligible: boolean; missingRequirements: string[];

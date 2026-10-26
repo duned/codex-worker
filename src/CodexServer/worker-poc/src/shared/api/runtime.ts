@@ -1,25 +1,26 @@
 import { t } from '../i18n';
 import { QueryClient } from '@tanstack/react-query';
 import { ApiError, cancelled, HttpClient, type Validator } from './client';
-import { sessionDocument, workers } from './validation';
+import { sessionDocument, serverStatus } from './validation';
 export const queryKeys = { session: (generation: number) => ['private', generation] as const,
   read: (generation: number, path: string) => ['private', generation, path] as const };
 export function createQueryClient() {
   return new QueryClient({ defaultOptions: {
-    queries: { retry: false, staleTime: 0, gcTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false, refetchInterval: false },
+    queries: { retry: false, staleTime: Infinity, gcTime: 10 * 60 * 1000, refetchOnWindowFocus: false, refetchOnReconnect: false, refetchInterval: false },
     mutations: { retry: false }
   } });
 }
 export interface SessionState { authenticated: boolean; pending: boolean; message: string; generation: number; live: string; logoutAvailable: boolean }
-// One owner for a React root/tab. Cache, requests, live stream and transient
+// One owner for a React root/tab. Cache, requests, status polling and transient
 // mutation fences all share this generation; observations never grant authority.
 export class DashboardRuntime {
   private controller = new AbortController();
   private csrf = '';
   private logoutCsrf = '';
   private expiry?: ReturnType<typeof setTimeout>;
-  private liveController?: AbortController;
-  private liveDone: Promise<void> = Promise.resolve();
+  private markers?: string[];
+  private visibilityCleanup?: () => void;
+  private pollGeneration = 0;
   private poll?: ReturnType<typeof setTimeout>;
   private listeners = new Set<() => void>();
   private fences = new Map<string, 'pending' | 'uncertain'>();
@@ -31,7 +32,7 @@ export class DashboardRuntime {
   private current(generation: number) { return generation === this.state.generation && !this.controller.signal.aborted; }
   reset(message = t("api.signInToAdministerThisServer")) {
     this.controller.abort(); this.controller = new AbortController();
-    this.stopLive(); clearTimeout(this.expiry); this.csrf = '';
+    this.stopLive(); this.markers = undefined; clearTimeout(this.expiry); this.csrf = '';
     void this.queries.cancelQueries(); this.queries.clear(); this.fences.clear();
     this.publish({ authenticated: false, pending: false, message, generation: this.state.generation + 1, live: t("shared.liveSignedOut"), logoutAvailable: !!this.logoutCsrf });
   }
@@ -101,8 +102,7 @@ export class DashboardRuntime {
       const value = await this.http.request(path, { method, body, csrf: this.csrf, signal }, validate);
       if (!this.current(generation)) throw cancelled();
       this.fences.delete(resource);
-      await this.queries.cancelQueries();
-      void this.queries.invalidateQueries({ queryKey: queryKeys.session(generation) });
+      await this.invalidateMutation(path, generation);
       return value;
     } catch (error) {
       if (this.current(generation)) {
@@ -118,69 +118,70 @@ export class DashboardRuntime {
     if (!this.current(generation)) throw cancelled();
     this.fences.delete(resource); this.publish({});
   }
-  stopLive() { this.liveController?.abort(); clearTimeout(this.poll); }
+  private async invalidateMutation(path: string, generation: number) {
+    const root = path.split('/')[3];
+    const affected = new Set([root]);
+    // Scheduling/configuration actions also affect their Server projections.
+    if (['projects', 'workers', 'nodes', 'executions', 'provisioning'].includes(root)) {
+      affected.add('executions'); affected.add('workers'); affected.add('nodes');
+    }
+    await this.queries.invalidateQueries({ queryKey: queryKeys.session(generation),
+      predicate: query => {
+        const cachedPath = String(query.queryKey[2]);
+        const category = cachedPath.split('/')[3]?.split('?')[0];
+        if (!affected.has(category)) return false;
+        const targetId = path.split('/')[4]?.split('?')[0];
+        const cachedId = cachedPath.split('/')[4]?.split('?')[0];
+        return !cachedId || category === root && (!targetId || cachedId === targetId);
+      } });
+  }
+  /** One status round; collection invalidation never expands identifiers into detail reads. */
+  async checkStatus() {
+    const generation = this.state.generation;
+    const status = await this.queries.fetchQuery({ queryKey: queryKeys.read(generation, '/api/status'),
+      staleTime: 0, queryFn: ({ signal }) => this.read('/api/status', signal, serverStatus) });
+    if (!this.current(generation)) return;
+    if (!status.freshness || !status.persistenceAvailable) throw new ApiError(t('api.invalidServerDataRefreshOrCheckTheServerDeployment'));
+    const next = [status.startedAtUtc, String(status.freshness.projects), String(status.freshness.workers), String(status.freshness.executions)];
+    const previous = this.markers;
+    this.markers = next;
+    if (!previous) return;
+    for (const [index, category] of ['projects', 'workers', 'executions'].entries()) {
+      if (previous && previous[0] === next[0] && previous[index + 1] === next[index + 1]) continue;
+      // Details become stale for their next navigation, but only collections refresh now.
+      await this.queries.invalidateQueries({ queryKey: queryKeys.session(generation), refetchType: 'none',
+        predicate: query => String(query.queryKey[2]).split('?')[0].startsWith(`/api/v1/${category}/`) || String(query.queryKey[2]).split('?')[0] === `/api/v1/${category}` });
+    }
+    // A failed refresh stays invalidated and retries on a later status round,
+    // even when the Server marker has not changed again.
+    await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
+      predicate: query => query.state.isInvalidated && /^\/api\/v1\/(projects|workers|executions)$/.test(String(query.queryKey[2]).split('?')[0])
+    }, { cancelRefetch: false, throwOnError: true });
+  }
+  stopLive() { this.pollGeneration++; clearTimeout(this.poll); this.visibilityCleanup?.(); this.visibilityCleanup = undefined; }
   private startLive() {
     this.stopLive();
-    const previous = this.liveDone, generation = this.state.generation, controller = new AbortController();
-    this.liveController = controller;
-    const signal = AbortSignal.any([controller.signal, this.controller.signal]);
-    const current = () => this.current(generation) && !signal.aborted;
-    // Sequential polling of active query observers; no per-component timers.
+    const generation = this.state.generation, pollGeneration = this.pollGeneration;
+    const current = () => this.current(generation) && pollGeneration === this.pollGeneration;
+    let failures = 0, running = false;
+    const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
     const poll = async () => {
-      if (!current()) return;
-      await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active', predicate: query => query.queryKey[2] !== '/api/v1/workers' || this.state.live !== 'Live · connected' }, { cancelRefetch: false });
-      if (current()) this.poll = setTimeout(() => { void poll(); }, 5000);
-    };
-    this.poll = setTimeout(() => { void poll(); }, 5000);
-    this.liveDone = (async () => {
-      await previous; // Cancelled reader must release before a replacement opens.
-      while (current()) {
-        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, processing = false;
-        const cancelReader = () => { void reader?.cancel().catch(() => {}); };
-        try {
-          const response = await this.http.response('/api/v1/events/stream', { signal, stream: true });
-          if (!current()) { await response.body?.cancel(); break; }
-          if (!response.body) throw new ApiError(t("api.liveStreamUnavailable"));
-          reader = response.body.getReader(); signal.addEventListener('abort', cancelReader, { once: true });
-          this.publish({ live: 'Live · connected' });
-          const decoder = new TextDecoder(); let buffer = '';
-          while (current()) {
-            const chunk = await reader.read();
-            if (!current() || chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
-            if (buffer.length > 1024 * 1024) { processing = true; throw new ApiError(t("api.eventBoundExceeded")); }
-            let boundary;
-            while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-              const event = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
-              const data = event.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
-              if (!data) continue;
-              processing = true;
-              const value = workers(JSON.parse(data));
-              // Cancel an older GET so it cannot overwrite the newer snapshot.
-              await this.queries.cancelQueries({ queryKey: queryKeys.read(generation, '/api/v1/workers'), exact: true });
-              if (!current()) break;
-              this.queries.setQueryData(queryKeys.read(generation, '/api/v1/workers'), value); processing = false;
-            }
-          }
-        } catch (error) {
-          this.rejectSession(error, generation);
-          if (current() && processing) {
-            this.publish({ live: t("shared.liveProcessingFailed") }); break;
-          }
-        } finally {
-          signal.removeEventListener('abort', cancelReader);
-          if (reader) { try { await reader.cancel(); } catch { /* Aborted stream already errored. */ } reader.releaseLock(); }
-        }
-        if (current()) {
-          this.publish({ live: t("shared.liveInterrupted") });
-          await new Promise<void>(resolve => {
-            const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
-            const timer = setTimeout(finish, 3000); signal.addEventListener('abort', finish, { once: true });
-            if (signal.aborted) finish();
-          });
-        }
+      if (!current() || running || !visible()) return;
+      running = true;
+      try { await this.checkStatus(); failures = 0; if (current()) this.publish({ live: 'Live · connected' }); }
+      catch { failures = Math.min(failures + 1, 5); if (current()) this.publish({ live: t('shared.liveInterrupted') }); }
+      finally {
+        running = false;
+        if (current() && visible()) this.poll = setTimeout(() => { void poll(); },
+          failures ? Math.min(60000, 5000 * 2 ** failures) * (0.8 + Math.random() * 0.4) : 5000);
       }
-    })();
+    };
+    const visibility = () => { clearTimeout(this.poll); if (visible()) void poll(); };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', visibility);
+      this.visibilityCleanup = () => document.removeEventListener('visibilitychange', visibility);
+    }
+    this.poll = setTimeout(() => { void poll(); }, 0);
   }
   suspend = () => { this.reset(t("api.checkingAdministrationSession")); };
   dispose() { this.reset(); }

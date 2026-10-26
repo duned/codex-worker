@@ -143,7 +143,12 @@ export const serverGitHubConnection: Validator<import('./contracts').ServerGitHu
 };
 export const serverStatus: Validator<import('./contracts').ServerStatus> = value => {
   const item = fields(value, ['state', 'startedAtUtc']);
-  optional(item, ['version']);
+  optional(item, ['version'], ['persistenceAvailable']);
+  if (item.freshness != null) {
+    const markers = fields(item.freshness, []);
+    for (const key of ['projects', 'workers', 'executions'])
+      if (!Number.isSafeInteger(markers[key]) || Number(markers[key]) < 0) throw new Error('Invalid freshness marker.');
+  }
   return value as import('./contracts').ServerStatus;
 };
 

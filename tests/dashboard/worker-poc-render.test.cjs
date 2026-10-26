@@ -11,12 +11,12 @@ const {createElement}=frontendRequire('react');
 const {MemoryRouter}=frontendRequire('react-router-dom');
 const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react-router-dom','../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
-const issueTitleApi={useApiRead(path){const issueNumber=Number(/\/issues\/(\d+)$/.exec(path)?.[1]);return context.__workerPocIssueReads[path]??(Number.isSafeInteger(issueNumber)&&issueNumber>0?{data:{number:issueNumber,title:`Issue title ${issueNumber}`}}:{});},useApiMutation(){return {};},useSession(){return {};},useRuntime(){throw Error('Unexpected runtime access in static render.');}};
-const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL,__workerPocIssueReads:{}};
+const issueTitleApi={useApiRead(){throw Error('Worker rendering must not fetch Issue details.');},useApiMutation(){return {};},useSession(){return {};},useRuntime(){throw Error('Unexpected runtime access in static render.');}};
+const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL};
 vm.runInNewContext(output,context);
 const {WorkerDetail}=moduleResult.exports;
 const {props,worker,node,capability,current,completed}=require('./worker-poc-fixtures.cjs');
-const render=data=>{context.__workerPocIssueReads=data?.issueReads??{};return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
+const render=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
  for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
@@ -29,7 +29,7 @@ test('Worker detail renders real identity, current stage, outcomes, links and ca
  assert.ok(!html.includes('Upcoming'));
 });
 test('Current execution retains its Issue number when the title cannot be loaded',()=>{
- const html=render({issueReads:{'/api/v1/projects/project-a/github/issues/27':{error:'Issue read unavailable'}}});
+ const html=render({executions:[{...current,workReference:{...current.workReference,title:undefined}}]});
  assert.ok(html.includes('#27 · title unavailable'));
  assert.ok(html.includes('href="/projects/project-a/issues/27"'));
 });
@@ -162,7 +162,7 @@ test('Migration preview reuses Worker presentation without unfinished administra
 });
 
 test('Canonical detail preserves multiple actual slots, linked concurrent stages and independent delivery revocation', () => {
- const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28' } };
+ const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28', title: 'Issue title 28' } };
  const html = render({ observations: [{ ...worker, activeExecutions: 2, availableCapacity: 0 }], executions: [current, second, completed], administration: { worker, delivery: { status: 'active' }, actions: [{ key: 'revoke-delivery', label: 'Revoke delivery authorization', reason: '' }], onAction: () => {}, onRefresh: () => {} } });
  for (const text of ['2 / 2', 'Current executions', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
  assert.ok(!html.includes('Detail preview'));

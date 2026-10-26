@@ -18,7 +18,7 @@ presentation modules, not a separate application. Custom CSS handles composition
 
 `SessionProvider` creates one `DashboardRuntime` and TanStack Query cache per tab.
 The runtime owns CSRF, generation fencing, query cancellation/invalidation, expiry,
-one bounded Worker SSE reader and sequential fallback polling. Zustand persists
+one sequential, visibility-aware Server status polling loop. Zustand persists
 only a versioned light/dark preference. Project/credential workspaces retain
 transient drafts and uncertain attempts, not separate registries. Shared node
 components and Server readiness projections serve multiple screens. Diagnostics
@@ -216,3 +216,16 @@ unsupported source; journal permission or command failures report a retrieval
 error. No executable, unit name, path or shell command can be supplied remotely.
 The API accepts 1–200 lines, caps each line and the total response, and uses existing
 administration authorization for reads and per-Worker authentication for delivery.
+
+Dashboard refresh uses one five-second `/api/status` check while the tab is visible.
+The session-scoped React Query cache retains unused reads for ten minutes and
+shares requests by full API path (including project IDs, filters and pagination).
+Projects, Workers and executions collections remain fresh until their Server
+marker changes, a mutation invalidates them, or the user requests refresh. Marker
+changes invalidate inactive collections for their next visit and refresh active
+collections; detail reads are invalidated without background fetching. Details
+and resources without markers refresh on navigation or explicit refresh. The Worker
+SSE snapshot stream is not opened by the dashboard. Status failures
+retain observations and use jittered exponential backoff; hidden tabs pause the
+loop and visibility restoration checks status immediately. The bounded, explicitly
+opened Worker journal request remains a separate pending-operation policy.

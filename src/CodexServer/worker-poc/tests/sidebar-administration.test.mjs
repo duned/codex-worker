@@ -62,7 +62,7 @@ test('sidebar status uses API version and successful fetch time, and localizes b
   assert.match(status, /typeof data\?\.version === 'string'/);
   assert.match(status, /timestamp\(timestampIso\)/);
   assert.match(status, /status\.freshness === 'stale'/);
-  assert.match(validation, /optional\(item, \['version'\]\)/);
+  assert.match(validation, /optional\(item, \['version'\], \['persistenceAvailable'\]\)/);
   for (const source of [english, spanish]) {
     assert.match(source, /"shared\.serverReady"/);
     assert.match(source, /"shared\.serverStatusUnavailable"/);
