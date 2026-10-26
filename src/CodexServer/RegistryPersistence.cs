@@ -831,6 +831,15 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             }
         }
         await transaction.CommitAsync(cancellationToken);
+        // One startup diagnostic, never one log entry per dashboard poll. Query the
+        // effective mode instead of assuming a provider default; omit the local path.
+        await using var diagnostics = connection.CreateCommand();
+        diagnostics.CommandText = "PRAGMA journal_mode;";
+        var journalMode = await diagnostics.ExecuteScalarAsync(cancellationToken);
+        diagnostics.CommandText = "PRAGMA busy_timeout;";
+        var busyTimeout = await diagnostics.ExecuteScalarAsync(cancellationToken);
+        _logger.LogInformation("Registry SQLite settings: journal_mode={JournalMode}, busy_timeout_ms={BusyTimeoutMs}, command_timeout_seconds={CommandTimeoutSeconds}, connection_default_timeout_seconds={ConnectionDefaultTimeoutSeconds}",
+            journalMode, busyTimeout, diagnostics.CommandTimeout, connection.DefaultTimeout);
     }
 
     public Task<ExecutionRequest> EnqueueExecutionAsync(EnqueueExecutionRequest request, CancellationToken cancellationToken = default) =>
@@ -2451,7 +2460,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     public async Task<ServerResourceStatus> GetResourceStatusAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = new SqliteConnection(ConnectionString);
+        using var openTiming = new StatusStageTiming("open");
         await connection.OpenAsync(cancellationToken);
+        openTiming.Dispose();
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT schema_version,
@@ -2460,10 +2471,18 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 (SELECT version FROM resource_freshness WHERE category='executions')
             FROM schema_metadata WHERE singleton=1;
             """;
+        using var executeTiming = new StatusStageTiming("execute");
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken) || reader.GetInt32(0) != CurrentSchemaVersion)
-            return new(false, null);
-        return new(true, new(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
+        executeTiming.Dispose();
+        using var readerTiming = new StatusStageTiming("reader");
+        var available = await reader.ReadAsync(cancellationToken) && reader.GetInt32(0) == CurrentSchemaVersion;
+        ResourceFreshness? freshness = available
+            ? new(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)) : null;
+        readerTiming.Dispose();
+        return new(available, freshness)
+        {
+            TimingHeader = $"{openTiming.Header}, {executeTiming.Header}, {readerTiming.Header}"
+        };
     }
 
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)

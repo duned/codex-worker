@@ -13,7 +13,10 @@ using System.Text;
 using System.Text.Json;
 
 public sealed record ResourceFreshness(long Projects, long Workers, long Executions);
-public sealed record ServerResourceStatus(bool PersistenceAvailable, ResourceFreshness? Freshness);
+public sealed record ServerResourceStatus(bool PersistenceAvailable, ResourceFreshness? Freshness)
+{
+    internal string? TimingHeader { get; init; }
+}
 public sealed record ServerStatus(string State, string Version, DateTimeOffset StartedAtUtc)
 {
     public string ProcessHealth { get; init; } = "healthy";
@@ -41,7 +44,7 @@ public sealed class ServerHealthService(IRegistryStore registryStore) : IServerH
 
 public static partial class ServerApplication
 {
-    private static readonly System.Diagnostics.Metrics.Meter StatusMeter = new("CodexServer.Status");
+    internal static readonly System.Diagnostics.Metrics.Meter StatusMeter = new("CodexServer.Status");
     private static readonly System.Diagnostics.Metrics.Histogram<double> StatusRequestDuration =
         StatusMeter.CreateHistogram<double>("codex.server.status.duration", "ms",
             "Status HTTP processing including response serialization; excludes client/network time.");
@@ -178,6 +181,14 @@ public static partial class ServerApplication
                 return;
             }
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            // Headers must be finalized before the body is sent. The histogram below
+            // additionally covers response writing; do not label this header as RTT.
+            context.Response.OnStarting(() =>
+            {
+                context.Response.Headers.Append("Server-Timing",
+                    $"server_headers;dur={StatusStageTiming.FormatMilliseconds(System.Diagnostics.Stopwatch.GetElapsedTime(started))}");
+                return Task.CompletedTask;
+            });
             try { await next(context); }
             finally
             {
@@ -330,6 +341,7 @@ public static partial class ServerApplication
             {
                 resources = new(false, null);
             }
+            using var projectionTiming = new StatusStageTiming("projection");
             var projection = status with
             {
                 State = resources.PersistenceAvailable ? "ready" : "not-ready",
@@ -337,7 +349,9 @@ public static partial class ServerApplication
                 PersistenceAvailable = resources.PersistenceAvailable,
                 Freshness = resources.Freshness
             };
-            context.Response.Headers["Server-Timing"] = $"registry;dur={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}";
+            projectionTiming.Dispose();
+            context.Response.Headers["Server-Timing"] = $"registry;dur={StatusStageTiming.FormatMilliseconds(System.Diagnostics.Stopwatch.GetElapsedTime(started))}, {projectionTiming.Header}"
+                + (resources.TimingHeader is { } stages ? $", {stages}" : "");
             return Results.Ok(projection);
         });
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));

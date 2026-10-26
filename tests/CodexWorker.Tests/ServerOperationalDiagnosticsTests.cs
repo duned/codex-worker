@@ -123,8 +123,8 @@ public sealed class ServerOperationalDiagnosticsTests
         {
             Assert.DoesNotContain("private-", e.Message);
             Assert.Null(e.Exception);
-            Assert.Equal(2201, e.EventId.Id);
         });
+        Assert.All(fixture.Logger.Events.Where(e => e.Reason is not null), e => Assert.Equal(2201, e.EventId.Id));
         Assert.Contains(fixture.Logger.Events, e => e.Reason == "invalid-request" && e.Level == LogLevel.Information);
         Assert.Contains(fixture.Logger.Events, e => e.Reason == "infrastructure-failure" && e.Level == LogLevel.Error);
     }
@@ -183,14 +183,36 @@ public sealed class ServerOperationalDiagnosticsTests
         var disabled = Assert.IsType<CentralProject>(await fixture.Store.UpdateProjectLifecycleAsync(project.Id, false, updated.Revision));
         var enabled = Assert.IsType<CentralProject>(await fixture.Store.UpdateProjectLifecycleAsync(project.Id, true, disabled.Revision));
         Assert.True(await fixture.Store.RemoveProjectAsync(project.Id, enabled.Revision));
+        var decisions = fixture.Logger.Events.Where(e => e.EventId.Id == 2201).ToArray();
         Assert.Equal(new[] { "created", "definition-updated", "disabled", "enabled", "deleted" },
-            fixture.Logger.Events.Select(e => e.Reason));
-        Assert.All(fixture.Logger.Events, e =>
+            decisions.Select(e => e.Reason));
+        Assert.All(decisions, e =>
         {
             Assert.Equal(project.Id, e.Fields["ProjectId"]);
             Assert.Equal(LogLevel.Information, e.Level);
             Assert.DoesNotContain("private-description", e.Message);
         });
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task SqliteSettingsAreLoggedAtInitializationWithoutPollNoise()
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var settings = Assert.Single(fixture.Logger.Events);
+        Assert.Equal(LogLevel.Information, settings.Level);
+        Assert.Null(settings.Exception);
+        Assert.Null(settings.Reason);
+        Assert.IsType<string>(settings.Fields["JournalMode"]);
+        Assert.True(Convert.ToInt64(settings.Fields["BusyTimeoutMs"]) >= 0);
+        Assert.True(Convert.ToInt64(settings.Fields["CommandTimeoutSeconds"]) >= 0);
+        Assert.True(Convert.ToInt64(settings.Fields["ConnectionDefaultTimeoutSeconds"]) >= 0);
+
+        await fixture.Store.GetResourceStatusAsync();
+        await fixture.Store.GetResourceStatusAsync();
+        Assert.Single(fixture.Logger.Events);
     }
 
     private static WorkerAssignmentRequest Request(string project, string worker) => new(worker, true, 1,

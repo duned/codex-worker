@@ -19,6 +19,15 @@ public sealed class ServerTokenEnvironmentCollection { }
 [Collection("ServerTokenEnvironment")]
 public sealed class CodexServerTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void StatusTimingUsesMillisecondsWithInvariantDecimalFormatting()
+    {
+        Assert.Equal("0.142", StatusStageTiming.FormatMilliseconds(TimeSpan.FromTicks(1420)));
+        Assert.Equal("142.000", StatusStageTiming.FormatMilliseconds(TimeSpan.FromMilliseconds(142)));
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
@@ -2152,7 +2161,20 @@ public sealed class CodexServerTests
             Assert.True(status.RootElement.GetProperty("persistenceAvailable").GetBoolean());
             Assert.Equal("ready", status.RootElement.GetProperty("controlPlaneReadiness").GetString());
             Assert.Equal(JsonValueKind.Number, status.RootElement.GetProperty("freshness").GetProperty("projects").ValueKind);
-            Assert.True(statusResponse.Headers.Contains("Server-Timing"));
+            var timing = string.Join(",", statusResponse.Headers.GetValues("Server-Timing"));
+            foreach (var stage in new[] { "registry", "registry_open", "registry_execute", "registry_reader", "registry_projection", "server_headers" })
+            {
+                var value = Assert.Single(timing.Split(',').Select(value => value.Trim()),
+                    value => value.StartsWith(stage + ";dur=", StringComparison.Ordinal));
+                Assert.True(double.Parse(value.Split('=')[1], System.Globalization.CultureInfo.InvariantCulture) >= 0);
+            }
+            var durations = timing.Split(',').Select(value => value.Trim().Split(";dur="))
+                .ToDictionary(parts => parts[0], parts => double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
+            // F3 rounding can add up to 0.0005 ms per stage.
+            Assert.True(durations["registry_open"] + durations["registry_execute"] + durations["registry_reader"]
+                + durations["registry_projection"] <= durations["registry"] + 0.003);
+            Assert.True(durations["registry"] <= durations["server_headers"] + 0.001);
+            Assert.False(status.RootElement.TryGetProperty("timingHeader", out _));
 
             using var versionResponse = await client.GetAsync("/api/version");
             using var version = JsonDocument.Parse(await versionResponse.Content.ReadAsStringAsync());
