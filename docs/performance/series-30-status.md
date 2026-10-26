@@ -198,3 +198,52 @@ Local development measurements do not describe deployment latency. The operator'
 managed or standalone deployment capture remains an outstanding field measurement,
 not an implementation prerequisite. No production distribution or latency dominance
 has been established.
+
+## 30.5.2: bottleneck decision and next capture
+
+No request-path cache or background persistence probe is introduced. The supplied
+observation bounds the registry component at 0.142 ms for that request; it does
+not locate the remainder of the reported roughly 260 ms response. In particular,
+there is no paired full Server processing observation. Neither SQLite dominance
+nor a latency boundary outside Server processing has been established. Claiming
+an improvement, or replacing the transactional counters with a memory projection,
+would therefore be speculative. Deployment latency remains unresolved.
+
+The capture tool now reports `http_after_headers_ms` for each successful response
+with a valid `server_headers`, and its nearest-rank distribution. This is the
+paired difference `http_ms - server_headers`, not a subtraction of independent
+percentiles. It includes body writing/transfer, connection and proxy overhead;
+it is **not** network time or full Server duration. Small negative values can
+occur from timing precision and are retained rather than silently clamped.
+Missing header samples are excluded from that distribution. Existing registry,
+header and HTTP measurements retain their original scopes.
+
+The concrete operator next step is two captures under the repeatable protocol
+above: one from the affected client through the deployed proxy/TLS route and one
+on the Server host directly against its configured listener. Keep build, dataset,
+load, sample count and interval equal and record the UTC windows. Export
+`codex.server.status.duration` for each same window, including sample count and
+p50/p95/p99; preserve individual slow-request hosting traces to avoid inferring
+per-request boundaries from separate histograms. Also record readiness failures
+separately. Compare all three boundaries:
+
+- Registry dominates full processing: inspect stage timings and verified provider
+  waits before changing the registry read.
+- Full processing dominates registry: trace middleware, response preparation and
+  body writing before changing persistence.
+- Client RTT dominates full processing: compare direct-listener RTT with proxy
+  RTT, then capture proxy upstream/total timing and client connection/TLS/TTFB
+  timing for slow samples. Only this evidence supports an operator-side boundary.
+
+No field samples or local Server latency distributions were captured for this
+change. The local build waited on frontend dependency setup; the focused .NET
+check stopped at NETSDK1004 (missing restored test assets), and Python HTTP tests
+could not create a loopback socket in the sandbox. These are validation limits,
+not latency evidence. The Worker runs its authoritative checks separately.
+
+Regression coverage adds rollback and store reinitialization checks against the
+persisted committed markers, and verifies that a successful readiness observation
+does not survive schema invalidation or a subsequent SQLite read failure.
+Existing coverage exercises committed project, Worker and execution mutations.
+Authorization, scheduling authority, process health and per-request persistence
+checks remain unchanged; there is no stale-ready probe window.

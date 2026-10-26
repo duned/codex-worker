@@ -52,6 +52,11 @@ class CaptureTests(unittest.TestCase):
                     self.assertEqual({"n": 1, "p50": 0.142, "p95": 0.142, "p99": 0.142},
                                      report["summary"]["registry"])
                     self.assertEqual(2, report["summary"]["http_ms"]["n"])
+                    self.assertEqual(1, report["summary"]["http_after_headers_ms"]["n"])
+                    paired = report["samples"][0]
+                    self.assertAlmostEqual(paired["http_ms"] - paired["server_headers"],
+                                           paired["http_after_headers_ms"])
+                    self.assertNotIn("http_after_headers_ms", report["samples"][1])
                     self.assertEqual(3, json.loads(result.stdout)["attempts"])
             finally:
                 server.shutdown()

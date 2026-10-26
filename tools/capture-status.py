@@ -46,6 +46,10 @@ def main():
                                 sample[name] = value
                         except ValueError:
                             pass
+                # Paired residual is only a boundary locator: headers exclude body
+                # writing, so this is not a network latency measurement.
+                if "server_headers" in sample:
+                    sample["http_after_headers_ms"] = elapsed - sample["server_headers"]
                 sample["missing_timings"] = [key for key in TIMINGS if key not in sample]
                 samples.append(sample)
             except (OSError, http.client.HTTPException):
@@ -55,7 +59,7 @@ def main():
                 time.sleep(max(0, args.interval - (time.perf_counter() - started)))
     successful = [s for s in samples if s.get("http_status") == 200]
     summary = {}
-    for key in ("http_ms", *TIMINGS):
+    for key in ("http_ms", "http_after_headers_ms", *TIMINGS):
         values = sorted(s[key] for s in successful if key in s)
         summary[key] = {"n": len(values), **{
             f"p{p}": values[max(0, math.ceil(len(values) * p / 100) - 1)] if values else None

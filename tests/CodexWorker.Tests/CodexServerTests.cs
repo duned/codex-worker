@@ -31,6 +31,47 @@ public sealed class CodexServerTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task ResourceStatusIgnoresRollbackAndRestoresCommittedMarkersAfterRestart()
+    {
+        using var directory = new TemporaryDirectory();
+        var database = Path.Combine(directory.Path, "registry.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        await store.CreateProjectAsync(new("Committed", "team/committed", "main", ""));
+        var committed = await store.GetResourceStatusAsync();
+        await using (var connection = new SqliteConnection($"Data Source={database}"))
+        {
+            await connection.OpenAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var command = connection.CreateCommand();
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = "DELETE FROM projects;";
+            await command.ExecuteNonQueryAsync();
+            await transaction.RollbackAsync();
+        }
+        Assert.Equal(committed.Freshness, (await store.GetResourceStatusAsync()).Freshness);
+        var restarted = new SqliteRegistryStore(database);
+        await restarted.InitializeAsync();
+        Assert.Equal(committed.Freshness, (await restarted.GetResourceStatusAsync()).Freshness);
+
+        // Invalidate the schema after a successful read: readiness must be checked
+        // on the next read, rather than retaining a previously ready observation.
+        await using var failureConnection = new SqliteConnection($"Data Source={database}");
+        await failureConnection.OpenAsync();
+        await using var failure = failureConnection.CreateCommand();
+        failure.CommandText = "UPDATE schema_metadata SET schema_version=-1 WHERE singleton=1;";
+        await failure.ExecuteNonQueryAsync();
+        var unavailable = await restarted.GetResourceStatusAsync();
+        Assert.False(unavailable.PersistenceAvailable);
+        Assert.Null(unavailable.Freshness);
+        failure.CommandText = "DROP TABLE resource_freshness;";
+        await failure.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<SqliteException>(() => restarted.GetResourceStatusAsync());
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task ResourceStatusReadsPersistedMarkersWithoutLoadingCollectionPayloads()
     {
         using var directory = new TemporaryDirectory();
