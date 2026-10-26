@@ -1,9 +1,6 @@
 import { t, useLanguage } from '../../shared/i18n';
 import { Link } from 'react-router-dom';
-import { useApiRead } from '../../shared/api/session';
 import type { ExecutionSummary } from '../../shared/api/contracts';
-import { issue } from './contracts';
-import { issuePath } from './model';
 import { issueLink } from '../../model';
 
 export function IssueTitle({ projectId, repository, workReference, className }: {
@@ -29,16 +26,9 @@ function IssueTitleRead({ projectId, workReference, className }: {
   className?: string;
 }) {
   useLanguage();
-  const issueNumber = Number(workReference.id);
-  const read = useApiRead(issuePath(projectId, issueNumber), value => {
-    const observed = issue(value);
-    if (observed.number !== issueNumber) throw Error('Issue identity mismatch.');
-    return observed;
-  });
-  const title = read.data?.title.trim();
-  const text = title ? `#${workReference.id} · ${title}` : read.error || read.data
-    ? `#${workReference.id} · ${t('projects.issueTitleUnavailable')}`
-    : `#${workReference.id} · ${t('projects.loadingIssueTitle')}`;
+  const title = workReference.title?.trim();
+  const text = title ? `#${workReference.id} · ${title}`
+    : `#${workReference.id} · ${t('projects.issueTitleUnavailable')}`;
   const href = issueLink(workReference, projectId);
   return href ? <Link to={href} className={className}>{text}</Link> : <span className={className}>{text}</span>;
 }

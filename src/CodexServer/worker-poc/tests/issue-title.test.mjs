@@ -29,7 +29,7 @@ const { outputFiles } = await build({
     setup(build) {
       build.onResolve({ filter: /^\.\.\/\.\.\/shared\/api\/session$/ }, () => ({ path: 'session-mock', namespace: 'test' }));
       build.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export function useApiRead() { return globalThis.__issueTitleRead ?? {}; }',
+        contents: 'export function useApiRead() { throw Error("Execution titles must not fetch Issues"); }',
         loader: 'js'
       }));
     }
@@ -45,7 +45,7 @@ const workReference = { type: 'github-issue', id: '27', url: 'https://github.com
 const render = (query, projectId = 'project-a') => {
   context.__issueTitleRead = query;
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(IssueTitle, {
-    projectId, repository: 'owner/repo', workReference
+    projectId, repository: 'owner/repo', workReference: { ...workReference, title: query.data?.title }
   })));
 };
 
@@ -85,4 +85,12 @@ test('missing project identity renders unavailable text without an external fall
   const html = render({}, '');
   assert.match(html, /#27 · title unavailable/);
   assert.doesNotMatch(html, /href=/);
+});
+
+test('repeated and concurrent execution list rendering never requests Issue details', async () => {
+  for (let refresh = 0; refresh < 5; refresh++) {
+    await Promise.all(Array.from({ length: 50 }, () => Promise.resolve().then(() => {
+      assert.match(render({ data: { title: 'Snapshot title' } }), /Snapshot title/);
+    })));
+  }
 });

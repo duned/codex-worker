@@ -54,7 +54,7 @@ export const executions = list<ExecutionSummary>(value => {
     if (Object.entries(stages).some(([stage, timestamp]) => !allowed.has(stage) || typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp)))) throw new Error('Invalid stage timestamps.');
   }
   if (item.managedEligibilityReasons != null && (!Array.isArray(item.managedEligibilityReasons) || item.managedEligibilityReasons.some(reason => typeof reason !== 'string'))) throw new Error('Invalid eligibility reasons.');
-  if (item.workReference != null) optional(fields(item.workReference, ['type', 'id']), ['url']);
+  if (item.workReference != null) optional(fields(item.workReference, ['type', 'id']), ['url', 'title']);
 });
 export const nodes = list<NodeSummary>(value => {
   const item = fields(value, ['id', 'kind', 'connectivity', 'executionReadiness'], ['observationsStale']);

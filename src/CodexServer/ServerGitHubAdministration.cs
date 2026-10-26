@@ -956,7 +956,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
             ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
         if (!issue.IsEligible) throw new ManagedIssueIneligibleException(issue);
         var url = $"https://github.com/{project.Repository}/issues/{canonical.Id}";
-        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url), project.Revision, discoveredProject is not null, project.CreatedAtUtc, issue.ReadyLabelAppliedAtUtc), cancellationToken);
+        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url, issue.Title), project.Revision, discoveredProject is not null, project.CreatedAtUtc, issue.ReadyLabelAppliedAtUtc), cancellationToken);
         return await registry.UpdateManagedEligibilityAsync(created.Id,
             new("eligible", [], _clock.GetUtcNow()), cancellationToken) ?? created;
     }

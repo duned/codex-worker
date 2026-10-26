@@ -734,6 +734,7 @@ public static partial class ServerApplication
             if (issueNumber <= 0) return Results.BadRequest(new { error = "Issue number must be positive." });
             try
             {
+                using var readOperation = github.BeginReadOperation(refresh: true);
                 var issue = await github.GetIssueAsync(projectId, issueNumber, context.RequestAborted);
                 return issue is null ? Results.NotFound() : Results.Ok(issue);
             }

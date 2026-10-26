@@ -6,6 +6,28 @@ using System.Text.Json;
 public sealed class GitHubIssueReadProviderTests
 {
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ExecutionListsRetainVerifiedTitleWithoutReadingGitHub()
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "team/project", "main", "", IssueReadyLabel: "ready"));
+        var source = new Source { Labels = ["ready"] };
+        var provider = new GitHubIssueReadProvider(source, directory.Database);
+        var service = new ServerGitHubAdministrationService(registry, provider);
+        var execution = await service.EnqueueIssueAsync(project.Id, new("github-issue", "1", Title: "Untrusted title"));
+        var verified = await provider.GetIssueAsync(project, 1);
+        Assert.NotNull(verified);
+        Assert.Equal(verified.Title, execution.WorkReference.Title);
+        var requests = source.Batches.Count;
+        var lists = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => registry.ListExecutionsAsync(new())));
+        Assert.All(lists, list => Assert.Equal(verified.Title, Assert.Single(list).WorkReference.Title));
+        Assert.Equal(requests, source.Batches.Count);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
     public async Task DiscoveryUsesBatchesCacheFreshnessAndAliasPolicyWithoutCreatingExecutions()

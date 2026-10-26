@@ -67,7 +67,7 @@ public interface IRegistryStore
     Task<ProvisioningPlan?> TransitionProvisioningPlanAsync(string planId, ProvisioningStateTransition transition, CancellationToken cancellationToken = default);
 }
 
-public sealed record WorkReference(string Type, string Id, string? Url = null);
+public sealed record WorkReference(string Type, string Id, string? Url = null, string? Title = null);
 public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference,
     [property: JsonIgnore] long? ExpectedProjectRevision = null, [property: JsonIgnore] bool AutomaticDiscovery = false,
     [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null,
@@ -173,9 +173,9 @@ public static class ExecutionRequestValidation
                 urlIssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) != canonicalId ||
                 !string.Equals(repository, $"{owner}/{name}", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("workReference.url must identify this project's GitHub repository and Issue.");
-            return new("github-issue", canonicalId, $"https://github.com/{repository}/issues/{canonicalId}");
+            return new("github-issue", canonicalId, $"https://github.com/{repository}/issues/{canonicalId}", reference.Title);
         }
-        return new("github-issue", canonicalId);
+        return new("github-issue", canonicalId, Title: reference.Title);
     }
 
     public static WorkReference NormalizeIdentity(WorkReference reference)

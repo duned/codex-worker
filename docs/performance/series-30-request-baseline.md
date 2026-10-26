@@ -115,3 +115,21 @@ These are candidate work packages for the three child Issues; their detailed sco
 3. Consolidate journal refresh ownership and stop terminal polling; narrow mutation invalidation; assess stream snapshot/database cost and node command-query expansion. Verify same-tab deduplication and cross-tab multiplication before adding coordination complexity.
 
 For each of #395/#394/#392, reuse the exact workload and result sheet above. Record changes to request counts, unique-Issue fan-out, browser RTT, Server processing, failures and observation age. Avoid declaring performance improvement from source estimates alone. No production behavior, configuration, ownership, security boundary or product version changes are included here.
+
+### Execution title snapshots (30.4)
+
+Execution titles now come from `workReference.title`, captured from the Server's
+verified GitHub read when enqueuing and persisted with the execution reference.
+Browser `IssueTitle` rendering performs no reads. Cold, warm, repeated and
+concurrent execution-list rendering therefore adds **zero** Issue-detail HTTP or
+upstream GitHub requests, regardless of row count. The registry list routes remain
+GitHub-independent. Historical references without a title display their Issue
+number and the localized unavailable-title text; snapshots remain useful during
+GitHub outages and do not expire or claim to describe current Issue status.
+No additional summary cache, background refresh, or browser GitHub access is used.
+
+Opening the Issue page or using its refresh controls reads the Server Issue-detail
+endpoint, which explicitly refreshes that Issue through the existing read provider.
+Other reads retain the existing repository-scoped freshness and batching policy.
+Mutation eligibility checks remain authoritative. These are code-derived budgets;
+no live browser/GitHub performance campaign was run for this change.

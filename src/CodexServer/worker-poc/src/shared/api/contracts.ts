@@ -17,7 +17,7 @@ export interface ExecutionSummary {
   durationMilliseconds?: number; recoveryState?: string; recoveryReason?: string; pendingReason?: string;
   managedEligibilityState?: string; managedEligibilityReasons?: string[]; managedEligibilityCheckedAtUtc?: string;
   completionSummary?: string;
-  workReference?: { type: string; id: string; url?: string };
+  workReference?: { type: string; id: string; url?: string; title?: string };
 }
 export interface ExecutionMaintenanceRequest {
   operationId: string; workerId: string; serverExecutionId?: string | null; workerExecutionId?: string | null;
