@@ -145,17 +145,16 @@ export class DashboardRuntime {
     const next = [status.startedAtUtc, String(status.freshness.projects), String(status.freshness.workers), String(status.freshness.executions)];
     const previous = this.markers;
     this.markers = next;
-    if (!previous) return;
     for (const [index, category] of ['projects', 'workers', 'executions'].entries()) {
-      if (previous && previous[0] === next[0] && previous[index + 1] === next[index + 1]) continue;
+      if (!previous || previous[0] === next[0] && previous[index + 1] === next[index + 1]) continue;
       // Details become stale for their next navigation, but only collections refresh now.
       await this.queries.invalidateQueries({ queryKey: queryKeys.session(generation), refetchType: 'none',
         predicate: query => String(query.queryKey[2]).split('?')[0].startsWith(`/api/v1/${category}/`) || String(query.queryKey[2]).split('?')[0] === `/api/v1/${category}` });
     }
-    // A failed refresh stays invalidated and retries on a later status round,
-    // even when the Server marker has not changed again.
+    // Retry failed initial loads as well as invalidated refreshes. Both use the
+    // status loop's backoff, even when the Server marker has not changed.
     await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
-      predicate: query => query.state.isInvalidated && /^\/api\/v1\/(projects|workers|executions)$/.test(String(query.queryKey[2]).split('?')[0])
+      predicate: query => (query.state.isInvalidated || query.state.status === 'error') && /^\/api\/v1\/(projects|workers|executions)$/.test(String(query.queryKey[2]).split('?')[0])
     }, { cancelRefetch: false, throwOnError: true });
   }
   stopLive() { this.pollGeneration++; clearTimeout(this.poll); this.visibilityCleanup?.(); this.visibilityCleanup = undefined; }

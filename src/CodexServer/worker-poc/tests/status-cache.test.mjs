@@ -12,14 +12,14 @@ new Function('module', 'exports', 'require', bundle.outputFiles[0].text)(module,
 const { DashboardRuntime, queryKeys, HttpClient, QueryObserver } = module.exports;
 async function fixture(t) {
   const counts = new Map();
-  const control = { fail: false, failProjects: false };
+  const control = { fail: false, failProjects: false, startedAtUtc: '2026-01-01T00:00:00Z' };
   const freshness = { projects: 1, workers: 1, executions: 1 };
   const runtime = new DashboardRuntime(undefined, new HttpClient(async path => {
     counts.set(path, (counts.get(path) ?? 0) + 1);
     if (path.endsWith('/session')) return Response.json({ csrfToken: 'test', expiresAtUtc: new Date(Date.now() + 3600000).toISOString() });
     if (path === '/api/v1/projects' && control.failProjects) throw new Error('offline');
     if (path === '/api/status' && control.fail) throw new Error('offline');
-    if (path === '/api/status') return Response.json({ state: 'ready', startedAtUtc: '2026-01-01T00:00:00Z', persistenceAvailable: true, freshness });
+    if (path === '/api/status') return Response.json({ state: 'ready', startedAtUtc: control.startedAtUtc, persistenceAvailable: true, freshness });
     return Response.json([]);
   }));
   await runtime.session('GET'); runtime.stopLive();
@@ -107,4 +107,64 @@ test('failed collection refresh retains data and retries on unchanged status', a
   assert.equal(f.counts.get(path), 3);
   await f.runtime.checkStatus();
   assert.equal(f.counts.get(path), 3);
+});
+
+test('failed initial collection load retries on unchanged status and stops after recovery', async t => {
+  const f = await fixture(t), path = '/api/v1/projects';
+  f.control.failProjects = true;
+  f.observe(path);
+  await assert.rejects(f.runtime.queries.fetchQuery(f.options(path)));
+  await assert.rejects(f.runtime.checkStatus());
+  f.control.failProjects = false;
+  await f.runtime.checkStatus();
+  assert.deepEqual(f.runtime.queries.getQueryData(f.options(path).queryKey), []);
+  assert.equal(f.counts.get(path), 3);
+  await f.runtime.checkStatus();
+  assert.equal(f.counts.get(path), 3);
+});
+
+test('one minute of unchanged Home status has no resource or GitHub detail fan-out', async t => {
+  const f = await fixture(t);
+  const paths = ['/api/v1/projects', '/api/v1/workers', '/api/v1/executions?limit=50&offset=0',
+    '/api/v1/nodes', '/api/v1/nodes/server/github-connection'];
+  for (const path of paths) {
+    await f.runtime.queries.fetchQuery(f.options(path)); f.observe(path);
+  }
+  // Twelve completed status rounds represent the baseline's steady-state
+  // one-minute budget, without wall-clock sleeps or network latency assumptions.
+  for (let round = 0; round < 12; round++) await f.runtime.checkStatus();
+  assert.equal(f.counts.get('/api/status'), 12);
+  for (const path of paths) assert.equal(f.counts.get(path), 1);
+  assert.equal([...f.counts.keys()].some(path => path.includes('/github/issues/')), false);
+  assert.equal([...f.counts.values()].reduce((sum, count) => sum + count, 0), 18); // session + five mounts + twelve checks
+});
+
+test('execution changes refresh each active project scope once and preserve inactive cache invalidation', async t => {
+  const f = await fixture(t);
+  const paths = ['/api/v1/executions?projectId=p1&limit=50', '/api/v1/executions?projectId=p2&limit=50'];
+  for (const path of paths) {
+    await f.runtime.queries.fetchQuery(f.options(path)); f.observe(path);
+  }
+  const inactive = '/api/v1/executions?projectId=p3&limit=50';
+  await f.runtime.queries.fetchQuery(f.options(inactive));
+  await f.runtime.checkStatus();
+  f.freshness.executions++;
+  await Promise.all([f.runtime.checkStatus(), f.runtime.checkStatus()]);
+  for (const path of paths) assert.equal(f.counts.get(path), 2);
+  assert.equal(f.counts.get(inactive), 1);
+  await f.runtime.queries.fetchQuery(f.options(inactive));
+  assert.equal(f.counts.get(inactive), 2);
+});
+
+
+test('Server restart invalidates all collection markers even when counters repeat', async t => {
+  const f = await fixture(t);
+  const paths = ['/api/v1/projects', '/api/v1/workers', '/api/v1/executions?limit=50'];
+  for (const path of paths) {
+    await f.runtime.queries.fetchQuery(f.options(path)); f.observe(path);
+  }
+  await f.runtime.checkStatus();
+  f.control.startedAtUtc = '2026-01-02T00:00:00Z';
+  await f.runtime.checkStatus();
+  for (const path of paths) assert.equal(f.counts.get(path), 2);
 });

@@ -133,3 +133,95 @@ endpoint, which explicitly refreshes that Issue through the existing read provid
 Other reads retain the existing repository-scoped freshness and batching policy.
 Mutation eligibility checks remain authoritative. These are code-derived budgets;
 no live browser/GitHub performance campaign was run for this change.
+
+## Parent integration review (#391)
+
+Review date: 2026-10-26. The preceding audit describes the **before** implementation;
+its polling descriptions are not the current runtime policy. The 30.2, 30.3 and
+30.4 changes are present in this checkout. This review adds regression coverage
+and fixes recovery of failed initial collection loads.
+
+### Comparable request budgets
+
+The following comparison uses the audit's same one-minute steady-state window,
+healthy visible tab, unchanged resources and `U=10` distinct execution Issues.
+These remain **source-derived budgets, not measured browser traffic**. Initial
+mount reads, user actions, changes and reconnects are excluded from both columns.
+
+| View | Before HTTP requests/minute | After HTTP requests/minute |
+| --- | ---: | ---: |
+| Home | 180 | 12 status |
+| Projects list | 36 | 12 status |
+| Workers list | 24 | 12 status |
+| Worker detail, editor/journal closed | 192 | 12 status |
+| Executions list | 168 | 12 status |
+| Issue history/detail | 60 | 12 status |
+
+Home's unchanged steady-state budget falls by 168 requests/minute (93.3%).
+The former stream is no longer opened by the React runtime, removing its twelve
+periodic Worker inventory reads per minute per tab. Execution title rendering
+adds zero Issue-detail reads and zero upstream GitHub calls, compared with up to
+120 detail GETs and approximately 20 warm upstream snapshot calls per minute for
+10 ordinary Issues in the audit's conditional example. Explicit Issue navigation
+and refresh still use the existing GitHub read service.
+
+Reproduction: after installing dashboard dependencies, run
+`cd src/CodexServer/worker-poc && node --test tests/status-cache.test.mjs tests/issue-title.test.mjs`.
+The Home budget test mounts the five resource queries and completes twelve status
+rounds, asserting twelve status requests, one initial request for each resource,
+and no Issue-detail requests. It does not render a browser or measure latency.
+The title test renders fifty rows repeatedly with a read hook that throws if used.
+Other runtime tests cover same-key deduplication, project-filtered execution caches,
+inactive cache invalidation, Server restart with repeated counters, visibility,
+backoff, mutation scoping and retained data after refresh failure. Failed initial
+collection reads now also retry through the status loop, so a transient mount
+failure cannot strand a view indefinitely when counters remain unchanged.
+
+### Freshness and ownership review
+
+- Status reads schema metadata and three trigger-maintained SQLite counters in
+  one query. It does not deserialize collection payloads or call GitHub, Worker
+  RPC, node discovery or provisioning. `Server-Timing: registry;dur=...` exposes
+  registry processing duration for the live capture. Existing Server tests cover
+  persisted counters, collection-independent reads and the timing header.
+- The authenticated visible tab checks status every five seconds after a round
+  completes. Unchanged counters do not refresh collections. Changed counters
+  invalidate the relevant category, refresh active collections and leave inactive
+  entries stale for navigation. Restart identity invalidates all three categories.
+- Keys retain the full path (including project filters and pagination) and session
+  generation. Repository snapshot sharing stays in the existing GitHub provider;
+  the dashboard adds no independent repository cache. Session reset clears reads
+  and aborts in-flight work. Same-key requests share in-flight work within a tab.
+- Details and non-marker resources refresh on entry or explicit refresh; collection
+  freshness does not expand identifiers into GitHub/detail calls. Local mutations
+  invalidate their affected projections immediately. Uncertain mutation fences and
+  uncached authoritative preflight remain separate from observational caching.
+- Hidden tabs pause scheduled checks and check on visibility restoration. Failed
+  rounds retain query data/errors and use bounded exponential backoff with jitter.
+  Failed active collection loads retry even without another counter change.
+
+### Remaining trade-offs and validation limits
+
+Markers are category-wide, so a change in one project can refresh active execution
+collections for several project filters. Worker heartbeats can change the Worker
+marker even without an administrative change. Tabs have independent caches and
+status loops; there is no cross-tab leader. Slow changed-collection refreshes still
+extend the next status interval. Already-open details and non-marker resources
+require navigation or explicit refresh; the journal retains its separate bounded
+pending-result timer. The legacy Worker dashboard is outside this Server runtime
+change and retains the behavior documented above.
+
+No live Server/browser dataset or GitHub transport instrumentation was supplied;
+therefore before/after p50/p95 endpoint RTT, registry timing, observation age and
+actual external request volume remain **unmeasured**. The reported 200–300 ms
+status latency has not been reproduced or claimed fixed numerically. Complete the
+existing live capture protocol on both revisions before claiming empirical
+performance acceptance. No wall-clock latency threshold is added to deterministic
+tests.
+
+Local validation in this review: dependency installation failed offline because
+zustand 5.0.11 was not cached, and online because registry.npmjs.org DNS resolution
+failed (`EAI_AGAIN`). Focused dashboard tests consequently could not load esbuild.
+The focused .NET test could not run without restored project assets; restore also
+exited unsuccessfully in this environment. Worker-configured authoritative
+validation remains separate and has not been reported as passed.
