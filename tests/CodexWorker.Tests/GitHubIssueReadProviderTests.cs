@@ -38,6 +38,38 @@ public sealed class GitHubIssueReadProviderTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task RepeatedExecutionPagesReuseDurableSummariesAcrossRepositoryAliases()
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "TEAM/PROJECT", "main", ""));
+        var alias = project with { Repository = "team/project" };
+        for (var number = 1; number <= 50; number++)
+            await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", number.ToString(System.Globalization.CultureInfo.InvariantCulture)), project.Revision));
+
+        var source = new Source();
+        var provider = new GitHubIssueReadProvider(source, directory.Database);
+        Assert.NotNull(await provider.GetIssueAsync(alias, 1));
+        Assert.Single(source.Batches);
+
+        // A new registry instance consumes durable display metadata without a provider.
+        var restarted = new SqliteRegistryStore(directory.Database);
+        await restarted.InitializeAsync();
+        for (var refresh = 0; refresh < 5; refresh++)
+        {
+            var page = await restarted.ListExecutionsAsync(new(Limit: 50));
+            Assert.Equal(50, page.Count);
+            Assert.Equal("Issue 1", Assert.Single(page, item => item.WorkReference.Id == "1").WorkReference.Title);
+            Assert.All(page.Where(item => item.WorkReference.Id != "1"),
+                item => Assert.Null(item.WorkReference.Title));
+        }
+        Assert.Single(source.Batches);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task ExecutionListsRetainVerifiedTitleWithoutReadingGitHub()
     {
         using var directory = new TemporaryDirectory();

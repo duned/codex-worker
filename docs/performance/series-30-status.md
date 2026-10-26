@@ -247,3 +247,48 @@ does not survive schema invalidation or a subsequent SQLite read failure.
 Existing coverage exercises committed project, Worker and execution mutations.
 Authorization, scheduling authority, process health and per-request persistence
 checks remain unchanged; there is no stale-ready probe window.
+
+## 30.5 parent integration review
+
+The integrated status path retains the transactional SQLite freshness counters and
+per-request schema/readiness observation. Committed mutations advance persisted
+markers; rolled-back mutations do not, and reinitializing the store reads the
+same committed markers. Schema invalidation and subsequent read failure cannot
+reuse an earlier successful readiness result. See `CodexServerTests` for these
+regressions. No memory cache, background probe or scheduling authority was added.
+
+Execution display summaries reuse `github_issue_reads`, keyed by normalized
+repository and Issue number. Successful full snapshot reads commit the title
+with the snapshot. `ExecutionIssueTitles` joins the requested keys in one local
+SQL batch, independently of snapshot expiry/invalidation; a cached title replaces
+an older persisted title, while a cache miss retains a persisted title or null.
+Repository aliases share metadata, different repositories do not. This policy is
+deliberately display-only: it does not refresh eligibility or authorize scheduling.
+The dashboard `IssueTitle` consumes the projected title and renders the localized
+title-unavailable fallback without an Issue request. Opening an Issue detail view
+continues to use the full read contract.
+
+The parent regression `RepeatedExecutionPagesReuseDurableSummariesAcrossRepositoryAliases`
+defines a reproducible workload: 50 executions across two repository aliases,
+one full Issue read, store reinitialization, then five 50-row list reads. Its
+request-count assertions require one upstream batch before and after all five
+pages (zero additional GitHub requests), with normal cache misses on the other
+rows. The dashboard regression renders five concurrent groups of 50 titles with
+an Issue-read hook that throws if called. These are deterministic contract
+checks, not captured deployment request counts.
+
+Parent checkout validation on 2026-10-26 was environment-limited: focused .NET
+tests stopped at missing restored assets (NETSDK1004); the full repository
+validation command `python3 tools/validate.py --base origin/main --full` reached
+solution restore but NuGet access was denied (NU1301). The dashboard title test
+could not load the uninstalled `esbuild` dependency. Capture-tool tests could not
+open loopback sockets under the sandbox. These attempts do not establish passing
+tests; Worker validation remains authoritative.
+
+Field latency and browser/upstream request-count captures remain outstanding.
+Use the operator command and paired direct-listener/proxy protocol above, and
+record Issue-detail and upstream batch counts for the same five-page workload
+before and after deployment. The 0.142 ms sample does not identify a responsible
+code-controlled contributor to the roughly 260 ms RTT. No measured latency
+improvement or completed bottleneck diagnosis is claimed by this integration
+review; that acceptance item still requires the field capture.
