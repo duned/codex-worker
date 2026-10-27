@@ -18,6 +18,8 @@ import { issueDoneLabel, issueHistoryPageSize, issueHistoryPath, issueExecutions
 import { issuePath, projectPath } from './model';
 import { fenceKey, useProjects } from './Workspace';
 import { IssueMarkdown } from './IssueMarkdown';
+import { IssueDetailLayout } from './IssueDetailLayout';
+import { IssueDetailsPanel } from './IssueDetailsPanel';
 
 function validIssueNumber(value: string | undefined) {
   if (!value || !/^[1-9]\d*$/.test(value)) return undefined;
@@ -129,15 +131,15 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
       {issueUrl && <ExternalLink href={issueUrl}>{t('issues.openGitHub')}</ExternalLink>}
     </div>
 
-    <div className="mt-6 grid items-start gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
-      <section aria-labelledby="issue-description-heading" className="max-h-[100vh] min-w-0 overflow-y-auto rounded-xl border border-secondary bg-primary p-5 shadow-xs">
+    <IssueDetailLayout
+      description={<section aria-labelledby="issue-description-heading" className="max-h-[100vh] min-w-0 overflow-y-auto rounded-xl border border-secondary bg-primary p-5 shadow-xs">
         <h2 id="issue-description-heading" className="text-lg font-semibold text-primary">{t('issues.description')}</h2>
         {!currentIssue ? <p className="mt-4 text-sm text-tertiary">{issueRead.error ? t('issues.descriptionUnavailable') : t('issues.loadingGitHub')}</p> : <>
           {issueRead.error && <Notice error>{t('issues.githubStale')}</Notice>}
           <div className="mt-4">{currentIssue.body ? <IssueMarkdown source={currentIssue.body} /> : <p className="text-sm text-tertiary">{t('issues.noDescription')}</p>}</div>
         </>}
-      </section>
-      <IssueStatusSummary
+      </section>}
+      status={<IssueStatusSummary
         issue={currentIssue}
         project={currentProject}
         state={current}
@@ -151,22 +153,16 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
         issueNumber={issueNumber}
         onRefreshGitHub={() => { void issueRead.refetch(); }}
         onRefreshServer={() => { void statusRead.refetch(); }}
-      />
-    </div>
-
-    <section aria-labelledby="issue-details-heading" className="mt-4 rounded-xl border border-secondary bg-primary p-4 shadow-xs">
-      <h2 id="issue-details-heading" className="text-sm font-semibold text-primary">{t('issues.issueDetails')}</h2>
-      {currentIssue ? <dl className="mt-3 grid grid-cols-1 gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-        <MetadataItem label={t('issues.author')} value={currentIssue.author || t('issues.notReported')} />
-        <MetadataItem label={t('issues.assignees')} value={currentIssue.assignees.length ? currentIssue.assignees.join(', ') : t('issues.unassigned')} />
-        <MetadataItem label={t('issues.milestone')} value={currentIssue.milestone || t('issues.none')} />
-        <MetadataItem label={t('issues.project')} value={currentProject?.name ?? projectId} />
-        <MetadataItem label={t('issues.created')} value={timestamp(currentIssue.createdAtUtc)} />
-        <MetadataItem label={t('issues.updated')} value={timestamp(currentIssue.updatedAtUtc)} />
-        <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs text-tertiary">{t('issues.labels')}</dt><dd className="mt-1 flex flex-wrap gap-1.5">{currentIssue.labels.length ? currentIssue.labels.map(label => <StatusBadge key={label} tone="purple" compact>{label}</StatusBadge>) : <span className="text-sm text-secondary">{t('issues.none')}</span>}</dd></div>
-      </dl> : <p className="mt-2 text-sm text-tertiary">{issueRead.error ? t('issues.metadataUnavailable') : t('issues.loadingGitHub')}</p>}
-      {projectRead.error && <div className="mt-3 flex flex-wrap items-center gap-2"><Notice error>{t('issues.projectUnavailable')}</Notice><Button color="secondary" onPress={() => { void projectRead.refetch(); }}>{t('issues.retryProject')}</Button></div>}
-    </section>
+      />}
+      details={<IssueDetailsPanel
+        issue={currentIssue}
+        project={currentProject}
+        projectId={projectId}
+        issueError={issueRead.error}
+        projectError={!!projectRead.error}
+        onRetryProject={() => { void projectRead.refetch(); }}
+      />}
+    />
 
     <section aria-labelledby="issue-execution-history-heading" className="mt-8">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
@@ -241,10 +237,6 @@ function IssueStatusSummary({ issue: item, project: currentProject, state, issue
       <p className="text-xs text-tertiary">{t('issues.githubUpdated', { time: timestamp(item.updatedAtUtc) })}</p>
     </div>}
   </aside>;
-}
-
-function MetadataItem({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0"><dt className="text-xs text-tertiary">{label}</dt><dd className="mt-1 break-words font-medium text-secondary">{value}</dd></div>;
 }
 
 function ExecutionHistoryRow({ item, workers: workerItems }: { item: Execution; workers: { workerId: string; displayName?: string }[] }) {
