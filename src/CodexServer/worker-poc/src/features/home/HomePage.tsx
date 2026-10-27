@@ -8,11 +8,12 @@ import { completedExecutions, completedStatuses, homeWorkerSummary, recentProjec
 import { Notice, StatusBadge } from '../../shared/Presentation';
 import { ExternalLink } from '../../shared/Actions';
 import { Button } from '../../untitled/components/base/buttons/button';
-import { issueLink, timestamp, duration, statusColor, isActiveExecutionState } from '../../model';
+import { timestamp, duration, statusColor, isActiveExecutionState } from '../../model';
 import { presentation } from '../executions/model';
 import { ExecutionTable } from '../executions/ExecutionTable';
 import type { ExecutionSummary } from '../../shared/api/contracts';
 import { GuidDisplay } from '../../shared/GuidDisplay';
+import { IssueTitle } from '../projects/IssueTitle';
 import { WorkerConnectionBadge } from '../workers/WorkerConnectionBadge';
 
 export function HomePage() {
@@ -37,9 +38,7 @@ export function HomePage() {
   ];
   const linkClass = 'text-brand-secondary hover:underline';
   function issue(item: ExecutionSummary) {
-    const href = issueLink(item.workReference, item.projectId);
-    const label = item.workReference ? `${item.workReference.type === 'github-issue' ? t("home.issue") : `${item.workReference.type} `}${item.workReference.id}` : t("home.issueUnavailable");
-    return <span>{href ? <Link to={href}>{label}</Link> : label}<span className="text-tertiary">{' '}{t("home.titleUnavailable")}</span></span>;
+    return <IssueTitle projectId={item.projectId} workReference={item.workReference} />;
   }
   function executionRow(item: ExecutionSummary, active = false) {
     const state = presentation(item);
@@ -75,7 +74,7 @@ export function HomePage() {
           return <li key={project.id} className="grid grid-cols-[minmax(15rem,1fr)_7.5rem_minmax(18rem,1.25fr)] items-center gap-4 px-5 py-3">
           <div className="min-w-0"><Link className={`${linkClass} font-medium`} to={`/projects/${encodeURIComponent(project.id)}`}>{project.name}</Link><span className="mt-1 block truncate text-xs text-tertiary">{repoHref ? <ExternalLink href={repoHref}>{project.repository}</ExternalLink> : t("home.repositoryLinkUnavailable")}</span></div>
           <StatusBadge compact tone={project.enabled === true ? 'success' : 'gray'}>{project.enabled == null ? t("home.statusUnavailable") : project.enabled ? localizeText('Enabled') : localizeText('Disabled')}</StatusBadge>
-          {!activity.data ? <span className="text-sm text-tertiary">{t("home.executionActivityUnavailable")}</span> : latest ? <Link className="min-w-0 text-sm text-secondary hover:text-primary" to={`/executions/${encodeURIComponent(latest.id)}`}>{latest.workReference ? `${latest.workReference.type === 'github-issue' ? '#' : ''}${latest.workReference.id}` : t("home.issueUnavailable")} · {timestamp(latest.completedAtUtc ?? latest.startedAtUtc ?? latest.assignedAtUtc ?? latest.createdAtUtc)} · <StatusBadge compact tone={statusColor(latest.state)} active={isActiveExecutionState(latest.state)}>{localizeText(latest.state)}</StatusBadge></Link> : <span className="text-sm text-tertiary">{t("home.noRecordedExecutionActivityInThisSnapshot")}</span>}
+          {!activity.data ? <span className="text-sm text-tertiary">{t("home.executionActivityUnavailable")}</span> : latest ? <div className="min-w-0 text-sm text-secondary"><IssueTitle projectId={latest.projectId} workReference={latest.workReference} /><Link className="hover:text-primary" to={`/executions/${encodeURIComponent(latest.id)}`}> · {timestamp(latest.completedAtUtc ?? latest.startedAtUtc ?? latest.assignedAtUtc ?? latest.createdAtUtc)} · <StatusBadge compact tone={statusColor(latest.state)} active={isActiveExecutionState(latest.state)}>{localizeText(latest.state)}</StatusBadge></Link></div> : <span className="text-sm text-tertiary">{t("home.noRecordedExecutionActivityInThisSnapshot")}</span>}
         </li>;
         })}</ul></div></section>
     </div>

@@ -1465,7 +1465,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         ExecutionRequest? result;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             result = await reader.ReadAsync(cancellationToken) ? ReadExecution(reader) : null;
-        return result is null ? null : (await DecorateQueuedExecutionsAsync([result], cancellationToken))[0];
+        return result is null ? null : (await DecorateIssueTitlesAsync(
+            await DecorateQueuedExecutionsAsync([result], cancellationToken), cancellationToken))[0];
     }
 
     private async Task<IReadOnlyList<ExecutionRequest>> DecorateQueuedExecutionsAsync(IReadOnlyList<ExecutionRequest> executions,

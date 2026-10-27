@@ -56,6 +56,8 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
     ? issueExecutions(historyRead.retainedData, projectId, issueNumber)
     : undefined;
   const statusItems = statusRead.retainedData ?? [];
+  const displayTitle = currentIssue?.title?.trim()
+    || [...statusItems, ...(historyItems ?? [])].find(item => item.workReference?.title?.trim())?.workReference?.title;
   const current = issuePageState({
     projectAvailable: !!currentProject,
     projectEnabled: currentProject?.enabled === true,
@@ -112,7 +114,7 @@ function IssueHistoryPage({ projectId, issueNumber }: { projectId: string; issue
 
   return <>
     <PageHeading
-      title={currentIssue ? t('issues.heading', { number: issueNumber, title: currentIssue.title }) : t('issues.issueNumber', { number: issueNumber })}
+      title={displayTitle ? t('issues.heading', { number: issueNumber, title: displayTitle }) : t('issues.issueNumber', { number: issueNumber })}
       breadcrumbs={[
         { label: t('issues.issues'), href: `/projects/${encodeURIComponent(projectId)}` },
         { label: currentProject?.name ?? projectId, href: `/projects/${encodeURIComponent(projectId)}` },

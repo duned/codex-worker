@@ -32,6 +32,12 @@ public sealed class GitHubIssueReadProviderTests
             Assert.Equal("Saved title", Assert.Single(list, item => item.WorkReference.Id == "2").WorkReference.Title);
             Assert.Null(Assert.Single(list, item => item.ProjectId == other.Id).WorkReference.Title);
         }
+        foreach (var execution in await registry.GetExecutionsAsync())
+        {
+            var detail = await registry.GetExecutionAsync(execution.Id);
+            Assert.NotNull(detail);
+            Assert.Equal(execution.WorkReference.Title, detail.WorkReference.Title);
+        }
         Assert.Equal(requests, source.Batches.Count);
     }
 
