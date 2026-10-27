@@ -24,6 +24,8 @@ public sealed class CodexServerTests
     [Fact]
     public void StatusTimingUsesMillisecondsWithInvariantDecimalFormatting()
     {
+        Assert.Equal("0.100", StatusStageTiming.FormatMilliseconds(TimeSpan.FromTicks(1000)));
+        Assert.Equal("100.000", StatusStageTiming.FormatMilliseconds(TimeSpan.FromMilliseconds(100)));
         Assert.Equal("0.142", StatusStageTiming.FormatMilliseconds(TimeSpan.FromTicks(1420)));
         Assert.Equal("142.000", StatusStageTiming.FormatMilliseconds(TimeSpan.FromMilliseconds(142)));
     }

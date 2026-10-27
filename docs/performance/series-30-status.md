@@ -292,3 +292,124 @@ before and after deployment. The 0.142 ms sample does not identify a responsible
 code-controlled contributor to the roughly 260 ms RTT. No measured latency
 improvement or completed bottleneck diagnosis is claimed by this integration
 review; that acceptance item still requires the field capture.
+
+## 30.6: end-to-end diagnosis
+
+**Field capture pending; no Server bottleneck or latency reduction established.**
+The supplied single response reports `registry=0.148 ms`, `open=0.002 ms`,
+`execute=0.102 ms`, `reader=0.004 ms`, `projection=0.001 ms`, and
+`server_headers=0.192 ms`. `0.100` is **0.100 ms (100 microseconds)**;
+100 ms is `100.000`. `registry_execute` times the SQLite provider's
+`ExecuteReaderAsync` call, including initial stepping and possible provider
+wait/retry work, not just SQLite CPU time. These observations do not explain the
+roughly 260 ms client report: no paired full Server duration was supplied.
+Do not subtract those observations from an unrelated client sample.
+
+The #397 capture tool now separates three disjoint client boundaries, all in ms:
+
+| Report key | Scope |
+| --- | --- |
+| `connect_ms` | Explicit connection establishment, including DNS, TCP and TLS for HTTPS; on a reused connection only the connection-check overhead |
+| `request_headers_ms` | Sending the request through parsing all response headers; includes Server work, proxy and network waits, and may include reconnect work if a reused socket fails |
+| `body_read_ms` | Reading the remaining body after header parsing until EOF/content completion, discarding chunks |
+| `http_ms` | Sum of the above boundaries, including the complete response body |
+
+`connection_established` identifies samples that explicitly establish a connection.
+The default remains connection reuse; `--connection fresh` forces establishment
+for every sample. Connection setup combines DNS/TCP/TLS; it cannot distinguish
+those individually. Body bytes may already be buffered while headers are parsed;
+`body_read_ms` is client receive completion time, **not Server body-writing time**.
+The Server histogram measures middleware entry until downstream request handling
+returns, including serialization and response writes, but excludes transport drain
+and client receipt. `server_headers` stops at headers starting. Neither boundary
+covers the full round trip. No Server request logging or new Server stages are
+needed until a field capture demonstrates a material gap there.
+
+### Matched field procedure
+
+Use the environment/workload inventory above. Run these two probes concurrently
+(or in repeated matched windows with unchanged load), from their stated hosts:
+
+```sh
+# Affected client, through the same proxy/TLS origin as the slow route:
+python3 tools/capture-status.py https://server.example --count 300 --interval 5 --output route-reuse.json
+# Server host, against its actual configured listener (example only):
+python3 tools/capture-status.py http://127.0.0.1:5000 --count 300 --interval 5 --output listener-reuse.json
+```
+
+Use matching build, dataset, normal workload, count, interval and connection mode.
+Repeat both commands with `--connection fresh` and separate output files to test
+connection setup. Keep fresh and reused populations separate. Preserve report UTC
+windows and private topology notes. Do not change listener exposure or bypass TLS
+verification to run the probe. The tool sends no credentials, follows no redirects,
+prints one summary and saves no URLs, bodies or sensitive exception text. If the
+actual browser remains slow while this probe is fast, capture its queueing,
+connection/TLS, TTFB and content-download timings using browser network tools.
+
+During **each same UTC window**, export `CodexServer.Status` instruments
+`codex.server.status.duration` and `codex.server.status.stage.duration` from the
+operator's metrics/diagnostics collector. This checkout declares meters, not a
+built-in HTTP metrics exporter; the capture CLI cannot obtain the Server histogram
+from response headers. Retain count, units, window bounds and histogram buckets
+(or raw observations), then calculate window p50/p95/p99; label bucket-derived
+quantiles approximate. Use window deltas for cumulative buckets, never lifetime
+percentiles or an average in place of quantiles. If the collector exports only
+interval quantiles, retain those intervals; do not average their percentiles into
+a window percentile. Report unavailable exports explicitly. Server counts can
+include dashboard/other probe requests and failed requests, unlike the tool's
+HTTP-200-only distributions; inventory that traffic before comparing populations.
+
+For selected slow requests, retain a bounded hosting/proxy trace correlated using
+the existing `X-Codex-Request-Id` and UTC timestamps, with per-request Server
+processing and proxy upstream/total duration. Avoid payload/header dumps and
+credentials. A histogram alone cannot pair requests. Compare paired durations
+where available; never subtract independent p95/p99 values to assign a component.
+The existing `http_after_headers_ms` remains a paired boundary residual, not a
+network measurement.
+
+### Report to complete after capture
+
+Each distribution cell must contain **n; p50 / p95 / p99 in ms**, separately for
+reuse/fresh and each workload window. The tool's `summary` supplies nearest-rank
+client and header distributions; metric export supplies full Server processing.
+
+| Distribution | Affected route | Direct listener |
+| --- | --- | --- |
+| Client RTT (`http_ms`) | Pending | Pending |
+| Connection setup/check | Pending | Pending |
+| Request through headers | Pending | Pending |
+| Remaining body receive | Pending | Pending |
+| Full Server processing histogram | Pending | Pending |
+| `server_headers` | Pending | Pending |
+| Registry aggregate | Pending | Pending |
+| Registry open | Pending | Pending |
+| Registry execute | Pending | Pending |
+| Registry reader | Pending | Pending |
+| Registry projection | Pending | Pending |
+| Paired RTT minus Server headers | Pending | Pending |
+
+Also report attempts, successful responses, HTTP failures, transport failures and
+missing/invalid headers per stage separately (provided by the CLI). Observe
+readiness failures independently: HTTP 200 does not guarantee ready, and the tool
+intentionally discards the response payload. Include missing Server exports and
+unpaired slow samples instead of treating them as zero.
+
+Use this evidence to choose the next action:
+
+- High connection setup: split DNS/TCP/TLS in client diagnostics and inspect
+  connection reuse, resolver and TLS termination with the operator.
+- Low full Server processing and low direct RTT, high routed RTT: inspect proxy
+  upstream/total timings and client/network traces for the matched slow requests.
+- High Server processing after headers: trace serialization and response writes,
+  including downstream backpressure; client body receive alone cannot identify it.
+- High Server processing before headers: inspect middleware/preparation and the
+  measured registry stages before changing the responsible code.
+
+The measured boundary currently established is only the sub-millisecond registry
+and header sample. The two field windows, Server histogram exports and paired
+slow traces are still required to locate the remaining delay. They are operator
+follow-up, not a prerequisite for this local implementation. No speculative
+SQLite, cache or persistence change is introduced. Exact-unit .NET assertions
+cover both `0.100` and `100.000`; capture regressions protect client boundaries,
+sub-millisecond parsing, fresh mode, failures and missing headers. Local test
+fixtures are validation, not deployment performance measurements.
