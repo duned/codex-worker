@@ -683,6 +683,8 @@ public sealed class WorkerRegistrationTests
         public string? Uri { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/credential-access/request", StringComparison.Ordinal) == true)
+                return new(HttpStatusCode.NoContent);
             Method = request.Method.Method;
             Uri = request.RequestUri?.ToString();
             Authorization = request.Headers.Authorization?.ToString();
@@ -708,6 +710,8 @@ public sealed class WorkerRegistrationTests
         public string? LastAuthorization { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/credential-access/request", StringComparison.Ordinal) == true)
+                return new(HttpStatusCode.NoContent);
             RequestCount++;
             LastMethod = request.Method.Method;
             LastAuthorization = request.Headers.Authorization?.ToString();

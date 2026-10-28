@@ -328,6 +328,8 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
                     new HttpRequestException("Server registration request was rejected.", null, response.StatusCode));
             }
             await ValidateAcknowledgementAsync(response, identity, enrollment: false, cancellationToken);
+            await SynchronizeDeliveryAuthorizationAsync(Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath),
+                identity, connection.Endpoint, token, cancellationToken);
         }
         catch (WorkerStartupException) { throw; }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -375,6 +377,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             var activeToken = await WorkerAuthentication.LoadTokenAsync(identityPath, cancellationToken);
             await VerifyCredentialAsync(endpoint, identity, activeToken, capacity, cancellationToken);
             await WorkerRegistrationFile.ReplaceAsync(urlPath, endpoint, cancellationToken);
+            await SynchronizeDeliveryAuthorizationAsync(identityPath, identity, endpoint, activeToken, cancellationToken);
             return;
         }
         if (pending is null && bootstrapToken.Length == 0)
@@ -483,7 +486,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         catch (JsonException) { throw new InvalidDataException("Server returned an invalid registration acknowledgement. Pending material was retained."); }
     }
 
-    private static async Task PublishAsync(string identityPath, WorkerPendingRegistration pending, CancellationToken cancellationToken)
+    private async Task PublishAsync(string identityPath, WorkerPendingRegistration pending, CancellationToken cancellationToken)
     {
         // Journal verification before publishing either file. Runtime authentication refuses partial publication.
         pending = pending with { Verified = true };
@@ -491,6 +494,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         await WorkerRegistrationFile.ReplaceAsync(WorkerAuthentication.TokenPath(identityPath), pending.Token, cancellationToken);
         await WorkerRegistrationFile.ReplaceAsync(identityPath + ".server", pending.Endpoint, cancellationToken);
         File.Delete(identityPath + ".pending");
+        await SynchronizeDeliveryAuthorizationAsync(identityPath, pending.WorkerId, pending.Endpoint, pending.Token, cancellationToken);
     }
 
     private static async Task<string> ReadSafeServerErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken,
@@ -557,6 +561,10 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);
+        // Credential repair is control-plane work and must progress even while executions are active.
+        if (lifecycleState != WorkerLifecycleStates.Stopped)
+            await SynchronizeDeliveryAuthorizationAsync(Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath),
+                identity, connection.Endpoint, token, cancellationToken);
         await RetrieveJournalAsync(settings, identity, cancellationToken);
     }
 
@@ -589,6 +597,9 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
     {
         if (!settings.Enabled) throw new InvalidOperationException("Managed configuration requires Server mode.");
         var identity = await LoadRegisteredIdentityAsync(settings, cancellationToken);
+        var connection = WorkerAuthentication.GetConnection(settings);
+        await SynchronizeDeliveryAuthorizationAsync(Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath),
+            identity, connection.Endpoint, connection.Token, cancellationToken);
         using var request = CreateAuthorizedRequest(HttpMethod.Get, settings, $"api/v1/workers/{identity}/configuration");
         using var response = await SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -671,8 +682,9 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
     {
         if (!settings.Enabled) throw new InvalidOperationException("Credential delivery requires managed Server mode.");
         var connection = WorkerAuthentication.GetConnection(settings);
-        var token = Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
-        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Credential delivery requires CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN.");
+        var token = await LoadDeliveryTokenAsync(Path.GetFullPath(settings.IdentityFile ?? WorkerIdentity.DefaultPath), connection.Endpoint, cancellationToken)
+            ?? Environment.GetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN");
+        if (string.IsNullOrWhiteSpace(token)) throw new WorkerStartupException("Credential delivery authorization is unavailable. Repair it from the Worker dashboard.");
         var workerId = await LoadRegisteredIdentityAsync(settings, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Get,
             new Uri(new Uri(connection.Endpoint.TrimEnd('/') + "/"), $"api/v1/workers/{workerId}/credentials/{Uri.EscapeDataString(credentialId)}"));

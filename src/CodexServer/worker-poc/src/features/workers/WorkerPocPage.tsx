@@ -12,11 +12,13 @@ import { ApiError } from '../../shared/api/client';
 const actions = [
   { key: 'Enabled', label: t("workers.activateScheduling") }, { key: 'Draining', label: t("workers.drainWorker") },
   { key: 'Disabled', label: t("workers.deactivate") }, { key: 'revoke-api', label: t("workers.revokeWorkerAPIToken") },
+  { key: 'repair-delivery', label: t('workers.repairDeliveryAuthorization') },
   { key: 'revoke-delivery', label: t("workers.revokeDeliveryAuthorization") }
 ];
 function reason(key: string, registry?: WorkerAdministration, readiness?: WorkerReadiness, delivery?: DeliveryAuthorization) {
   if (!registry) return t("workers.currentRegistryStateUnavailableRefreshToRecoverIt");
-  if (key === 'revoke-delivery') return delivery?.status === 'active' ? '' : t("workers.noActiveCredentialDeliveryAuthorizationIsReported");
+  if (key === 'repair-delivery') return registry.authenticationCredentialStatus === 'active' ? '' : t('workers.noActiveWorkerAPITokenIsRegistered');
+  if (key === 'revoke-delivery') return ['active', 'pending', 'failed'].includes(delivery?.status ?? '') ? '' : t("workers.noActiveCredentialDeliveryAuthorizationIsReported");
   if (key === 'revoke-api') return registry.authenticationCredentialStatus === 'active' ? '' : t("workers.noActiveWorkerAPITokenIsRegistered");
   if (registry.schedulingPolicy === key) return t("workers.thisSchedulingPolicyIsAlreadyApplied");
   if (key === 'Enabled' && readiness?.canActivate !== true) return t('workers.activationBlocked', { reasons: readiness?.activationBlockingReasons?.map(localizeText).join('; ') || t("workers.readinessEvidenceUnavailable") });
@@ -66,6 +68,7 @@ export function WorkerPocPage({ id }: { id: string }) {
       const blocked = reason(key, current, evidence, authorization);
       if (blocked) throw new ApiError(blocked);
     };
+    if (key === 'repair-delivery') return runtime.mutate(resource, `${base}/credential-access/repair`, 'POST', undefined, deliveryAuthorization, check);
     if (key === 'revoke-delivery') return runtime.mutate(resource, `${base}/credential-access/revoke`, 'POST', undefined, deliveryAuthorization, check);
     return runtime.mutate(resource, key === 'revoke-api' ? `${base}/authentication/revoke` : `${base}/scheduling-policy`,
       key === 'revoke-api' ? 'POST' : 'PUT', key === 'revoke-api' ? undefined : { policy: key }, worker, check);
@@ -96,7 +99,7 @@ export function WorkerPocPage({ id }: { id: string }) {
     <ConfirmationDialog key={selected ?? 'closed'} isOpen={!!selected} onClose={() => setSelected(undefined)}
       title={actions.find(action => action.key === selected)?.label ?? t("workers.confirmAction")} actionLabel={t("workers.confirm")}
       destructive={selected === 'revoke-api' || selected === 'revoke-delivery' || selected === 'Disabled'} disabled={pending || locked}
-      description={selected === 'revoke-delivery' ? t("workers.stopFutureDeliveryOfServerManagedCredentialsToThisWorkerWorkerAPI") : selected === 'revoke-api'
+      description={selected === 'repair-delivery' ? t('workers.repairDeliveryDescription') : selected === 'revoke-delivery' ? t("workers.stopFutureDeliveryOfServerManagedCredentialsToThisWorkerWorkerAPI") : selected === 'revoke-api'
         ? t("workers.callsUsingThisTokenWillBeDeniedAndActiveLeasesMayExpire")
         : selected === 'Enabled' ? t("workers.allowNewAssignmentsAfterCurrentServerReadinessValidationExistingAssignmentsAndLeases")
         : selected === 'Draining' ? t("workers.pauseNewAssignmentsWhileExistingAssignmentsKeepTheirLeasesAndFinishThis")

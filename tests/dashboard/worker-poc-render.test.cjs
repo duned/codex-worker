@@ -167,3 +167,11 @@ test('Canonical detail preserves multiple actual slots, linked concurrent stages
  for (const text of ['2 / 2', 'Current executions', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
  assert.ok(!html.includes('Detail preview'));
 });
+test('Credential delivery repair exposes pending guidance and an accessible action without secrets',()=>{
+ const html=render({administration:{worker,delivery:{status:'pending'},actions:[{key:'repair-delivery',label:'Provision or repair delivery authorization',reason:''}],onAction:()=>{},onRefresh:()=>{}}});
+ assert.ok(html.includes('Provision or repair delivery authorization'));
+ assert.ok(html.includes('Keep the Worker online'));
+ assert.ok(html.includes('aria-describedby="poc-delivery-repair-delivery-reason"'));
+ assert.ok(html.includes('role="status"'));
+ assert.ok(!html.includes('CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN'));
+});

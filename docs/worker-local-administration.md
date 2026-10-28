@@ -215,14 +215,23 @@ Server's credential is never sent there. The previous active association and mat
 remain intact until the new endpoint has acknowledged and authenticated enrollment.
 After migration to a distinct Server registry, explicitly revoke the old Server
 credential there; moving association does not grant authority to administer the
-previous Server. Reconfigure separate credential-delivery authorization for that
-destination before restarting. When only the endpoint of the same registry changes,
+previous Server. Separate credential-delivery authorization is automatically
+provisioned for the destination, with protected local persistence confirmed before
+Server activation. No delivery secret needs to be copied into systemd.
+When only the endpoint of the same registry changes,
 association already replaces its API credential: do not revoke that Worker's token
-afterward, which would revoke the newly associated credential. Existing delivery
-authorization in the retained registry remains independent.
+afterward, which would revoke the newly associated credential. Delivery
+authorization remains separate and is renewed through the same confirmed exchange.
 
-The identity, `.token`, `.server`, and `.pending` files are owner-only on Unix. The
-pending journal retains Worker ID, endpoint, operation and fresh credential across
+The identity, `.token`, `.server`, `.pending`, and `.delivery` files are owner-only on Unix.
+The `.delivery` file holds the separate credential-delivery secret scoped to the
+associated Server. Existing managed Workers can provision or repair it from
+**Worker detail → Current control state → Provision or repair delivery authorization**.
+Keep the Worker online; pending changes activate only after it confirms persistence.
+Failed requests can be retried after restoring connectivity or local file access;
+no manual secret copying or service environment edits are needed.
+
+The pending journal retains Worker ID, endpoint, operation and fresh credential across
 failures; it never retains the operator authorization. Retrying with the **same endpoint
 and operation** authenticates that retained material first, reconciling a lost response
 without generating another credential or blindly consuming another authorization.

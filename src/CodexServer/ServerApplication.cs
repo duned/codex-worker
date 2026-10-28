@@ -373,7 +373,7 @@ public static partial class ServerApplication
                 TimeSpan.FromMinutes(15), context.RequestAborted);
             return Results.Ok(new { authorization = token, lifetimeSeconds = 900 });
         });
-        app.MapPost("/api/v1/workers/register", async (WorkerRegistrationRequest request, HttpContext context, IRegistryStore store) =>
+        app.MapPost("/api/v1/workers/register", async (WorkerRegistrationRequest request, HttpContext context, IRegistryStore store, ICredentialStore credentials) =>
         {
             if (request is null || !Valid(request))
             {
@@ -393,6 +393,8 @@ public static partial class ServerApplication
                 return RegistrationError(app, context, StatusCodes.Status401Unauthorized, "invalid_bootstrap_token",
                     "Worker authorization was rejected: it may be invalid, expired, used, bound to another identity/operation, or association may have active assignments. Retain pending state and reconcile the same Server and operation first; drain active assignments before requesting a fresh authorization.");
             }
+            await credentials.RequestWorkerDeliveryAsync(
+                request.WorkerId, repair: operation == "associate", context.RequestAborted);
             return Results.Ok(new CodexProvisioning.WorkerEnrollmentAcknowledgement(CodexProvisioning.WorkerEnrollmentProtocol.AcknowledgementVersion, request.WorkerId));
         });
         app.MapPost("/api/v1/credentials", async (CreateCredentialRequest request, HttpContext context, ServerConfiguration settings, ICredentialStore store) =>
@@ -426,6 +428,30 @@ public static partial class ServerApplication
             if (await registry.GetWorkerAsync(request.WorkerId, context.RequestAborted) is null) return Results.NotFound();
             var credential = await store.AssignAsync(credentialId, request.WorkerId, context.RequestAborted);
             return credential is null ? Results.NotFound() : Results.Ok(credential);
+        });
+        app.MapPost("/api/v1/workers/{workerId}/credential-access/repair", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore registry, ICredentialStore credentials) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            var worker = await registry.GetWorkerAsync(workerId, context.RequestAborted);
+            if (worker is null) return Results.NotFound();
+            if (worker.AuthenticationCredentialStatus != "active") return Results.Conflict(new { error = "Restore Worker API authentication before repairing credential delivery." });
+            await credentials.RequestWorkerDeliveryAsync(workerId, repair: true, context.RequestAborted);
+            return Results.Ok(await credentials.GetWorkerDeliveryAuthorizationStatusAsync(workerId, context.RequestAborted));
+        });
+        app.MapPost("/api/v1/workers/{workerId}/credential-access/request", async (string workerId, HttpContext context,
+            IRegistryStore registry, ICredentialStore credentials) =>
+        {
+            if (!await AuthorizedWorkerAsync(context, registry, workerId)) return WorkerUnauthorized();
+            var operation = await credentials.RequestWorkerDeliveryAsync(workerId, repair: false, context.RequestAborted);
+            return operation is null ? Results.NoContent() : Results.Ok(operation);
+        });
+        app.MapPost("/api/v1/workers/{workerId}/credential-access/confirm", async (string workerId, WorkerDeliveryConfirmation confirmation,
+            HttpContext context, IRegistryStore registry, ICredentialStore credentials) =>
+        {
+            if (!await AuthorizedWorkerAsync(context, registry, workerId)) return WorkerUnauthorized();
+            return await credentials.ConfirmWorkerDeliveryAsync(workerId, confirmation, context.RequestAborted)
+                ? Results.NoContent() : Results.Conflict();
         });
         app.MapPut("/api/v1/workers/{workerId}/credential-access", async (string workerId, CredentialSecretInput token,
             HttpContext context, ServerConfiguration settings, IRegistryStore registry, ICredentialStore store) =>

@@ -413,14 +413,13 @@ function ControlRail({ administration }) {
 
 function DeliveryControl({ administration }) {
   useLanguage();
-  const action = administration?.actions?.find(item => item.key === 'revoke-delivery');
-  if (!action) return null;
-  return <div className="poc-extra-control">
-    <Button color="tertiary-destructive" size="md" className="w-full justify-start" iconLeading={Trash01} isDisabled={!!action.reason || !administration?.onAction} aria-describedby="poc-delivery-action-reason" onPress={() => administration?.onAction('revoke-delivery')}>
+  const actions = administration?.actions?.filter(item => ['repair-delivery', 'revoke-delivery'].includes(item.key)) ?? [];
+  return actions.map(action => <div key={action.key} className="poc-extra-control">
+    <Button color={action.key === 'revoke-delivery' ? 'tertiary-destructive' : 'secondary'} size="md" className="w-full justify-start" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`poc-delivery-${action.key}-reason`} onPress={() => administration?.onAction(action.key)}>
       {localizeText(action.label)}
     </Button>
-    <p id="poc-delivery-action-reason" className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
-  </div>;
+    <p id={`poc-delivery-${action.key}-reason`} className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
+  </div>);
 }
 
 export function CapabilityCard({ capability, commands, children }) {
@@ -488,6 +487,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
               <div><dt>{t('shared.workerAPIToken')}</dt><dd><Status value={administration?.worker?.authenticationCredentialStatus ?? t('shared.unavailable')} />{administration?.worker?.authenticationCredentialRevokedAtUtc && <p>{t('shared.revoked')} {timestamp(administration.worker.authenticationCredentialRevokedAtUtc)}</p>}</dd></div>
             </dl>
             <p id="poc-policy-effect">{t('shared.schedulingControlsAffectNewAssignmentsExistingAssignmentsAndLeasesAreNotCancelled')}</p>
+            {['pending', 'failed', 'not-configured', 'revoked'].includes(administration?.delivery?.status) && <p role="status">{t('workers.repairDeliveryDescription')}</p>}
             <p id="poc-delivery-effect">{t('shared.revokingDeliveryAuthorizationStopsFutureServerCredentialDeliveryWorkerAPIAuthenticationAnd')}</p>
             <p id="poc-token-effect">{t('shared.revokingWorkerAPIAuthenticationDeniesCallsUsingItsTokenActiveLeasesMay')}</p>
             {administration?.actions?.map(action => <p key={action.key}>{localizeText(action.label)} · {localizeText(action.reason || t('shared.confirmationRequired'))}</p>)}

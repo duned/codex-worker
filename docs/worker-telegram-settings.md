@@ -27,12 +27,28 @@ an immutable encrypted credential assigned to that Worker; after a successful
 revision-checked save the previous credential is revoked. Rejected saves revoke
 staged credentials; uncertain commit outcomes preserve them for reconciliation.
 
-Runtime delivery uses the existing authorized credential endpoint and the
-Worker's `CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN`. Missing, revoked or invalid
-delivery credentials leave synchronization pending/failed and retain the running
-notification configuration. Operators can replace the token, restore credential
-delivery authorization, or disable Telegram. The credential delivery endpoint is
-Worker-only; management sessions cannot use it to retrieve saved tokens.
+Runtime delivery uses the existing authorized credential endpoint and a separate
+per-Worker delivery authorization, provisioned automatically during enrollment or
+association. No manual token copying or systemd environment edits are required.
+The Worker generates and atomically saves the secret in its protected identity
+state (`.delivery`) before confirming persistence over its authenticated managed
+connection; the Server stores only a verifier. The Worker API token remains separate.
+
+For an existing Worker, open **Worker detail → Current control state → Provision
+or repair delivery authorization**. Keep the Worker online with active Worker API
+authentication. Repair runs on authenticated heartbeats even while executions are
+active. The dashboard shows **pending** until the Worker saves and confirms
+the authorization, then **active**. After five minutes without confirmation it shows
+**failed**: restore connectivity/service-account access to identity state and request
+repair again. Repeated pending requests reuse the operation; expired retries create
+a fresh operation and reject stale confirmations. Revocation stops automatic
+reprovisioning until an administrator requests repair. Missing, revoked or invalid
+authorization leaves Telegram synchronization failed and retains the running
+notification configuration. Once active, wait for configuration synchronization,
+then use **Send test message** to verify Telegram delivery. Operators can also replace
+the bot token or disable Telegram. Existing environment delivery tokens remain a
+fallback for installations without a saved delivery authorization. The credential
+delivery endpoint is Worker-only; management sessions cannot use it to retrieve saved tokens.
 
 Changes travel in managed snapshot contract 4 (only Workers with an override).
 Contracts 2 and 3 remain unchanged for untouched installations. The snapshot hash

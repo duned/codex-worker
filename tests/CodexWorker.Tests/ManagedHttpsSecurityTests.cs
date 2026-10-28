@@ -220,7 +220,13 @@ public sealed class ManagedHttpsSecurityTests
         const string sentinel = "isolated-https-provider-secret-sentinel";
         Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", deliveryToken);
         var credential = await credentials.CreateAsync(new("test-provider", "api-token", new(sentinel)));
+        // Repair the deliberately mismatched verifier through authenticated managed control.
         await credentials.SetWorkerDeliveryTokenAsync(workerId, new(deliveryToken));
+        await credentials.RequestWorkerDeliveryAsync(workerId, repair: true);
+        Assert.True(await worker.SynchronizeDeliveryAuthorizationAsync(identityPath, workerId, settings.EffectiveUrl,
+            WorkerAuthentication.GetToken(settings), CancellationToken.None));
+        using var local = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(identityPath + ".delivery"));
+        var persistedDeliveryToken = local.RootElement.GetProperty("Token").GetString();
         Assert.Null(await worker.RetrieveCredentialAsync(settings, credential.Id, CancellationToken.None));
         await credentials.AssignAsync(credential.Id, workerId);
         var delivered = Assert.IsType<CredentialDeliveryResponse>(await worker.RetrieveCredentialAsync(settings, credential.Id, CancellationToken.None));
@@ -229,7 +235,7 @@ public sealed class ManagedHttpsSecurityTests
 
         // Conditional requests still receive a fresh non-cacheable representation.
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{settings.Url}/api/v1/workers/{workerId}/credentials/{credential.Id}");
-        request.Headers.Add("X-Worker-Credential-Token", deliveryToken);
+        request.Headers.Add("X-Worker-Credential-Token", persistedDeliveryToken);
         request.Headers.TryAddWithoutValidation("If-None-Match", "*");
         using var response = await WorkerServerHttpTransport.SendAsync(http, request, TimeSpan.FromSeconds(10), CancellationToken.None);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

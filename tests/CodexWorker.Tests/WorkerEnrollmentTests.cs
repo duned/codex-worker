@@ -394,6 +394,8 @@ public sealed class WorkerEnrollmentTests
         public List<string> Tokens { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/credential-access/request", StringComparison.Ordinal) == true)
+                return new(HttpStatusCode.NoContent);
             var registration = await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadFromJsonAsync<WorkerRegistrationRequest>(cancellationToken: cancellationToken);
             Assert.NotNull(registration);
             var bearer = request.Headers.Authorization?.Parameter ?? "";

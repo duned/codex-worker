@@ -987,6 +987,8 @@ export const es = {
   "workers.drainWorker": "Drenar agente",
   "workers.deactivate": "Desactivar",
   "workers.revokeWorkerAPIToken": "Revocar token API del agente",
+  "workers.repairDeliveryAuthorization": "Configurar o reparar autorización de entrega",
+  "workers.repairDeliveryDescription": "Solicitar acceso protegido a credenciales. Mantenga el agente conectado; se activa cuando guarda su secreto. La solicitud caduca tras cinco minutos; repárela de nuevo si falla. Actualice el estado autoritativo para comprobar el progreso.",
   "workers.revokeDeliveryAuthorization": "Revocar autorización de entrega",
   "workers.currentRegistryStateUnavailableRefreshToRecoverIt": "Estado actual del registro no disponible. Actualice para recuperarlo.",
   "workers.noActiveCredentialDeliveryAuthorizationIsReported": "No se informa ninguna autorización activa de entrega de credenciales.",

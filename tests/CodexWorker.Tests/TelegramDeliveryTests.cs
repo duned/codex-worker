@@ -130,12 +130,20 @@ public sealed class TelegramDeliveryTests
             var token = await WorkerAuthentication.LoadOrCreateTokenAsync(identity);
             var bootstrap = await registry.CreateWorkerBootstrapTokenAsync(TimeSpan.FromMinutes(1));
             Assert.True(await registry.BootstrapWorkerAsync(bootstrap, new(2, id, "Worker", "1", "linux", 1, []), token));
+            // A mismatched Server verifier must be replaced without exposing either value.
             await credentials.SetWorkerDeliveryTokenAsync(id, new("telegram-test-delivery-authorization-token"));
             using var management = new HttpClient { BaseAddress = new Uri(url) };
             var path = $"/api/v1/workers/{id}/telegram/test";
             using var unauthorized = await management.PostAsJsonAsync(path, new { });
             Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+            using var unauthorizedRepair = await management.PostAsync($"/api/v1/workers/{id}/credential-access/repair", null);
+            Assert.Equal(HttpStatusCode.Unauthorized, unauthorizedRepair.StatusCode);
             management.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "telegram-test-management");
+            using var managementRequest = await management.PostAsync($"/api/v1/workers/{id}/credential-access/request", null);
+            Assert.Equal(HttpStatusCode.Unauthorized, managementRequest.StatusCode);
+            using var managementConfirmation = await management.PostAsJsonAsync($"/api/v1/workers/{id}/credential-access/confirm",
+                new WorkerDeliveryConfirmation(Guid.NewGuid().ToString("N"), new(new string('a', 64))));
+            Assert.Equal(HttpStatusCode.Unauthorized, managementConfirmation.StatusCode);
             using var save = await management.PutAsJsonAsync($"/api/v1/workers/{id}/settings",
                 new WorkerConfigurationUpdateRequest("Worker", 1, 1, Telegram: new(true, "-100123456", new(BotToken))));
             save.EnsureSuccessStatusCode();
@@ -156,11 +164,22 @@ public sealed class TelegramDeliveryTests
                 (credentialId, ct) => worker.RetrieveCredentialAsync(settings, credentialId, ct), CancellationToken.None));
             Assert.Equal("error", synchronizer.Status.SynchronizationStatus);
             Assert.Empty(handler.Chats);
-            Environment.SetEnvironmentVariable("CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN", "telegram-test-delivery-authorization-token");
+            using var repair = await management.PostAsync($"/api/v1/workers/{id}/credential-access/repair", null);
+            repair.EnsureSuccessStatusCode();
+            Assert.Equal("pending", (await repair.Content.ReadFromJsonAsync<WorkerDeliveryAuthorizationStatus>())?.Status);
+            await worker.HeartbeatAsync(settings, 1, 1, [], "running", CancellationToken.None);
+            Assert.Equal("active", (await credentials.GetWorkerDeliveryAuthorizationStatusAsync(id)).Status);
             await ManagedTelegramConfiguration.SynchronizeAsync(synchronizer, notifier, new(false, null, null),
                 ct => worker.GetManagedConfigurationAsync(settings, ct),
                 (credentialId, ct) => worker.RetrieveCredentialAsync(settings, credentialId, ct), CancellationToken.None);
             Assert.Empty(handler.Chats);
+            Assert.Equal("active", (await credentials.GetWorkerDeliveryAuthorizationStatusAsync(id)).Status);
+            Assert.True(File.Exists(identity + ".delivery"));
+            using var localDelivery = JsonDocument.Parse(await File.ReadAllTextAsync(identity + ".delivery"));
+            var protectedSecret = localDelivery.RootElement.GetProperty("Token").GetString() ?? throw new InvalidDataException();
+            var dashboardStatus = await management.GetStringAsync($"/api/v1/workers/{id}/credential-access");
+            Assert.DoesNotContain(protectedSecret, dashboardStatus, StringComparison.Ordinal);
+            Assert.DoesNotContain(BotToken, dashboardStatus, StringComparison.Ordinal);
             await registry.HeartbeatWorkerAsync(new(2, id, "1", "running", 0, 1, [], [],
                 synchronizer.Status.SynchronizationStatus, synchronizer.Status.AppliedVersion));
             using var queued = await management.PostAsJsonAsync(path, new { });

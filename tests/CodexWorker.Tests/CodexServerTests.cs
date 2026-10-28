@@ -1696,6 +1696,15 @@ public sealed class CodexServerTests
             var identity = await WorkerIdentity.LoadOrCreateAsync(identityPath);
             Assert.Single(await store.GetWorkersAsync());
             Assert.True(await store.IsWorkerTokenValidAsync(identity, WorkerAuthentication.GetToken(settings)));
+            var delivery = app.Services.GetRequiredService<ICredentialStore>();
+            Assert.Equal("active", (await delivery.GetWorkerDeliveryAuthorizationStatusAsync(identity)).Status);
+            Assert.True(File.Exists(identityPath + ".delivery"));
+            Assert.False(await delivery.IsWorkerDeliveryTokenValidAsync(identity, WorkerAuthentication.GetToken(settings)));
+            var priorDelivery = await File.ReadAllTextAsync(identityPath + ".delivery");
+            var association = await store.CreateWorkerAuthorizationAsync(identity, "associate", TimeSpan.FromMinutes(15));
+            await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).BootstrapAsync(settings, 1, association, "associate", CancellationToken.None);
+            Assert.Equal("active", (await delivery.GetWorkerDeliveryAuthorizationStatusAsync(identity)).Status);
+            Assert.NotEqual(priorDelivery, await File.ReadAllTextAsync(identityPath + ".delivery"));
             await new WorkerRegistrationClient(client, TestCapabilityDiscovery.Create()).HeartbeatAsync(settings, 1, 0, [], "running", CancellationToken.None);
             Assert.False(await EnrollWorkerAsync(store, bootstrap, identity, WorkerAuthentication.GetToken(settings)));
             using var management = new HttpClient { BaseAddress = new Uri(url) };

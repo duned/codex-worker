@@ -973,6 +973,8 @@ export const en = {
   "workers.drainWorker": "Drain worker",
   "workers.deactivate": "Deactivate",
   "workers.revokeWorkerAPIToken": "Revoke Worker API token",
+  "workers.repairDeliveryAuthorization": "Provision or repair delivery authorization",
+  "workers.repairDeliveryDescription": "Request protected credential access. Keep the Worker online; authorization activates only after it saves its secret. Pending requests expire after five minutes; repair again if failed. Refresh authoritative state to check progress.",
   "workers.revokeDeliveryAuthorization": "Revoke delivery authorization",
   "workers.currentRegistryStateUnavailableRefreshToRecoverIt": "Current registry state unavailable. Refresh to recover it.",
   "workers.noActiveCredentialDeliveryAuthorizationIsReported": "No active credential-delivery authorization is reported.",
