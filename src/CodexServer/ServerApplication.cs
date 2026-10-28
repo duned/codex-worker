@@ -92,6 +92,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
+        builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ExecutionMaintenanceStore(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
             services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
@@ -129,6 +130,7 @@ public static partial class ServerApplication
             await persistence.InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ExecutionMaintenanceStore>().InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<TelegramTestStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ICredentialStore>().InitializeAsync(cancellationToken);
         }
         catch
@@ -710,6 +712,7 @@ public static partial class ServerApplication
             return Results.Ok(WorkerDiagnosticsDerivation.Derive(worker, projects, plans,
                 ManagedConfigurationVersion(projects, worker.WorkerExecutionSlots, worker.Telegram), typedCommands, clock.GetUtcNow()));
         });
+        MapTelegramTests(app);
         app.MapGet("/api/v1/workers/{workerId}/configuration", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {

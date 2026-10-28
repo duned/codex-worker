@@ -551,6 +551,9 @@ public sealed class WorkerHost
                 if (managed && active.Count == 0 &&
                     await _registration.ExecuteWorkerUpdateAsync(_global.Server, _global.Worker.Provisioning, runtimeReadModel, executionToken))
                     continue;
+                if (managed && managedConfiguration?.Status.SynchronizationStatus == "synchronized" && active.Count == 0 &&
+                    await _registration.ExecuteTelegramTestAsync(_global.Server, managedConfiguration, telegram, executionToken))
+                    continue;
                 if (managed && active.Count == 0 && managedConfiguration?.Status.SynchronizationStatus == "synchronized" &&
                     await _registration.ExecuteMaintenanceCommandAsync(_global.Server, history, runtimeReadModel, executionToken,
                         async (command, authorize, token) =>

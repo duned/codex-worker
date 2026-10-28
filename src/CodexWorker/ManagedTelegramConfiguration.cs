@@ -28,7 +28,11 @@ internal static class ManagedTelegramConfiguration
                 effective = await ResolveAsync(snapshot.Telegram, local.Enabled, local.Token, local.ChatId, retrieveCredential, token);
                 resolving = false;
                 return snapshot;
-            }, cancellationToken);
+            }, cancellationToken, () =>
+            {
+                if (effective is null) throw new InvalidOperationException("Telegram configuration was not resolved.");
+                notifier.Configure(effective.Enabled, effective.Token, effective.ChatId);
+            });
         }
         catch (Exception error) when (resolving && (error is InvalidDataException or HttpRequestException or OperationCanceledException) &&
             !cancellationToken.IsCancellationRequested)
@@ -36,8 +40,6 @@ internal static class ManagedTelegramConfiguration
             synchronizer.RecordTelegramFailure();
             throw;
         }
-        if (effective is null) throw new InvalidOperationException("Telegram configuration was not resolved.");
-        notifier.Configure(effective.Enabled, effective.Token, effective.ChatId);
         return projects;
     }
 

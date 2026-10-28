@@ -62,7 +62,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
         new("unverified", "not-synchronized", "none", null, null, null, null, []);
 
     public async Task<IReadOnlyList<(string Path, WorkerConfiguration Configuration)>> RetrieveAndApplyAsync(
-        Func<CancellationToken, Task<ServerManagedConfigurationContract>> retrieve, CancellationToken token)
+        Func<CancellationToken, Task<ServerManagedConfigurationContract>> retrieve, CancellationToken token, Action? beforeAcknowledgement = null)
     {
         ServerManagedConfigurationContract desired;
         try { desired = await retrieve(token); }
@@ -72,7 +72,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
             RecordUnavailable(ex);
             throw;
         }
-        return Apply(desired);
+        return Apply(desired, updateStatus: true, beforeAcknowledgement);
     }
 
     public void RecordUnavailable(Exception exception)
@@ -144,7 +144,7 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
 
     private IReadOnlyList<(string Path, WorkerConfiguration Configuration)> Apply(
         ServerManagedConfigurationContract desired,
-        bool updateStatus)
+        bool updateStatus, Action? beforeAcknowledgement = null)
     {
         var stage = "contract-validation";
         ServerProjectContract? preparing = null;
@@ -172,6 +172,8 @@ public sealed class ManagedConfigurationSynchronizer(string cachePath, ManagedPr
                 {
                     var unchanged = string.Equals(_status.AppliedVersion, desired.Version, StringComparison.Ordinal) && File.Exists(_cachePath);
                     if (!unchanged) PersistAtomically(desired);
+                    // Publish synchronized status only after runtime notification settings are installed.
+                    beforeAcknowledgement?.Invoke();
                     _appliedProjects = desired.Projects.ToArray();
                     _appliedWorkerExecutionSlots = desired.WorkerExecutionSlots;
                     _appliedTelegram = desired.Telegram;

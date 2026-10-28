@@ -52,3 +52,35 @@ during a Server outage, a cached explicit override cannot fall back to environme
 credentials: managed notification delivery waits for authenticated retrieval.
 A validated cached snapshot with no override preserves local notification
 behavior. Cached projects still do not authorize scheduling during an outage.
+
+## Verify delivery from the dashboard
+
+Open **Workers → Worker → Edit → Telegram notifications**. Enable managed
+Telegram, enter the destination (for example `-100123456789` or `@my_channel`),
+and supply a replacement bot token if needed. Save. The displayed values are the
+Server's **desired** settings. **Pending** means that the Worker has not yet
+acknowledged this snapshot; wait until it is idle and synchronization completes.
+**Applied** means its latest heartbeat acknowledges the current snapshot, including
+successful credential retrieval and runtime configuration. It does not by itself
+prove that Telegram accepts the token or that the bot can post to the destination.
+**Stale** means the Worker is offline or has an old heartbeat; **failed**
+synchronization requires checking credential delivery authorization and diagnostics.
+The saved token is never displayed.
+
+Once Telegram is enabled and the current configuration is acknowledged by an
+online Worker, select **Send test message**. Unsaved edits must be saved first.
+The action queues one bounded request through the authenticated Worker control
+path. The Worker checks the requested snapshot against its applied snapshot and
+the current Server snapshot, then sends with its active notifier. It never asks
+the management client to retrieve a token. Saving alone never queues a test.
+
+The result starts as **Pending**; select **Refresh test result** to observe
+completion. **Telegram accepted** means the Bot API returned HTTP success and
+`ok: true` from that Worker. A rejection means checking the bot token, exact chat
+ID, bot membership, and channel posting permissions. Network failure, a changed
+configuration, timeout, or an interrupted Worker cannot establish delivery;
+refresh Worker diagnostics before explicitly requesting another test. Requests
+expire after 60 seconds and dispatched tests are never automatically replayed,
+including after a Server or Worker restart. A timeout can leave delivery uncertain.
+The dashboard retains the latest observation per Worker; it describes the
+snapshot used by that test, not a later configuration update.

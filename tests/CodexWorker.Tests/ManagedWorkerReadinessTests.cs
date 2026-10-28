@@ -154,6 +154,7 @@ public sealed class ManagedWorkerReadinessTests
             }
             Assert.False(path.EndsWith("/assignments/request", StringComparison.Ordinal));
             return new(path.EndsWith("/maintenance/executions/request", StringComparison.Ordinal) ||
+                path.EndsWith("/telegram/test/request", StringComparison.Ordinal) ||
                 path.EndsWith("/provisioning/request", StringComparison.Ordinal) ||
                 path.EndsWith("/commands/request", StringComparison.Ordinal) ? HttpStatusCode.NoContent : HttpStatusCode.OK);
         });

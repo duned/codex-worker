@@ -172,22 +172,47 @@ public sealed class TelegramNotifier : IDisposable
         if (match.Success) lines.Add($"{label}: {match.Groups[1].Value}");
     }
 
+    internal async Task<string> TestAsync(CancellationToken ct) =>
+        (await DeliverAsync("Codex Worker Telegram delivery test.", ct)).Diagnostic;
+
     private async Task SendAsync(string text, CancellationToken ct, bool html = false)
     {
+        if (!Volatile.Read(ref _settings).Enabled) return;
+        var result = await DeliverAsync(text, ct, html);
+        if (result.HttpStatus is { } status) _console.Warning($"Telegram notification failed with HTTP {status}; worker continues.");
+        else if (result.Diagnostic != "accepted") _console.Warning($"Telegram notification failed: {result.Diagnostic}; worker continues.");
+    }
+
+    private async Task<(string Diagnostic, int? HttpStatus)> DeliverAsync(string text, CancellationToken ct, bool html = false)
+    {
         var settings = Volatile.Read(ref _settings);
-        if (!settings.Enabled) return;
+        if (!settings.Enabled || settings.Token is null || settings.ChatId is null) return ("delivery-unavailable", null);
         try
         {
             var payload = new Dictionary<string, object?> { ["chat_id"] = settings.ChatId, ["text"] = text };
             if (html) payload["parse_mode"] = "HTML";
             using var response = await _client.PostAsJsonAsync($"https://api.telegram.org/bot{settings.Token}/sendMessage", payload,
                 TelegramJsonOptions, ct);
-            if (!response.IsSuccessStatusCode) _console.Warning($"Telegram notification failed with HTTP {(int)response.StatusCode}; worker continues.");
+            if (!response.IsSuccessStatusCode) return ("telegram-rejected", (int)response.StatusCode);
+            // Read only a bounded response. Never surface Telegram descriptions or request URLs.
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var buffer = new byte[65537];
+            var length = 0;
+            while (length < buffer.Length)
+            {
+                var read = await stream.ReadAsync(buffer.AsMemory(length), ct);
+                if (read == 0) break;
+                length += read;
+            }
+            if (length == buffer.Length) return ("delivery-unavailable", null);
+            using var body = JsonDocument.Parse(buffer.AsMemory(0, length));
+            return body.RootElement.ValueKind == JsonValueKind.Object && body.RootElement.TryGetProperty("ok", out var ok) &&
+                ok.ValueKind == JsonValueKind.True ? ("accepted", null) : ("telegram-rejected", null);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or IOException)
         {
-            var detail = settings.Token is null ? ex.Message : ex.Message.Replace(settings.Token, "[redacted]", StringComparison.Ordinal);
-            _console.Warning($"Telegram notification failed: {detail}; worker continues.");
+            return ("delivery-unavailable", null);
         }
     }
 

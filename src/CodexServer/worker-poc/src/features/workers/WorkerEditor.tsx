@@ -14,6 +14,8 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { Checkbox } from '../../untitled/components/base/checkbox/checkbox';
 import { saveWorkerSettings } from './worker-settings';
 import { workerUpdate } from './worker-update';
+import { telegramTest } from './telegram-test';
+import { telegramSynchronization, telegramResultLabel } from './telegram-model.mjs';
 import { workerConfiguration, workerVersionState, workerUpdateBlockReason } from './worker-editor-model.mjs';
 
 interface WorkerEditorProps {
@@ -58,6 +60,10 @@ export function WorkerEditor({ worker, workerStatusError = false, diagnostics, d
   const [telegramToken, setTelegramToken] = useState('');
   const [clearTelegramToken, setClearTelegramToken] = useState(false);
   const [telegramDirty, setTelegramDirty] = useState(false);
+  const testRead = useApiRead(`${path}/telegram/test`, telegramTest);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testError, setTestError] = useState('');
+  const testGuard = useRef(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshRequired, setRefreshRequired] = useState(false);
@@ -82,6 +88,22 @@ export function WorkerEditor({ worker, workerStatusError = false, diagnostics, d
   const validSlots = Number.isInteger(Number(slots)) && Number(slots) >= 1 && Number(slots) <= 8;
   const dirty = telegramDirty || slots !== baseline.workerExecutionSlots || currentName !== baseline.displayName.trim() || capacity !== baseline.maximumParallelExecutions;
   const canSubmit = dirty && !busy && !locked && !refreshRequired && !refreshing;
+
+  const telegramState = telegramSynchronization(worker, diagnostics, revision, workerStatusError || diagnosticsLoading || diagnosticsError);
+  const telegramApplied = telegramState === 'applied';
+  const testPending = testRead.data?.status === 'pending' || testRead.data?.status === 'running';
+  async function sendTelegramTest() {
+    if (testGuard.current || dirty || !telegramApplied || !worker.telegram?.enabled) return;
+    testGuard.current = true; setTestBusy(true); setTestError('');
+    try {
+      await runtime.mutate(resource, `${path}/telegram/test`, 'POST', {}, telegramTest, async signal => {
+        const current = await runtime.read(path, signal, validateWorker);
+        if (current.configurationRevision !== revision) throw new Error(t('workers.editorRevisionConflict'));
+      });
+      await testRead.refetch();
+    } catch { setTestError(t('workers.telegramTestFailed')); }
+    finally { testGuard.current = false; setTestBusy(false); }
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -223,8 +245,16 @@ export function WorkerEditor({ worker, workerStatusError = false, diagnostics, d
           <div className="worker-editor-section-heading"><h2 id="worker-editor-telegram">{t('workers.telegramTitle')}</h2><p>{t('workers.telegramScope')}</p></div>
           <div className="worker-editor-card">
             <p>{t(worker.telegram ? 'workers.telegramManaged' : 'workers.telegramLegacy')}</p>
-            {worker.telegram && <p role="status">{t(!diagnosticsLoading && !diagnosticsError && diagnostics?.configurationSynchronization === 'synchronized' && diagnostics.configurationRevision === revision && worker.availability !== 'stale' ? 'workers.telegramApplied' : 'workers.telegramPending')}</p>}
             <p className="worker-editor-help">{t('workers.telegramApply')}</p>
+            {worker.telegram && <>
+              <p role="status">{t(telegramState === 'stale' ? 'workers.telegramStale' : telegramState === 'failed' ? 'workers.telegramRuntimeFailure' : telegramApplied ? 'workers.telegramApplied' : 'workers.telegramPending')}</p>
+              <Button color="secondary" isDisabled={!telegramApplied || !worker.telegram.enabled || !worker.telegram.tokenConfigured || dirty || locked || testBusy || testPending || !session.authenticated} onPress={() => { void sendTelegramTest(); }}>{t('workers.telegramTest')}</Button>
+              <p className="worker-editor-help">{t('workers.telegramTestHelp')}</p>
+              {testRead.data && <p className="worker-editor-help">{t('workers.telegramTestObservation')} {testRead.data.deadlineUtc}</p>}
+              {testRead.data && <p role="status">{t(telegramResultLabel(testRead.data))}</p>}
+              {(testPending || testRead.hasError) && <Button color="secondary" onPress={() => { void testRead.refetch(); }}>{t('workers.telegramTestRefresh')}</Button>}
+              {(testError || testRead.hasError) && <p role="alert">{testError || t('workers.telegramTestFailed')}</p>}
+            </>}
             {!telegramOverride && <Button color="secondary" onPress={() => { setTelegramOverride(true); setTelegramDirty(true); }}>{t('workers.telegramManage')}</Button>}
             {telegramOverride && <>
               <Checkbox label={t('workers.telegramEnabled')} isSelected={telegramEnabled} onChange={selected => { setTelegramEnabled(selected); setTelegramDirty(true); }} />
