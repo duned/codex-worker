@@ -550,6 +550,44 @@ public sealed class ServerGitHubAdministrationTests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ApplyingCustomReadyLabelPreservesBlockersAndSkipsConcurrentOrClosedWrites()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "apply-ready.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "reviewed", issueBlockedLabel: "blocked"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(41, blockers: [BlockingIssue(42, "open")]));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+
+        var result = await service.SetIssueLabelAsync(project.Id, 41, new("reviewed", Applied: true));
+        Assert.True(result.Changed);
+        Assert.Equal(project.Repository, result.Repository);
+        Assert.Equal(41, result.IssueNumber);
+        Assert.Equal("reviewed", result.Label);
+        Assert.Equal(new[] { "label:add" }, writer.Operations);
+        // A fresh read can observe another administrator's successful label write.
+        read.Add(project.Repository, Issue(41, labels: ["REVIEWED"], blockers: [BlockingIssue(42, "open")]));
+        var repeated = await service.SetIssueLabelAsync(project.Id, 41, new("reviewed", Applied: true));
+        Assert.False(repeated.Changed);
+        Assert.Single(writer.Operations);
+        var refreshed = await service.GetIssueAsync(project.Id, 41);
+        Assert.NotNull(refreshed);
+        Assert.False(refreshed.IsEligible);
+        Assert.NotEmpty(refreshed.EligibilityReasons);
+        Assert.Single(refreshed.BlockedBy);
+        Assert.Empty(await registry.GetExecutionsAsync());
+
+        read.Add(project.Repository, Issue(41) with { State = "CLOSED" });
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            service.SetIssueLabelAsync(project.Id, 41, new("reviewed", Applied: true)));
+        Assert.Single(writer.Operations);
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
     public async Task IssueMutationPreviewValidationAndIdempotencyStayProjectScoped()
@@ -862,6 +900,16 @@ public sealed class ServerGitHubAdministrationTests
             Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
             var updated = await updateResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>();
             Assert.Equal("Edited", updated!.Title);
+
+            // Concurrent application is an authenticated, idempotent no-op.
+            using var alreadyReadyResponse = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/labels/configured",
+                new GitHubIssueLabelRequest("READY", Applied: true));
+            Assert.Equal(HttpStatusCode.OK, alreadyReadyResponse.StatusCode);
+            Assert.False((await alreadyReadyResponse.Content.ReadFromJsonAsync<GitHubIssueMutationResult>())!.Changed);
+            github.Add(project.Repository, Issue(57) with { State = "CLOSED" });
+            using var closedReadyResponse = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/57/labels/configured",
+                new GitHubIssueLabelRequest("ready", Applied: true));
+            Assert.Equal(HttpStatusCode.BadRequest, closedReadyResponse.StatusCode);
 
             using var invalidLabel = await client.PutAsJsonAsync($"{issuePath}{project.Id}/github/issues/55/labels/configured",
                 new GitHubIssueLabelRequest("worker:done", Applied: true));

@@ -1,4 +1,10 @@
 export const en = {
+  "projects.applyReady": "Apply {label}",
+  "projects.readyApplying": "Applying {label}…",
+  "projects.readyApplied": "{label} applied. This action does not enqueue work; other eligibility requirements still apply.",
+  "projects.readyFailed": "Could not confirm the label update. Refresh the Issue and reconcile the action before retrying.",
+  "projects.readyClosed": "The Issue is closed. Refresh its current state.",
+
   "projects.validationCommands": "Validation commands",
   "projects.validationCommandsHelp": "The Worker runs these shell commands sequentially in the execution worktree. Order matters. An empty list runs no validation commands.",
   "projects.validationUseDefaults": "Use Worker default validation commands",

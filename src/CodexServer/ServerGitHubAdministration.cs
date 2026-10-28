@@ -763,6 +763,9 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
         if (request.PreviewOnly || !changed)
             return new("label", project.Repository, request.PreviewOnly, changed, issue.Number, issue.Url, issue.Title, null,
                 label, request.Applied, null);
+        if (request.Applied && string.Equals(label, project.IssueReadyLabel, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(issue.State, "open", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The Ready label can only be applied to an open Issue.");
         if (request.Applied) await _issueWriter.AddLabelAsync(project, issueNumber, label, cancellationToken);
         else await _issueWriter.RemoveLabelAsync(project, issueNumber, label, cancellationToken);
         return new("label", project.Repository, false, true, issue.Number, issue.Url, issue.Title, null,

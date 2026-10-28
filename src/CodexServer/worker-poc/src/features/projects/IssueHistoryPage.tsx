@@ -1,3 +1,4 @@
+import { ReadyLabelAction } from './ReadyLabelAction';
 import { useState } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { Dialog, DialogTrigger, Heading, Popover } from 'react-aria-components';
@@ -222,7 +223,8 @@ function IssueStatusSummary({ issue: item, project: currentProject, state, issue
       <p className="text-sm text-secondary">{summaryText}</p>
       {state.state === 'completed' && <p className="text-sm text-success-primary">{t('issues.completedLabelPresent', { label: issueDoneLabel })}</p>}
       {state.state === 'closed' && <p className="text-sm text-warning-primary">{t('issues.closedDoneLabelMissing', { label: issueDoneLabel })}</p>}
-      {state.state === 'blocked' && currentProject?.enabled && !item.isEligible && item.eligibilityReasons.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-warning-primary">{item.eligibilityReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
+      {currentProject && !issueError && <ReadyLabelAction project={currentProject} issue={item} />}
+      {!item.isEligible && item.eligibilityReasons.length > 0 && <ul className="list-disc space-y-1 pl-5 text-sm text-warning-primary">{item.eligibilityReasons.map(reason => <li key={reason}>{reason}</li>)}</ul>}
       {state.active && state.state !== 'completed' && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverExecution')}</span><StatusBadge tone={serverTone(state.active.state)} active={state.active.state === 'Running'} compact>{localizeText(state.active.state)}</StatusBadge><Link className="break-all font-medium text-brand-secondary hover:underline" to={`/executions/${encodeURIComponent(state.active.id)}`}>{t('issues.currentExecution', { id: state.active.id })}</Link></p>}
       {(state.state === 'ready' || state.state === 'failed') && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverEligibility')}</span><StatusBadge tone="success" compact>{t('issues.eligible')}</StatusBadge></p>}
       {state.state === 'blocked' && <p className="flex flex-wrap items-center gap-2 text-sm text-secondary"><span>{t('issues.serverEligibility')}</span><StatusBadge tone="warning" compact>{!currentProject?.enabled ? t('issues.projectDisabledShort') : t('issues.ineligible')}</StatusBadge></p>}

@@ -19,6 +19,7 @@ const clone = value => structuredClone(value);
     page.on('pageerror', error => errors.push(error.message));
     let projects = clone(props.projects), failVerify = false, loseSave = false, loseIssue = false, loseEnqueue = false, loseRefresh = false, loseLifecycle = false, loseDelete = false;
     let queue = [{ id: 'queued-27', projectId: 'project-a', workReference: { type: 'github-issue', id: '27' }, state: 'Queued', createdAtUtc: '2026-01-01T00:02:30Z', managedEligibilityState: 'eligible', managedEligibilityReasons: [], managedEligibilityCheckedAtUtc: '2026-01-01T00:02:30Z' }], nextIssue = 30;
+    let readyGate, concurrentReady = false, failReady = false;
     const issues = new Map([
       [27, { number: 27, title: 'Repair parser', body: 'Bounded description', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/27', labels: ['ready'], assignees: [], blockedBy: [], isEligible: true, eligibilityReasons: [] }],
       [28, { number: 28, title: 'Blocked task', body: '', state: 'open', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-02T00:00:00Z', url: 'https://github.com/owner/repo/issues/28', labels: [], assignees: [], blockedBy: [{ number: 27, title: 'Repair parser', state: 'open', url: 'https://github.com/owner/repo/issues/27' }], isEligible: false, eligibilityReasons: ['Ready label is missing.', 'Blocked by open Issue #27.'] }]
@@ -52,6 +53,11 @@ const clone = value => structuredClone(value);
         if (method === 'GET') return route.fulfill({ status: rawNumber && !current ? 404 : 200, json: rawNumber ? current ?? {} : [...issues.values()] });
         if (body?.previewOnly) { previews.push(endpoint); return route.fulfill({ json: { operation: rawNumber ? 'update' : 'create', repository: projects.find(p => p.id === projectId)?.repository ?? 'owner/repo', previewOnly: true, changed: true, issueNumber: rawNumber ? number : null, title: body.title ?? current?.title, body: body.body ?? current?.body, label: body.label ?? null, applied: body.applied ?? null, relatedIssueNumber: body.blockerIssueNumber ?? null } }); }
         effects.push({ endpoint, method, body });
+        if (suffix === '/labels/configured' && body.label === 'ready' && body.applied) {
+          if (readyGate) await readyGate;
+          if (failReady) { failReady = false; return route.fulfill({ status: 503, json: { error: 'GitHub unavailable' } }); }
+          if (concurrentReady) { concurrentReady = false; current.labels = ['ready']; }
+        }
         if (suffix === '/enqueue') {
           const e = { id: 'queued-27', projectId, workReference: { type: 'github-issue', id: String(number) }, state: 'Queued', createdAtUtc: '2026-01-01T00:02:30Z', managedEligibilityState: 'eligible', managedEligibilityReasons: [], managedEligibilityCheckedAtUtc: '2026-01-01T00:02:30Z' };
           queue.push(e); if (loseEnqueue) { loseEnqueue = false; return route.abort(); } return route.fulfill({ status: 201, json: e });
@@ -59,7 +65,7 @@ const clone = value => structuredClone(value);
         if (suffix === '/eligibility/refresh') { queue = queue.map(e => ({ ...e, managedEligibilityCheckedAtUtc: '2026-01-01T00:02:31Z' })); if (loseRefresh) { loseRefresh = false; return route.abort(); } return route.fulfill({ json: queue }); }
         let updated;
         if (!rawNumber) { const newNumber = nextIssue++; updated = { ...clone(issues.get(27)), number: newNumber, title: body.title, body: body.body, url: `https://github.com/owner/repo/issues/${newNumber}` }; }
-        else if (suffix === '/labels/configured') updated = { ...current, labels: body.applied ? [...current.labels, body.label] : current.labels.filter(l => l !== body.label) };
+        else if (suffix === '/labels/configured') updated = { ...current, labels: body.applied ? [...new Set([...current.labels, body.label])] : current.labels.filter(l => l !== body.label) };
         else if (suffix === '/dependencies/blocked-by') updated = { ...current, blockedBy: body.applied ? [{ number: body.blockerIssueNumber, title: 'Prerequisite', state: 'open', url: `https://github.com/owner/repo/issues/${body.blockerIssueNumber}` }] : [] };
         else updated = { ...current, title: body.title, body: body.body };
         updated.isEligible = updated.labels.includes('ready') && !updated.labels.includes('blocked') && !updated.blockedBy.some(b => b.state === 'open');
@@ -81,6 +87,44 @@ const clone = value => structuredClone(value);
       }
       throw Error(`Unexpected fixture ${method} ${endpoint}`);
     });
+    // Both Ready-label entry points retain independent eligibility blockers.
+    const originalBlocked = clone(issues.get(28));
+    issues.set(29, { ...clone(originalBlocked), number: 29, title: 'Closed task', state: 'closed', url: 'https://github.com/owner/repo/issues/29' });
+    await page.goto('https://dashboard.test/projects/project-a?issues=1&issueState=all');
+    const applyReady = () => page.getByRole('button', { name: 'Apply ready', exact: true });
+    await applyReady().waitFor();
+    assert.equal(await applyReady().count(), 1); // Already-labelled and closed rows omit it.
+    let releaseReady;
+    readyGate = new Promise(resolve => { releaseReady = resolve; });
+    const beforeReady = effects.length;
+    await applyReady().click();
+    await page.getByRole('button', { name: 'Applying ready…', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Applying ready…', exact: true }).isDisabled(), true);
+    releaseReady(); readyGate = undefined;
+    await page.getByText(/ready applied. This action does not enqueue work/).waitFor();
+    assert.deepEqual(effects.slice(beforeReady).map(e => [e.method, e.endpoint, e.body]), [
+      ['PUT', '/api/v1/projects/project-a/github/issues/28/labels/configured', { label: 'ready', applied: true, previewOnly: false }]
+    ]);
+    assert.equal(issues.get(28).isEligible, false);
+    await page.getByText('Configured label or open blocked-by Issue prevents eligibility.').waitFor();
+    assert.equal(await applyReady().count(), 0);
+
+    issues.set(28, clone(originalBlocked)); concurrentReady = true;
+    await page.goto('https://dashboard.test/projects/project-a/issues/28');
+    await applyReady().click();
+    await page.getByText(/ready applied. This action does not enqueue work/).waitFor();
+    assert.deepEqual(issues.get(28).labels, ['ready']);
+    await page.getByText('Configured label or open blocked-by Issue prevents eligibility.').waitFor();
+    assert.equal(await applyReady().count(), 0);
+    assert.equal(queue.length, 1); // Applying a label never enqueues.
+
+    issues.set(28, clone(originalBlocked)); failReady = true;
+    await page.reload(); await applyReady().click();
+    await page.getByRole('alert').filter({ hasText: 'Could not confirm the label update' }).waitFor();
+    assert.equal(await applyReady().isDisabled(), true);
+    assert.deepEqual(issues.get(28).labels, []);
+    // Reset the session and fixtures for the existing administration campaign.
+    issues.set(28, clone(originalBlocked)); issues.delete(29); effects.length = 0;
     const detail = 'https://dashboard.test/projects/project-a?issue=27&issueState=open&label=ready&issues=1&step=preparation';
     for (const { width, height } of [{ width: 1440, height: 1040 }, { width: 1280, height: 1000 }, { width: 375, height: 1000 }]) {
       await page.setViewportSize({ width, height }); await page.goto(detail);

@@ -78,8 +78,9 @@ function useWorkspaceOwner() {
       remember(key); setMessage(deleting ? t("projects.projectDeletedExecutionHistoryIsRetained") : t('projects.lifecycleChanged', { state: statusLabel(enabled ? 'Enabled' : 'Disabled') }), p.id);
     } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(t("projects.actionUnavailableCheckAuthoritativeStateTheServerEnforcesRevisionAndInUse"), p.id); throw error; }
   }
-  async function submitIssue(d: IssueDraft) {
-    if (d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && !d.preview) throw Error(t("projects.previewTheCurrentChangesBeforeApplying"));
+  async function submitIssue(d: IssueDraft, applyReady = false) {
+    const readyAction = applyReady && d.change.kind === 'label' && d.change.applied && d.change.label === d.project.issueReadyLabel;
+    if (d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && !d.preview && !readyAction) throw Error(t("projects.previewTheCurrentChangesBeforeApplying"));
     const key = fenceKey(d.project.id), request = changeRequest(d.project.id, d.before?.number, d.change);
     const attempt: Attempt = { kind: 'issue', project: d.project, before: d.before, change: d.change };
     if (runtime.locked(key)) throw Error(t("projects.reconcileTheRetainedAttemptBeforeAnotherWrite"));
@@ -98,7 +99,8 @@ function useWorkspaceOwner() {
             const observed = await runtime.read(issuePath(current.id, d.before.number), signal, issue);
             if (observed.number !== d.before.number) throw Error(t("projects.unexpectedIssueIdentity"));
             if (d.change.kind === 'enqueue' && (!current.enabled || !observed.isEligible)) throw Error(t("projects.issueAdmissionIsBlockedRefreshEligibilityAndProjectPolicy"));
-            if (d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && JSON.stringify(observed) !== JSON.stringify(d.before)) throw Error(t("projects.issueChangedReopenItAndPreviewTheCurrentState"));
+            if (readyAction && observed.state.toLowerCase() !== 'open') throw Error(t('projects.readyClosed'));
+            if (!readyAction && d.change.kind !== 'enqueue' && d.change.kind !== 'refresh' && JSON.stringify(observed) !== JSON.stringify(d.before)) throw Error(t("projects.issueChangedReopenItAndPreviewTheCurrentState"));
             if (d.change.kind === 'enqueue' || d.change.kind === 'refresh') {
               const items = await runtime.read(queuePath(current.id, d.before.number), signal, executionList);
               if (d.change.kind === 'enqueue' && items.some(item => ['Queued', 'Assigned'].includes(item.state) || isActiveExecutionState(item.state)))
@@ -108,7 +110,7 @@ function useWorkspaceOwner() {
             }
           }
         });
-      remember(key); if (d.change.kind !== 'enqueue') setIssueDraft(undefined);
+      remember(key); if (d.change.kind !== 'enqueue' && !readyAction) setIssueDraft(undefined);
       setMessage(d.change.kind === 'refresh' ? Array.isArray(result) && result.length ? result.map(e => `${e.id}: ${e.managedEligibilityState ?? 'unavailable'}${e.managedEligibilityReasons?.length ? ' · ' + e.managedEligibilityReasons.join('; ') : ''}`).join(' · ') : t("projects.noQueuedRequestExistsForThisIssue") : t("projects.issueActionConfirmedByTheServer"), d.project.id);
       return result;
     } catch (error) { if (!runtime.locked(key)) remember(key); setMessage(runtime.locked(key) ? t("projects.issueActionCouldNotBeConfirmedReconcileExplicitlyBeforeAnotherWriteNo") : error instanceof Error ? error.message : t("projects.issueActionUnavailable"), d.project.id); throw error; }

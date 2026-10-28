@@ -1,5 +1,11 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "projects.applyReady": "Añadir {label}",
+  "projects.readyApplying": "Añadiendo {label}…",
+  "projects.readyApplied": "{label} añadida. Esta acción no añade trabajo a la cola; siguen vigentes los demás requisitos.",
+  "projects.readyFailed": "No se pudo confirmar el cambio. Actualiza el Issue y concilia la acción antes de reintentar.",
+  "projects.readyClosed": "El Issue está cerrado. Actualiza su estado.",
+
   "projects.validationCommands": "Comandos de validación",
   "projects.validationCommandsHelp": "El Worker ejecuta estos comandos de shell secuencialmente en el árbol de trabajo de la ejecución. El orden importa. Una lista vacía no ejecuta comandos de validación.",
   "projects.validationUseDefaults": "Usar los comandos de validación predeterminados del Worker",
