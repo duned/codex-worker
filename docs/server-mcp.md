@@ -68,3 +68,11 @@ creation in GitHub before taking further action; changing the operation ID can c
 Text edits and label changes set desired values through the existing administration service.
 A failed refresh can follow a successful write; refresh before retrying. Planning calls obey the
 same 16 KiB request limit as other MCP calls.
+
+## Managed Worker maintenance
+
+`get_worker_maintenance(workerId)` reloads registered Worker state, provisioning capability status/action allowlists, bounded operation history and the current restart/update operation. `request_worker_maintenance(workerId, operationId, action)` accepts only `restart` or `update`. Retain the operation ID for idempotent requests and poll the inspection tool. Existing protocol readiness, drain, idle, node-local policy, deadline and uncertain-outcome recovery rules apply; reload is an inspection, not a remote configuration or shell command.
+
+`request_worker_provisioning(workerId, capabilityId, action, timeoutSeconds?, allowElevation?, repository?)` queues only existing typed provisioning actions, with a 5–600 second deadline. An accepted request returns an operation ID, not proof of node authorization or completion. Poll `get_worker_provisioning_operation(workerId, operationId)` for pending, running, succeeded, failed, cancelled or timedout status and typed diagnostics. Duplicate active capability operations are rejected. `cancel_worker_provisioning` cancels queued commands only; running or uncertain commands retain existing deadline and node inspection/reconciliation semantics. Requests are never automatically replayed. These tools target registered managed Workers only and do not affect standalone ownership.
+
+Outputs omit private keys, public identities, device login instructions, local paths, raw logs and credential payloads. Authentication setup remains on the existing node-local path. No caller-selected package, version, executable or shell text is accepted. All tools require the existing management authorization.

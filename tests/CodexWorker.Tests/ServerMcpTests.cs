@@ -54,14 +54,14 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
             var discovery = await Rpc(client, "tools/list", new { });
             var tools = discovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
-            Assert.Equal(new[] { "cancel_execution", "create_project_issue", "dispatch_execution", "get_execution", "get_execution_operation", "list_executions", "list_projects", "list_workers", "retry_execution_report", "server_health", "set_project_issue_label", "update_project_issue" },
+            Assert.Equal(new[] { "cancel_execution", "cancel_worker_provisioning", "create_project_issue", "dispatch_execution", "get_execution", "get_execution_operation", "get_worker_maintenance", "get_worker_provisioning_operation", "list_executions", "list_projects", "list_workers", "request_worker_maintenance", "request_worker_provisioning", "retry_execution_report", "server_health", "set_project_issue_label", "update_project_issue" },
                 tools.Select(tool => tool.GetProperty("name").GetString()).Order(StringComparer.Ordinal));
             Assert.All(tools, tool =>
             {
                 var name = tool.GetProperty("name").GetString();
-                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report" or "create_project_issue" or "update_project_issue" or "set_project_issue_label"),
+                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report" or "create_project_issue" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning"),
                     tool.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean());
-                Assert.Equal(name is "cancel_execution" or "retry_execution_report" or "update_project_issue" or "set_project_issue_label",
+                Assert.Equal(name is "cancel_execution" or "retry_execution_report" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning",
                     tool.GetProperty("annotations").GetProperty("destructiveHint").GetBoolean());
                 Assert.DoesNotContain("cancellationToken", tool.GetProperty("inputSchema").GetRawText(), StringComparison.OrdinalIgnoreCase);
             });
@@ -95,6 +95,40 @@ public sealed class ServerMcpTests
             var project = await store.CreateProjectAsync(new("project", "example/repo", "main", "secret=private-description",
                 ValidationCommands: ["echo private-command"]));
             await store.HeartbeatWorkerAsync(new(2, workerId, "1.2.3", "running", 0, 1, capabilities, [project.Id]));
+            Assert.Equal("unsupported-action", (await Call(client, "request_worker_maintenance", new { workerId, operationId = Guid.NewGuid().ToString("N"), action = "shell" })).GetProperty("reason").GetString());
+            Assert.Equal("rejected", (await Call(client, "request_worker_maintenance", new { workerId, operationId = Guid.NewGuid().ToString("N"), action = "restart" })).GetProperty("outcome").GetString());
+            Assert.Equal("unsupported-or-invalid-provisioning-action", (await Call(client, "request_worker_provisioning", new { workerId, capabilityId = "/private/executable", action = "Install" })).GetProperty("reason").GetString());
+            var provisioning = await Call(client, "request_worker_provisioning", new { workerId, capabilityId = "git", action = "Detect", timeoutSeconds = 5 });
+            var provisioningId = provisioning.GetProperty("operationId").GetString();
+            Assert.Equal("pending", provisioning.GetProperty("status").GetString());
+            Assert.Equal("active-capability-operation", (await Call(client, "request_worker_provisioning", new { workerId, capabilityId = "git", action = "Detect" })).GetProperty("reason").GetString());
+            Assert.Equal("pending", (await Call(client, "get_worker_provisioning_operation", new { workerId, operationId = provisioningId })).GetProperty("status").GetString());
+            Assert.Equal("cancelled", (await Call(client, "cancel_worker_provisioning", new { workerId, operationId = provisioningId })).GetProperty("status").GetString());
+            var commandStore = app.Services.GetRequiredService<ProvisioningCommandStore>();
+            using (var cancelledRequest = new CancellationTokenSource())
+            {
+                await cancelledRequest.CancelAsync();
+                var workerTools = new ServerWorkerTools(store, commandStore);
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => workerTools.Inspect(workerId, cancelledRequest.Token));
+            }
+            foreach (var report in new[]
+            {
+                new ProvisioningCommandReport(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied),
+                new ProvisioningCommandReport(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut,
+                    FailureDetail: new(ProvisioningFailureCode.TimedOut))
+            })
+            {
+                var pending = await Call(client, "request_worker_provisioning", new { workerId, capabilityId = "git", action = "Detect" });
+                var claimed = Assert.IsType<ProvisioningCommand>(await commandStore.ClaimAsync(workerId));
+                Assert.Equal(pending.GetProperty("operationId").GetString(), claimed.Id);
+                Assert.Equal("operation-requires-reconciliation", (await Call(client, "cancel_worker_provisioning", new { workerId, operationId = claimed.Id })).GetProperty("reason").GetString());
+                await commandStore.ReportAsync(claimed.Id, workerId, report);
+                var completed = await Call(client, "get_worker_provisioning_operation", new { workerId, operationId = claimed.Id });
+                Assert.Equal(report.Status.ToString().ToLowerInvariant(), completed.GetProperty("status").GetString());
+                Assert.Equal(report.Diagnostic.ToString(), completed.GetProperty("diagnostic").GetString());
+            }
+            var maintenanceState = await Call(client, "get_worker_maintenance", new { workerId });
+            Assert.DoesNotContain("private", maintenanceState.GetRawText(), StringComparison.OrdinalIgnoreCase);
             var dispatched = await Call(client, "dispatch_execution", new { projectId = project.Id, issueNumber = 42 });
             Assert.Equal("accepted", dispatched.GetProperty("outcome").GetString());
             var queued = Assert.IsType<ExecutionRequest>(await store.GetExecutionAsync(dispatched.GetProperty("executionRequestId").GetString() ?? ""));
