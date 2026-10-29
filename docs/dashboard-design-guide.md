@@ -14,6 +14,16 @@ These owner-approved repository files are the current visual targets. Match thei
 
 ![Approved Worker detail reference](mockups/worker-detail-approved.svg)
 
+The following owner-approved follow-up references refine the controls and lower information blocks of the same page. They replace those areas of the main reference when implementing the Worker detail page.
+
+#### Worker controls and status refresh
+
+![Worker controls and status refresh](mockups/worker-detail-controls-refinement.svg)
+
+#### Lower information layout
+
+![Worker detail lower information layout](mockups/worker-detail-lower-refinement.svg)
+
 ### Home
 
 ![Approved Home reference](mockups/home-summary.svg)
