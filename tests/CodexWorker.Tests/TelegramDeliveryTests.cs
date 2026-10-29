@@ -214,6 +214,48 @@ public sealed class TelegramDeliveryTests
         }
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ManagedLifecycleUsesWorkerIdentityWithoutNotificationsFromRepeatedSync(bool enabled)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var handler = new FakeTelegram(true);
+            using var client = new HttpClient(handler);
+            using var notifier = new TelegramNotifier(false, null, null, client, workerName: "registered-node");
+            var synchronizer = new ManagedConfigurationSynchronizer(Path.Combine(directory, "snapshot.json"), new());
+            var settings = new WorkerTelegramConfiguration(enabled, enabled ? "123" : null, enabled ? Guid.NewGuid().ToString("N") : null);
+            var snapshot = new ServerManagedConfigurationContract(4,
+                ManagedConfigurationSynchronizer.CalculateVersion([], telegram: settings), [], Telegram: settings);
+            Task SynchronizeAsync() => ManagedTelegramConfiguration.SynchronizeAsync(synchronizer, notifier,
+                new(false, BotToken, null), _ => Task.FromResult(snapshot),
+                (id, _) => Task.FromResult<CredentialDeliveryResponse?>(new(id, "telegram", "bot-token", 1, BotToken)), CancellationToken.None);
+
+            await SynchronizeAsync();
+            await notifier.StartedAsync(0, CancellationToken.None);
+            await SynchronizeAsync();
+            await SynchronizeAsync();
+            await notifier.StoppedAsync(0, CancellationToken.None);
+
+            if (enabled)
+            {
+                Assert.Equal(new[]
+                {
+                    $"🟢 registered-node {ApplicationVersion.Display} · INICIADO\n0 proyectos cargados",
+                    $"⚫ registered-node {ApplicationVersion.Display} · DETENIDO"
+                }, handler.Messages);
+            }
+            else Assert.Empty(handler.Messages);
+            Assert.DoesNotContain(handler.Messages, message => message.Contains(BotToken, StringComparison.Ordinal));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     private sealed class TestClock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
@@ -223,11 +265,13 @@ public sealed class TelegramDeliveryTests
     private sealed class FakeTelegram(bool accepted) : HttpMessageHandler
     {
         public List<string?> Chats { get; } = [];
+        public List<string> Messages { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Assert.Equal("api.telegram.org", request.RequestUri?.Host);
             Assert.NotNull(request.Content);
             using var body = JsonDocument.Parse(await request.Content.ReadAsStringAsync(cancellationToken));
+            Messages.Add(body.RootElement.GetProperty("text").GetString() ?? throw new InvalidDataException("Missing Telegram text."));
             Chats.Add(body.RootElement.GetProperty("chat_id").GetString());
             return new(HttpStatusCode.OK) { Content = new StringContent(accepted ? "{\"ok\":true}" : "{\"ok\":false,\"description\":\"private upstream detail\"}") };
         }

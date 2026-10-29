@@ -316,14 +316,14 @@ public sealed class OperabilityTests
             attemptNumber: 2, resumed: true);
         await telegram.StartingAsync("Codex Worker Test", "duned/codex-worker", issue, retry, CancellationToken.None);
 
-        Assert.StartsWith($"🟢 CW {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
-        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA INICIADA · CW {ApplicationVersion.Display}", MessageAt(1));
-        Assert.StartsWith($"🟡 <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA BLOQUEADA · CW {ApplicationVersion.Display}", MessageAt(2));
+        Assert.StartsWith($"🟢 {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · INICIADO\nCodex Worker Test", MessageAt(0));
+        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA INICIADA · {WorkerIdentity.DisplayName} {ApplicationVersion.Display}", MessageAt(1));
+        Assert.StartsWith($"🟡 <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA BLOQUEADA · {WorkerIdentity.DisplayName} {ApplicationVersion.Display}", MessageAt(2));
         Assert.Contains("Which endpoint path?", MessageAt(2));
-        Assert.StartsWith($"❌ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA FALLIDA · CW {ApplicationVersion.Display}", MessageAt(3));
+        Assert.StartsWith($"❌ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA FALLIDA · {WorkerIdentity.DisplayName} {ApplicationVersion.Display}", MessageAt(3));
         Assert.Contains("Duración: 02:00", MessageAt(3));
-        Assert.StartsWith($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
-        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA REANUDADA · CW {ApplicationVersion.Display}", MessageAt(5));
+        Assert.StartsWith($"🚨 {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · INFRAESTRUCTURA\nProyecto: Codex Worker Test\nWorker detenido", MessageAt(4));
+        Assert.StartsWith($"▶ <a href=\"https://github.com/duned/codex-worker/issues/5\">Add application uptime endpoint #5</a>\nCODEX WORKER TEST · TAREA REANUDADA · {WorkerIdentity.DisplayName} {ApplicationVersion.Display}", MessageAt(5));
         Assert.Contains("Intento 2 · resume · ejecución", MessageAt(5));
         Assert.Contains("ejecución anterior [0b3fdff5]", MessageAt(5));
         Assert.DoesNotContain(retry.ExecutionId.ToString(), MessageAt(5));
@@ -354,7 +354,7 @@ public sealed class OperabilityTests
         Assert.Contains("Added the uptime endpoint with focused coverage.", message);
         Assert.Contains("Rama completada preservada: completed/3", message);
         Assert.Contains("Reparación de integración completada · intentos: 2", message);
-        Assert.StartsWith($"✅ <a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>\nEXAMPLE · TAREA COMPLETADA · CW {ApplicationVersion.Display}", message);
+        Assert.StartsWith($"✅ <a href=\"https://github.com/owner/repo/issues/3\">Add config #3</a>\nEXAMPLE · TAREA COMPLETADA · {WorkerIdentity.DisplayName} {ApplicationVersion.Display}", message);
         Assert.DoesNotContain("════════════", message);
     }
 
@@ -373,7 +373,7 @@ public sealed class OperabilityTests
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
-        Assert.StartsWith("▶ <a href=\"https://github.com/owner/repo/issues/8\">Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title #8</a>\nEXAMPLE · TAREA INICIADA · CW ", message);
+        Assert.StartsWith("▶ <a href=\"https://github.com/owner/repo/issues/8\">Add &lt;uptime&gt; &amp; &quot;health&quot; endpoint with a complete descriptive title #8</a>\nEXAMPLE · TAREA INICIADA · " + WorkerIdentity.DisplayName + " ", message);
         Assert.DoesNotContain("https://github.com/owner/repo/issues/8\n", message);
         Assert.DoesNotContain("#8 · Add <uptime>", message);
     }
@@ -394,7 +394,7 @@ public sealed class OperabilityTests
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
         Assert.Equal("HTML", body.RootElement.GetProperty("parse_mode").GetString());
-        Assert.StartsWith("⚠️ <a href=\"https://github.com/owner/repo/issues/12\">Fix &lt;link&gt; &amp; escaping #12</a>\nEXAMPLE · RECUPERACIÓN DE INTEGRACIÓN RECHAZADA · CW ", message);
+        Assert.StartsWith("⚠️ <a href=\"https://github.com/owner/repo/issues/12\">Fix &lt;link&gt; &amp; escaping #12</a>\nEXAMPLE · RECUPERACIÓN DE INTEGRACIÓN RECHAZADA · " + WorkerIdentity.DisplayName + " ", message);
         Assert.DoesNotContain("&lt;a href=", message);
         Assert.Contains("Recovery was rejected", message);
     }
@@ -531,7 +531,7 @@ public sealed class OperabilityTests
         await telegram.StoppedAsync("Example", CancellationToken.None);
         using var body = JsonDocument.Parse(handler.Body!);
         var message = body.RootElement.GetProperty("text").GetString()!;
-        Assert.StartsWith($"⚫ CW {ApplicationVersion.Display} · DETENIDO\nExample", message);
+        Assert.StartsWith($"⚫ {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · DETENIDO\nExample", message);
         Assert.DoesNotContain("Cancellation received", message);
     }
 
@@ -547,8 +547,8 @@ public sealed class OperabilityTests
         await telegram.StoppedAsync(2, CancellationToken.None);
         using var start = JsonDocument.Parse(handler.Bodies[0]);
         using var stop = JsonDocument.Parse(handler.Bodies[1]);
-        Assert.Equal($"🟢 CW {ApplicationVersion.Display} · INICIADO\n2 proyectos cargados", start.RootElement.GetProperty("text").GetString());
-        Assert.Equal($"⚫ CW {ApplicationVersion.Display} · DETENIDO", stop.RootElement.GetProperty("text").GetString());
+        Assert.Equal($"🟢 {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · INICIADO\n2 proyectos cargados", start.RootElement.GetProperty("text").GetString());
+        Assert.Equal($"⚫ {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · DETENIDO", stop.RootElement.GetProperty("text").GetString());
     }
 
     [Trait("TestType", "Component")]
@@ -563,7 +563,7 @@ public sealed class OperabilityTests
         await telegram.NoWorkAsync(CancellationToken.None);
 
         using var body = JsonDocument.Parse(handler.Body!);
-        Assert.Equal($"🟡 CW {ApplicationVersion.Display} · SIN TRABAJO", body.RootElement.GetProperty("text").GetString());
+        Assert.Equal($"🟡 {WorkerIdentity.DisplayName} {ApplicationVersion.Display} · SIN TRABAJO", body.RootElement.GetProperty("text").GetString());
     }
 
     // Only the spinner's one-shot delays are needed here. Each advance waits for

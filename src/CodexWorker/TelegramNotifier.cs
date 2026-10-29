@@ -16,6 +16,7 @@ public sealed class TelegramNotifier : IDisposable
         ValidateConfiguration(enabled, token, chatId);
         Volatile.Write(ref _settings, new(enabled, token, chatId));
     }
+    private readonly string _identity;
     private readonly HttpClient _client;
     private readonly bool _ownsClient;
     private readonly WorkerConsole _console;
@@ -24,11 +25,12 @@ public sealed class TelegramNotifier : IDisposable
         : this(enabled, Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN"),
             Environment.GetEnvironmentVariable("TELEGRAM_CHAT_ID"), new HttpClient(), console, true) { }
 
-    internal TelegramNotifier(bool enabled, string? token, string? chatId, HttpClient client, WorkerConsole? console = null)
-        : this(enabled, token, chatId, client, console, false) { }
+    internal TelegramNotifier(bool enabled, string? token, string? chatId, HttpClient client, WorkerConsole? console = null, string? workerName = null)
+        : this(enabled, token, chatId, client, console, false, workerName) { }
 
-    private TelegramNotifier(bool enabled, string? token, string? chatId, HttpClient client, WorkerConsole? console, bool ownsClient)
+    private TelegramNotifier(bool enabled, string? token, string? chatId, HttpClient client, WorkerConsole? console, bool ownsClient, string? workerName = null)
     {
+        _identity = $"{Clean(workerName ?? WorkerIdentity.DisplayName)} {ApplicationVersion.Display}";
         Configure(enabled, token, chatId);
         _client = client;
         _ownsClient = ownsClient;
@@ -47,16 +49,16 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     public Task StartedAsync(string project, CancellationToken ct) =>
-        SendAsync(Format($"🟢 CW {ApplicationVersion.Display} · INICIADO\n{project}"), ct);
+        SendAsync(Format($"🟢 {_identity} · INICIADO\n{project}"), ct);
 
     public Task StartedAsync(int projectCount, CancellationToken ct) =>
-        SendAsync(Format($"🟢 CW {ApplicationVersion.Display} · INICIADO\n{projectCount} proyectos cargados"), ct);
+        SendAsync(Format($"🟢 {_identity} · INICIADO\n{projectCount} proyectos cargados"), ct);
 
     public Task StoppedAsync(string project, CancellationToken ct) =>
-        SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO\n{project}"), ct);
+        SendAsync(Format($"⚫ {_identity} · DETENIDO\n{project}"), ct);
 
     public Task NoWorkAsync(CancellationToken ct) =>
-        SendAsync(Format($"🟡 CW {ApplicationVersion.Display} · SIN TRABAJO"), ct);
+        SendAsync(Format($"🟡 {_identity} · SIN TRABAJO"), ct);
 
     public Task StartingAsync(string project, string repository, GitHubIssue issue, CancellationToken ct) =>
         SendTaskAsync(project, repository, issue, "▶", "TAREA INICIADA", null, ct);
@@ -130,10 +132,10 @@ public sealed class TelegramNotifier : IDisposable
             $"Ejecución {ExecutionFormatting.Display(executionId)}\nPreparación rechazada: {Clean(reason)}", ct);
 
     public Task CriticalAsync(string? project, string details, CancellationToken ct) =>
-        SendAsync(Format($"🚨 CW {ApplicationVersion.Display} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
+        SendAsync(Format($"🚨 {_identity} · INFRAESTRUCTURA\n{(string.IsNullOrWhiteSpace(project) ? "" : $"Proyecto: {project}\n")}Worker detenido\n{Clean(details)}"), ct);
 
     public Task StoppedAsync(int projectCount, CancellationToken ct) =>
-        SendAsync(Format($"⚫ CW {ApplicationVersion.Display} · DETENIDO"), ct);
+        SendAsync(Format($"⚫ {_identity} · DETENIDO"), ct);
 
     public static string Format(string message) => string.Join("\n", message.Split('\n').Select(Clean));
 
@@ -144,8 +146,8 @@ public sealed class TelegramNotifier : IDisposable
         return SendAsync(HtmlMessage(lines), ct, html: true);
     }
 
-    private static List<string> TaskHeader(string project, string repository, GitHubIssue issue, string icon, string status) =>
-        [$"{icon} {IssueLink(repository, issue)}", $"{Project(project)} · {status} · CW {ApplicationVersion.Display}"];
+    private List<string> TaskHeader(string project, string repository, GitHubIssue issue, string icon, string status) =>
+        [$"{icon} {IssueLink(repository, issue)}", $"{Project(project)} · {status} · {_identity}"];
 
     private static string IssueLink(string repository, GitHubIssue issue)
     {
@@ -173,7 +175,7 @@ public sealed class TelegramNotifier : IDisposable
     }
 
     internal async Task<string> TestAsync(CancellationToken ct) =>
-        (await DeliverAsync("Codex Worker Telegram delivery test.", ct)).Diagnostic;
+        (await DeliverAsync($"{_identity} · Telegram delivery test.", ct)).Diagnostic;
 
     private async Task SendAsync(string text, CancellationToken ct, bool html = false)
     {
