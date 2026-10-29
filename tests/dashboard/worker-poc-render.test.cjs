@@ -7,7 +7,8 @@ const frontend=path.resolve(__dirname,'../../src/CodexServer/worker-poc');
 const frontendRequire=createRequire(path.join(frontend,'package.json'));
 const {buildSync}=frontendRequire('esbuild');
 const {renderToStaticMarkup}=frontendRequire('react-dom/server');
-const {Children,cloneElement,createElement,Fragment}=frontendRequire('react');
+const {createElement}=frontendRequire('react');
+const react=frontendRequire('react');
 const {MemoryRouter}=frontendRequire('react-router-dom');
 const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react-router-dom','../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
@@ -16,20 +17,20 @@ const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==
 vm.runInNewContext(output,context);
 const {WorkerDetail}=moduleResult.exports;
 const openModule={exports:{}};
+let openActionsPanel=false;
+const openReact={...react,useState(initialValue){if(openActionsPanel&&initialValue===false){openActionsPanel=false;return [true,()=>{}];}return react.useState(initialValue);}};
 const ariaComponents=frontendRequire('react-aria-components');
 const openStateComponents={...ariaComponents,
- MenuTrigger:({children})=>{const [trigger,content]=Children.toArray(children);return createElement(Fragment,null,cloneElement(trigger,{'aria-expanded':true}),content);},
- Popover:({children,className})=>createElement('div',{className},children),
- Menu:({children,'aria-label':label,className})=>createElement('div',{role:'menu','aria-label':label,className},children),
- MenuSection:({children,'aria-label':label,className})=>createElement('section',{ 'aria-label':label,className},children),
- Header:({children,className})=>createElement('h3',{className},children),
- MenuItem:props=>createElement('button',{id:props.id,role:'menuitem',disabled:props.isDisabled,'aria-label':props['aria-label'],'aria-describedby':props['aria-describedby']},props.children)
+ ModalOverlay:({children,isOpen,className})=>isOpen?createElement('div',{className},children):null,
+ Modal:({children,className})=>createElement('div',{className},children),
+ Dialog:({children,'aria-describedby':describedBy})=>createElement('div',{role:'dialog','aria-describedby':describedBy},children),
+ Heading:({children})=>createElement('h2',null,children)
 };
-vm.runInNewContext(output,{...context,module:openModule,exports:openModule.exports,require:id=>id==='react-aria-components'?openStateComponents:context.require(id)});
+vm.runInNewContext(output,{...context,module:openModule,exports:openModule.exports,require:id=>id==='react'?openReact:id==='react-aria-components'?openStateComponents:context.require(id)});
 const {WorkerDetail:OpenWorkerDetail}=openModule.exports;
 const {props,worker,node,capability,current,completed}=require('./worker-poc-fixtures.cjs');
 const render=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
-const renderOpen=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(OpenWorkerDetail,{...props,...data})));};
+const renderOpen=data=>{openActionsPanel=true;try{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(OpenWorkerDetail,{...props,...data})));}finally{openActionsPanel=false;}};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
  for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Synced','Managed settings','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
@@ -157,9 +158,9 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
  assert.ok(!unavailable.includes('href="https://github.com/'));
 });
 
-test('Scheduling controls and More actions preserve guards, descriptions and current control explanations',()=>{
+test('More actions side panel preserves scheduling guards, descriptions and direct status reload',()=>{
  const html=renderOpen({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}},onRefreshStatus:()=>{}});
- for(const text of ['poc-worker-actions-menu','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
+ for(const text of ['aria-expanded="true"','role="dialog"','Scheduling controls','Draining','Current executions continue to completion.','Activation blocked: Codex preflight required','Additional actions','No active Worker API token','id="poc-action-revoke-api-reason"','id="poc-action-Enabled-reason"','Worker status','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
 test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
@@ -182,7 +183,7 @@ test('Credential delivery repair exposes pending guidance and an accessible acti
  const html=renderOpen({administration:{worker,delivery:{status:'pending'},actions:[{key:'repair-delivery',label:'Provision or repair delivery authorization',reason:''}],onAction:()=>{},onRefresh:()=>{}}});
  assert.ok(html.includes('Provision or repair delivery authorization'));
  assert.ok(html.includes('Keep the Worker online'));
- assert.ok(html.includes('id="poc-delivery-repair-delivery-reason"'));
+ assert.match(html, /<button[^>]*>[\s\S]*?Provision or repair delivery authorization[\s\S]*?<\/button>/);
  assert.ok(html.includes('role="status"'));
  assert.ok(!html.includes('CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN'));
 });

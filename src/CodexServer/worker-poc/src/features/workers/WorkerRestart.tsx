@@ -3,8 +3,8 @@ import { useApiRead, useApiMutation, useRuntime, useSession } from '../../shared
 import { queryKeys } from '../../shared/api/runtime';
 import { worker as validateWorker } from '../../shared/api/validation';
 import type { WorkerObservation } from '../../shared/api/contracts';
-import { Header, MenuItem, MenuSection } from 'react-aria-components';
 import { t, useLanguage } from '../../shared/i18n';
+import { Button } from '../../untitled/components/base/buttons/button';
 import { workerUpdate } from './worker-update';
 import { restartAvailable, restartStatusPaths } from './worker-restart-model.mjs';
 
@@ -98,26 +98,34 @@ export function WorkerRestart({ worker, onStatusChecked, onNotification }: { wor
         : ready ? t('workers.restartReady') : t('workers.restartUnavailable');
   const actionDisabled = mutation.isPending || mutation.locked || operation.fetching || (operation.hasError && current === undefined) || !restartAvailable(worker, current);
   const statusCheckAvailable = Boolean(current?.restart || operation.hasError || mutation.isError || mutation.locked || requestMessage);
-  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.restart')}>
-    <Header className="poc-worker-menu-section-header">{t('workers.restart')}</Header>
-    <MenuItem id="restart-worker" textValue={t('workers.restart')} aria-label={t('workers.restart')} aria-describedby="poc-restart-state poc-restart-help" isDisabled={actionDisabled}
-      onAction={() => { void request(); }} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''}`}>
-      <span id="poc-restart-state" className={`poc-worker-menu-item-state ${ready && !operation.fetching && !operation.hasError ? 'is-ready' : 'is-unavailable'}`} role="status" aria-live="polite">
-        <span className={`poc-worker-card-dot ${ready && !operation.fetching && !operation.hasError ? 'tone-success' : 'tone-warning'}`} aria-hidden="true" />
-        {restartState}
-      </span>
-      <span className="poc-worker-menu-item-title">{mutation.isPending ? t('workers.restartRequesting') : t('workers.restart')}</span>
-      <span id="poc-restart-help" className="poc-worker-menu-item-detail">{t('workers.restartHelp')}</span>
-      {requestMessage && <span className={`poc-worker-menu-item-result${requestMessage.failed ? ' is-error' : ''}`} role={requestMessage.failed ? 'alert' : 'status'} aria-live="polite">{requestMessage.text}</span>}
-      {!requestMessage && mutation.isError && <span className="poc-worker-menu-item-result is-error" role="alert">{t('workers.restartOutcomeUncertain')}</span>}
-    </MenuItem>
-    {statusCheckAvailable && <MenuItem id="check-restart-status" textValue={t('workers.checkRestartStatus')} aria-label={t('workers.checkRestartStatus')} aria-describedby="poc-restart-check-help poc-restart-check-readonly" isDisabled={checkPending || mutation.isPending || operation.fetching}
-      onAction={() => { void checkStatus(); }} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''}`}>
-      <span className="poc-worker-menu-item-title">{t('workers.checkRestartStatus')}</span>
-      <span id="poc-restart-check-help" className="poc-worker-menu-item-detail">{t('workers.restartStatusCheckHelp')}</span>
-      <span id="poc-restart-check-readonly" className="poc-worker-menu-item-note">{t('workers.restartStatusCheckReadOnly')}</span>
-      {checkPending && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{t('workers.restartStatusChecking')}</span>}
-      {checkMessage && <span className={`poc-worker-menu-item-result${checkMessage.failed ? ' is-error' : ''}`} role={checkMessage.failed ? 'alert' : 'status'} aria-live="polite">{checkMessage.text}</span>}
-    </MenuItem>}
-  </MenuSection>;
+  return <section className="worker-editor-section" aria-label={t('workers.restart')}>
+    <div className="worker-editor-section-heading"><h2>{t('workers.restart')}</h2></div>
+    <div className="worker-editor-card">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <p id="poc-restart-state" className="poc-worker-action-state" role="status" aria-live="polite">
+            <span className={`poc-worker-card-dot ${ready && !operation.fetching && !operation.hasError ? 'tone-success' : 'tone-warning'}`} aria-hidden="true" />
+            {restartState}
+          </p>
+          <p className="worker-editor-help">{t('workers.restartHelp')}</p>
+          {requestMessage && <p className={`text-sm ${requestMessage.failed ? 'text-error-primary' : 'text-secondary'}`} role={requestMessage.failed ? 'alert' : 'status'} aria-live="polite">{requestMessage.text}</p>}
+          {!requestMessage && mutation.isError && <p className="text-sm text-error-primary" role="alert">{t('workers.restartOutcomeUncertain')}</p>}
+        </div>
+        <Button color="primary" aria-describedby="poc-restart-state" isDisabled={actionDisabled} onPress={() => { void request(); }}>
+          {mutation.isPending ? t('workers.restartRequesting') : t('workers.restart')}
+        </Button>
+      </div>
+      {statusCheckAvailable && <div className="mt-4 flex flex-wrap items-start justify-between gap-4 border-t border-secondary pt-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-sm font-semibold text-primary">{t('workers.checkRestartStatus')}</p>
+          <p id="poc-restart-check-help" className="worker-editor-help">{t('workers.restartStatusCheckHelp')}</p>
+          <p id="poc-restart-check-readonly" className="worker-editor-help">{t('workers.restartStatusCheckReadOnly')}</p>
+          {checkPending && <p className="text-sm text-secondary" role="status" aria-live="polite">{t('workers.restartStatusChecking')}</p>}
+          {checkMessage && <p className={`text-sm ${checkMessage.failed ? 'text-error-primary' : 'text-secondary'}`} role={checkMessage.failed ? 'alert' : 'status'} aria-live="polite">{checkMessage.text}</p>}
+        </div>
+        <Button color="secondary" aria-describedby="poc-restart-check-help poc-restart-check-readonly" isDisabled={checkPending || mutation.isPending || operation.fetching}
+          onPress={() => { void checkStatus(); }}>{checkPending ? t('workers.restartStatusChecking') : t('workers.checkRestartStatus')}</Button>
+      </div>}
+    </div>
+  </section>;
 }

@@ -1795,6 +1795,7 @@ export const en = {
   "workers.pauseSchedulingHelp": "Pause scheduling to stop new assignments. Running executions continue to completion.",
   "workers.currentExecutionsContinue": "Current executions continue to completion.",
   "workers.moreActions": "More actions",
+  "workers.moreActionsDescription": "Manage scheduling, restart the Worker, or reload its current status.",
   "workers.additionalActions": "Additional actions",
   "workers.heartbeatFresh": "Fresh",
   "workers.heartbeatDelayed": "Delayed",

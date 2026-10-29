@@ -101,22 +101,8 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 }
 .poc-worker-identity { min-width: 0; }
 .poc-worker-heading-actions { display: flex; align-items: center; gap: 12px; }
-.poc-worker-actions-popover { z-index: 50; width: min(28rem, calc(100vw - 2rem)); max-height: min(80dvh, 44rem); overflow: auto; border: 1px solid var(--color-border-secondary); border-radius: 12px; background: var(--color-bg-primary); box-shadow: var(--shadow-lg); }
-.poc-worker-actions-section { display: grid; gap: 4px; border-bottom: 1px solid var(--color-border-secondary); padding: 9px 8px; }
-.poc-worker-actions-section:last-child { border-bottom: 0; }
-.poc-worker-menu-section-header { padding: 3px 10px 5px; color: var(--color-text-tertiary); font-size: 10px; font-weight: 700; letter-spacing: .07em; line-height: 14px; text-transform: uppercase; }
-.poc-worker-menu-item { display: grid; width: 100%; gap: 4px; border: 0; border-radius: 8px; padding: 9px 10px; background: transparent; color: var(--color-text-secondary); cursor: pointer; text-align: left; }
-.poc-worker-menu-item.is-focused { background: var(--color-bg-secondary); }
-.poc-worker-menu-item.is-focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: -2px; }
-.poc-worker-menu-item[data-disabled] { cursor: not-allowed; opacity: .55; }
-.poc-worker-menu-item-title { color: var(--color-text-primary); font-size: 12px; font-weight: 650; line-height: 17px; }
-.poc-worker-menu-item-state { display: flex; min-width: 0; align-items: center; gap: 7px; color: var(--color-text-secondary); font-size: 11px; line-height: 15px; }
-.poc-worker-menu-item-state.is-unavailable { color: var(--color-text-warning-primary); }
-.poc-worker-menu-item-state .poc-worker-card-dot { width: 7px; height: 7px; flex-basis: 7px; }
-.poc-worker-menu-item-detail, .poc-worker-menu-item-note, .poc-worker-menu-item-result { color: var(--color-text-tertiary); font-size: 10px; line-height: 14px; overflow-wrap: anywhere; }
-.poc-worker-menu-item-note { color: var(--color-text-quaternary); }
-.poc-worker-menu-item-result { color: var(--color-text-secondary); }
-.poc-worker-menu-item-result.is-error { color: var(--color-text-error-primary); }
+.poc-worker-action-state { display: flex; min-width: 0; align-items: center; gap: 7px; color: var(--color-text-secondary); font-size: 14px; font-weight: 550; line-height: 20px; }
+.poc-worker-action-state .poc-worker-card-dot { width: 8px; height: 8px; flex-basis: 8px; }
 .poc-worker-unavailable-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 .poc-worker-action-toast { position: fixed; right: 16px; bottom: 16px; z-index: 60; width: min(32rem, calc(100vw - 2rem)); }
 .poc-worker-action-toast .rounded-lg { padding: 10px 14px; }

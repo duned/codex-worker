@@ -7,10 +7,10 @@ import { StatusBadge, AdvancedDisclosure, Notice } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { Activity, ChevronDown, Shield01 } from '@untitledui/icons';
+import { FormDialog } from './shared/Dialogs';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses, workerHeartbeatAge, workerManagedSettingsState, workerSlotSummary } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
 import { IssueTitle } from './features/projects/IssueTitle';
-import { Header, Menu, MenuItem, MenuSection, MenuTrigger, Popover } from 'react-aria-components';
 const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
 const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
   'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
@@ -97,36 +97,38 @@ function WorkerMoreActions({ administration, restart, statusRefreshing, statusMe
   const visibleActions = actions.filter(action => ['Enabled', 'Disabled', 'revoke-api', 'repair-delivery', 'revoke-delivery'].includes(action.key));
   if (!administration && !restart && !onRefreshStatus) return null;
   return <>
-    <MenuTrigger isOpen={isOpen} onOpenChange={onOpenChange}>
-      <Button color="secondary" iconTrailing={ChevronDown} aria-haspopup="menu" aria-expanded={isOpen}>{t('workers.moreActions')}</Button>
-      <Popover placement="bottom end" className="poc-worker-actions-popover">
-        <Menu aria-label={t('workers.moreActions')} className="poc-worker-actions-menu" shouldCloseOnSelect={false}>
+    <Button color="secondary" iconTrailing={ChevronDown} aria-haspopup="dialog" aria-expanded={isOpen} onPress={() => onOpenChange(true)}>{t('workers.moreActions')}</Button>
+    <FormDialog isOpen={isOpen} title={t('workers.moreActions')} description={t('workers.moreActionsDescription')} onClose={() => onOpenChange(false)} variant="side-panel"
+      headerActions={<Button color="tertiary" aria-label={t('shared.closeDialog')} onPress={() => onOpenChange(false)}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="20" height="20"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+      </Button>}>
+      <div className="min-h-0 overflow-y-auto px-5 py-4 sm:px-8 sm:py-6">
+        <div className="flex flex-col gap-5">
           {administration && <SchedulingControls administration={administration} />}
           {restart}
           {onRefreshStatus && <WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt} onRefresh={onRefreshStatus} />}
-          {visibleActions.length > 0 && <MenuSection className="poc-worker-actions-section" aria-label={t('workers.additionalActions')}>
-            <Header className="poc-worker-menu-section-header">{t('workers.additionalActions')}</Header>
-            {visibleActions.map(action => {
-              const reasonId = action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`;
-              return <WorkerActionMenuItem key={action.key} id={action.key} textValue={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
-                aria-label={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
-                aria-describedby={reasonId} isDisabled={!!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
-                onAction={() => administration?.onAction?.(action.key)}>
-                <span className="poc-worker-menu-item-title">{action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}</span>
-                <span id={reasonId} className={action.reason ? 'poc-worker-menu-item-detail' : 'sr-only'}>{localizeText(action.reason || t('shared.confirmationRequired'))}</span>
-              </WorkerActionMenuItem>;
-            })}
-          </MenuSection>}
-        </Menu>
-      </Popover>
-    </MenuTrigger>
+          {visibleActions.length > 0 && <section className="worker-editor-section" aria-label={t('workers.additionalActions')}>
+            <div className="worker-editor-section-heading"><h2>{t('workers.additionalActions')}</h2></div>
+            <div className="worker-editor-card flex flex-col gap-3">
+              {visibleActions.map(action => {
+                const label = action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label);
+                const reasonId = `poc-action-${action.key}-reason`;
+                return <div key={action.key} className="flex flex-wrap items-start justify-between gap-3 border-b border-secondary pb-3 last:border-0 last:pb-0">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-primary">{label}</p>
+                    {action.reason && <p id={reasonId} className="worker-editor-help">{localizeText(action.reason)}</p>}
+                  </div>
+                  <Button color="secondary" aria-describedby={action.reason ? reasonId : undefined}
+                    isDisabled={!!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
+                    onPress={() => administration?.onAction?.(action.key)}>{label}</Button>
+                </div>;
+              })}
+            </div>
+          </section>}
+        </div>
+      </div>
+    </FormDialog>
   </>;
-}
-
-function WorkerActionMenuItem({ children, className = '', ...props }) {
-  return <MenuItem {...props} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''} ${className}`}>
-    {children}
-  </MenuItem>;
 }
 
 function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration, restart, statusRefreshing, statusMessage, statusUpdatedAt, onRefreshStatus, actionsOpen, onActionsOpenChange }) {
@@ -448,16 +450,24 @@ function SchedulingControls({ administration }) {
   const actionLabel = actionKey === 'Draining' ? t('workers.pauseNewAssignments') : t('workers.activateScheduling');
   const stateId = 'poc-scheduling-action-state';
   const helpId = 'poc-scheduling-action-help';
-  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.schedulingControls')}>
-    <Header className="poc-worker-menu-section-header">{t('workers.schedulingControls')}</Header>
-    <WorkerActionMenuItem id="scheduling-action" textValue={actionLabel} aria-label={actionLabel} isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
-      aria-describedby={`${stateId} ${helpId}`} onAction={() => administration?.onAction?.(actionKey)}>
-      <span id={stateId} className="poc-worker-menu-item-state"><span className={`poc-worker-card-dot ${policy === 'Enabled' ? 'tone-success' : policy === 'Draining' ? 'tone-warning' : 'tone-gray'}`} aria-hidden="true" />{currentPolicy}{policy === 'Enabled' ? ` · ${t('workers.acceptingAssignments')}` : ''}</span>
-      <span className="poc-worker-menu-item-title">{actionLabel}</span>
-      <span id={helpId} className="poc-worker-menu-item-detail">{actionKey === 'Draining' ? t('workers.pauseSchedulingHelp') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></span>
-      {administration?.message && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{localizeText(administration.message)}</span>}
-    </WorkerActionMenuItem>
-  </MenuSection>;
+  const reasonId = 'poc-scheduling-action-reason';
+  return <section className="worker-editor-section" aria-label={t('workers.schedulingControls')}>
+    <div className="worker-editor-section-heading"><h2>{t('workers.schedulingControls')}</h2></div>
+    <div className="worker-editor-card">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <p id={stateId} className="poc-worker-action-state"><span className={`poc-worker-card-dot ${policy === 'Enabled' ? 'tone-success' : policy === 'Draining' ? 'tone-warning' : 'tone-gray'}`} aria-hidden="true" />{currentPolicy}{policy === 'Enabled' ? ` · ${t('workers.acceptingAssignments')}` : ''}</p>
+          <p id={helpId} className="worker-editor-help">{actionKey === 'Draining' ? t('workers.pauseSchedulingHelp') : t('workers.activationPrerequisite')}</p>
+          <p className="worker-editor-help">{t('workers.currentExecutionsContinue')}</p>
+          {action?.reason && <p id={reasonId} className="worker-editor-help">{localizeText(action.reason)}</p>}
+          {administration?.message && <p className="text-sm text-secondary" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
+        </div>
+        <Button color="secondary" aria-describedby={`${stateId} ${helpId}${action?.reason ? ` ${reasonId}` : ''}`}
+          isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
+          onPress={() => administration?.onAction?.(actionKey)}>{actionLabel}</Button>
+      </div>
+    </div>
+  </section>;
 }
 
 function WorkerStatusRefresh({ pending, message, updatedAt, onRefresh }) {
@@ -467,18 +477,25 @@ function WorkerStatusRefresh({ pending, message, updatedAt, onRefresh }) {
   const readOnlyId = 'poc-worker-status-readonly';
   const directId = 'poc-worker-status-direct';
   const updatedId = 'poc-worker-status-updated';
-  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.workerStatus')}>
-    <Header className="poc-worker-menu-section-header">{t('workers.workerStatus')}</Header>
-    <WorkerActionMenuItem id="worker-status-refresh" textValue={t('workers.reloadWorkerStatus')} aria-label={t('workers.reloadWorkerStatus')} aria-describedby={`${helpId} ${readOnlyId} ${directId} ${updatedId}`} isDisabled={pending} aria-busy={pending} onAction={onRefresh}>
-      <span className="poc-worker-menu-item-title">{t('workers.reloadWorkerStatus')}</span>
-      <span id={helpId} className="poc-worker-menu-item-detail">{t('workers.workerStatusRefreshHelp')}</span>
-      <span id={readOnlyId} className="poc-worker-menu-item-detail">{t('workers.workerStatusRefreshReadOnly')}</span>
-      {pending && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{t('workers.workerStatusRefreshing')}</span>}
-      <span id={directId} className="poc-worker-menu-item-note">{t('workers.workerStatusRefreshDirect')}</span>
-      {message && <span className={`poc-worker-menu-item-result${message.failed ? ' is-error' : ''}`} role={message.failed ? 'alert' : 'status'} aria-live="polite">{message.text}</span>}
-      <span id={updatedId} className="poc-worker-menu-item-note">{t('workers.statusLastUpdated', { time: lastUpdated })}</span>
-    </WorkerActionMenuItem>
-  </MenuSection>;
+  return <section className="worker-editor-section" aria-label={t('workers.workerStatus')}>
+    <div className="worker-editor-section-heading"><h2>{t('workers.workerStatus')}</h2></div>
+    <div className="worker-editor-card">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-sm font-semibold text-primary">{t('workers.reloadWorkerStatus')}</p>
+          <p id={helpId} className="worker-editor-help">{t('workers.workerStatusRefreshHelp')}</p>
+          <p id={readOnlyId} className="worker-editor-help">{t('workers.workerStatusRefreshReadOnly')}</p>
+          {pending && <p className="text-sm text-secondary" role="status" aria-live="polite">{t('workers.workerStatusRefreshing')}</p>}
+          <p id={directId} className="worker-editor-help">{t('workers.workerStatusRefreshDirect')}</p>
+          {message && <p className={`text-sm ${message.failed ? 'text-error-primary' : 'text-secondary'}`} role={message.failed ? 'alert' : 'status'} aria-live="polite">{message.text}</p>}
+          <p id={updatedId} className="worker-editor-overline">{t('workers.statusLastUpdated', { time: lastUpdated })}</p>
+        </div>
+        <Button color="secondary" aria-describedby={`${helpId} ${readOnlyId} ${directId} ${updatedId}`} isDisabled={pending} aria-busy={pending} onPress={onRefresh}>
+          {pending ? t('workers.workerStatusRefreshing') : t('workers.reloadWorkerStatus')}
+        </Button>
+      </div>
+    </div>
+  </section>;
 }
 
 export function CapabilityCard({ capability, commands, children }) {

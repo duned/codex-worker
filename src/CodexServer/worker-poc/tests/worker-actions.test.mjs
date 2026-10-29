@@ -42,6 +42,9 @@ test('restart status checks read existing operation and service status without r
   assert.doesNotMatch(request, /runtime\.read|refetch\(/);
   assert.match(source, /const actionDisabled = mutation\.isPending \|\| mutation\.locked \|\| operation\.fetching \|\| \(operation\.hasError && current === undefined\) \|\| !restartAvailable\(worker, current\)/);
   assert.match(source, /const statusCheckAvailable = Boolean\(current\?\.restart \|\| operation\.hasError \|\| mutation\.isError \|\| mutation\.locked \|\| requestMessage\)/);
+  assert.match(source, /<Button color="primary" aria-describedby="poc-restart-state" isDisabled=\{actionDisabled\}/);
+  assert.match(source, /statusCheckAvailable && <div/);
+  assert.match(source, /onPress=\{\(\) => \{ void checkStatus\(\); \}\}/);
   assert.match(check, /mutation\.reconcile\(async signal/);
   assert.match(check, /runtime\.read\(paths\.operation, signal, workerUpdate\)/);
   assert.match(check, /runtime\.read\(paths\.worker, signal, validateWorker\)/);
@@ -75,14 +78,20 @@ test('scheduling mutations retain confirmation and Server enforcement without du
   assert.match(runtime, /csrf: this\.csrf/);
 });
 
-test('Worker controls and lower information follow the approved responsive ordering', async () => {
+test('Worker controls use the shared side panel and lower information keeps its approved responsive ordering', async () => {
   const view = await read(detailView);
-  const trigger = view.indexOf('<MenuTrigger isOpen={isOpen} onOpenChange={onOpenChange}>');
-  const schedule = view.indexOf('{administration && <SchedulingControls administration={administration} />}', trigger);
+  const trigger = view.indexOf('aria-haspopup="dialog" aria-expanded={isOpen}');
+  const panel = view.indexOf('<FormDialog isOpen={isOpen}', trigger);
+  const schedule = view.indexOf('{administration && <SchedulingControls administration={administration} />}', panel);
   const restart = view.indexOf('{restart}', schedule);
   const refresh = view.indexOf('<WorkerStatusRefresh', restart);
-  const additional = view.indexOf('{visibleActions.length > 0 && <MenuSection', refresh);
-  assert.ok(trigger >= 0 && schedule > trigger && restart > schedule && refresh > restart && additional > refresh);
+  const additional = view.indexOf('{visibleActions.length > 0 && <section', refresh);
+  assert.ok(trigger >= 0 && panel > trigger && schedule > panel && restart > schedule && refresh > restart && additional > refresh);
+  assert.match(view, /variant="side-panel"/);
+  assert.match(view, /workers\.currentExecutionsContinue/);
+  assert.match(view, /onPress=\{\(\) => onOpenChange\(true\)\}/);
+  assert.match(view, /onClose=\{\(\) => onOpenChange\(false\)\}/);
+
   const technical = view.indexOf('<div className="poc-worker-technical-column">', refresh);
   const readiness = view.indexOf('<ReadinessPanel', technical);
   assert.ok(technical >= 0 && readiness > technical);
@@ -92,4 +101,25 @@ test('Worker controls and lower information follow the approved responsive order
   assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('More actions uses the same focus-managed side panel and responsive dimensions as Edit worker', async () => {
+  const view = await read(detailView);
+  const dialog = await read(new URL('../src/shared/Dialogs.tsx', import.meta.url));
+  const editor = await read(new URL('../src/features/workers/WorkerEditor.tsx', import.meta.url));
+  assert.match(view, /aria-haspopup="dialog" aria-expanded=\{isOpen\}/);
+  assert.match(view, /<FormDialog isOpen=\{isOpen\}[\s\S]*?variant="side-panel"/);
+  assert.match(editor, /pending=\{busy\} variant="side-panel"/);
+  assert.match(dialog, /isDismissable=\{!pending\} isKeyboardDismissDisabled=\{pending\}/);
+  assert.match(dialog, /fixed inset-0 z-50 flex justify-end bg-overlay\/70/);
+  assert.match(dialog, /lg:w-\[60vw\] lg:max-w-5xl/);
+  assert.match(dialog, /React Aria owns focus containment\/restoration, Escape and outside dismissal/);
+  assert.match(view, /aria-label=\{t\('shared\.closeDialog'\)\}/);
+});
+
+/* Keep the approved page content ordering visible as a focused contract check. */
+test('Worker detail content continues from operational cards into executions and lower information', async () => {
+  const view = await read(detailView);
+  assert.match(view, /<WorkerOperationalStatus worker=\{worker\} node=\{node\} diagnostics=\{diagnostics\} \/>[\s\S]*?<CurrentExecutions/);
+  assert.match(view, /<RecentExecutions[\s\S]*?<div className="poc-worker-lower-grid">/);
 });

@@ -1795,6 +1795,7 @@ export const es = {
   "workers.pauseSchedulingHelp": "Pausa la planificación para detener las nuevas asignaciones. Las ejecuciones en curso terminarán.",
   "workers.currentExecutionsContinue": "Las ejecuciones actuales continúan hasta terminar.",
   "workers.moreActions": "Más acciones",
+  "workers.moreActionsDescription": "Administra la planificación, reinicia el Worker o vuelve a cargar su estado actual.",
   "workers.additionalActions": "Acciones adicionales",
   "workers.heartbeatFresh": "Reciente",
   "workers.heartbeatDelayed": "Retrasado",

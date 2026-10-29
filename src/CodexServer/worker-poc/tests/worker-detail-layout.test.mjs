@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { build } from 'esbuild';
-import { Children, cloneElement, createElement, Fragment } from 'react';
+import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -23,28 +23,30 @@ const module = { exports: {} };
 vm.runInNewContext(outputFiles[0].text, { module, exports: module.exports, require, URL, URLSearchParams });
 const { WorkerDetail } = module.exports;
 const openModule = { exports: {} };
+const react = require('react');
+let openActionsPanel = false;
+const openReact = {
+  ...react,
+  useState(initialValue) {
+    if (openActionsPanel && initialValue === false) {
+      openActionsPanel = false;
+      return [true, () => {}];
+    }
+    return react.useState(initialValue);
+  }
+};
 const ariaComponents = require('react-aria-components');
 const openStateComponents = {
   ...ariaComponents,
-  MenuTrigger: ({ children }) => {
-    const [trigger, content] = Children.toArray(children);
-    return createElement(Fragment, null, cloneElement(trigger, { 'aria-expanded': true }), content);
-  },
-  Popover: ({ children, className }) => createElement('div', { className }, children),
-  Menu: ({ children, 'aria-label': label }) => createElement('div', { role: 'menu', 'aria-label': label }, children),
-  MenuSection: ({ children, 'aria-label': label }) => createElement('section', { 'aria-label': label }, children),
-  Header: ({ children }) => createElement('h3', null, children),
-  MenuItem: props => createElement('button', {
-    id: props.id,
-    role: 'menuitem',
-    disabled: props.isDisabled,
-    'aria-describedby': props['aria-describedby']
-  }, props.children)
+  ModalOverlay: ({ children, isOpen, className }) => isOpen ? createElement('div', { className }, children) : null,
+  Modal: ({ children, className }) => createElement('div', { className }, children),
+  Dialog: ({ children, 'aria-describedby': describedBy }) => createElement('div', { role: 'dialog', 'aria-describedby': describedBy }, children),
+  Heading: ({ children }) => createElement('h2', null, children)
 };
 vm.runInNewContext(outputFiles[0].text, {
   module: openModule,
   exports: openModule.exports,
-  require: specifier => specifier === 'react-aria-components' ? openStateComponents : require(specifier),
+  require: specifier => specifier === 'react' ? openReact : specifier === 'react-aria-components' ? openStateComponents : require(specifier),
   URL,
   URLSearchParams
 });
@@ -90,8 +92,13 @@ function props(overrides = {}) {
 function render(overrides = {}) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(WorkerDetail, props(overrides))));
 }
-function renderOpenMenu(overrides = {}) {
-  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(OpenWorkerDetail, props(overrides))));
+function renderOpenActions(overrides = {}) {
+  openActionsPanel = true;
+  try {
+    return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(OpenWorkerDetail, props(overrides))));
+  } finally {
+    openActionsPanel = false;
+  }
 }
 
 test('operational cards follow the approved order and keep known slot counts', () => {
@@ -123,15 +130,16 @@ test('managed settings distinguish synchronized and standalone observations', ()
   assert.doesNotMatch(standalone, /Reload worker status|Restart worker/);
 });
 
-test('secondary worker controls stay out of the page until More actions opens', () => {
+test('secondary worker controls stay out of the page until More actions opens the panel', () => {
   const closed = render();
   assert.match(closed, /aria-expanded="false"/);
   assert.doesNotMatch(closed, /Scheduling controls|Pause new assignments|Restart worker|Check restart status|Reload worker status/);
   assert.ok(closed.indexOf('Operational status') < closed.indexOf('Current execution'));
   assert.doesNotMatch(closed, /poc-worker-rail|poc-control-rail/);
 
-  const open = renderOpenMenu();
+  const open = renderOpenActions();
   assert.match(open, /aria-expanded="true"/);
+  assert.match(open, /role="dialog"/);
   const labels = ['Scheduling controls', 'Pause new assignments', 'Restart worker', 'Check restart status', 'Worker status', 'Reload worker status'];
   const positions = labels.map(label => open.indexOf(label));
   assert.ok(positions.every(position => position >= 0));
@@ -153,13 +161,13 @@ test('unknown capacity remains unavailable and scheduling controls preserve acti
   assert.match(unknownCapacity, /0 \/ Unavailable/);
   assert.doesNotMatch(unknownCapacity, /0 \/ 0/);
 
-  const enabled = renderOpenMenu();
+  const enabled = renderOpenActions();
   assert.match(enabled, /Pause new assignments/);
   assert.match(enabled, /Pause scheduling to stop new assignments\. Running executions continue to completion\./);
   assert.match(enabled, /Restart worker/);
   assert.match(enabled, /Reload worker status/);
 
-  const blocked = renderOpenMenu({ actions: actions.map(action => action.key === 'Draining' ? { ...action, reason: 'operation pending' } : action) });
+  const blocked = renderOpenActions({ actions: actions.map(action => action.key === 'Draining' ? { ...action, reason: 'operation pending' } : action) });
   assert.match(blocked, /Pause new assignments/);
   const pauseLabel = blocked.indexOf('Pause new assignments');
   const pauseButtonStart = blocked.lastIndexOf('<button', pauseLabel);
@@ -167,7 +175,7 @@ test('unknown capacity remains unavailable and scheduling controls preserve acti
   assert.match(blocked.slice(pauseButtonStart, pauseButtonEnd), /\sdisabled(?:="")?/);
   assert.match(blocked, /operation pending/);
 
-  const disabled = renderOpenMenu({ worker: { schedulingPolicy: 'Disabled' } });
+  const disabled = renderOpenActions({ worker: { schedulingPolicy: 'Disabled' } });
   assert.match(disabled, /Activate scheduling/);
 });
 
@@ -192,13 +200,16 @@ test('readiness and technical details stack at narrow widths', async () => {
   assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
 
-test('More actions uses a keyboard menu trigger with viewport bounds', async () => {
+test('More actions reuses the Edit worker side-panel behavior and responsive shell', async () => {
   const source = await readFile(new URL('../src/detail.jsx', import.meta.url), 'utf8');
-  const css = await readFile(new URL('../src/poc.css', import.meta.url), 'utf8');
-  assert.match(source, /<MenuTrigger isOpen=\{isOpen\} onOpenChange=\{onOpenChange\}>/);
-  assert.match(source, /aria-haspopup="menu" aria-expanded=\{isOpen\}/);
-  assert.doesNotMatch(source, /DialogTrigger|aria-haspopup="dialog"/);
-  assert.match(source, /<Popover placement="bottom end"/);
-  assert.match(source, /shouldCloseOnSelect=\{false\}/);
-  assert.match(css, /\.poc-worker-actions-popover\s*\{[^}]*width:\s*min\(28rem, calc\(100vw - 2rem\)\)[^}]*max-height:\s*min\(80dvh, 44rem\)/);
+  const dialogs = await readFile(new URL('../src/shared/Dialogs.tsx', import.meta.url), 'utf8');
+  const editor = await readFile(new URL('../src/features/workers/WorkerEditor.tsx', import.meta.url), 'utf8');
+  assert.match(source, /aria-haspopup="dialog" aria-expanded=\{isOpen\}/);
+  assert.match(source, /<FormDialog isOpen=\{isOpen\}[\s\S]*?variant="side-panel"/);
+  assert.match(source, /onClose=\{\(\) => onOpenChange\(false\)\}/);
+  assert.match(editor, /pending=\{busy\} variant="side-panel"/);
+  assert.match(dialogs, /isDismissable=\{!pending\} isKeyboardDismissDisabled=\{pending\}/);
+  assert.match(dialogs, /fixed inset-0 z-50 flex justify-end bg-overlay\/70/);
+  assert.match(dialogs, /lg:w-\[60vw\] lg:max-w-5xl/);
+  assert.match(dialogs, /React Aria owns focus containment\/restoration, Escape and outside dismissal/);
 });
