@@ -12,7 +12,7 @@ These owner-approved repository files are the current visual targets. Match thei
 
 ### Worker detail
 
-![Approved Worker detail reference](mockups/worker-detail-approved.jpg)
+![Approved Worker detail reference](mockups/worker-detail-approved.svg)
 
 ### Home
 
