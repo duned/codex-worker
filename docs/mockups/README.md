@@ -8,6 +8,8 @@ These SVGs and images are repository-owned visual references for the React + Unt
 - [Project editor · dark](project-editor-dark-reference.svg)
 - [Workers list](workers-list-dark-reference.svg)
 - [Worker detail](worker-detail-approved.svg)
+- [Worker detail · controls and status refresh](worker-detail-controls-refinement.svg)
+- [Worker detail · lower information layout](worker-detail-lower-refinement.svg)
 
 ## Previous visual reference
 
