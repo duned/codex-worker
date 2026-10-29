@@ -60,6 +60,8 @@ Inventory for the operator consolidation: tracked Markdown and documentation ass
 | `docs/mockups/sidebar-administration-dark-reference.svg` | Retain | Preserve visual/reference assets, including owner-review assets whose external Issue references cannot be verified offline. |
 | `docs/mockups/worker-detail-approved.jpg` | Retain | Preserve visual/reference assets, including owner-review assets whose external Issue references cannot be verified offline. |
 | `docs/mockups/worker-detail-approved.svg` | Retain | Current owner-approved Worker detail visual target for the React + Untitled UI dashboard. |
+| `docs/mockups/worker-detail-controls-refinement.svg` | Retain | Owner-approved Worker controls, restart-status and direct status-refresh reference. |
+| `docs/mockups/worker-detail-lower-refinement.svg` | Retain | Owner-approved Worker readiness and technical-details layout reference. |
 | `docs/mockups/worker-detail-dark.svg` | Retain | Preserve visual/reference assets, including owner-review assets whose external Issue references cannot be verified offline. |
 | `docs/mockups/worker-editor-dark-reference.svg` | Retain | Preserve visual/reference assets, including owner-review assets whose external Issue references cannot be verified offline. |
 | `docs/mockups/workers-list-dark-reference.svg` | Retain | Preserve visual/reference assets, including owner-review assets whose external Issue references cannot be verified offline. |
