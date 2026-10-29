@@ -12,6 +12,8 @@
     <Description>Standalone GitHub Issue relationship planning toolbox.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
     <None Include="../../docs/work-execution-toolbox.md" Pack="true" PackagePath="README.md" />
     <ProjectReference Include="../WorkExecutionToolbox/WorkExecutionToolbox.csproj" />
   </ItemGroup>

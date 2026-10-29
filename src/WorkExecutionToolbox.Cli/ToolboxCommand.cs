@@ -10,6 +10,7 @@ public static class ToolboxCommand
 {
     public const string Help = """
         Usage: wet COMMAND [--repo owner/name] [--json] [--refresh]
+          mcp                           Serve local MCP tools over stdio (existing gh authorization).
           parent set CHILD... PARENT       Set one parent for 1–50 distinct children (clear before replacing).
           parent clear CHILD            Clear an organizational parent.
           roots [--state open|closed|all] List parentless repository Issues (default all).

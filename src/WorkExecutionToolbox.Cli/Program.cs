@@ -1,6 +1,8 @@
 using WorkExecutionToolbox;
 using WorkExecutionToolbox.Cli;
 
+if (args is ["mcp"]) return await ToolboxMcp.RunAsync();
+
 if (await ToolboxCommand.RunInformationAsync(args, Console.Out) is { } informationExit) return informationExit;
 
 using var cancellation = new CancellationTokenSource();

@@ -441,3 +441,40 @@ concurrency, while joining every read on failure or cancellation. A deterministi
 hierarchy/dependency overlap regression counts **75 unique cold REST
 reads** and **zero warm reads** from a new provider using the same persisted cache. This protects
 request efficiency without live GitHub credentials; it is not a measured live campaign timing.
+
+## Local MCP tools
+
+Run `wet mcp` as a stdio MCP server in a compatible client's local server configuration:
+
+```json
+{"mcpServers":{"wet":{"command":"wet","args":["mcp"]}}}
+```
+
+The client launches WET as the local user, with that user's existing `gh auth login
+--hostname github.com` authorization and WET cache. This grants the client access to
+that user's GitHub relationship capabilities; configure only trusted clients. No
+Server or Worker service, remote command bridge, `cw`, or extra login is involved.
+The Server's `/mcp` endpoint remains read-only administration and does not host these tools.
+
+Discoverable tools:
+
+| Tool | Arguments | Behavior |
+| --- | --- | --- |
+| `wet_inspect` | repository, operation (Roots/Children/Relationships/Graph), optional issue, refresh | Roots takes no Issue; other operations require a positive Issue number. Roots includes all states. |
+| `wet_set_parent` | repository, parent, children | Native parent assignment for 1–50 distinct children; existing different parents conflict. |
+| `wet_clear_parent` | repository, child | Clear the native parent. |
+| `wet_dependencies` | repository, issue, blockers, applied | Add (`true`) or remove (`false`) 1–50 native blocked-by prerequisites. |
+| `wet_operation` | operationId | Retrieve a completed result from this process's last 32 operations. |
+
+Every operation requires an explicit validated GitHub.com `owner/name`; no paths,
+remote discovery, executables, shell text or arbitrary commands are accepted.
+Tools dispatch through the existing WET command and provider contracts, preserving
+preflight, conflicts, partial outcomes and write verification. Writes serialize
+within the host. Each call, including time waiting for another call, has a 30-second
+deadline and propagates MCP cancellation. There is no detached long-running work.
+Responses include an operation identifier, WET exit code, stdout/error text and a
+truncation indicator. Each output stream retains at most 16,384 characters; a
+truncated JSON envelope must not be parsed as complete. Results are process-local,
+not durable recovery records. After a failed, partial, timed-out or cancelled write,
+refresh relationships before deciding whether to retry: the write may have applied.
+Raw host exceptions and credential process diagnostics are never returned or logged.
