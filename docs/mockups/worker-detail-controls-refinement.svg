@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920">
+<title>Worker detail follow-up: clear controls and status actions</title>
+<desc>Worker controls with separate, spaced sections for scheduling, restarting the worker, and read-only status refresh. Buttons explain their effect and do not require redundant authorization steps for refreshing status.</desc>
+<rect width="1600" height="920" fill="#090909"/>
+<rect x="24" y="24" width="1552" height="872" rx="18" fill="#0b0b0b" stroke="#292929" stroke-width="1.5"/>
+<text x="64" y="78" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="28" font-weight="700">Worker controls</text>
+<rect x="1190" y="46" width="150" height="48" rx="10" fill="#0c0c0c" stroke="#3a3a3a" stroke-width="1.5"/>
+<text x="1265" y="76" text-anchor="middle" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="600">Edit worker</text>
+<rect x="1354" y="46" width="180" height="48" rx="10" fill="#0c0c0c" stroke="#3a3a3a" stroke-width="1.5"/>
+<text x="1444" y="76" text-anchor="middle" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="600">More actions  ▾</text>
+
+<rect x="56" y="120" width="1488" height="190" rx="14" fill="#111111" stroke="#292929" stroke-width="1.5"/>
+<text x="88" y="164" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21" font-weight="650">Scheduling</text>
+<circle cx="98" cy="204" r="6" fill="#00bd63"/>
+<text x="118" y="210" fill="#e6e6e6" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="500">Active · accepting assignments</text>
+<text x="88" y="247" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">Pause scheduling to stop new assignments. Work already running will continue.</text>
+<rect x="1080" y="174" width="420" height="58" rx="10" fill="#161616" stroke="#444444" stroke-width="1.5"/>
+<circle cx="1112" cy="203" r="10" fill="none" stroke="#a3a3a3" stroke-width="2.5"/>
+<path d="M1109 198v10 M1115 198v10" stroke="#a3a3a3" stroke-width="2.5" stroke-linecap="round"/>
+<text x="1290" y="210" text-anchor="middle" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="650">Pause new assignments</text>
+<text x="1080" y="265" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13">Running executions continue to completion.</text>
+
+<rect x="56" y="334" width="1488" height="248" rx="14" fill="#111111" stroke="#292929" stroke-width="1.5"/>
+<text x="88" y="378" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21" font-weight="650">Restart worker</text>
+<circle cx="96" cy="416" r="6" fill="#00bd63"/>
+<text x="116" y="422" fill="#e6e6e6" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="600">Ready</text>
+<text x="88" y="458" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">Stops new work, waits for running executions to finish, then restarts the installed service.</text>
+<rect x="88" y="484" width="220" height="54" rx="10" fill="#8b5cf6" stroke="#8b5cf6" stroke-width="1.5"/>
+<text x="198" y="518" text-anchor="middle" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650">Restart worker</text>
+<line x1="344" y1="392" x2="344" y2="552" stroke="#292929" stroke-width="1.5"/>
+<text x="376" y="416" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650">If the restart result is unclear</text>
+<rect x="376" y="434" width="218" height="30" rx="15" fill="#241a0b" stroke="#aa7000" stroke-width="1.2"/>
+<circle cx="393" cy="449" r="4" fill="#e0a300"/>
+<text x="405" y="454" fill="#f5bc28" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="600">Needs status check</text>
+<text x="376" y="486" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13">Check whether the service restarted and inspect recent Worker logs.</text>
+<text x="376" y="508" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13">This check reads the result; it does not send another restart.</text>
+<rect x="1080" y="434" width="420" height="54" rx="10" fill="#0c0c0c" stroke="#3a3a3a" stroke-width="1.5"/>
+<text x="1290" y="468" text-anchor="middle" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="600">Check restart status</text>
+
+<rect x="56" y="606" width="1488" height="258" rx="14" fill="#111111" stroke="#292929" stroke-width="1.5"/>
+<text x="88" y="652" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21" font-weight="650">Worker status</text>
+<text x="88" y="688" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">Reloads the latest scheduling, API token and execution-readiness state shown on this page.</text>
+<text x="88" y="714" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">Read-only: it does not change settings, pause scheduling or restart the Worker.</text>
+<rect x="1080" y="662" width="420" height="58" rx="10" fill="#0c0c0c" stroke="#3a3a3a" stroke-width="1.5"/>
+<path d="M1110 691a13 13 0 1 1 3 8 M1110 691v-9 M1110 691h9" fill="none" stroke="#c4c4c4" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1300" y="698" text-anchor="middle" fill="#f3f3f4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="600">Reload worker status</text>
+<text x="1080" y="748" fill="#a3a3a3" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13">One direct read · no confirmation step</text>
+<text x="88" y="822" fill="#777777" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12">Last updated 18 seconds ago</text>
+</svg>
