@@ -7,7 +7,11 @@ These SVGs and images are repository-owned visual references for the React + Unt
 - [Home](home-summary.svg)
 - [Project editor · dark](project-editor-dark-reference.svg)
 - [Workers list](workers-list-dark-reference.svg)
-- [Worker detail](worker-detail-approved.jpg)
+- [Worker detail](worker-detail-approved.svg)
+
+## Previous visual reference
+
+- [Worker detail · previous raster snapshot](worker-detail-approved.jpg)
 
 ## Drafts for review
 
