@@ -54,14 +54,14 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
             var discovery = await Rpc(client, "tools/list", new { });
             var tools = discovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
-            Assert.Equal(new[] { "cancel_execution", "dispatch_execution", "get_execution", "get_execution_operation", "list_executions", "list_projects", "list_workers", "retry_execution_report", "server_health" },
+            Assert.Equal(new[] { "cancel_execution", "create_project_issue", "dispatch_execution", "get_execution", "get_execution_operation", "list_executions", "list_projects", "list_workers", "retry_execution_report", "server_health", "set_project_issue_label", "update_project_issue" },
                 tools.Select(tool => tool.GetProperty("name").GetString()).Order(StringComparer.Ordinal));
             Assert.All(tools, tool =>
             {
                 var name = tool.GetProperty("name").GetString();
-                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report"),
+                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report" or "create_project_issue" or "update_project_issue" or "set_project_issue_label"),
                     tool.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean());
-                Assert.Equal(name is "cancel_execution" or "retry_execution_report",
+                Assert.Equal(name is "cancel_execution" or "retry_execution_report" or "update_project_issue" or "set_project_issue_label",
                     tool.GetProperty("annotations").GetProperty("destructiveHint").GetBoolean());
                 Assert.DoesNotContain("cancellationToken", tool.GetProperty("inputSchema").GetRawText(), StringComparison.OrdinalIgnoreCase);
             });

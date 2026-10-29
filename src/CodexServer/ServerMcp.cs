@@ -17,7 +17,8 @@ internal static class ServerMcp
         })
         .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
         .WithTools<ServerReadOnlyTools>()
-        .WithTools<ServerExecutionTools>();
+        .WithTools<ServerExecutionTools>()
+        .WithTools<ServerIssuePlanningTools>();
 
     public static void UseServerMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
     {

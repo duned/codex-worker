@@ -95,6 +95,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ExecutionMaintenanceStore(databasePath));
+        builder.Services.AddSingleton(_ => new IssuePlanningOperations(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
             services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
         builder.Services.AddHostedService<LocalProvisioningCommandService>();

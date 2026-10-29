@@ -1221,15 +1221,70 @@ public sealed class ServerGitHubAdministrationTests
         }
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task McpPlanningUsesProjectLabelsAndDurableCreationReservations()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "planning.db");
+        var registry = new SqliteRegistryStore(path);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "reviewed", issueBlockedLabel: "held"));
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(101));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        var tools = new ServerIssuePlanningTools(registry, service, new IssuePlanningOperations(path));
+        static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value);
+        var id = Guid.NewGuid().ToString("N");
+        var created = Json(await tools.Create(project.Id, id, "Plan", "Details", default));
+        Assert.True(created.TryGetProperty("issue", out _), created.GetRawText());
+        Assert.Equal(101, created.GetProperty("issue").GetProperty("Number").GetInt32());
+        Assert.Equal($"https://github.com/{project.Repository}/issues/101", created.GetProperty("issue").GetProperty("Url").GetString());
+        Assert.Empty(created.GetProperty("issue").GetProperty("Labels").EnumerateArray());
+        // Reconstruct the tools/store to exercise retry after a Server restart.
+        tools = new ServerIssuePlanningTools(registry, service, new IssuePlanningOperations(path));
+        await tools.Create(project.Id, id, "Plan", "Details", default);
+        Assert.Single(writer.Operations);
+        Assert.Equal("operation-scope-conflict", Json(await tools.Create(project.Id, id, "Other", "Details", default)).GetProperty("reason").GetString());
+        Assert.Equal("project-not-found", Json(await tools.Create("missing", Guid.NewGuid().ToString("N"), "Plan", "", default)).GetProperty("reason").GetString());
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Update(project.Id, 101, default, title: ""));
+        Assert.Equal("invalid-project-or-fields", Json(await tools.Label(project.Id, 101, "ready", true, default)).GetProperty("reason").GetString());
+        await tools.Update(project.Id, 101, default, title: "Updated");
+        Assert.Equal(new[] { "create", "update" }, writer.Operations);
+        await tools.Label(project.Id, 101, "reviewed", true, default);
+        Assert.Equal("label:add", writer.Operations[^1]);
+        read.Add(project.Repository, Issue(101, labels: ["reviewed"]));
+        await tools.Label(project.Id, 101, "reviewed", true, default);
+        Assert.Equal(3, writer.Operations.Count);
+        var reserved = Guid.NewGuid().ToString("N");
+        var reservations = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
+            new IssuePlanningOperations(path).ReserveAsync(reserved, "same-request", default)));
+        Assert.Single(reservations, value => value);
+        var uncertain = Guid.NewGuid().ToString("N");
+        writer.FailNextCreate = true;
+        Assert.Equal("github-write-uncertain-refresh-before-retry", Json(await tools.Create(project.Id, uncertain, "Plan", "", default)).GetProperty("reason").GetString());
+        var count = writer.Operations.Count;
+        Assert.Equal("creation-uncertain-reconcile-before-retry", Json(await tools.Create(project.Id, uncertain, "Plan", "", default)).GetProperty("reason").GetString());
+        Assert.Equal(count, writer.Operations.Count);
+    }
+
     private sealed class FakeGitHubIssueWriteService : IServerGitHubIssueWriteService
     {
         public List<string> Operations { get; } = [];
         public bool FailNextParentAdd { get; set; }
+        public bool FailNextCreate { get; set; }
 
         public Task<GitHubIssueWriteResponse> CreateIssueAsync(CentralProject project, string title, string body,
             CancellationToken cancellationToken = default)
         {
             Operations.Add("create");
+            if (FailNextCreate)
+            {
+                FailNextCreate = false;
+                throw new GitHubIssueWriteUnavailableException(project.Repository, "write-failed", "Unavailable");
+            }
             return Task.FromResult(new GitHubIssueWriteResponse(101, title, body, $"https://github.com/{project.Repository}/issues/101"));
         }
 

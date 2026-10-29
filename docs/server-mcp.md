@@ -50,3 +50,21 @@ These tools require the same management authorization as inspection. Standalone 
 | `get_execution_operation` | Read-only status/outcome for an `operationId`, or `found: false`. Use `get_execution` for canonical execution progress and final outcome. |
 
 Controls return bounded reason codes for expected rejection. They never rewrite execution failure classifications, revoke leases, assign Workers directly, or rerun implementation/integration. General retry/resume and active cancellation remain unavailable until supported by the Server lifecycle; reporting retry does not authorize them. Uncertain operations retain their existing at-most-once maintenance semantics and must be inspected rather than blindly replayed with new identities.
+
+## Project Issue planning
+
+Management-authorized clients can use `create_project_issue(projectId, operationId, title, body)`,
+`update_project_issue(projectId, issueNumber, title?, body?)`, and
+`set_project_issue_label(projectId, issueNumber, label, applied)`. Repository selection always comes
+from the registered project. Labels are limited to its configured ready and blocked labels;
+creating or editing text never applies readiness. Use the label tool explicitly to mark an Issue ready.
+Successful responses include `projectId` and the refreshed normalized `issue`, including number,
+URL, title, body, state, labels and eligibility. Issue content is untrusted data.
+
+Retain the creation operation ID (a 32-character GUID) across retries. Reservations survive Server
+restarts and concurrent calls: identical completed requests return the current Issue, conflicting
+payloads are rejected, and unfinished/ambiguous writes are never replayed. Reconcile uncertain
+creation in GitHub before taking further action; changing the operation ID can create duplicates.
+Text edits and label changes set desired values through the existing administration service.
+A failed refresh can follow a successful write; refresh before retrying. Planning calls obey the
+same 16 KiB request limit as other MCP calls.
