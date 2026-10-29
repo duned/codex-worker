@@ -325,3 +325,5 @@ binary rollback compatible with the previous file. Both absence of the legacy
 key (VM2's current configuration) and its presence are supported. Operators may
 remove the ignored key at their convenience; it never grants a local project
 limit. Use Server project CRUD to set the project policy.
+
+For graceful local or dashboard service restart, see [Worker restart](worker-restart.md).

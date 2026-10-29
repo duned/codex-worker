@@ -144,7 +144,9 @@ public sealed class CommandLineTests
         Assert.Contains("Usage: codex-worker diagnostics", output);
         Assert.Contains("unknown", output);
         var (_, rootHelp) = await RunAsync(["--help"]);
-        Assert.Contains("cw restart (rs)", rootHelp);
+        Assert.Contains("register, restart, update", rootHelp);
+        Assert.Contains("sudo codex-worker restart [--json]", rootHelp);
+        Assert.Contains("gracefully drains and verifies the new service instance", rootHelp);
         Assert.Contains("update --help", rootHelp);
     }
 

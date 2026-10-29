@@ -42,7 +42,7 @@ public static class WorkerAgentCapabilities
 public sealed record WorkerHeartbeatContract(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapabilityContract> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null,
-    IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null);
+    IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null);
 public sealed record WorkerHeartbeatStatus(int ActiveExecutions, IReadOnlyList<string> Projects, string State);
 public sealed record WorkerAssignmentRequestContract(string WorkerId, bool WorkerEnabled, int AvailableCapacity,
     IReadOnlyDictionary<string, int> ProjectCapacities, IReadOnlyList<IntegrationRecoveryCandidate>? IntegrationRecoveries = null);
@@ -443,6 +443,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
             .Append(new("protocol", ExecutionMaintenanceProtocol.CompletionCapability))
             .Concat(SelfUpdateSupported
                 ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.Capability)] : [])
+            .Concat(RestartSupported ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.RestartCapability)] : [])
             .Distinct().ToArray();
 
     private async Task<bool> TryVerifyCredentialAsync(string endpoint, string identity, string token, int capacity, CancellationToken cancellationToken)
@@ -557,7 +558,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         request.Content = JsonContent.Create(new WorkerHeartbeatContract(2, identity, ApplicationVersion.Display,
             lifecycleState, activeExecutions, capacity, WithMaintenanceCapability(capabilities ?? await CapabilityDiscovery.GetCachedAsync(cancellationToken)), activeProjects,
             configurationSync?.SynchronizationStatus, configurationSync?.AppliedVersion,
-            await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics, await WorkerHostResourceCollector.CollectAsync(cancellationToken)));
+            await InventoryDiscovery.GetAsync(cancellationToken: cancellationToken), configurationSync?.Diagnostics, await WorkerHostResourceCollector.CollectAsync(cancellationToken), WorkerProcessIdentity.InstanceId));
         using var response = await SendAsync(request, cancellationToken, TimeSpan.FromSeconds(10));
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"Codex Server heartbeat failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).{await ReadSafeServerErrorAsync(response, cancellationToken, RequestSecrets(request))}", null, response.StatusCode);

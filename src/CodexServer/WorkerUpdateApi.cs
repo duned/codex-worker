@@ -20,7 +20,7 @@ public static partial class ServerApplication
         {
             // Explicit mutation authorization (including browser CSRF), independent of reads/settings.
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
-            try { return Results.Ok(await store.RequestWorkerUpdateAsync(workerId, request.OperationId, context.RequestAborted)); }
+            try { return Results.Ok(await store.RequestWorkerUpdateAsync(workerId, request.OperationId, context.RequestAborted, request.Restart)); }
             catch (InvalidDataException) { return Results.BadRequest(new { reason = "invalid-worker-update" }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
         });

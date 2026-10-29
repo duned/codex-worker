@@ -6,6 +6,7 @@ worker:
     enabled: false
     allowNonPrivileged: false
     allowCredentials: false
+    # Add worker:restart to permit controlled dashboard restarts.
     allowedPrivilegedActions: []
     deniedActions: []
 

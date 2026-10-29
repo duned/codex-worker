@@ -13,8 +13,8 @@ public sealed partial class SqliteRegistryStore
         ChangeWorkerUpdateAsync(workerId, null, "observe", null, cancellationToken);
 
     public async Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId,
-        CancellationToken cancellationToken = default) =>
-        await ChangeWorkerUpdateAsync(workerId, operationId, "request", null, cancellationToken)
+        CancellationToken cancellationToken = default, bool restart = false) =>
+        await ChangeWorkerUpdateAsync(workerId, operationId, restart ? "restart" : "request", null, cancellationToken)
         ?? throw new InvalidOperationException("worker-unavailable");
 
     public Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null,
@@ -25,7 +25,7 @@ public sealed partial class SqliteRegistryStore
         string action, string? version, CancellationToken ct)
     {
         if (!WorkerUpdateProtocol.ValidId(workerId) ||
-            action is "request" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
+            action is "request" or "restart" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
             operationId is not null && !WorkerUpdateProtocol.ValidId(operationId) ||
             version is not null && !WorkerUpdateProtocol.ValidVersion(version))
             throw new InvalidDataException("invalid-worker-update");
@@ -38,7 +38,7 @@ public sealed partial class SqliteRegistryStore
         // Same database write gate as assignment admission and scheduling policy changes.
         command.CommandText = "UPDATE workers SET worker_id=worker_id WHERE worker_id=$worker;";
         await command.ExecuteNonQueryAsync(ct);
-        if (action == "request")
+        if (action is "request" or "restart")
         {
             command.CommandText = "SELECT operation_json FROM worker_updates WHERE operation_id=$operation;";
             command.Parameters.AddWithValue("$operation", operationId);
@@ -89,7 +89,7 @@ public sealed partial class SqliteRegistryStore
         if (operation is { State: "updating", StartedAtUtc: not null } && heartbeat is not null && seen > operation.StartedAtUtc &&
             (heartbeat.WorkerVersion == operation.ExpectedVersion || heartbeat.LifecycleState == WorkerLifecycleStates.Stopped))
             operation = operation with { State = "reconnecting" };
-        if (operation is { State: "updating" or "reconnecting", ExpectedVersion: not null, StartedAtUtc: not null, InstallerVerified: true } && fresh && seen > operation.StartedAtUtc &&
+        if (operation is { State: "updating" or "reconnecting", ExpectedVersion: not null, StartedAtUtc: not null, InstallerVerified: true } && (!operation.Restart || action == "reconcile" || !string.IsNullOrEmpty(heartbeat?.InstanceId) && heartbeat.InstanceId != operation.OriginalInstanceId) && fresh && seen > operation.StartedAtUtc &&
             heartbeat?.WorkerVersion == operation.ExpectedVersion && heartbeat.LifecycleState == WorkerLifecycleStates.Running &&
             heartbeat.ConfigurationSynchronization == "synchronized" &&
             (operation.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current =>
@@ -104,16 +104,18 @@ public sealed partial class SqliteRegistryStore
                 command.Parameters.RemoveAt("$policy");
             }
         }
-        if (action == "request" && (operation is null || operation.State == "succeeded" && operation.OperationId != operationId))
+        if ((action is "request" or "restart") && (operation is null || operation.State == "succeeded" && operation.OperationId != operationId))
         {
             if (!fresh || heartbeat is null || heartbeat.LifecycleState is not (WorkerLifecycleStates.Running or WorkerLifecycleStates.NotReady or WorkerLifecycleStates.Ready or WorkerLifecycleStates.Draining or WorkerLifecycleStates.DrainRequested or WorkerLifecycleStates.Drained) || !WorkerUpdateProtocol.ValidVersion(heartbeat.WorkerVersion) ||
-                !heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == WorkerUpdateProtocol.Capability))
+                !heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (action == "restart" ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)))
                 throw new InvalidOperationException("worker-update-unavailable");
             var originallyDraining = heartbeat.LifecycleState is WorkerLifecycleStates.Draining or WorkerLifecycleStates.DrainRequested or WorkerLifecycleStates.Drained;
             var prior = originallyDraining && policy == WorkerSchedulingPolicy.Enabled ? WorkerSchedulingPolicy.Draining : policy;
             operation = new(operationId ?? throw new InvalidDataException("operation-id-required"), workerId,
                 "waiting-for-idle", now, now.AddHours(24), prior, policy == WorkerSchedulingPolicy.Enabled, heartbeat.WorkerVersion,
-                RequiredCapabilities: heartbeat.Capabilities.Select(c => $"{c.Type}/{c.Name}/{c.Scope}").ToArray());
+                RequiredCapabilities: heartbeat.Capabilities.Select(c => $"{c.Type}/{c.Name}/{c.Scope}").ToArray(),
+                Restart: action == "restart", OriginalInstanceId: heartbeat.InstanceId);
+            if (operation.Restart && string.IsNullOrEmpty(operation.OriginalInstanceId)) throw new InvalidOperationException("worker-restart-unavailable");
             if (policy == WorkerSchedulingPolicy.Enabled)
             {
                 command.CommandText = "UPDATE workers SET scheduling_policy='Draining' WHERE worker_id=$worker;";
@@ -124,7 +126,7 @@ public sealed partial class SqliteRegistryStore
         {
             if (operation.OperationId != operationId || operation.State != "waiting-for-idle" || !idle)
                 throw new InvalidOperationException("worker-update-not-authorized");
-            var update = WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? operation.OriginalVersion, version ?? throw new InvalidDataException("version-required"));
+            var update = operation.Restart || WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? operation.OriginalVersion, version ?? throw new InvalidDataException("version-required"));
             operation = operation with { ExpectedVersion = version, State = update ? "updating" : "succeeded",
                 StartedAtUtc = now, DeadlineUtc = now.AddMinutes(20), Diagnostic = update ? null : "already-current" };
             if (!update && operation.PriorPolicy == WorkerSchedulingPolicy.Enabled &&
@@ -142,7 +144,7 @@ public sealed partial class SqliteRegistryStore
         if (operation is { State: "updating" or "reconnecting" } && action == "verified" && operation.OperationId == operationId)
             operation = operation with { InstallerVerified = true };
         if (operation is not null && action == "fail" && operation.OperationId == operationId && operation.State != "succeeded")
-            operation = operation with { State = "failed", Diagnostic = "update-failed-inspect-service-and-journal-before-retry" };
+            operation = operation with { State = "failed", Diagnostic = operation.Restart ? "restart-failed-inspect-service-and-journal-before-retry" : "update-failed-inspect-service-and-journal-before-retry" };
         if (operation is not null)
         {
             command.CommandText = "INSERT INTO worker_updates(operation_id,worker_id,operation_json) VALUES($operation,$worker,$json) ON CONFLICT(operation_id) DO UPDATE SET operation_json=excluded.operation_json;";

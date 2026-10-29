@@ -3,15 +3,17 @@ namespace CodexProvisioning;
 using System.Text.Json.Serialization;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record WorkerUpdateRequest(string OperationId);
+public sealed record WorkerUpdateRequest(string OperationId, bool Restart = false);
 public sealed record WorkerUpdateOperation(string OperationId, string WorkerId, string State,
     DateTimeOffset RequestedAtUtc, DateTimeOffset DeadlineUtc, string PriorPolicy, bool OwnsDrain,
     string OriginalVersion, string? ExpectedVersion = null, DateTimeOffset? StartedAtUtc = null,
-    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false);
+    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false, bool Restart = false, string? OriginalInstanceId = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkerUpdatePreparation(string Version);
 public static class WorkerUpdateProtocol
 {
+    public const string RestartCapability = "worker-restart-v1";
+    public const string RestartPolicyKey = "worker:restart";
     public const string Capability = "worker-self-update-v1";
     public const string PolicyKey = "worker:self-update";
     public static bool ValidId(string value) => Guid.TryParseExact(value, "N", out _);

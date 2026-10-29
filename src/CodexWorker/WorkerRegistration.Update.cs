@@ -6,6 +6,8 @@ using System.Net.Http.Json;
 
 public sealed partial class WorkerRegistrationClient
 {
+    private static bool RestartSupported => OperatingSystem.IsLinux() &&
+        string.Equals(Environment.ProcessPath, "/opt/codex-worker/CodexWorker", StringComparison.Ordinal);
     private static bool SelfUpdateSupported => OperatingSystem.IsLinux() &&
         System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.X64 &&
         string.Equals(Environment.ProcessPath, "/opt/codex-worker/CodexWorker", StringComparison.Ordinal) &&
@@ -13,7 +15,7 @@ public sealed partial class WorkerRegistrationClient
     internal async Task<bool> ExecuteWorkerUpdateAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
         WorkerRuntimeReadModel runtime, CancellationToken ct)
     {
-        if (!SelfUpdateSupported) return false;
+        if (!SelfUpdateSupported && !RestartSupported) return false;
         var worker = await LoadRegisteredIdentityAsync(settings, ct);
         using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/update/request");
         using var response = await SendAsync(request, ct);
@@ -26,7 +28,7 @@ public sealed partial class WorkerRegistrationClient
             throw new InvalidDataException("Invalid Worker update command.");
         if (operation.State is "updating" or "reconnecting")
         {
-            if (operation.InstallerVerified) return false;
+            if (operation.Restart || operation.InstallerVerified) return false;
             string state;
             try { state = await ReadUpdaterStateAsync(ct); }
             catch (Exception ex) when (ex is IOException or InvalidOperationException or ProcessTimeoutException or System.ComponentModel.Win32Exception)
@@ -44,7 +46,8 @@ public sealed partial class WorkerRegistrationClient
         runtime.Registry.DrainWorker();
         async Task<bool> RecordFailureAsync()
         {
-            runtime.Lifecycle.RecordUpdateResult("Inspect service status and the codex-worker-self-update journal before retrying.", false);
+            if (operation.Restart) runtime.Lifecycle.RecordRestartFailure("Inspect codex-worker.service status and journal before retrying.");
+            else runtime.Lifecycle.RecordUpdateResult("Inspect service status and the codex-worker-self-update journal before retrying.", false);
             if (!ct.IsCancellationRequested)
             {
                 using var failure = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/update/{operation.OperationId}/fail");
@@ -55,20 +58,20 @@ public sealed partial class WorkerRegistrationClient
         }
         try
         {
-            if (!policy.Enabled || !policy.AllowedPrivilegedActions.Contains(WorkerUpdateProtocol.PolicyKey, StringComparer.Ordinal) ||
-                policy.DeniedActions.Contains(WorkerUpdateProtocol.PolicyKey, StringComparer.Ordinal) ||
-                !SelfUpdateSupported)
+            if (!policy.Enabled || !policy.AllowedPrivilegedActions.Contains((operation.Restart ? WorkerUpdateProtocol.RestartPolicyKey : WorkerUpdateProtocol.PolicyKey), StringComparer.Ordinal) ||
+                policy.DeniedActions.Contains((operation.Restart ? WorkerUpdateProtocol.RestartPolicyKey : WorkerUpdateProtocol.PolicyKey), StringComparer.Ordinal) ||
+                !(operation.Restart ? RestartSupported : SelfUpdateSupported))
                 return await RecordFailureAsync();
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            var release = await new PackagedSelfUpdate(http).FindReleaseAsync(
+            var release = operation.Restart ? null : await new PackagedSelfUpdate(http).FindReleaseAsync(
                 new("worker", "Codex Worker", ApplicationVersion.Display, "/opt/codex-worker/CodexWorker"), ct);
             using var start = CreateAuthorizedRequest(HttpMethod.Post, settings,
                 $"api/v1/workers/{worker}/update/{operation.OperationId}/start");
-            start.Content = JsonContent.Create(new WorkerUpdatePreparation(release.Version));
+            start.Content = JsonContent.Create(new WorkerUpdatePreparation(release?.Version ?? ApplicationVersion.Display));
             using var authorization = await SendAsync(start, ct);
             authorization.EnsureSuccessStatusCode();
             var authorized = await authorization.Content.ReadFromJsonAsync<WorkerUpdateOperation>(cancellationToken: ct);
-            if (authorized?.OperationId != operation.OperationId || authorized.WorkerId != worker || (authorized.ExpectedVersion != release.Version && !(authorized.InstallerVerified && authorized.ExpectedVersion == ApplicationVersion.Display)))
+            if (authorized?.OperationId != operation.OperationId || authorized.WorkerId != worker || (authorized.ExpectedVersion != (release?.Version ?? ApplicationVersion.Display) && !(authorized.InstallerVerified && authorized.ExpectedVersion == ApplicationVersion.Display)))
                 throw new InvalidDataException("Invalid Worker update authorization.");
             if (authorized.State == "succeeded" || authorized.State == "reconnecting" && authorized.InstallerVerified)
             {
@@ -76,11 +79,24 @@ public sealed partial class WorkerRegistrationClient
                 return true;
             }
             if (authorized.State != "updating") throw new InvalidDataException("Worker update is not authorized.");
-            runtime.Lifecycle.BeginUpdate();
-            var launched = await RunUpdateControlAsync("/usr/bin/sudo", ["-n", "/usr/local/libexec/codex-worker-self-update"],
+            if (operation.Restart)
+            {
+                if (!runtime.Registry.TryPrepareRestart()) throw new InvalidOperationException("Worker restart drain reservation is unavailable.");
+            }
+            else runtime.Lifecycle.BeginUpdate();
+            if (operation.Restart)
+            {
+                // Persist authorization before dispatch. Never replay an uncertain service-manager request.
+                using var verified = CreateAuthorizedRequest(HttpMethod.Post, settings,
+                    $"api/v1/workers/{worker}/update/{operation.OperationId}/verified");
+                using var acknowledgement = await SendAsync(verified, ct);
+                acknowledgement.EnsureSuccessStatusCode();
+            }
+            var launched = await RunUpdateControlAsync("/usr/bin/sudo", operation.Restart ? ["-n", "/usr/bin/systemctl", "--no-block", "restart", "codex-worker.service"] : ["-n", "/usr/local/libexec/codex-worker-self-update"],
                 TimeSpan.FromSeconds(30), ct);
-            if (launched.ExitCode != 0) throw new InvalidOperationException("Update helper failed.");
-            runtime.Events.Publish("worker.updating", "Worker self-update started; waiting for restart and readiness.");
+            if (launched.ExitCode != 0) throw new InvalidOperationException(operation.Restart ? "Service-manager restart request failed." : "Update helper failed.");
+            runtime.Events.Publish(operation.Restart ? "worker.restarting" : "worker.updating",
+                operation.Restart ? "Worker restart requested; waiting for a new ready instance." : "Worker self-update started; waiting for restart and readiness.");
             return true;
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException or ProcessTimeoutException)

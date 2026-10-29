@@ -33,7 +33,7 @@ public interface IRegistryStore
         long expectedRevision, CancellationToken cancellationToken = default, int? workerExecutionSlots = null, WorkerTelegramConfiguration? telegram = null);
     Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
-    Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default, bool restart = false);
     Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<CentralProject>> GetProjectsAsync(CancellationToken cancellationToken = default);
@@ -440,7 +440,7 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
 }
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
     string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
-    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null);
+    IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
     DateTimeOffset FirstRegisteredAtUtc, DateTimeOffset LastSeenAtUtc, string Availability,

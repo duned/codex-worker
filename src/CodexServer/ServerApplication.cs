@@ -1152,7 +1152,7 @@ public static partial class ServerApplication
     private static bool Valid(WorkerRegistrationRequest request) => request.IsValid();
 
     private static bool Valid(WorkerHeartbeatRequest request) => request.ContractVersion is 1 or 2 &&
-        Guid.TryParseExact(request.WorkerId, "N", out _) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
+        Guid.TryParseExact(request.WorkerId, "N", out _) && (request.InstanceId is null || Guid.TryParseExact(request.InstanceId, "N", out _)) && !string.IsNullOrWhiteSpace(request.WorkerVersion) &&
         request.WorkerVersion.Length <= 100 && WorkerLifecycleStates.IsValid(request.LifecycleState) &&
         request.ActiveExecutions is >= 0 and <= 8 && request.MaximumCapacity is >= 1 and <= 8 &&
         request.ActiveExecutions <= request.MaximumCapacity && request.Capabilities is not null && request.Capabilities.Count <= 32 &&

@@ -1,5 +1,14 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "workers.restart": "Reiniciar Worker",
+  "workers.restartHelp": "Detiene el trabajo nuevo, espera las ejecuciones activas y reinicia el servicio instalado. Actualiza para ver el resultado.",
+  "workers.restartUnavailable": "Reinicio no disponible o solicitud incierta. Actualiza el estado; revisa el servicio y su registro si falla.",
+  "workers.restartRefresh": "Actualizar estado del reinicio",
+  "workers.restartState.waiting-for-idle": "Reinicio pendiente: esperando a que termine el trabajo activo.",
+  "workers.restartState.updating": "Reinicio autorizado: esperando al servicio.",
+  "workers.restartState.reconnecting": "Esperando a que una nueva instancia esté lista.",
+  "workers.restartState.succeeded": "Worker reiniciado y en línea.",
+  "workers.restartState.failed": "El reinicio falló o agotó el tiempo. La planificación sigue pausada; revisa el servicio y su registro.",
   "projects.applyReady": "Añadir {label}",
   "projects.readyApplying": "Añadiendo {label}…",
   "projects.readyApplied": "{label} añadida. Esta acción no añade trabajo a la cola; siguen vigentes los demás requisitos.",

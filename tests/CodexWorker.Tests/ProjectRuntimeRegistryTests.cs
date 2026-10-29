@@ -6,6 +6,24 @@ public sealed class ProjectRuntimeRegistryTests
 {
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
+    [Fact]
+    public void RestartReservationWaitsForWorkAndPreventsDrainCancellationAndMaintenance()
+    {
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha"))]);
+        Assert.True(registry.TryReserve("alpha"));
+        registry.DrainWorker();
+        Assert.False(registry.TryPrepareRestart());
+        registry.Release("alpha");
+        Assert.True(registry.TryPrepareRestart());
+        Assert.False(registry.TryPrepareRestart());
+        Assert.False(registry.CancelWorkerDrain());
+        Assert.False(registry.TryReserve("alpha"));
+        Assert.Null(registry.TryBeginMaintenance());
+        Assert.Null(registry.TryBeginDrainingMaintenance());
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(false)]

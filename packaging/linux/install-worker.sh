@@ -255,6 +255,7 @@ Cmnd_Alias CODEX_WORKER_PROVISIONING = \
     /usr/local/libexec/codex-provisioning-codex install, \
     /usr/local/libexec/codex-provisioning-codex uninstall, \
     /usr/local/libexec/codex-provisioning-docker configure, \
+    /usr/bin/systemctl --no-block restart codex-worker.service, \
     /usr/local/libexec/codex-worker-self-update ""
 codex-worker ALL=(root) NOPASSWD: CODEX_WORKER_PROVISIONING
 EOF

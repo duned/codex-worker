@@ -33,6 +33,60 @@ public sealed class WorkerUpdateTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task RestartWaitsForIdleAndDifferentReadyInstanceWithoutVersionChange()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        Task Heartbeat(string instance, int active = 0, string sync = "synchronized") => store.HeartbeatWorkerAsync(
+            new(2, worker, "1.0.0", "running", active, 2, capabilities, [], ConfigurationSynchronization: sync, InstanceId: instance));
+        await Heartbeat("original", 1);
+        var id = Guid.NewGuid().ToString("N");
+        var operation = await store.RequestWorkerUpdateAsync(worker, id, restart: true);
+        Assert.True(operation.Restart);
+        Assert.Equal("waiting-for-idle", operation.State);
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        Assert.Equal(id, (await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true)).OperationId);
+        await Heartbeat("original");
+        Assert.Equal("updating", (await store.AdvanceWorkerUpdateAsync(worker, id, "1.0.0"))?.State);
+        await store.AdvanceWorkerUpdateAsync(worker, id, verified: true);
+        clock.Now += TimeSpan.FromSeconds(1);
+        await Heartbeat("original");
+        Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
+        await Heartbeat("replacement", sync: "error");
+        Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
+        await Heartbeat("replacement");
+        Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task RestartTimeoutRetainsDrainAndCannotBeReplayed()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2,
+            [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [], InstanceId: "original"));
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+        clock.Now = operation.DeadlineUtc;
+        Assert.Equal("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        Assert.Equal(operation.OperationId, (await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true)).OperationId);
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2,
+            [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [],
+            ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task InvalidManagedContractCanUpdateAfterDrainingButCannotRestoreSchedulingUntilSynchronized()
     {
         using var temporary = new TemporaryDirectory();

@@ -67,6 +67,7 @@ public sealed class WorkerLifecycle
         }
     }
 
+    public void BeginServiceRestart() => RequireState("drained", "restarting");
     public void BeginUpdate() => RequireState("drained", "updating");
     public void RecordUpdateResult(string result, bool succeeded) => Update(succeeded ? "updated" : "update-failed", true, updateResult: result);
     public void BeginRestart() => RequireState("updated", "restarting");

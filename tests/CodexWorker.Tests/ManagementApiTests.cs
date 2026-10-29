@@ -14,6 +14,45 @@ public sealed class ManagementApiTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task RestartPreparationRequiresMatchingInstanceAndHoldsDrain()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var history = new ExecutionHistoryStore(Path.Combine(directory, "history.db"));
+        var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [], history) { State = "running" };
+        var app = await ManagementApi.StartAsync(model, new ManagementApiSettings { ListenUrl = "http://127.0.0.1:0" }, CancellationToken.None);
+        Assert.NotNull(app);
+        try
+        {
+            var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+            Assert.NotNull(addresses);
+            using var client = new HttpClient { BaseAddress = new Uri(Assert.Single(addresses.Addresses)) };
+            var status = await client.GetFromJsonAsync<WorkerStatus>("/api/status");
+            Assert.NotNull(status);
+            Assert.NotNull(status.InstanceId);
+            using var undrained = await client.PostAsJsonAsync("/api/worker/restart/prepare", new WorkerRestartPreparation(status.InstanceId));
+            Assert.Equal(HttpStatusCode.Conflict, undrained.StatusCode);
+            using var drain = await client.PostAsync("/api/worker/drain", null);
+            drain.EnsureSuccessStatusCode();
+            using var wrong = await client.PostAsJsonAsync("/api/worker/restart/prepare", new WorkerRestartPreparation(Guid.NewGuid().ToString("N")));
+            Assert.Equal(HttpStatusCode.Conflict, wrong.StatusCode);
+            using var prepared = await client.PostAsJsonAsync("/api/worker/restart/prepare", new WorkerRestartPreparation(status.InstanceId));
+            Assert.Equal(HttpStatusCode.OK, prepared.StatusCode);
+            using var cancel = await client.PostAsync("/api/worker/drain/cancel", null);
+            Assert.Equal(HttpStatusCode.Conflict, cancel.StatusCode);
+            Assert.Equal("restarting", model.Lifecycle.Snapshot.State);
+        }
+        finally
+        {
+            await app.StopAsync();
+            await app.DisposeAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task CleanupApiValidatesSelectionAndRequiresCompletedRunningDrain()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

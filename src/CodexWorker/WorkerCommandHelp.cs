@@ -6,6 +6,7 @@ public static class WorkerCommandHelp
     public static void Write(string command, TextWriter? writer = null)
     {
         writer ??= Console.Out;
+        if (command == "restart") { writer.WriteLine(WorkerRestartCli.Help); return; }
         if (command == "register")
         {
             writer.WriteLine("Usage: codex-worker register [--server <url>] (--token-stdin|--pair) [--operation enroll|rotate|recover|associate] [--capacity 1..8] [--identity-file <path>] [--config <path>] [--json]");
@@ -113,10 +114,10 @@ public static class WorkerCommandHelp
                 break;
             default:
                 writer.WriteLine("Usage: codex-worker [command] [options]");
-                writer.WriteLine("Commands: run, maintenance, executions, status, diagnostics, config, capabilities, provision, credential, register, update");
+                writer.WriteLine("Commands: run, maintenance, executions, status, diagnostics, config, capabilities, provision, credential, register, restart, update");
                 writer.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 writer.WriteLine("Lifecycle: run starts foreground execution; Ctrl+C/SIGTERM requests graceful shutdown.");
-                writer.WriteLine("Installed service: sudo systemctl <start|stop|restart> codex-worker; the existing cw restart (rs) helper verifies restart.");
+                writer.WriteLine("Restart: sudo codex-worker restart [--json]; gracefully drains and verifies the new service instance.");
                 writer.WriteLine("Update: codex-worker update --help; update owns installer activation and service restart.");
                 writer.WriteLine("Local administration exits 0 on completed observation, 2 on rejected/failed commands, 130 on cancellation.");
                 writer.WriteLine($"Normal execution defaults to {WorkerCommandLine.DefaultConfigurationPath}.");

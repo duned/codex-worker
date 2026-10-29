@@ -1,5 +1,7 @@
 # Dashboard Worker updates
 
+For a restart without installing a release, see [Worker restart](worker-restart.md).
+
 The Worker editor's **Update worker** action sends an authenticated, CSRF-protected
 management request to the Server. It never copies or executes a browser shell
 command. Update authority is separate from configuration saving and Worker reads.

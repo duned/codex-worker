@@ -15,9 +15,10 @@ public sealed record WorkerCapability(string Name, string Kind, string? Version 
 public sealed record WorkerStatus(string Version, string State, long UptimeSeconds, int MaxParallelTasks,
     int ActiveExecutionCount, int AvailableExecutionCapacity, int ConfiguredProjectCount, int EnabledProjectCount,
     string LifecycleState, bool DrainRequested, string? LastUpdateResult, string ReconnectReadinessResult,
-    ManagedWorkerDiagnostics? ManagedDiagnostics = null);
+    ManagedWorkerDiagnostics? ManagedDiagnostics = null, string? InstanceId = null);
 public sealed record ProjectRuntimeInfo(string Name, string ConfigurationPath, string ProjectDirectory, string Repository, bool Enabled, string State,
     int MaxParallelTasks, int ActiveExecutionCount, int AvailableExecutionCapacity, int? ReadyWorkCount, string? UnavailableReason = null);
+public sealed record WorkerRestartPreparation(string InstanceId);
 public sealed record ProjectLifecycleRequest(string Action);
 public sealed record ExecutionRepairInfo(int Attempt, int MaximumAttempts, bool PassedAfterRepair);
 public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, string Repository, int IssueNumber,
@@ -163,7 +164,7 @@ public sealed class WorkerRuntimeReadModel
             _global.Worker.MaxParallelTasks, active, Math.Max(0, _global.Worker.MaxParallelTasks - active),
             projectCount, _registry.Status().Count(project => project.State == ProjectLifecycleState.Enabled),
             lifecycle.State, lifecycle.DrainRequested, lifecycle.LastUpdateResult, lifecycle.ReconnectReadinessResult,
-            ConfigurationSyncStatus?.Diagnostics);
+            ConfigurationSyncStatus?.Diagnostics, WorkerProcessIdentity.InstanceId);
     }
 
     public IReadOnlyList<WorkerCapability> Capabilities =>
@@ -304,6 +305,12 @@ public static class ManagementApi
             return Results.Ok(new { draining = lifecycle.DrainRequested, state = lifecycle.State,
                 activeExecutionCount = lifecycle.ActiveExecutions,
                 drainComplete = lifecycle.DrainRequested && lifecycle.ActiveExecutions == 0 });
+        });
+        app.MapPost("/api/worker/restart/prepare", (WorkerRestartPreparation request, WorkerRuntimeReadModel model) =>
+        {
+            if (request.InstanceId != WorkerProcessIdentity.InstanceId || !model.Registry.TryPrepareRestart())
+                return (IResult)Results.Conflict(new { error = "Restart requires the same idle, drained Worker instance with no other maintenance." });
+            return Results.Ok(new { state = "restarting" });
         });
         app.MapPost("/api/worker/drain/cancel", (WorkerRuntimeReadModel model) =>
         {

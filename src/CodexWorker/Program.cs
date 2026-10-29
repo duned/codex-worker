@@ -89,6 +89,8 @@ public static class Program
                 FailureDiagnosticRedactor.Redact(ex.Message));
             return ProcessExitCodes.StartupFailure;
         }
+        if (commandLine.Command == "restart")
+            return await WorkerRestartCli.RunAsync(commandLine, cancellationToken);
         if (commandLine.Command == "maintenance")
             return await StandaloneMaintenanceCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "executions")

@@ -1,4 +1,14 @@
 export const en = {
+  "workers.restart": "Restart worker",
+  "workers.restartHelp": "Stops new work, waits for active executions, then restarts the installed service. Refresh to check the outcome.",
+  "workers.restartUnavailable": "Restart unavailable or request uncertain. Refresh current state; inspect service status and journal after failure.",
+  "workers.restartRefresh": "Refresh restart status",
+  "workers.restartState.waiting-for-idle": "Restart pending: waiting for active work to finish.",
+  "workers.restartState.updating": "Restart authorized: waiting for the service.",
+  "workers.restartState.reconnecting": "Waiting for a new Worker instance to become ready.",
+  "workers.restartState.succeeded": "Worker restarted and online.",
+  "workers.restartState.failed": "Restart failed or timed out. Scheduling remains drained; inspect the service and journal.",
+
   "projects.applyReady": "Apply {label}",
   "projects.readyApplying": "Applying {label}…",
   "projects.readyApplied": "{label} applied. This action does not enqueue work; other eligibility requirements still apply.",

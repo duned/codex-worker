@@ -163,10 +163,22 @@ public sealed class ProjectRuntimeRegistry
     {
         lock (_gate)
         {
-            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance) return false;
+            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance || Lifecycle.Snapshot.State == "restarting") return false;
             Lifecycle.CancelDrain(WorkerActive);
             _events?.Publish("worker.drain.cancelled", "Worker drain was cancelled.");
             SignalChanged();
+            return true;
+        }
+    }
+
+    internal bool TryPrepareRestart()
+    {
+        lock (_gate)
+        {
+            if (!WorkerDrainRequested || WorkerActive != 0 || _maintenance || Lifecycle.Snapshot.State != "drained") return false;
+            Lifecycle.BeginServiceRestart();
+            // Hold admission and maintenance until process replacement, including uncertain dispatch failures.
+            _maintenance = true;
             return true;
         }
     }
