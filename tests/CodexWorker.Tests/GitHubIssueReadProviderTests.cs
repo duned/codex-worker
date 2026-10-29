@@ -2,9 +2,59 @@ namespace CodexWorker.Tests;
 
 using CodexServer;
 using System.Text.Json;
+using System.Net.Http.Json;
+using System.Net;
+using System.Net.Sockets;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class GitHubIssueReadProviderTests
 {
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
+    [Fact]
+    public async Task WorkerDetailExecutionResponseProjectsCachedTitlesWithoutGitHubReads()
+    {
+        using var directory = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(directory.Database);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        var other = await registry.CreateProjectAsync(new("Other", "team/other", "main", ""));
+        await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", "1"), project.Revision));
+        await registry.EnqueueExecutionAsync(new(project.Id, new("github-issue", "2"), project.Revision));
+        await registry.EnqueueExecutionAsync(new(other.Id, new("github-issue", "1"), other.Revision));
+        var source = new Source();
+        var provider = new GitHubIssueReadProvider(source, directory.Database);
+        Assert.NotNull(await provider.GetIssueAsync(project, 1));
+        var requests = source.Batches.Count;
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "worker-title-test-token");
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+        listener.Stop();
+        try
+        {
+            await using var app = await ServerApplication.BuildAsync([
+                $"--Server:ListenUrl={url}", $"--Server:DatabasePath={directory.Database}",
+                "--Logging:LogLevel:Default=Warning"], githubReadService: provider);
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            client.DefaultRequestHeaders.Authorization = new("Bearer", "worker-title-test-token");
+            // This is the bounded response consumed by WorkerDetailPage for both execution blocks.
+            for (var refresh = 0; refresh < 3; refresh++)
+            {
+                var executions = await client.GetFromJsonAsync<ExecutionRequest[]>("/api/v1/executions?limit=50&offset=0");
+                Assert.NotNull(executions);
+                Assert.Equal("Issue 1", Assert.Single(executions,
+                    item => item.ProjectId == project.Id && item.WorkReference.Id == "1").WorkReference.Title);
+                Assert.Null(Assert.Single(executions, item => item.WorkReference.Id == "2").WorkReference.Title);
+                Assert.Null(Assert.Single(executions, item => item.ProjectId == other.Id).WorkReference.Title);
+            }
+            Assert.Equal(requests, source.Batches.Count);
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
