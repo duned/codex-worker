@@ -154,7 +154,13 @@ public sealed class ServerEventStreamTests
             await app.StopAsync().WaitAsync(Deadline);
             await Task.WhenAll(drained).WaitAsync(Deadline);
             await Task.WhenAll(Enumerable.Range(0, 7).Select(index => completed[index.ToString()].Task)).WaitAsync(Deadline);
-            Assert.All(app.Services.GetServices<IHostedService>().OfType<BackgroundService>(),
+            // Assert the Server's background loops have joined. Transport SDK services
+            // can remain dormant (with no ExecuteTask), such as MCP's idle tracker
+            // when the transport is stateless.
+            var serverServices = app.Services.GetServices<IHostedService>().OfType<BackgroundService>()
+                .Where(service => service.GetType().Assembly == typeof(ServerApplication).Assembly).ToArray();
+            Assert.NotEmpty(serverServices);
+            Assert.All(serverServices,
                 service => Assert.True(service.ExecuteTask?.IsCompleted));
         }
         finally

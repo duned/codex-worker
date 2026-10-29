@@ -71,6 +71,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(configuration);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<AdministrationSessions>();
+        builder.Services.AddReadOnlyMcp();
         builder.Services.AddSingleton<WorkerJournalRequests>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
@@ -106,7 +107,7 @@ public static partial class ServerApplication
             context.Response.Headers["X-Codex-Request-Id"] = context.TraceIdentifier;
             // All control-plane API responses can include private state or transient login
             // challenges. Set this before binding/authentication so errors are covered too.
-            if (context.Request.Path.StartsWithSegments("/api"))
+            if (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/mcp"))
             {
                 context.Response.OnStarting(() =>
                 {
@@ -123,6 +124,7 @@ public static partial class ServerApplication
             }
             await next(context);
         });
+        app.UseReadOnlyMcpAuthorization();
         try
         {
             _ = app.Services.GetRequiredService<ServerDatabaseAccessLock>();
@@ -198,6 +200,7 @@ public static partial class ServerApplication
             }
         });
         app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
+        app.MapMcp("/mcp");
         app.MapGet("/readyz", async (IServerHealthService healthService, HttpContext context) =>
         {
             try

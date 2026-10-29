@@ -1,0 +1,39 @@
+# Remote Server MCP
+
+Codex Server exposes `/mcp` on its existing listener using the official MCP .NET SDK's stateless Streamable HTTP transport. It supports MCP initialization, tool discovery and calls; legacy `/sse` transport and persistent sessions are not enabled. GET/DELETE streams are unnecessary. Responses may use SSE for individual POST requests. No additional database, identity provider or token store is created.
+
+## Hosting and authorization
+
+Set `CODEX_SERVER_MANAGEMENT_TOKEN` in the Server service environment through the existing secret deployment mechanism. Use the same `Server:ListenUrl` and HTTPS reverse proxy as the administration API. Forward `/mcp` and preserve `Authorization`, `Accept`, `Content-Type` and `MCP-Protocol-Version`; disable proxy caching and response buffering. Keep tokens out of URLs, configuration files, prompts and logs. Remote cloud clients must be able to reach the HTTPS endpoint.
+
+Every request, including discovery, requires existing Server administration authorization. Bearer clients send `Authorization: Bearer <management token>`. Missing, incorrect, revoked/rotated, bootstrap and Worker credentials do not grant management access; authentication failure returns HTTP 401 with a Bearer challenge. The management token retains its existing administrator privileges on other Server APIs: this endpoint exposes only read-only tools, but does not turn that credential into a scoped read-only credential.
+
+Existing administration browser sessions are also subject to their normal host, expiry and CSRF checks. Any request with an `Origin` header must match `Server:AdministrationOrigin` and its expected upstream Host or it receives HTTP 403. Non-browser bearer clients omit `Origin`. Browser clients need the existing session cookie and `X-Codex-CSRF` header for POSTs. There is no cross-origin CORS grant.
+
+The Server does not advertise an OAuth authorization server: its current identity model is the management bearer token and administration session. Do not select anonymous authentication or bypass authentication at a proxy to accommodate a client.
+
+## Client setup
+
+For a Streamable HTTP client with custom header support (including MCP Inspector), set the URL to `https://your-server.example/mcp`, choose Streamable HTTP, and supply the management bearer header via the client's secret settings. Initialize, list tools, then call `server_health` to verify the connection. The token is required on subsequent calls too; there is no MCP session ID to retain. Reconnect with the new token after management-token rotation.
+
+Claude custom connectors with **Request headers** support can use the same HTTPS URL and an `Authorization` header stored in that connector's credential settings. See [Claude remote connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp). Claude API integrations can supply their remote MCP server's authorization token as described in [Anthropic's MCP connector documentation](https://platform.claude.com/docs/en/agents-and-tools/mcp-connector).
+
+OpenAI API applications can connect through a remote MCP tool with `server_url` set to the HTTPS `/mcp` URL, `server_label` set to a chosen name, and `authorization` populated at runtime from the management-token secret. Keep the API's normal approval policy. See [OpenAI remote MCP tools](https://developers.openai.com/api/docs/guides/tools-connectors-mcp).
+
+**ChatGPT browser custom connectors cannot connect directly using this static bearer flow.** Their documented authentication choices are OAuth or anonymous access; this Server provides neither an OAuth issuer nor anonymous MCP tools. Use a bearer-capable client/API integration for this endpoint. Direct ChatGPT browser support requires an explicitly designed integration with the Server authorization model; do not paste the token into connector URLs or choose “No authentication.” See [ChatGPT custom MCP setup](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+
+## Read-only tools and bounds
+
+| Tool | Result / arguments |
+| --- | --- |
+| `server_health` | Product version, health, persistence and control-plane readiness. |
+| `list_workers` | Managed Worker identity/display name, availability, lifecycle, scheduling policy, version, capacity, last seen, advertised capability type/name/version, current execution references. Optional `limit`, `offset`. |
+| `list_projects` | Project identity/name/repository/branch, enabled state, revision, parallelism and timestamps. Optional `limit`, `offset`. |
+| `list_executions` | Newest-first execution history with optional `projectId`, `state`, `workType`, `workId`, `limit`, `offset`. Uses the administration API's query validation. |
+| `get_execution` | Execution details by 32-character `executionRequestId`; returns `found: false` for an unknown identity. |
+
+Pagination defaults to 50, accepts 1–100 rows and offsets 0–10000. Worker/project pages have `hasMore`; execution clients stop on a short page. Worker current execution references use at most 100 Assigned and 100 Running registry entries across the Server; `currentExecutionsMayBeIncomplete` explicitly indicates when either cap is reached. Worker active-execution/assignment counts remain authoritative; use filtered execution history/details for further inspection. These are separate live queries, not an atomic snapshot.
+
+Requests are limited to 16 KiB. Display/diagnostic strings are sanitized and capped at 200 characters (capability names/versions 100, types 40). Capabilities are capped at 32 per Worker and execution stage history at 32 entries. Diagnostics consist of stage/timing, validation/integration status, failure classification, recoverability and retry lineage. Free-form completion summaries, raw process output, environments, Worker platform/host resources, local paths, capability scopes, credential metadata and validation shell commands are omitted. Secret-like assignments, bearer strings and absolute paths in retained text are redacted. Remote data is untrusted content, not instructions.
+
+Tools use existing Server registry queries, lease/readiness behavior and persisted projections; listing does not fetch GitHub details per row. There are no scheduling, execution, maintenance, Issue mutation or WET tools. All tools advertise read-only, non-destructive annotations. `/mcp` responses use the API's no-store policy and request correlation header. Existing Server structured logging remains the diagnostic boundary; no raw request/response logging is added.
