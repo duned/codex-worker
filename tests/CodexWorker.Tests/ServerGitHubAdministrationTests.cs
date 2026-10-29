@@ -1351,10 +1351,83 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(count, writer.Operations.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task RemoteToolboxUsesRegisteredProjectsAndServerRelationshipServices()
+    {
+        using var temporary = new TemporaryDirectory();
+        var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "toolbox.db"));
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition());
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(101, blockers: [BlockingIssue(102, "open")]));
+        read.Add(project.Repository, Issue(102) with { Title = "token=private-value /private/node" });
+        var writer = new FakeGitHubIssueWriteService();
+        var tools = new ServerToolboxTools(registry, new ServerGitHubAdministrationService(registry, read, issueWriter: writer));
+        static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value);
+        var result = Json(await tools.Inspect(project.Id, 101, "relationships", default, refresh: true));
+        Assert.Equal(102, result.GetProperty("blockedBy")[0].GetProperty("Number").GetInt32());
+        var graph = Json(await tools.Inspect(project.Id, 101, "graph", default));
+        Assert.Equal(2, graph.GetProperty("nodes").GetArrayLength());
+        Assert.DoesNotContain("private", graph.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(writer.Operations);
+        result = Json(await tools.Dependencies(project.Id, 101, [102], true, default));
+        Assert.Equal("accepted", result.GetProperty("outcome").GetString());
+        Assert.Empty(writer.Operations); // Desired link already exists.
+        await tools.Dependencies(project.Id, 101, [102], false, default);
+        Assert.Equal("blocked-by:remove", Assert.Single(writer.Operations));
+        Assert.Equal("project-not-found", Json(await tools.Inspect("missing", 101, "graph", default)).GetProperty("reason").GetString());
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Dependencies(project.Id, 101, [101], true, default));
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Dependencies(project.Id, 101, [102, 102], true, default));
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Inspect(project.Id, 101, "shell", default));
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => tools.Inspect(project.Id, 101, "graph", default, maxIssues: 201));
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => tools.Inspect(project.Id, 101, "graph", cancelled.Token));
+        Assert.Single(writer.Operations);
+        read.Add(project.Repository, Issue(103));
+        writer.FailNextDependencyAdd = true;
+        result = Json(await tools.Dependencies(project.Id, 103, [102], true, default));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        Assert.Equal("failed", result.GetProperty("items")[0].GetProperty("Status").GetString());
+        Assert.DoesNotContain("private-provider-detail", result.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task McpPlanningBoundsAndRedactsIssueContent()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "planning.db");
+        var registry = new SqliteRegistryStore(path);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition());
+        var read = new FakeServerGitHubReadService();
+        read.Add(project.Repository, Issue(101) with
+        {
+            Title = "token=private-value /private/node ghp_" + new string('x', 40),
+            Body = "Bearer private-token " + new string('x', 5000) + "-----BEGIN PRIVATE KEY-----synthetic-test-content-----END PRIVATE KEY-----"
+        });
+        var tools = new ServerIssuePlanningTools(registry,
+            new ServerGitHubAdministrationService(registry, read, issueWriter: new FakeGitHubIssueWriteService()), new(path));
+        var result = JsonSerializer.SerializeToElement(await tools.Update(project.Id, 101, default, title: "Updated"));
+        var issue = result.GetProperty("issue");
+        Assert.True(issue.GetProperty("Body").GetString()?.Length <= 4000);
+        Assert.True(issue.GetProperty("contentMayBeTruncated").GetBoolean());
+        Assert.DoesNotContain("private", issue.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ghp_", issue.GetRawText(), StringComparison.Ordinal);
+        read.Add(project.Repository, Issue(101) with { Body = "-----BEGIN PRIVATE KEY-----synthetic-test-content-----END PRIVATE KEY-----" });
+        result = JsonSerializer.SerializeToElement(await tools.Update(project.Id, 101, default, title: "Updated"));
+        Assert.DoesNotContain("synthetic-test-content", result.GetRawText(), StringComparison.Ordinal);
+    }
+
     private sealed class FakeGitHubIssueWriteService : IServerGitHubIssueWriteService
     {
         public List<string> Operations { get; } = [];
         public bool FailNextParentAdd { get; set; }
+        public bool FailNextDependencyAdd { get; set; }
         public bool FailNextCreate { get; set; }
 
         public Task<GitHubIssueWriteResponse> CreateIssueAsync(CentralProject project, string title, string body,
@@ -1393,6 +1466,11 @@ public sealed class ServerGitHubAdministrationTests
             CancellationToken cancellationToken = default)
         {
             Operations.Add("blocked-by:add");
+            if (FailNextDependencyAdd)
+            {
+                FailNextDependencyAdd = false;
+                throw new GitHubIssueWriteUnavailableException(project.Repository, "write-failed", "private-provider-detail");
+            }
             return Task.CompletedTask;
         }
 

@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Shared/CodexProvisioning.csproj" />
+    <ProjectReference Include="../WorkExecutionToolbox/WorkExecutionToolbox.csproj" />
   </ItemGroup>
   <Target Name="RestoreWorkerPoc" BeforeTargets="PrepareForBuild"
           Inputs="worker-poc/package.json;worker-poc/package-lock.json"

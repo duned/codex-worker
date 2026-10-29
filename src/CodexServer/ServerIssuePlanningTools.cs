@@ -70,7 +70,19 @@ public sealed class ServerIssuePlanningTools(IRegistryStore registry, IServerGit
     {
         using var refresh = github.BeginReadOperation(refresh: true);
         var issue = await github.GetIssueAsync(projectId, issueNumber, ct);
-        return issue is null ? Rejected("issue-not-found-refresh-required") : new { outcome = "accepted", projectId, issue };
+        return issue is null ? Rejected("issue-not-found-refresh-required") : new
+        {
+            outcome = "accepted", projectId,
+            issue = new
+            {
+                issue.Number, issue.Url, Title = ServerReadOnlyTools.Text(issue.Title, 256),
+                Body = ServerReadOnlyTools.Text(issue.Body, 4000), issue.State,
+                Labels = issue.Labels.Take(32).Select(label => ServerReadOnlyTools.Text(label, 100)),
+                issue.IsEligible,
+                EligibilityReasons = issue.EligibilityReasons.Take(32).Select(reason => ServerReadOnlyTools.Text(reason)),
+                contentMayBeTruncated = issue.Body.Length > 4000 || issue.Labels.Count > 32 || issue.EligibilityReasons.Count > 32
+            }
+        };
     }
 
     private static void Number(int number)

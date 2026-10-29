@@ -54,14 +54,14 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
             var discovery = await Rpc(client, "tools/list", new { });
             var tools = discovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
-            Assert.Equal(new[] { "cancel_execution", "cancel_worker_provisioning", "create_project_issue", "dispatch_execution", "get_execution", "get_execution_operation", "get_worker_maintenance", "get_worker_provisioning_operation", "list_executions", "list_projects", "list_workers", "plan_project_work_package", "request_worker_maintenance", "request_worker_provisioning", "retry_execution_report", "server_health", "set_project_issue_label", "update_project_issue" },
+            Assert.Equal(new[] { "cancel_execution", "cancel_worker_provisioning", "create_project_issue", "dispatch_execution", "get_execution", "get_execution_operation", "get_worker_maintenance", "get_worker_provisioning_operation", "list_executions", "list_projects", "list_workers", "plan_project_work_package", "request_worker_maintenance", "request_worker_provisioning", "retry_execution_report", "server_health", "set_project_issue_label", "update_project_issue", "wet_dependencies", "wet_inspect" },
                 tools.Select(tool => tool.GetProperty("name").GetString()).Order(StringComparer.Ordinal));
             Assert.All(tools, tool =>
             {
                 var name = tool.GetProperty("name").GetString();
-                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report" or "plan_project_work_package" or "create_project_issue" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning"),
+                Assert.Equal(name is not ("dispatch_execution" or "cancel_execution" or "retry_execution_report" or "plan_project_work_package" or "create_project_issue" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning" or "wet_dependencies"),
                     tool.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean());
-                Assert.Equal(name is "plan_project_work_package" or "cancel_execution" or "retry_execution_report" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning",
+                Assert.Equal(name is "plan_project_work_package" or "cancel_execution" or "retry_execution_report" or "update_project_issue" or "set_project_issue_label" or "request_worker_maintenance" or "request_worker_provisioning" or "cancel_worker_provisioning" or "wet_dependencies",
                     tool.GetProperty("annotations").GetProperty("destructiveHint").GetBoolean());
                 Assert.DoesNotContain("cancellationToken", tool.GetProperty("inputSchema").GetRawText(), StringComparison.OrdinalIgnoreCase);
             });
@@ -94,6 +94,12 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "mcp-test-management");
             var project = await store.CreateProjectAsync(new("project", "example/repo", "main", "secret=private-description",
                 ValidationCommands: ["echo private-command"]));
+            Assert.Equal("project-not-found", (await Call(client, "wet_inspect", new
+                { projectId = "missing", issueNumber = 42, operation = "graph" })).GetProperty("reason").GetString());
+            AssertToolError(await Rpc(client, "tools/call", new
+                { name = "wet_inspect", arguments = new { projectId = project.Id, issueNumber = 42, operation = "shell" } }));
+            AssertToolError(await Rpc(client, "tools/call", new
+                { name = "wet_dependencies", arguments = new { projectId = project.Id, issueNumber = 42, blockers = new[] { 42 }, applied = true } }));
             await store.HeartbeatWorkerAsync(new(2, workerId, "1.2.3", "running", 0, 1, capabilities, [project.Id]));
             Assert.Equal("unsupported-action", (await Call(client, "request_worker_maintenance", new { workerId, operationId = Guid.NewGuid().ToString("N"), action = "shell" })).GetProperty("reason").GetString());
             Assert.Equal("rejected", (await Call(client, "request_worker_maintenance", new { workerId, operationId = Guid.NewGuid().ToString("N"), action = "restart" })).GetProperty("outcome").GetString());

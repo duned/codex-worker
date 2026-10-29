@@ -20,6 +20,7 @@ internal static class ServerMcp
         .WithTools<ServerExecutionTools>()
         .WithTools<ServerIssuePlanningTools>()
         .WithTools<ServerWorkPackageTools>()
+        .WithTools<ServerToolboxTools>()
         .WithTools<ServerWorkerTools>();
 
     public static void UseServerMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
@@ -151,10 +152,14 @@ public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthServi
     }
 
     // Defense in depth for persisted/display strings. Never expose paths, scopes, raw diagnostics or summaries.
-    private static string? Text(string? value, int maximum = 200)
+    internal static string? Text(string? value, int maximum = 200)
     {
         if (value is null) return null;
         var redacted = SecretSanitizer.Redact(value);
+        redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
+            @"(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z]+ )?PRIVATE KEY-----|$)",
+            "[redacted]", System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
         redacted = System.Text.RegularExpressions.Regex.Replace(redacted,
             @"(?<![\w/])(?:/[^\s,;]+|[A-Za-z]:\\[^\s,;]+)", "[redacted-path]");
         return SecretSanitizer.Sanitize(redacted, maximum);

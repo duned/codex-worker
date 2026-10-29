@@ -6,7 +6,7 @@ Codex Server exposes `/mcp` on its existing listener using the official MCP .NET
 
 Set `CODEX_SERVER_MANAGEMENT_TOKEN` in the Server service environment through the existing secret deployment mechanism. Use the same `Server:ListenUrl` and HTTPS reverse proxy as the administration API. Forward `/mcp` and preserve `Authorization`, `Accept`, `Content-Type` and `MCP-Protocol-Version`; disable proxy caching and response buffering. Keep tokens out of URLs, configuration files, prompts and logs. Remote cloud clients must be able to reach the HTTPS endpoint.
 
-Every request, including discovery, requires existing Server administration authorization. Bearer clients send `Authorization: Bearer <management token>`. Missing, incorrect, revoked/rotated, bootstrap and Worker credentials do not grant management access; authentication failure returns HTTP 401 with a Bearer challenge. The management token retains its existing administrator privileges on other Server APIs: this endpoint exposes only read-only tools, but does not turn that credential into a scoped read-only credential.
+Every request, including discovery, requires existing Server administration authorization. Bearer clients send `Authorization: Bearer <management token>`. Missing, incorrect, revoked/rotated, bootstrap and Worker credentials do not grant management access; authentication failure returns HTTP 401 with a Bearer challenge. The management token grants administrator privileges, including the mutation tools below; it is not a scoped read-only credential. Configure client approval for mutations accordingly.
 
 Existing administration browser sessions are also subject to their normal host, expiry and CSRF checks. Any request with an `Origin` header must match `Server:AdministrationOrigin` and its expected upstream Host or it receives HTTP 403. Non-browser bearer clients omit `Origin`. Browser clients need the existing session cookie and `X-Codex-CSRF` header for POSTs. There is no cross-origin CORS grant.
 
@@ -60,6 +60,9 @@ from the registered project. Labels are limited to its configured ready and bloc
 creating or editing text never applies readiness. Use the label tool explicitly to mark an Issue ready.
 Successful responses include `projectId` and the refreshed normalized `issue`, including number,
 URL, title, body, state, labels and eligibility. Issue content is untrusted data.
+Returned titles are capped at 256 characters, bodies at 4000, labels at 32 (100 characters each),
+and eligibility reasons at 32 (200 characters each), with secret/path redaction.
+`contentMayBeTruncated` signals exhausted body/list limits. These response bounds do not alter stored Issue text.
 
 Retain the creation operation ID (a 32-character GUID) across retries. Reservations survive Server
 restarts and concurrent calls: identical completed requests return the current Issue, conflicting
@@ -106,3 +109,45 @@ operations set desired state and skip unchanged links. Dispatch retries retain t
 active-execution conflict behavior: inspect `list_executions` for the project and Issue rather
 than creating a second execution. Cancellation can interrupt a response; retain the request's
 creation identities even when no response arrives. The normal 16 KiB request bound applies.
+
+## Selected remote WET capabilities
+
+The remote `wet_` tools use registered `projectId` values, not arbitrary repositories or local paths.
+They share Server's GitHub administration services, credentials, snapshots and relationship mutations.
+They do not start `wet`, `cw`, `gh`, or a caller-selected process. The separate local `wet mcp`
+stdio host retains its own repository-based schema and local authentication; it is not a remote Worker administration API.
+
+| Tool | Arguments and behavior |
+| --- | --- |
+| `wet_inspect` | `projectId`, positive `issueNumber`, `operation` (`relationships` or `graph`), optional `refresh`. Relationships return parent, children, blocked-by and blocking references, capped at 100 per relation with `truncated`. Graph uses existing Server graph traversal with optional `maxDepth` (0–20), `maxIssues` (1–200), `maxEdges` (1–2000); defaults 5/100/500. Truncation, cycles and repeated nodes are explicit. Titles are redacted and capped at 200 characters; bodies, URLs, labels and provider diagnostics are omitted. |
+| `wet_dependencies` | `projectId`, positive `issueNumber`, `blockers` (1–50 distinct positive numbers, excluding the target), `applied`. Uses WET's batch argument contract and Server's existing add/remove blocked-by service. Returns bounded per-link changed/unchanged/failed outcomes; any unsuccessful item makes the result `partial`. Does not change readiness or dispatch work. |
+
+These calls have a 30 second deadline and propagate request cancellation; no detached work continues
+after return. Read and write failures return bounded reason codes without raw provider exceptions.
+After a partial, timed-out, cancelled or otherwise uncertain write, use `wet_inspect` with `refresh: true`
+before retrying. Setting the same desired dependency state skips existing links. No automatic replay
+or separate operation store is added. Parent/child changes remain available through
+`plan_project_work_package`, preserving the Server relationship service's existing semantics.
+
+## Series 31 integration review
+
+The combined endpoint registers inspection, execution, planning, work-package, selected WET and
+managed maintenance tools under the same authenticated transport. The final integration added
+the missing remote WET adapter and bounded/redacted planning responses, including responses nested
+in work-package steps. Tool discovery regression coverage includes the complete tool set and mutation
+annotations. Component coverage exercises project scoping, desired-state dependency updates,
+argument bounds, cancellation, graph redaction and planning response limits alongside the existing
+execution, creation idempotency and orchestration tests.
+
+Ownership remains with registry scheduling/leases, GitHub administration, execution maintenance,
+and typed provisioning services. There is no direct Worker or GitHub transport in MCP handlers,
+no new scheduler, credential store or shell surface. Durable execution/reporting/restart/provisioning
+operations expose existing identifiers for inspection; synchronous planning and WET calls retain
+their documented partial-write/reconciliation behavior. Creation reservations retain stable identities;
+uncertain writes are never automatically replayed. Standalone Workers remain outside Server controls.
+
+Local final validation was attempted in the implementation environment, but the test project had no
+restored assets and NuGet restore could not reach `api.nuget.org` or resolve required packages.
+The configured Worker validation remains the authoritative gate. No live client or node campaign
+was run. Connection instructions above describe bearer-capable clients; direct ChatGPT browser
+connectors still require a separately designed OAuth integration.
