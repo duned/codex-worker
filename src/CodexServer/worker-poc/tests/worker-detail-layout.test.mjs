@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { build } from 'esbuild';
-import { createElement } from 'react';
+import { Children, cloneElement, createElement, Fragment } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -22,6 +22,33 @@ const { outputFiles } = await build({
 const module = { exports: {} };
 vm.runInNewContext(outputFiles[0].text, { module, exports: module.exports, require, URL, URLSearchParams });
 const { WorkerDetail } = module.exports;
+const openModule = { exports: {} };
+const ariaComponents = require('react-aria-components');
+const openStateComponents = {
+  ...ariaComponents,
+  MenuTrigger: ({ children }) => {
+    const [trigger, content] = Children.toArray(children);
+    return createElement(Fragment, null, cloneElement(trigger, { 'aria-expanded': true }), content);
+  },
+  Popover: ({ children, className }) => createElement('div', { className }, children),
+  Menu: ({ children, 'aria-label': label }) => createElement('div', { role: 'menu', 'aria-label': label }, children),
+  MenuSection: ({ children, 'aria-label': label }) => createElement('section', { 'aria-label': label }, children),
+  Header: ({ children }) => createElement('h3', null, children),
+  MenuItem: props => createElement('button', {
+    id: props.id,
+    role: 'menuitem',
+    disabled: props.isDisabled,
+    'aria-describedby': props['aria-describedby']
+  }, props.children)
+};
+vm.runInNewContext(outputFiles[0].text, {
+  module: openModule,
+  exports: openModule.exports,
+  require: specifier => specifier === 'react-aria-components' ? openStateComponents : require(specifier),
+  URL,
+  URLSearchParams
+});
+const { WorkerDetail: OpenWorkerDetail } = openModule.exports;
 
 const now = Date.parse('2026-10-29T12:00:00.000Z');
 const worker = {
@@ -54,11 +81,17 @@ function props(overrides = {}) {
     id: worker.workerId, observations: [currentWorker], nodes: [node], diagnostics: currentDiagnostics,
     executions: [execution], projects: [{ id: 'project-1', name: 'Project one', repository: 'team/repo' }],
     administration, now, readOnly: false,
-    restart: overrides.restart ?? createElement('div', null, 'Restart worker Check restart status')
+    restart: overrides.restart ?? (administration ? createElement('div', null, 'Restart worker Check restart status This reads the existing result and current service status. It does not send another restart.') : undefined),
+    onRefreshStatus: overrides.onRefreshStatus ?? (administration ? () => Promise.resolve() : undefined),
+    statusUpdatedAt: now,
+    statusMessage: overrides.statusMessage ?? null
   };
 }
 function render(overrides = {}) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(WorkerDetail, props(overrides))));
+}
+function renderOpenMenu(overrides = {}) {
+  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(OpenWorkerDetail, props(overrides))));
 }
 
 test('operational cards follow the approved order and keep known slot counts', () => {
@@ -87,8 +120,32 @@ test('managed settings distinguish synchronized and standalone observations', ()
   const standalone = render({ diagnostics: { ...diagnostics, configurationSynchronization: 'unknown' } });
   assert.match(standalone, />Standalone</);
   assert.doesNotMatch(standalone, />Synced</);
-  assert.match(standalone, /Reload worker status/);
-  assert.match(standalone, /Restart worker/);
+  assert.doesNotMatch(standalone, /Reload worker status|Restart worker/);
+});
+
+test('secondary worker controls stay out of the page until More actions opens', () => {
+  const closed = render();
+  assert.match(closed, /aria-expanded="false"/);
+  assert.doesNotMatch(closed, /Scheduling controls|Pause new assignments|Restart worker|Check restart status|Reload worker status/);
+  assert.ok(closed.indexOf('Operational status') < closed.indexOf('Current execution'));
+  assert.doesNotMatch(closed, /poc-worker-rail|poc-control-rail/);
+
+  const open = renderOpenMenu();
+  assert.match(open, /aria-expanded="true"/);
+  const labels = ['Scheduling controls', 'Pause new assignments', 'Restart worker', 'Check restart status', 'Worker status', 'Reload worker status'];
+  const positions = labels.map(label => open.indexOf(label));
+  assert.ok(positions.every(position => position >= 0));
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+  assert.match(open, /Pause scheduling to stop new assignments\. Running executions continue to completion\./);
+  assert.match(open, /This reads the existing result and current service status\. It does not send another restart\./);
+});
+
+test('closed-menu action results use an out-of-flow notification', async () => {
+  const html = render({ statusMessage: { text: 'Worker status refreshed.', failed: false } });
+  assert.match(html, /class="poc-worker-action-toast"/);
+  assert.match(html, /Worker status refreshed\./);
+  const css = await readFile(new URL('../src/poc.css', import.meta.url), 'utf8');
+  assert.match(css, /\.poc-worker-action-toast\s*\{[^}]*position:\s*fixed/);
 });
 
 test('unknown capacity remains unavailable and scheduling controls preserve action guards', () => {
@@ -96,13 +153,13 @@ test('unknown capacity remains unavailable and scheduling controls preserve acti
   assert.match(unknownCapacity, /0 \/ Unavailable/);
   assert.doesNotMatch(unknownCapacity, /0 \/ 0/);
 
-  const enabled = render();
+  const enabled = renderOpenMenu();
   assert.match(enabled, /Pause new assignments/);
   assert.match(enabled, /Pause scheduling to stop new assignments\. Running executions continue to completion\./);
   assert.match(enabled, /Restart worker/);
   assert.match(enabled, /Reload worker status/);
 
-  const blocked = render({ actions: actions.map(action => action.key === 'Draining' ? { ...action, reason: 'operation pending' } : action) });
+  const blocked = renderOpenMenu({ actions: actions.map(action => action.key === 'Draining' ? { ...action, reason: 'operation pending' } : action) });
   assert.match(blocked, /Pause new assignments/);
   const pauseLabel = blocked.indexOf('Pause new assignments');
   const pauseButtonStart = blocked.lastIndexOf('<button', pauseLabel);
@@ -110,7 +167,7 @@ test('unknown capacity remains unavailable and scheduling controls preserve acti
   assert.match(blocked.slice(pauseButtonStart, pauseButtonEnd), /\sdisabled(?:="")?/);
   assert.match(blocked, /operation pending/);
 
-  const disabled = render({ worker: { schedulingPolicy: 'Disabled' } });
+  const disabled = renderOpenMenu({ worker: { schedulingPolicy: 'Disabled' } });
   assert.match(disabled, /Activate scheduling/);
 });
 
@@ -132,5 +189,16 @@ test('readiness and technical details stack at narrow widths', async () => {
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-worker-status-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
-  assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 2\.59fr\) minmax\(18rem, 1fr\)/);
+  assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('More actions uses a keyboard menu trigger with viewport bounds', async () => {
+  const source = await readFile(new URL('../src/detail.jsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/poc.css', import.meta.url), 'utf8');
+  assert.match(source, /<MenuTrigger isOpen=\{isOpen\} onOpenChange=\{onOpenChange\}>/);
+  assert.match(source, /aria-haspopup="menu" aria-expanded=\{isOpen\}/);
+  assert.doesNotMatch(source, /DialogTrigger|aria-haspopup="dialog"/);
+  assert.match(source, /<Popover placement="bottom end"/);
+  assert.match(source, /shouldCloseOnSelect=\{false\}/);
+  assert.match(css, /\.poc-worker-actions-popover\s*\{[^}]*width:\s*min\(28rem, calc\(100vw - 2rem\)\)[^}]*max-height:\s*min\(80dvh, 44rem\)/);
 });

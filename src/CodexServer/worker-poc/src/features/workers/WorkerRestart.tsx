@@ -3,18 +3,18 @@ import { useApiRead, useApiMutation, useRuntime, useSession } from '../../shared
 import { queryKeys } from '../../shared/api/runtime';
 import { worker as validateWorker } from '../../shared/api/validation';
 import type { WorkerObservation } from '../../shared/api/contracts';
-import { Button } from '../../untitled/components/base/buttons/button';
-import { TableCard } from '../../untitled/components/application/table/table';
+import { Header, MenuItem, MenuSection } from 'react-aria-components';
 import { t, useLanguage } from '../../shared/i18n';
 import { workerUpdate } from './worker-update';
 import { restartAvailable, restartStatusPaths } from './worker-restart-model.mjs';
 
-export function WorkerRestart({ worker, onStatusChecked }: { worker: WorkerObservation; onStatusChecked?: () => void | Promise<void> }) {
+export function WorkerRestart({ worker, onStatusChecked, onNotification }: { worker: WorkerObservation; onStatusChecked?: () => void | Promise<void>; onNotification?: (message: { text: string; failed: boolean } | null) => void }) {
   useLanguage();
   const runtime = useRuntime();
   const session = useSession();
   const [checkPending, setCheckPending] = useState(false);
   const [checkMessage, setCheckMessage] = useState<{ text: string; failed: boolean } | null>(null);
+  const [requestMessage, setRequestMessage] = useState<{ text: string; failed: boolean } | null>(null);
   const path = `/api/v1/workers/${encodeURIComponent(worker.workerId)}/update`;
   const paths = restartStatusPaths(worker.workerId);
   const operation = useApiRead(path, workerUpdate);
@@ -28,10 +28,21 @@ export function WorkerRestart({ worker, onStatusChecked }: { worker: WorkerObser
     if (operation.data?.state === 'succeeded') id.current = crypto.randomUUID().replaceAll('-', '');
     guard.current = true;
     setCheckMessage(null);
+    setRequestMessage(null);
+    onNotification?.(null);
     try {
-      await mutation.mutateAsync({ operationId: id.current, restart: true });
+      const result = await mutation.mutateAsync({ operationId: id.current, restart: true });
+      if (result?.restart) {
+        const message = t(`workers.restartState.${result.state}`);
+        const failed = result.state === 'failed';
+        setRequestMessage({ text: message, failed });
+        onNotification?.({ text: message, failed });
+      }
     } catch {
       // An uncertain response keeps the mutation fence until a status check.
+      const message = t('workers.restartOutcomeUncertain');
+      setRequestMessage({ text: message, failed: true });
+      onNotification?.({ text: message, failed: true });
     } finally {
       guard.current = false;
     }
@@ -43,6 +54,7 @@ export function WorkerRestart({ worker, onStatusChecked }: { worker: WorkerObser
     const generation = session.generation;
     setCheckPending(true);
     setCheckMessage(null);
+    onNotification?.(null);
     try {
       let latest: ReturnType<typeof workerUpdate> | undefined;
       let service: ReturnType<typeof validateWorker> | undefined;
@@ -61,11 +73,15 @@ export function WorkerRestart({ worker, onStatusChecked }: { worker: WorkerObser
       if (runtime.snapshot().generation === generation) {
         const operationMessage = latest?.restart ? t(`workers.restartState.${latest.state}`) : t('workers.restartStatusNoRequest');
         const serviceMessage = service.availability === 'online' ? t('workers.restartServiceOnline') : t('workers.restartServiceUnavailable');
-        setCheckMessage({ text: t('workers.restartStatusCheckSuccess', { operation: operationMessage, service: serviceMessage }), failed: false });
+        const message = t('workers.restartStatusCheckSuccess', { operation: operationMessage, service: serviceMessage });
+        setCheckMessage({ text: message, failed: false });
+        onNotification?.({ text: message, failed: false });
       }
     } catch {
       if (runtime.snapshot().generation === generation) {
-        setCheckMessage({ text: t('workers.restartStatusCheckFailure'), failed: true });
+        const message = t('workers.restartStatusCheckFailure');
+        setCheckMessage({ text: message, failed: true });
+        onNotification?.({ text: message, failed: true });
       }
     } finally {
       checkGuard.current = false;
@@ -75,32 +91,33 @@ export function WorkerRestart({ worker, onStatusChecked }: { worker: WorkerObser
 
   const current = operation.data;
   const ready = restartAvailable(worker, current);
-  const restartState = operation.fetching && current === undefined ? t('workers.restartCheckingAvailability')
+  const restartState = mutation.isPending ? t('workers.restartRequesting')
+    : operation.fetching && current === undefined ? t('workers.restartCheckingAvailability')
     : operation.hasError && current === undefined ? t('workers.restartStatusUnknown')
       : current?.restart ? t(`workers.restartState.${current.state}`)
         : ready ? t('workers.restartReady') : t('workers.restartUnavailable');
-  const actionDisabled = mutation.isPending || mutation.locked || !restartAvailable(worker, current);
-  return <TableCard.Root className="poc-dashboard-panel poc-control-panel poc-restart-panel">
-    <div className="poc-panel-heading"><h2>{t('workers.restart')}</h2></div>
-    <div className="poc-restart-content">
-      <p className={`poc-restart-state ${ready && !operation.fetching && !operation.hasError ? 'is-ready' : 'is-unavailable'}`}>
+  const actionDisabled = mutation.isPending || mutation.locked || operation.fetching || (operation.hasError && current === undefined) || !restartAvailable(worker, current);
+  const statusCheckAvailable = Boolean(current?.restart || operation.hasError || mutation.isError || mutation.locked || requestMessage);
+  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.restart')}>
+    <Header className="poc-worker-menu-section-header">{t('workers.restart')}</Header>
+    <MenuItem id="restart-worker" textValue={t('workers.restart')} aria-label={t('workers.restart')} aria-describedby="poc-restart-state poc-restart-help" isDisabled={actionDisabled}
+      onAction={() => { void request(); }} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''}`}>
+      <span id="poc-restart-state" className={`poc-worker-menu-item-state ${ready && !operation.fetching && !operation.hasError ? 'is-ready' : 'is-unavailable'}`} role="status" aria-live="polite">
         <span className={`poc-worker-card-dot ${ready && !operation.fetching && !operation.hasError ? 'tone-success' : 'tone-warning'}`} aria-hidden="true" />
         {restartState}
-      </p>
-      <p className="poc-restart-help">{t('workers.restartHelp')}</p>
-      <Button color="primary" size="md" className="w-full" isDisabled={actionDisabled} onPress={() => { void request(); }}>
-        {t('workers.restart')}
-      </Button>
-      {mutation.isError && <p className="poc-control-message is-error" role="alert">{t('workers.restartOutcomeUncertain')}</p>}
-      <div className="poc-restart-check">
-        <h3>{t('workers.restartStatusCheckHeading')}</h3>
-        <p>{t('workers.restartStatusCheckHelp')}</p>
-        <p>{t('workers.restartStatusCheckReadOnly')}</p>
-        <Button color="secondary" size="md" className="w-full" isDisabled={checkPending || mutation.isPending || operation.fetching} onPress={() => { void checkStatus(); }}>
-          {checkPending ? t('workers.restartStatusChecking') : t('workers.checkRestartStatus')}
-        </Button>
-        {checkMessage && <p className="poc-control-message" role={checkMessage.failed ? 'alert' : 'status'} aria-live="polite">{checkMessage.text}</p>}
-      </div>
-    </div>
-  </TableCard.Root>;
+      </span>
+      <span className="poc-worker-menu-item-title">{mutation.isPending ? t('workers.restartRequesting') : t('workers.restart')}</span>
+      <span id="poc-restart-help" className="poc-worker-menu-item-detail">{t('workers.restartHelp')}</span>
+      {requestMessage && <span className={`poc-worker-menu-item-result${requestMessage.failed ? ' is-error' : ''}`} role={requestMessage.failed ? 'alert' : 'status'} aria-live="polite">{requestMessage.text}</span>}
+      {!requestMessage && mutation.isError && <span className="poc-worker-menu-item-result is-error" role="alert">{t('workers.restartOutcomeUncertain')}</span>}
+    </MenuItem>
+    {statusCheckAvailable && <MenuItem id="check-restart-status" textValue={t('workers.checkRestartStatus')} aria-label={t('workers.checkRestartStatus')} aria-describedby="poc-restart-check-help poc-restart-check-readonly" isDisabled={checkPending || mutation.isPending || operation.fetching}
+      onAction={() => { void checkStatus(); }} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''}`}>
+      <span className="poc-worker-menu-item-title">{t('workers.checkRestartStatus')}</span>
+      <span id="poc-restart-check-help" className="poc-worker-menu-item-detail">{t('workers.restartStatusCheckHelp')}</span>
+      <span id="poc-restart-check-readonly" className="poc-worker-menu-item-note">{t('workers.restartStatusCheckReadOnly')}</span>
+      {checkPending && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{t('workers.restartStatusChecking')}</span>}
+      {checkMessage && <span className={`poc-worker-menu-item-result${checkMessage.failed ? ' is-error' : ''}`} role={checkMessage.failed ? 'alert' : 'status'} aria-live="polite">{checkMessage.text}</span>}
+    </MenuItem>}
+  </MenuSection>;
 }

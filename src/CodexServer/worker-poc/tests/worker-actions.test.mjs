@@ -17,7 +17,7 @@ test('worker status reload uses authenticated reads and does not invoke a mutati
   const reload = source.slice(reloadStart, reloadEnd);
   assert.match(reload, /refreshVisibleStatus\(\)/);
   assert.match(reload, /administration\?\.onRefreshStatus\(\)/);
-  assert.doesNotMatch(reload, /runtime\.mutate|\/update|restart/i);
+  assert.doesNotMatch(reload, /runtime\.mutate|\/update|checkStatus|restartStatusPaths/i);
   assert.match(source, /observations\.refetch\(\{ throwOnError: true \}\)/);
   assert.match(source, /nodes\.refetch\(\{ throwOnError: true \}\)/);
   assert.match(source, /diagnostics\.refetch\(\{ throwOnError: true \}\)/);
@@ -40,8 +40,8 @@ test('restart status checks read existing operation and service status without r
   assert.equal((request.match(/mutation\.mutateAsync\(/g) ?? []).length, 1);
   assert.match(request, /operationId: id\.current, restart: true/);
   assert.doesNotMatch(request, /runtime\.read|refetch\(/);
-  assert.match(source, /const actionDisabled = mutation\.isPending \|\| mutation\.locked \|\| !restartAvailable\(worker, current\)/);
-  assert.doesNotMatch(source, /actionDisabled[^\n]*operation\.(fetching|hasError)/);
+  assert.match(source, /const actionDisabled = mutation\.isPending \|\| mutation\.locked \|\| operation\.fetching \|\| \(operation\.hasError && current === undefined\) \|\| !restartAvailable\(worker, current\)/);
+  assert.match(source, /const statusCheckAvailable = Boolean\(current\?\.restart \|\| operation\.hasError \|\| mutation\.isError \|\| mutation\.locked \|\| requestMessage\)/);
   assert.match(check, /mutation\.reconcile\(async signal/);
   assert.match(check, /runtime\.read\(paths\.operation, signal, workerUpdate\)/);
   assert.match(check, /runtime\.read\(paths\.worker, signal, validateWorker\)/);
@@ -77,16 +77,18 @@ test('scheduling mutations retain confirmation and Server enforcement without du
 
 test('Worker controls and lower information follow the approved responsive ordering', async () => {
   const view = await read(detailView);
-  const schedule = view.indexOf('<SchedulingControls administration={administration} />');
+  const trigger = view.indexOf('<MenuTrigger isOpen={isOpen} onOpenChange={onOpenChange}>');
+  const schedule = view.indexOf('{administration && <SchedulingControls administration={administration} />}', trigger);
   const restart = view.indexOf('{restart}', schedule);
   const refresh = view.indexOf('<WorkerStatusRefresh', restart);
-  assert.ok(schedule >= 0 && restart > schedule && refresh > restart);
+  const additional = view.indexOf('{visibleActions.length > 0 && <MenuSection', refresh);
+  assert.ok(trigger >= 0 && schedule > trigger && restart > schedule && refresh > restart && additional > refresh);
   const technical = view.indexOf('<div className="poc-worker-technical-column">', refresh);
   const readiness = view.indexOf('<ReadinessPanel', technical);
   assert.ok(technical >= 0 && readiness > technical);
 
   const css = await read(styles);
-  assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 2\.59fr\) minmax\(18rem, 1fr\)/);
+  assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);

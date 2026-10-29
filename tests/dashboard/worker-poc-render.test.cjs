@@ -7,7 +7,7 @@ const frontend=path.resolve(__dirname,'../../src/CodexServer/worker-poc');
 const frontendRequire=createRequire(path.join(frontend,'package.json'));
 const {buildSync}=frontendRequire('esbuild');
 const {renderToStaticMarkup}=frontendRequire('react-dom/server');
-const {createElement}=frontendRequire('react');
+const {Children,cloneElement,createElement,Fragment}=frontendRequire('react');
 const {MemoryRouter}=frontendRequire('react-router-dom');
 const output=buildSync({entryPoints:[path.join(frontend,'src/detail.jsx')],bundle:true,write:false,format:'cjs',platform:'node',jsx:'automatic',alias:{'@':path.join(frontend,'src/untitled')},external:['react-router-dom','../../shared/api/session','react','react/jsx-runtime','react-aria-components','@untitledui/icons','tailwind-merge']}).outputFiles[0].text;
 const moduleResult={exports:{}};
@@ -15,8 +15,21 @@ const issueTitleApi={useApiRead(){throw Error('Worker rendering must not fetch I
 const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL};
 vm.runInNewContext(output,context);
 const {WorkerDetail}=moduleResult.exports;
+const openModule={exports:{}};
+const ariaComponents=frontendRequire('react-aria-components');
+const openStateComponents={...ariaComponents,
+ MenuTrigger:({children})=>{const [trigger,content]=Children.toArray(children);return createElement(Fragment,null,cloneElement(trigger,{'aria-expanded':true}),content);},
+ Popover:({children,className})=>createElement('div',{className},children),
+ Menu:({children,'aria-label':label,className})=>createElement('div',{role:'menu','aria-label':label,className},children),
+ MenuSection:({children,'aria-label':label,className})=>createElement('section',{ 'aria-label':label,className},children),
+ Header:({children,className})=>createElement('h3',{className},children),
+ MenuItem:props=>createElement('button',{id:props.id,role:'menuitem',disabled:props.isDisabled,'aria-label':props['aria-label'],'aria-describedby':props['aria-describedby']},props.children)
+};
+vm.runInNewContext(output,{...context,module:openModule,exports:openModule.exports,require:id=>id==='react-aria-components'?openStateComponents:context.require(id)});
+const {WorkerDetail:OpenWorkerDetail}=openModule.exports;
 const {props,worker,node,capability,current,completed}=require('./worker-poc-fixtures.cjs');
 const render=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
+const renderOpen=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(OpenWorkerDetail,{...props,...data})));};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
  for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Synced','Managed settings','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
@@ -145,8 +158,8 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
 });
 
 test('Scheduling controls and More actions preserve guards, descriptions and current control explanations',()=>{
- const html=render({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}}});
- for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
+ const html=renderOpen({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}},onRefreshStatus:()=>{}});
+ for(const text of ['poc-worker-actions-menu','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
 test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
@@ -166,7 +179,7 @@ test('Canonical detail preserves multiple actual slots, linked concurrent stages
  assert.ok(!html.includes('Detail preview'));
 });
 test('Credential delivery repair exposes pending guidance and an accessible action without secrets',()=>{
- const html=render({administration:{worker,delivery:{status:'pending'},actions:[{key:'repair-delivery',label:'Provision or repair delivery authorization',reason:''}],onAction:()=>{},onRefresh:()=>{}}});
+ const html=renderOpen({administration:{worker,delivery:{status:'pending'},actions:[{key:'repair-delivery',label:'Provision or repair delivery authorization',reason:''}],onAction:()=>{},onRefresh:()=>{}}});
  assert.ok(html.includes('Provision or repair delivery authorization'));
  assert.ok(html.includes('Keep the Worker online'));
  assert.ok(html.includes('id="poc-delivery-repair-delivery-reason"'));

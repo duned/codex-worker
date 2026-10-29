@@ -3,14 +3,14 @@ import { useEffect, useState } from 'react';
 import { t, useLanguage, localizeText, statusLabel } from './shared/i18n';
 import { Link } from 'react-router-dom';
 import { GuidDisplay } from './shared/GuidDisplay';
-import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
+import { StatusBadge, AdvancedDisclosure, Notice } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
-import { Activity, ChevronDown, PauseCircle, Play, Shield01 } from '@untitledui/icons';
+import { Activity, ChevronDown, Shield01 } from '@untitledui/icons';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses, workerHeartbeatAge, workerManagedSettingsState, workerSlotSummary } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
 import { IssueTitle } from './features/projects/IssueTitle';
-import { Dropdown } from './untitled/components/base/dropdown/dropdown';
+import { Header, Menu, MenuItem, MenuSection, MenuTrigger, Popover } from 'react-aria-components';
 const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
 const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
   'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
@@ -92,24 +92,44 @@ function HeartbeatWaveform({ worker, now }) {
   </div>;
 }
 
-function WorkerMoreActions({ administration }) {
+function WorkerMoreActions({ administration, restart, statusRefreshing, statusMessage, statusUpdatedAt, onRefreshStatus, isOpen, onOpenChange }) {
   const actions = administration?.actions ?? [];
   const visibleActions = actions.filter(action => ['Enabled', 'Disabled', 'revoke-api', 'repair-delivery', 'revoke-delivery'].includes(action.key));
-  if (!visibleActions.length) return null;
+  if (!administration && !restart && !onRefreshStatus) return null;
   return <>
-    <Dropdown.Root>
-      <Button color="secondary" iconTrailing={ChevronDown}>{t('workers.moreActions')}</Button>
-      <Dropdown.Popover>
-        <Dropdown.Menu onAction={key => administration?.onAction?.(String(key))}>
-          {visibleActions.map(action => <Dropdown.Item key={action.key} id={action.key} label={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)} selectionIndicator="none" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`} />)}
-        </Dropdown.Menu>
-      </Dropdown.Popover>
-    </Dropdown.Root>
-    {visibleActions.map(action => <span key={`${action.key}-reason`} id={action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`} className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</span>)}
+    <MenuTrigger isOpen={isOpen} onOpenChange={onOpenChange}>
+      <Button color="secondary" iconTrailing={ChevronDown} aria-haspopup="menu" aria-expanded={isOpen}>{t('workers.moreActions')}</Button>
+      <Popover placement="bottom end" className="poc-worker-actions-popover">
+        <Menu aria-label={t('workers.moreActions')} className="poc-worker-actions-menu" shouldCloseOnSelect={false}>
+          {administration && <SchedulingControls administration={administration} />}
+          {restart}
+          {onRefreshStatus && <WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt} onRefresh={onRefreshStatus} />}
+          {visibleActions.length > 0 && <MenuSection className="poc-worker-actions-section" aria-label={t('workers.additionalActions')}>
+            <Header className="poc-worker-menu-section-header">{t('workers.additionalActions')}</Header>
+            {visibleActions.map(action => {
+              const reasonId = action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`;
+              return <WorkerActionMenuItem key={action.key} id={action.key} textValue={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
+                aria-label={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
+                aria-describedby={reasonId} isDisabled={!!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
+                onAction={() => administration?.onAction?.(action.key)}>
+                <span className="poc-worker-menu-item-title">{action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}</span>
+                <span id={reasonId} className={action.reason ? 'poc-worker-menu-item-detail' : 'sr-only'}>{localizeText(action.reason || t('shared.confirmationRequired'))}</span>
+              </WorkerActionMenuItem>;
+            })}
+          </MenuSection>}
+        </Menu>
+      </Popover>
+    </MenuTrigger>
   </>;
 }
 
-function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration }) {
+function WorkerActionMenuItem({ children, className = '', ...props }) {
+  return <MenuItem {...props} className={({ isFocused, isFocusVisible }) => `poc-worker-menu-item${isFocused ? ' is-focused' : ''}${isFocusVisible ? ' is-focus-visible' : ''} ${className}`}>
+    {children}
+  </MenuItem>;
+}
+
+function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration, restart, statusRefreshing, statusMessage, statusUpdatedAt, onRefreshStatus, actionsOpen, onActionsOpenChange }) {
   useLanguage();
   return <header className="poc-worker-heading">
     <div className="poc-worker-identity">
@@ -124,7 +144,7 @@ function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref,
     </div>
     <div className="poc-worker-heading-actions">
       {administration?.worker && administration?.onEdit && <Button color="secondary" isDisabled={administration.pending || administration.needsRefresh} onPress={() => administration.onEdit()}>{t('workers.editWorker')}</Button>}
-      <WorkerMoreActions administration={administration} />
+      <WorkerMoreActions administration={administration} restart={restart} statusRefreshing={statusRefreshing} statusMessage={statusMessage} statusUpdatedAt={statusUpdatedAt} onRefreshStatus={onRefreshStatus} isOpen={actionsOpen} onOpenChange={onActionsOpenChange} />
     </div>
   </header>;
 }
@@ -426,35 +446,39 @@ function SchedulingControls({ administration }) {
     : policy === 'Draining' ? t('workers.schedulingDraining')
       : policy === 'Disabled' ? t('workers.schedulingInactive') : t('shared.unknown');
   const actionLabel = actionKey === 'Draining' ? t('workers.pauseNewAssignments') : t('workers.activateScheduling');
-  return <TableCard.Root className="poc-dashboard-panel poc-control-panel poc-control-rail">
-    <PanelHeading id="poc-controls-heading" title={t('workers.schedulingControls')} />
-    <div className="poc-scheduling-content">
-      <p className="poc-scheduling-state"><span className={`poc-worker-card-dot ${policy === 'Enabled' ? 'tone-success' : policy === 'Draining' ? 'tone-warning' : 'tone-gray'}`} aria-hidden="true" />{currentPolicy}{policy === 'Enabled' ? ` · ${t('workers.acceptingAssignments')}` : ''}</p>
-      <Button color={actionKey === 'Draining' ? 'secondary' : 'primary'} size="md" className="w-full" iconLeading={actionKey === 'Draining' ? PauseCircle : Play}
-        isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
-        aria-describedby="poc-scheduling-action-help" onPress={() => administration?.onAction?.(actionKey)}>{actionLabel}</Button>
-      <p id="poc-scheduling-action-help" className="poc-scheduling-help">{actionKey === 'Draining' ? t('workers.pauseSchedulingHelp') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></p>
-      {administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
-    </div>
-  </TableCard.Root>;
+  const stateId = 'poc-scheduling-action-state';
+  const helpId = 'poc-scheduling-action-help';
+  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.schedulingControls')}>
+    <Header className="poc-worker-menu-section-header">{t('workers.schedulingControls')}</Header>
+    <WorkerActionMenuItem id="scheduling-action" textValue={actionLabel} aria-label={actionLabel} isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
+      aria-describedby={`${stateId} ${helpId}`} onAction={() => administration?.onAction?.(actionKey)}>
+      <span id={stateId} className="poc-worker-menu-item-state"><span className={`poc-worker-card-dot ${policy === 'Enabled' ? 'tone-success' : policy === 'Draining' ? 'tone-warning' : 'tone-gray'}`} aria-hidden="true" />{currentPolicy}{policy === 'Enabled' ? ` · ${t('workers.acceptingAssignments')}` : ''}</span>
+      <span className="poc-worker-menu-item-title">{actionLabel}</span>
+      <span id={helpId} className="poc-worker-menu-item-detail">{actionKey === 'Draining' ? t('workers.pauseSchedulingHelp') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></span>
+      {administration?.message && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{localizeText(administration.message)}</span>}
+    </WorkerActionMenuItem>
+  </MenuSection>;
 }
 
 function WorkerStatusRefresh({ pending, message, updatedAt, onRefresh }) {
   useLanguage();
   const lastUpdated = updatedAt ? relativeAge(new Date(updatedAt).toISOString(), Date.now()) : t('workers.statusNotUpdated');
-  return <TableCard.Root className="poc-dashboard-panel poc-control-panel poc-status-refresh-panel">
-    <div className="poc-panel-heading"><h2>{t('workers.workerStatus')}</h2></div>
-    <div className="poc-status-refresh-content">
-      <p>{t('workers.workerStatusRefreshHelp')}</p>
-      <p>{t('workers.workerStatusRefreshReadOnly')}</p>
-      <Button color="secondary" size="md" className="w-full" isDisabled={pending} aria-busy={pending} onPress={onRefresh}>
-        {pending ? t('workers.workerStatusRefreshing') : t('workers.reloadWorkerStatus')}
-      </Button>
-      <p className="poc-status-refresh-note">{t('workers.workerStatusRefreshDirect')}</p>
-      {message && <p className="poc-control-message" role={message.failed ? 'alert' : 'status'} aria-live="polite">{message.text}</p>}
-      <p className="poc-status-refresh-updated">{t('workers.statusLastUpdated', { time: lastUpdated })}</p>
-    </div>
-  </TableCard.Root>;
+  const helpId = 'poc-worker-status-help';
+  const readOnlyId = 'poc-worker-status-readonly';
+  const directId = 'poc-worker-status-direct';
+  const updatedId = 'poc-worker-status-updated';
+  return <MenuSection className="poc-worker-actions-section" aria-label={t('workers.workerStatus')}>
+    <Header className="poc-worker-menu-section-header">{t('workers.workerStatus')}</Header>
+    <WorkerActionMenuItem id="worker-status-refresh" textValue={t('workers.reloadWorkerStatus')} aria-label={t('workers.reloadWorkerStatus')} aria-describedby={`${helpId} ${readOnlyId} ${directId} ${updatedId}`} isDisabled={pending} aria-busy={pending} onAction={onRefresh}>
+      <span className="poc-worker-menu-item-title">{t('workers.reloadWorkerStatus')}</span>
+      <span id={helpId} className="poc-worker-menu-item-detail">{t('workers.workerStatusRefreshHelp')}</span>
+      <span id={readOnlyId} className="poc-worker-menu-item-detail">{t('workers.workerStatusRefreshReadOnly')}</span>
+      {pending && <span className="poc-worker-menu-item-result" role="status" aria-live="polite">{t('workers.workerStatusRefreshing')}</span>}
+      <span id={directId} className="poc-worker-menu-item-note">{t('workers.workerStatusRefreshDirect')}</span>
+      {message && <span className={`poc-worker-menu-item-result${message.failed ? ' is-error' : ''}`} role={message.failed ? 'alert' : 'status'} aria-live="polite">{message.text}</span>}
+      <span id={updatedId} className="poc-worker-menu-item-note">{t('workers.statusLastUpdated', { time: lastUpdated })}</span>
+    </WorkerActionMenuItem>
+  </MenuSection>;
 }
 
 export function CapabilityCard({ capability, commands, children }) {
@@ -485,30 +509,29 @@ export function CapabilityCard({ capability, commands, children }) {
 
 export { CapabilityCard as Capability };
 
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus, restartMessage = null }) {
   useLanguage();
+  const [actionsOpen, setActionsOpen] = useState(false);
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
   const items = workerExecutions(executions, id);
   const active = items.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state));
   const recent = items.filter(item => terminalStates.includes(item.state));
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
+  const actionNotice = !actionsOpen ? restartMessage ?? statusMessage ?? (administration?.message ? { text: localizeText(administration.message), failed: false } : null) : null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
     {!worker ? <>
       <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div>
-      {!readOnly && <div className="poc-worker-recovery-actions"><WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt} onRefresh={onRefreshStatus} /></div>}
+      {!readOnly && <div className="poc-worker-unavailable-actions"><WorkerMoreActions administration={administration} statusRefreshing={statusRefreshing} statusMessage={statusMessage} statusUpdatedAt={statusUpdatedAt} onRefreshStatus={onRefreshStatus} isOpen={actionsOpen} onOpenChange={setActionsOpen} /></div>}
+      {actionNotice && <div className="poc-worker-action-toast"><Notice error={actionNotice.failed}>{actionNotice.text}</Notice></div>}
     </> : <>
-      <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
+      <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} restart={restart} statusRefreshing={statusRefreshing} statusMessage={statusMessage} statusUpdatedAt={statusUpdatedAt ?? observations?.updatedAt} onRefreshStatus={onRefreshStatus} actionsOpen={actionsOpen} onActionsOpenChange={setActionsOpen} />
       <WorkerOperationalStatus worker={worker} node={node} diagnostics={diagnostics} />
-      <div className={readOnly ? 'poc-worker-layout poc-worker-read-only' : 'poc-worker-layout'}>
+      {actionNotice && <div className="poc-worker-action-toast"><Notice error={actionNotice.failed}>{actionNotice.text}</Notice></div>}
+      <div className="poc-worker-layout">
         <div className="poc-worker-main poc-main">
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />
         </div>
-        {!readOnly && <aside className="poc-worker-rail poc-secondary-rail" aria-label={t('workers.workerControlsAndReadiness')}>
-          <SchedulingControls administration={administration} />
-          {restart}
-          <WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt ?? observations?.updatedAt} onRefresh={onRefreshStatus} />
-        </aside>}
       </div>
       <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
       <div className="poc-worker-lower-grid">
