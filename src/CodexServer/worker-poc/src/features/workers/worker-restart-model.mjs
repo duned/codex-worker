@@ -6,3 +6,11 @@ export function restartAvailable(worker, operation) {
     worker.capabilities?.some(item => item.type === 'protocol' && item.name === 'worker-restart-v1') &&
     !restartPending(operation) && operation?.state !== 'failed');
 }
+
+export function restartStatusPaths(workerId) {
+  const workerPath = `/api/v1/workers/${encodeURIComponent(workerId)}`;
+  return {
+    operation: `${workerPath}/update`,
+    worker: workerPath
+  };
+}

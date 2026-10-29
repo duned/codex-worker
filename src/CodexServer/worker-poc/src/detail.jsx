@@ -109,7 +109,7 @@ function WorkerMoreActions({ administration }) {
   </>;
 }
 
-function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration, restart }) {
+function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration }) {
   useLanguage();
   return <header className="poc-worker-heading">
     <div className="poc-worker-identity">
@@ -124,7 +124,6 @@ function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref,
     </div>
     <div className="poc-worker-heading-actions">
       {administration?.worker && administration?.onEdit && <Button color="secondary" isDisabled={administration.pending || administration.needsRefresh} onPress={() => administration.onEdit()}>{t('workers.editWorker')}</Button>}
-      {restart}
       <WorkerMoreActions administration={administration} />
     </div>
   </header>;
@@ -434,9 +433,26 @@ function SchedulingControls({ administration }) {
       <Button color={actionKey === 'Draining' ? 'secondary' : 'primary'} size="md" className="w-full" iconLeading={actionKey === 'Draining' ? PauseCircle : Play}
         isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
         aria-describedby="poc-scheduling-action-help" onPress={() => administration?.onAction?.(actionKey)}>{actionLabel}</Button>
-      <p id="poc-scheduling-action-help" className="poc-scheduling-help">{actionKey === 'Draining' ? t('workers.currentExecutionsContinue') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></p>
+      <p id="poc-scheduling-action-help" className="poc-scheduling-help">{actionKey === 'Draining' ? t('workers.pauseSchedulingHelp') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></p>
       {administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
-      <Button color="tertiary" size="sm" className="poc-refresh-button" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh?.()}>{t('shared.refreshAuthoritativeState')}</Button>
+    </div>
+  </TableCard.Root>;
+}
+
+function WorkerStatusRefresh({ pending, message, updatedAt, onRefresh }) {
+  useLanguage();
+  const lastUpdated = updatedAt ? relativeAge(new Date(updatedAt).toISOString(), Date.now()) : t('workers.statusNotUpdated');
+  return <TableCard.Root className="poc-dashboard-panel poc-control-panel poc-status-refresh-panel">
+    <div className="poc-panel-heading"><h2>{t('workers.workerStatus')}</h2></div>
+    <div className="poc-status-refresh-content">
+      <p>{t('workers.workerStatusRefreshHelp')}</p>
+      <p>{t('workers.workerStatusRefreshReadOnly')}</p>
+      <Button color="secondary" size="md" className="w-full" isDisabled={pending} aria-busy={pending} onPress={onRefresh}>
+        {pending ? t('workers.workerStatusRefreshing') : t('workers.reloadWorkerStatus')}
+      </Button>
+      <p className="poc-status-refresh-note">{t('workers.workerStatusRefreshDirect')}</p>
+      {message && <p className="poc-control-message" role={message.failed ? 'alert' : 'status'} aria-live="polite">{message.text}</p>}
+      <p className="poc-status-refresh-updated">{t('workers.statusLastUpdated', { time: lastUpdated })}</p>
     </div>
   </TableCard.Root>;
 }
@@ -469,7 +485,7 @@ export function CapabilityCard({ capability, commands, children }) {
 
 export { CapabilityCard as Capability };
 
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus }) {
   useLanguage();
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
@@ -478,8 +494,11 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const recent = items.filter(item => terminalStates.includes(item.state));
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
-    {!worker ? <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div> : <>
-      <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} restart={restart} />
+    {!worker ? <>
+      <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div>
+      {!readOnly && <div className="poc-worker-recovery-actions"><WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt} onRefresh={onRefreshStatus} /></div>}
+    </> : <>
+      <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
       <WorkerOperationalStatus worker={worker} node={node} diagnostics={diagnostics} />
       <div className={readOnly ? 'poc-worker-layout poc-worker-read-only' : 'poc-worker-layout'}>
         <div className="poc-worker-main poc-main">
@@ -487,15 +506,17 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
         </div>
         {!readOnly && <aside className="poc-worker-rail poc-secondary-rail" aria-label={t('workers.workerControlsAndReadiness')}>
           <SchedulingControls administration={administration} />
+          {restart}
+          <WorkerStatusRefresh pending={statusRefreshing || administration?.pending} message={statusMessage} updatedAt={statusUpdatedAt ?? observations?.updatedAt} onRefresh={onRefreshStatus} />
         </aside>}
       </div>
       <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
       <div className="poc-worker-lower-grid">
-        <ReadinessPanel worker={worker} node={node} diagnostics={diagnostics} now={now} />
         <div className="poc-worker-technical-column">
           <WorkerResources worker={worker} node={node} now={now} />
           <CapabilitiesPanel node={node} />
         </div>
+        <ReadinessPanel worker={worker} node={node} diagnostics={diagnostics} now={now} />
       </div>
       <div className="poc-worker-extra">
         {diagnostics && <AdvancedDisclosure title={t('shared.readinessEvidence')}>

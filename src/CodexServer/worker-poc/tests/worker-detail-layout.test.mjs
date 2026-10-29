@@ -53,7 +53,8 @@ function props(overrides = {}) {
   return {
     id: worker.workerId, observations: [currentWorker], nodes: [node], diagnostics: currentDiagnostics,
     executions: [execution], projects: [{ id: 'project-1', name: 'Project one', repository: 'team/repo' }],
-    administration, now, readOnly: false
+    administration, now, readOnly: false,
+    restart: overrides.restart ?? createElement('div', null, 'Restart worker Check restart status')
   };
 }
 function render(overrides = {}) {
@@ -86,6 +87,8 @@ test('managed settings distinguish synchronized and standalone observations', ()
   const standalone = render({ diagnostics: { ...diagnostics, configurationSynchronization: 'unknown' } });
   assert.match(standalone, />Standalone</);
   assert.doesNotMatch(standalone, />Synced</);
+  assert.match(standalone, /Reload worker status/);
+  assert.match(standalone, /Restart worker/);
 });
 
 test('unknown capacity remains unavailable and scheduling controls preserve action guards', () => {
@@ -95,7 +98,9 @@ test('unknown capacity remains unavailable and scheduling controls preserve acti
 
   const enabled = render();
   assert.match(enabled, /Pause new assignments/);
-  assert.match(enabled, /Current executions continue to completion\./);
+  assert.match(enabled, /Pause scheduling to stop new assignments\. Running executions continue to completion\./);
+  assert.match(enabled, /Restart worker/);
+  assert.match(enabled, /Reload worker status/);
 
   const blocked = render({ actions: actions.map(action => action.key === 'Draining' ? { ...action, reason: 'operation pending' } : action) });
   assert.match(blocked, /Pause new assignments/);
@@ -117,8 +122,15 @@ test('recent executions use the cached title and retain the Issue link', () => {
 });
 
 test('readiness and technical details stack at narrow widths', async () => {
+  const html = render();
+  const sections = ['Technical details', 'Capabilities &amp; provisioning', 'Readiness checks'].map(label => html.indexOf(label));
+  assert.ok(sections.every(position => position >= 0));
+  assert.deepEqual(sections, [...sections].sort((left, right) => left - right));
   const css = await readFile(new URL('../src/poc.css', import.meta.url), 'utf8');
   assert.match(css, /\.poc-worker-lower-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-worker-status-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 2\.59fr\) minmax\(18rem, 1fr\)/);
 });

@@ -7,6 +7,7 @@ export function WorkerDetail(props: {
   nodes?: NodeSummary[] | null; projects?: ProjectSummary[] | null;
   executions?: ExecutionSummary[] | null; diagnostics?: WorkerDiagnostics | null;
   administrationHref?: string; workersHref?: string; nodeCommands?: NodeCommandSummary[] | null; administration?: AdministrationPresentation; readOnly: boolean; now?: number;
+  statusRefreshing?: boolean; statusMessage?: { text: string; failed: boolean } | null; statusUpdatedAt?: number | null; onRefreshStatus?: () => void;
 }): ReactElement;
 
 export function CapabilityCard(props: { capability: import("./shared/api/contracts").Capability; commands?: NodeCommandSummary[] | null; children?: ReactNode }): ReactElement;

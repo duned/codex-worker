@@ -28,7 +28,7 @@ export interface AdministrationPresentation {
   worker?: WorkerAdministration; delivery?: DeliveryAuthorization; pending: boolean; needsRefresh: boolean; message: string;
   actions: { key: string; label: string; reason: string }[];
   onEdit(): void;
-  onAction(key: string): void; onRefresh(): void;
+  onAction(key: string): void; onRefreshStatus(): Promise<void>;
 }
 export function WorkerPocPage({ id }: { id: string }) {
   useLanguage();
@@ -41,37 +41,34 @@ export function WorkerPocPage({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const editingWorker = registry.retainedData;
   const locked = runtime.locked(resource);
-  const refresh = async () => {
-    if (pending) return;
+  const refreshStatus = async () => {
+    if (pending) throw new ApiError(t('workers.statusRefreshUnavailableWhileAnActionIsRunning'));
     const generation = session.generation;
-    setPending(true);
-    try {
-      await runtime.reconcile(resource, async signal => {
-        // Registry recovery establishes actual policy/token state. Missing
-        // diagnostics block activation while preserving independent controls.
-        const value = await runtime.read(base, signal, worker);
-        const authorization = await runtime.read(`${base}/credential-access`, signal, deliveryAuthorization);
-        runtime.queries.setQueryData(queryKeys.read(generation, `${base}/credential-access`), authorization);
-        runtime.queries.setQueryData(queryKeys.read(generation, base), value);
-      });
-      await readiness.refetch();
-      if (runtime.snapshot().generation === generation) setMessage(t("workers.authoritativeStateRefreshedReviewCurrentPolicyTokenAndReadinessBeforeAnotherAction"));
-    } catch {
-      if (runtime.snapshot().generation === generation) setMessage(t("workers.authoritativeStateUnavailableTheOperationHasNotBeenResubmitted"));
-    } finally { if (runtime.snapshot().generation === generation) setPending(false); }
+    await runtime.reconcile(resource, async signal => {
+      const [value, authorization] = await Promise.all([
+        runtime.read(base, signal, worker),
+        runtime.read(`${base}/credential-access`, signal, deliveryAuthorization)
+      ]);
+      if (runtime.snapshot().generation !== generation) return;
+      runtime.queries.setQueryData(queryKeys.read(generation, `${base}/credential-access`), authorization);
+      runtime.queries.setQueryData(queryKeys.read(generation, base), value);
+    });
   };
   const operation = useMutation({ retry: false, mutationFn: async (key: string) => {
+    if (key === 'Enabled' || key === 'Draining' || key === 'Disabled') {
+      return runtime.mutate(resource, `${base}/scheduling-policy`, 'PUT', { policy: key }, worker);
+    }
     const check = async (signal: AbortSignal) => {
       const current = await runtime.read(base, signal, worker);
-      const evidence = key === 'Enabled' ? await runtime.read(`${base}/diagnostics`, signal, diagnostics) : undefined;
-      const authorization = key === 'revoke-delivery' ? await runtime.read(`${base}/credential-access`, signal, deliveryAuthorization) : undefined;
-      const blocked = reason(key, current, evidence, authorization);
+      const authorization = key === 'revoke-delivery'
+        ? await runtime.read(`${base}/credential-access`, signal, deliveryAuthorization)
+        : undefined;
+      const blocked = reason(key, current, readiness.data, authorization);
       if (blocked) throw new ApiError(blocked);
     };
     if (key === 'repair-delivery') return runtime.mutate(resource, `${base}/credential-access/repair`, 'POST', undefined, deliveryAuthorization, check);
     if (key === 'revoke-delivery') return runtime.mutate(resource, `${base}/credential-access/revoke`, 'POST', undefined, deliveryAuthorization, check);
-    return runtime.mutate(resource, key === 'revoke-api' ? `${base}/authentication/revoke` : `${base}/scheduling-policy`,
-      key === 'revoke-api' ? 'POST' : 'PUT', key === 'revoke-api' ? undefined : { policy: key }, worker, check);
+    return runtime.mutate(resource, `${base}/authentication/revoke`, 'POST', undefined, worker, check);
   } });
   const submit = async () => {
     const key = selected, generation = session.generation;
@@ -90,7 +87,7 @@ export function WorkerPocPage({ id }: { id: string }) {
     actions: actions.map(action => ({ ...action, reason: pending ? t("workers.anAdministrationOperationIsPending") : locked
       ? t("workers.refreshAuthoritativeStateBeforeAnotherActionThePreviousOperationWillNotBe") : reason(action.key, registry.data, readiness.data, delivery.data) })),
     onAction: key => { if (actions.some(action => action.key === key) && !pending && !locked && !reason(key, registry.data, readiness.data, delivery.data)) setSelected(key); },
-    onRefresh: () => { void refresh(); }
+    onRefreshStatus: refreshStatus
   };
   return <><WorkerDetailPage workerId={id} administration={administration} />
     {editing && editingWorker && <WorkerEditor key={id} worker={editingWorker} workerStatusError={!!registry.error} diagnostics={readiness.data}

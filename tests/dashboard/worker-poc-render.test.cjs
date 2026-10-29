@@ -146,7 +146,7 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
 
 test('Scheduling controls and More actions preserve guards, descriptions and current control explanations',()=>{
  const html=render({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}}});
- for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Refresh authoritative state','Revoke Worker API token'])assert.ok(html.includes(text),text);
+ for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
 test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
@@ -162,7 +162,7 @@ test('Migration preview reuses Worker presentation without unfinished administra
 test('Canonical detail preserves multiple actual slots, linked concurrent stages and independent delivery revocation', () => {
  const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28', title: 'Issue title 28' } };
  const html = render({ observations: [{ ...worker, activeExecutions: 2, availableCapacity: 0 }], executions: [current, second, completed], administration: { worker, delivery: { status: 'active' }, actions: [{ key: 'revoke-delivery', label: 'Revoke delivery authorization', reason: '' }], onAction: () => {}, onRefresh: () => {} } });
- for (const text of ['2 / 2', 'Current executions', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
+ for (const text of ['2 / 2', 'Current execution', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
  assert.ok(!html.includes('Detail preview'));
 });
 test('Credential delivery repair exposes pending guidance and an accessible action without secrets',()=>{

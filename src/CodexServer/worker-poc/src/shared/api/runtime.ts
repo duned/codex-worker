@@ -88,15 +88,15 @@ export class DashboardRuntime {
     } catch (error) { this.rejectSession(error, generation); throw error; }
   }
   locked(resource: string) { return this.fences.has(resource); }
-  async mutate<T>(resource: string, path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body: unknown, validate: Validator<T>, authoritativeCheck: (signal: AbortSignal) => Promise<void>) {
+  async mutate<T>(resource: string, path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body: unknown, validate: Validator<T>, authoritativeCheck?: (signal: AbortSignal) => Promise<void>) {
     if (!this.state.authenticated || this.locked(resource)) throw new ApiError(t("api.refreshAuthoritativeStateBeforeRetrying"));
     const generation = this.state.generation, signal = this.controller.signal;
     this.fences.set(resource, 'pending'); this.publish({});
     let submitted = false;
     try {
-      // A fresh, uncached read checks revision/consent/eligibility before sending.
-      // The Server still enforces all authorization and lifecycle constraints.
-      await authoritativeCheck(signal);
+      // Use a fresh client-side check only when it adds a useful preview. The
+      // Server remains responsible for authorization and mutation safety.
+      await authoritativeCheck?.(signal);
       if (!this.current(generation)) throw cancelled();
       submitted = true;
       const value = await this.http.request(path, { method, body, csrf: this.csrf, signal }, validate);

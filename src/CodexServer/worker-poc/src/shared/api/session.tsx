@@ -42,7 +42,7 @@ export function useApiRead<T>(path: string, validate: Validator<T>) {
 }
 // Callers provide fresh uncached Server checks and an explicit reconciliation
 // read. Timers, cache refreshes and render can never clear an uncertain lock.
-export function useApiMutation<T>(resource: string, path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', validate: Validator<T>, authoritativeCheck: (signal: AbortSignal) => Promise<void>) {
+export function useApiMutation<T>(resource: string, path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', validate: Validator<T>, authoritativeCheck?: (signal: AbortSignal) => Promise<void>) {
   const runtime = useRuntime(); useSession();
   const mutation = useMutation({ mutationFn: (body: unknown) => runtime.mutate(resource, path, method, body, validate, authoritativeCheck), retry: false });
   return { ...mutation, locked: runtime.locked(resource), reconcile: (read: (signal: AbortSignal) => Promise<void>) => runtime.reconcile(resource, read) };
