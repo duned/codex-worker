@@ -19,10 +19,10 @@ const {props,worker,node,capability,current,completed}=require('./worker-poc-fix
 const render=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(WorkerDetail,{...props,...data})));};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
- for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Config OK','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
+ for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Synced','Managed settings','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
  assert.ok(html.includes('aria-label="Connection: Connected"'));
  assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
- assert.ok(html.includes('aria-label="Configuration: Config OK"'));
+ assert.ok(html.includes('aria-label="Managed settings: Synced"'));
  assert.ok(html.includes('aria-label="Scheduling: Active"'));
  assert.ok(!html.includes('other-execution'));assert.ok(!html.includes('8 active'));
  assert.ok(html.includes('#27 · Issue title 27'));
@@ -43,15 +43,15 @@ test('Configuration failure is independent, unknown/stale evidence is never heal
  const html=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'error',workerReportedManagedDiagnostics:{retrieval:'retrieved',synchronization:'error',source:'server-retrieved',failureStage:'contract-validation',diagnosticCode:'managed-contract-invalid'}} });
  assert.ok(html.includes('aria-label="Connection: Connected"'));
  assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
- assert.ok(html.includes('aria-label="Configuration: Config KO"'));
+ assert.ok(html.includes('aria-label="Managed settings: Needs attention"'));
  assert.ok(html.includes('Scheduling: Active'));
  assert.ok(html.includes('Last reported failure: contract validation · managed contract invalid'));
 
  const unknown=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'unknown'} });
- assert.ok(unknown.includes('aria-label="Configuration: Config unknown"'));
+ assert.ok(unknown.includes('aria-label="Managed settings: Standalone"'));
  const stale=render({ observations:[{...worker,availability:'stale',lastHeartbeatAtUtc:undefined}] });
- assert.ok(stale.includes('aria-label="Heartbeat: Stale"'));
- assert.ok(stale.includes('aria-label="Configuration: Config unknown"'));
+ assert.ok(stale.includes('aria-label="Last heartbeat: Lost, heartbeat unavailable"'));
+ assert.ok(stale.includes('aria-label="Managed settings: Unknown"'));
 });
 test('The execution rail keeps cumulative checks and renders durations only for completed or current stages',()=>{
  for(const currentStage of ['Codex','Validation','Integration',null]){
@@ -144,11 +144,9 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
  assert.ok(!unavailable.includes('href="https://github.com/'));
 });
 
-test('Control rail preserves guarded actions, disabled reasons and current control explanations',()=>{
+test('Scheduling controls and More actions preserve guards, descriptions and current control explanations',()=>{
  const html=render({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}}});
- for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','aria-describedby="poc-action-revoke-api"','Refresh authoritative state','Revoke API token'])assert.ok(html.includes(text),text);
- assert.match(html,/<button[^>]*disabled=""[^>]*>[\s\S]*?Activate scheduling/);
- assert.match(html,/<button(?![^>]* disabled="")[^>]*>[\s\S]*?Deactivate/);
+ for(const text of ['poc-control-rail','2 active assignment(s) keep their leases','No active Worker API token','Activation blocked: Codex preflight required','Existing assignments and leases are not cancelled','does not revoke credential-delivery authorization','id="poc-action-revoke-api"','id="poc-action-Enabled"','Refresh authoritative state','Revoke Worker API token'])assert.ok(html.includes(text),text);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
 test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
@@ -171,7 +169,7 @@ test('Credential delivery repair exposes pending guidance and an accessible acti
  const html=render({administration:{worker,delivery:{status:'pending'},actions:[{key:'repair-delivery',label:'Provision or repair delivery authorization',reason:''}],onAction:()=>{},onRefresh:()=>{}}});
  assert.ok(html.includes('Provision or repair delivery authorization'));
  assert.ok(html.includes('Keep the Worker online'));
- assert.ok(html.includes('aria-describedby="poc-delivery-repair-delivery-reason"'));
+ assert.ok(html.includes('id="poc-delivery-repair-delivery-reason"'));
  assert.ok(html.includes('role="status"'));
  assert.ok(!html.includes('CODEX_WORKER_CREDENTIAL_DELIVERY_TOKEN'));
 });

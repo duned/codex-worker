@@ -6,10 +6,11 @@ import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
-import { Activity, Database01, PauseCircle, Play, Shield01, Stop, Trash01 } from '@untitledui/icons';
-import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses } from './model.js';
+import { Activity, ChevronDown, PauseCircle, Play, Shield01 } from '@untitledui/icons';
+import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses, workerHeartbeatAge, workerManagedSettingsState, workerSlotSummary } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
 import { IssueTitle } from './features/projects/IssueTitle';
+import { Dropdown } from './untitled/components/base/dropdown/dropdown';
 const managedFailureStages = new Set(['retrieval', 'contract-validation', 'synchronization']);
 const managedFailureCodes = new Set(['server-unavailable', 'server-unauthorized', 'managed-contract-invalid',
   'managed-local-configuration-invalid', 'managed-synchronization-failed', 'project-capabilities-missing', 'project-preparation-failed']);
@@ -23,6 +24,17 @@ function statusTone(value) {
 function freshnessLabel(state) {
   return state === 'Fresh' ? t('workers.fresh')
     : state === 'Stale' ? t('workers.staleHeartbeat') : t('shared.unknown');
+}
+
+function configurationFailureDiagnostic(diagnostics) {
+  const managed = diagnostics?.workerReportedManagedDiagnostics;
+  const details = [
+    managedFailureStages.has(managed?.failureStage) ? t(`status.${managed.failureStage}`) : null,
+    managedFailureCodes.has(managed?.diagnosticCode) ? t(`status.${managed.diagnosticCode}`) : null
+  ].filter(Boolean);
+  return details.length
+    ? t('workers.configurationFailureDiagnostic', { detail: details.join(' · ') })
+    : t('workers.configurationFailureGeneric');
 }
 
 function Status({ value, tone, active = false }) {
@@ -44,25 +56,6 @@ function relativeAge(value, now) {
   return t('workers.hoursAgo', { count: Math.floor(seconds / 3600) });
 }
 
-function configurationFailureDiagnostic(diagnostics) {
-  const managed = diagnostics?.workerReportedManagedDiagnostics;
-  const details = [
-    managedFailureStages.has(managed?.failureStage) ? t(`status.${managed.failureStage}`) : null,
-    managedFailureCodes.has(managed?.diagnosticCode) ? t(`status.${managed.diagnosticCode}`) : null
-  ].filter(Boolean);
-  return details.length
-    ? t('workers.configurationFailureDiagnostic', { detail: details.join(' · ') })
-    : t('workers.configurationFailureGeneric');
-}
-
-function WorkerOperationalStatus({ label, value, tone, diagnostic }) {
-  return <span className="poc-worker-status-item" role="group" aria-label={`${label}: ${value}`}
-    aria-describedby={diagnostic ? 'poc-worker-config-diagnostic' : undefined}>
-    <Status value={value} tone={tone} />
-    {diagnostic && <span id="poc-worker-config-diagnostic" className="poc-worker-status-diagnostic">{diagnostic}</span>}
-  </span>;
-}
-
 function CopyWorkerId({ id }) {
   useLanguage();
   const [message, setMessage] = useState('');
@@ -82,55 +75,108 @@ function CopyWorkerId({ id }) {
   </>;
 }
 
-function WorkerHeading({ worker, node, diagnostics, now, readOnly, administrationHref, workersHref, administration }) {
-  useLanguage();
-  const statuses = workerDetailStatuses(worker, node, diagnostics);
-  const connection = statuses.connection.state === 'Connected' ? t('workers.connected')
-    : statuses.connection.state === 'Disconnected' ? t('workers.disconnected') : t('shared.unknown');
-  const freshness = freshnessLabel(statuses.freshness.state);
-  const configuration = statuses.configuration.state === 'Ok' ? t('workers.configurationOk')
-    : statuses.configuration.state === 'Ko' ? t('workers.configurationKo') : t('workers.configurationUnknown');
-  const scheduling = statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
-    : statuses.scheduling.state === 'Inactive' ? t('workers.schedulingInactive')
-      : statuses.scheduling.state === 'Draining' ? t('workers.schedulingDraining') : t('shared.unknown');
-  const synchronization = diagnostics?.configurationSynchronization?.toLowerCase();
-  const configurationFailureReported = ['error', 'not-synchronized', 'out-of-sync'].includes(synchronization);
-  const configDiagnostic = configurationFailureReported ? configurationFailureDiagnostic(diagnostics) : null;
-  const slots = worker.activeExecutions == null || (worker.maximumCapacity ?? worker.capacity) == null
-    ? t('shared.unknown')
-    : `${worker.activeExecutions} / ${worker.maximumCapacity ?? worker.capacity}`;
+function heartbeatLabel(state) {
+  return state === 'Fresh' ? t('workers.heartbeatFresh')
+    : state === 'Delayed' ? t('workers.heartbeatDelayed') : t('workers.heartbeatLost');
+}
 
+function HeartbeatWaveform({ worker, now }) {
+  const heartbeat = workerHeartbeatAge(worker.lastHeartbeatAtUtc, now);
+  const label = heartbeatLabel(heartbeat.state);
+  const age = heartbeat.state === 'Lost' ? t('workers.heartbeatUnavailable') : relativeAge(worker.lastHeartbeatAtUtc, now);
+  return <div className="poc-worker-heartbeat" role="group" aria-label={`${t('workers.lastHeartbeat')}: ${label}, ${age}`}>
+    <svg className={`poc-heartbeat-waveform tone-${heartbeat.tone}`} viewBox="0 0 48 36" role="img" aria-label={`${t('workers.heartbeatStatus')}: ${label}`} focusable="false">
+      <path d="M 2 18 L 9 18 L 16 4 L 23 32 L 30 10 L 37 18 L 46 18" />
+    </svg>
+    <span className="poc-worker-heartbeat-copy"><span>{t('workers.lastHeartbeat')}</span><strong>{heartbeat.state === 'Lost' ? label : age}</strong>{heartbeat.state === 'Lost' && <span>{age}</span>}<span className="sr-only">{label}</span></span>
+  </div>;
+}
+
+function WorkerMoreActions({ administration }) {
+  const actions = administration?.actions ?? [];
+  const visibleActions = actions.filter(action => ['Enabled', 'Disabled', 'revoke-api', 'repair-delivery', 'revoke-delivery'].includes(action.key));
+  if (!visibleActions.length) return null;
+  return <>
+    <Dropdown.Root>
+      <Button color="secondary" iconTrailing={ChevronDown}>{t('workers.moreActions')}</Button>
+      <Dropdown.Popover>
+        <Dropdown.Menu onAction={key => administration?.onAction?.(String(key))}>
+          {visibleActions.map(action => <Dropdown.Item key={action.key} id={action.key} label={action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)} selectionIndicator="none" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`} />)}
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown.Root>
+    {visibleActions.map(action => <span key={`${action.key}-reason`} id={action.key === 'repair-delivery' || action.key === 'revoke-delivery' ? `poc-delivery-${action.key}-reason` : `poc-action-${action.key}`} className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</span>)}
+  </>;
+}
+
+function WorkerHeading({ worker, now, readOnly, administrationHref, workersHref, administration, restart }) {
+  useLanguage();
   return <header className="poc-worker-heading">
     <div className="poc-worker-identity">
       <nav aria-label={t('shared.breadcrumb')} className="poc-worker-breadcrumb">
         <a href={workersHref}>{t('shared.workers')}</a><span aria-hidden="true">/</span><span aria-current="page">{worker.displayName || t('workers.worker')}</span>
       </nav>
-      <h1 tabIndex={-1}>{worker.displayName || t('shared.workerDetails')}</h1>
+      <div className="poc-worker-title-row"><h1 tabIndex={-1}>{worker.displayName || t('shared.workerDetails')}</h1><HeartbeatWaveform worker={worker} now={now} /></div>
       <div className="poc-worker-meta">
         <span className="poc-worker-id"><GuidDisplay value={worker.workerId} /></span><CopyWorkerId id={worker.workerId} />{worker.workerVersion && <span>{t('workers.workerVersion')} {worker.workerVersion}</span>}
-        <div className="poc-worker-statuses" role="group" aria-label={t('workers.workerStatus')}>
-          <WorkerOperationalStatus label={t('workers.connection')} value={connection} tone={statuses.connection.tone} />
-          <WorkerOperationalStatus label={t('workers.heartbeatStatus')} value={freshness} tone={statuses.freshness.tone} />
-          <WorkerOperationalStatus label={t('shared.configuration')} value={configuration} tone={statuses.configuration.tone} diagnostic={configDiagnostic} />
-          <WorkerOperationalStatus label={t('workers.schedulingStatus')} value={scheduling} tone={statuses.scheduling.tone} />
-        </div>
         {readOnly && <a className="poc-readonly-link" href={administrationHref ?? `/workers/${encodeURIComponent(worker.workerId)}`}>{t('shared.openWorkerDetailAndAdministration')}</a>}
       </div>
     </div>
     <div className="poc-worker-heading-actions">
-      <div className="poc-worker-metrics" aria-label={t('workers.workerSummary')}>
-        <div className="poc-summary-metric">
-          <Database01 aria-hidden="true" />
-          <div><span>{t('workers.workSlots')}</span><strong>{slots}</strong></div>
-        </div>
-        <div className="poc-summary-metric">
-          <Activity aria-hidden="true" />
-          <div><span>{t('workers.lastHeartbeat')}</span><strong>{relativeAge(worker.lastHeartbeatAtUtc, now)}</strong></div>
-        </div>
-      </div>
       {administration?.worker && administration?.onEdit && <Button color="secondary" isDisabled={administration.pending || administration.needsRefresh} onPress={() => administration.onEdit()}>{t('workers.editWorker')}</Button>}
+      {restart}
+      <WorkerMoreActions administration={administration} />
     </div>
   </header>;
+}
+
+function WorkerStatusCard({ label, value, detail, tone = 'gray' }) {
+  return <article className="poc-worker-status-card" aria-label={`${label}: ${value}`}>
+    <span className="poc-worker-status-label">{label}</span>
+    <span className="poc-worker-status-value"><span className={`poc-worker-card-dot tone-${tone}`} aria-hidden="true" />{value}</span>
+    <span className="poc-worker-status-detail">{detail}</span>
+  </article>;
+}
+
+function WorkerOperationalStatus({ worker, node, diagnostics }) {
+  const statuses = workerDetailStatuses(worker, node, diagnostics);
+  const connection = statuses.connection.state === 'Connected' ? t('workers.connected')
+    : statuses.connection.state === 'Disconnected' ? t('workers.disconnected') : t('shared.unknown');
+  const scheduling = statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
+    : statuses.scheduling.state === 'Inactive' ? t('workers.schedulingInactive')
+      : statuses.scheduling.state === 'Draining' ? t('workers.schedulingDraining') : t('shared.unknown');
+  const readiness = currentWorkerExecutionReadiness(worker, node);
+  const configuration = workerManagedSettingsState(worker, diagnostics);
+  const slots = workerSlotSummary(worker);
+  const occupied = slots.occupied == null ? t('shared.unavailable') : slots.occupied;
+  const capacity = slots.capacity == null ? t('shared.unavailable') : slots.capacity;
+  const slotDetail = slots.available == null ? t('workers.availableSlotsUnavailable')
+    : slots.available === 0 ? t('workers.atCapacity') : t('workers.availableSlotCount', { count: slots.available });
+  const connectionDetail = statuses.connection.state === 'Connected' ? t('workers.workerReachable')
+    : statuses.connection.state === 'Disconnected' ? t('workers.workerNotReachable') : t('workers.connectionUnavailable');
+  const readinessDetail = node ? t('workers.currentServerReadiness') : t('workers.readinessUnavailable');
+  const settingsDetail = configuration === 'Standalone' ? t('workers.noManagedConfiguration')
+    : configuration === 'Unknown' || configuration === 'Unavailable' ? t('workers.configurationStateUnavailable')
+      : ['error', 'not-synchronized', 'out-of-sync'].includes(diagnostics?.configurationSynchronization?.toLowerCase()) ? configurationFailureDiagnostic(diagnostics)
+        : localizeText(diagnostics.configurationSynchronization);
+  const readinessLabel = localizeText(readiness);
+  const configurationLabel = configuration === 'Synced' ? t('workers.managedSynced')
+    : configuration === 'Cached' ? t('workers.managedCached')
+      : configuration === 'Pending' ? t('workers.managedPending')
+        : configuration === 'Needs attention' ? t('workers.managedNeedsAttention')
+          : configuration === 'Standalone' ? t('workers.managedStandalone')
+            : configuration === 'Unavailable' ? t('workers.unavailable') : t('shared.unknown');
+  const settingsTone = configuration === 'Synced' ? 'success' : configuration === 'Needs attention' ? 'error' : configuration === 'Pending' || configuration === 'Cached' ? 'warning' : 'gray';
+  return <section className="poc-operational-status" aria-labelledby="poc-operational-status-heading">
+    <div className="poc-operational-status-heading"><h2 id="poc-operational-status-heading">{t('workers.operationalStatus')}</h2><p>{t('workers.operationalStatusSummary')}</p></div>
+    <div className="poc-worker-status-grid">
+      <WorkerStatusCard label={t('workers.connection')} value={connection} tone={statuses.connection.tone} detail={connectionDetail} />
+      <WorkerStatusCard label={t('workers.schedulingStatus')} value={scheduling} tone={statuses.scheduling.tone} detail={scheduling === t('workers.schedulingActive') ? t('workers.acceptingAssignments') : scheduling === t('workers.schedulingDraining') ? t('workers.noNewAssignments') : t('workers.schedulingPolicyUnavailable')} />
+      <WorkerStatusCard label={t('workers.executionReadiness')} value={readinessLabel} tone={readiness === 'ready' ? 'success' : readiness === 'not-ready' ? 'error' : 'gray'} detail={readinessDetail} />
+      <WorkerStatusCard label={t('workers.managedSettings')} value={configurationLabel} tone={settingsTone} detail={settingsDetail} />
+      <WorkerStatusCard label={t('workers.workSlots')} value={`${occupied} / ${capacity}`} tone={slots.available === 0 ? 'warning' : slots.available == null ? 'gray' : 'success'} detail={slotDetail} />
+    </div>
+  </section>;
 }
 
 function PanelHeading({ id, title, trailing }) {
@@ -223,14 +269,18 @@ function CurrentExecution({ item, projects, now, showStatus }) {
 
 function CurrentExecutions({ items, projects, now, worker, unavailable }) {
   useLanguage();
-  const title = items.length > 1 ? t('shared.currentExecutions') : t('shared.currentExecution');
   const currentStage = items.length === 1 ? items[0].currentStage ? stageLabel(items[0].currentStage) : localizeText(items[0].state) : null;
-  const trailing = currentStage && <Status value={currentStage} tone={isActiveExecutionState(items[0].state) ? 'info' : items[0].currentStage ? 'warning' : statusTone(items[0].state)} active={isActiveExecutionState(items[0].state)} />;
+  const hasReportedWork = worker.activeAssignments > 0 || worker.activeExecutions > 0;
+  const idleReported = worker.activeAssignments === 0 && worker.activeExecutions === 0;
+  const trailing = unavailable ? <Status value={t('workers.statusUnavailable')} />
+    : items.length ? <Status value={currentStage ?? t('workers.active')} tone={items[0].currentStage ? 'warning' : 'info'} active={isActiveExecutionState(items[0].state)} />
+      : hasReportedWork ? <Status value={t('workers.executionDetailsUnavailable')} tone="warning" />
+        : idleReported ? <Status value={t('workers.idle')} tone="success" /> : <Status value={t('workers.statusUnavailable')} />;
   return <TableCard.Root className="poc-dashboard-panel poc-current-panel">
-    <PanelHeading id="poc-current-heading" title={title} trailing={trailing} />
+    <PanelHeading id="poc-current-heading" title={t('shared.currentExecution')} trailing={trailing} />
     {unavailable ? <p className="poc-empty-panel">{t('shared.currentExecutionDataUnavailableRefreshToRecoverReportedStages')}</p>
       : items.length ? <div className="poc-current-executions-list">{items.map(item => <CurrentExecution key={item.id} item={item} projects={projects} now={now} showStatus={items.length > 1} />)}</div>
-      : <p className="poc-empty-panel">{worker.activeAssignments > 0 || worker.activeExecutions > 0 ? t('shared.theWorkerReportsActiveWorkItsExecutionDetailIsUnavailableInThis') : t('shared.noCurrentExecutionInTheLatest50ServerRequests')}</p>}
+      : <div className="poc-current-empty"><strong>{hasReportedWork ? t('workers.executionDetailsUnavailable') : idleReported ? t('workers.noIssueRunning') : t('workers.executionDetailsUnavailable')}</strong><p>{hasReportedWork ? t('shared.theWorkerReportsActiveWorkItsExecutionDetailIsUnavailableInThis') : idleReported ? t('shared.noCurrentExecutionInTheLatest50ServerRequests') : t('workers.currentExecutionStateUnavailable')}</p><a href="/executions">{t('workers.viewAllExecutions')}<span aria-hidden="true"> →</span></a></div>}
   </TableCard.Root>;
 }
 
@@ -241,24 +291,15 @@ function RecentExecutions({ items, projects, now, loading }) {
   return <TableCard.Root className="poc-dashboard-panel poc-recent-panel">
     <PanelHeading id="poc-recent-heading" title={t('shared.recentExecutions')} trailing={viewAll} />
     {loading ? <p className="poc-empty-panel">{t('shared.executionHistoryUnavailableRefreshToTryAgain')}</p>
-      : rows.length ? <div className="poc-recent-table-wrap">
-        <table className="poc-recent-table" aria-labelledby="poc-recent-heading">
-          <colgroup><col className="poc-col-project"/><col className="poc-col-issue"/><col className="poc-col-status"/><col className="poc-col-started"/><col className="poc-col-duration"/></colgroup>
-          <thead><tr>
-            <th scope="col">{t('executions.project')}</th><th scope="col">{t('workers.gitHubIssue')}</th><th scope="col">{t('workers.status')}</th><th scope="col">{t('workers.startedAt')}</th><th scope="col">{t('shared.durationLabel')}</th>
-          </tr></thead>
-          <tbody>{rows.map(item => {
+      : rows.length ? <ol className="poc-recent-list" aria-labelledby="poc-recent-heading">{rows.map(item => {
             const project = projects?.find(value => value.id === item.projectId);
-            return <tr key={item.id}>
-              <td><a href={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</a></td>
-              <td><WorkReference item={item} project={project} showTitle /><a className="block break-all text-xs text-tertiary" href={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></a></td>
-              <td><span className="poc-table-status"><Status value={item.state} /></span>{item.recoveryState && <span className="block text-xs text-tertiary">{t('executions.recoveryStatus')}: {statusLabel(item.recoveryState)}</span>}</td>
-              <td>{item.startedAtUtc ? timestamp(item.startedAtUtc) : t('workers.notReported')}</td>
-              <td>{duration(item, now)}</td>
-            </tr>;
-          })}</tbody>
-        </table>
-      </div> : <p className="poc-empty-panel">{t('shared.noRecentTerminalExecutionsForThisWorkerInThisView')}</p>}
+            return <li className="poc-recent-row" key={item.id}>
+              <div className="poc-recent-copy"><div className="poc-recent-issue"><WorkReference item={item} project={project} showTitle /></div>
+                <p><a href={`/projects/${encodeURIComponent(item.projectId)}`}>{project?.name ?? item.projectId}</a><span aria-hidden="true"> · </span>{item.startedAtUtc ? timestamp(item.startedAtUtc) : t('workers.notReported')}<span aria-hidden="true"> · </span>{duration(item, now)}<span aria-hidden="true"> · </span><a href={`/executions/${encodeURIComponent(item.id)}`}><GuidDisplay value={item.id} /></a></p>
+              </div>
+              <div className="poc-recent-result"><Status value={item.state} />{item.recoveryState && <span className="poc-recent-recovery">{t('executions.recoveryStatus')}: {statusLabel(item.recoveryState)}</span>}</div>
+            </li>;
+          })}</ol> : <p className="poc-empty-panel">{t('shared.noRecentTerminalExecutionsForThisWorkerInThisView')}</p>}
   </TableCard.Root>;
 }
 
@@ -377,49 +418,27 @@ function ReadinessPanel({ worker, node, diagnostics, now }) {
   </TableCard.Root>;
 }
 
-function ControlRail({ administration }) {
+function SchedulingControls({ administration }) {
   useLanguage();
-  const actions = administration?.actions ?? [
-    { key: 'Enabled', label: t('shared.activateScheduling') }, { key: 'Draining', label: t('shared.drainWorker') },
-    { key: 'Disabled', label: t('shared.deactivate') }, { key: 'revoke-api', label: t('shared.revokeWorkerAPIToken') }
-  ].map(action => ({ ...action, reason: t('shared.currentAdministrationUnavailable') }));
-  const mainActions = actions.filter(action => ['Enabled', 'Draining', 'Disabled', 'revoke-api'].includes(action.key));
-  const appearance = { Enabled: ['primary', Play], Draining: ['secondary', PauseCircle], Disabled: ['secondary-destructive', Stop], 'revoke-api': ['tertiary-destructive', Trash01] };
-  function actionButton(action) {
-    const [color, iconLeading] = appearance[action.key] ?? ['secondary', Trash01];
-    return <div key={action.key} className={`poc-control-action ${action.key === 'revoke-api' ? 'poc-revoke-action' : ''}`}>
-      <Button color={color} size="md" className="w-full justify-start" iconLeading={iconLeading} isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`poc-action-${action.key}`} onPress={() => administration?.onAction(action.key)}>
-        {action.key === 'revoke-api' ? t('workers.revokeApiToken') : localizeText(action.label)}
-      </Button>
-      <p className="sr-only" id={`poc-action-${action.key}`}>{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
-    </div>;
-  }
+  const policy = administration?.worker?.schedulingPolicy;
+  const actionKey = policy === 'Enabled' ? 'Draining' : 'Enabled';
+  const action = administration?.actions?.find(item => item.key === actionKey);
+  const currentPolicy = policy === 'Enabled' ? t('workers.schedulingActive')
+    : policy === 'Draining' ? t('workers.schedulingDraining')
+      : policy === 'Disabled' ? t('workers.schedulingInactive') : t('shared.unknown');
+  const actionLabel = actionKey === 'Draining' ? t('workers.pauseNewAssignments') : t('workers.activateScheduling');
   return <TableCard.Root className="poc-dashboard-panel poc-control-panel poc-control-rail">
-    <PanelHeading id="poc-controls-heading" title={t('shared.workerControls')} />
-    <div className="poc-control-content">
-      <div className="poc-primary-controls">{mainActions.filter(action => action.key !== 'revoke-api').map(actionButton)}</div>
-      <div className="poc-danger-controls">{mainActions.filter(action => action.key === 'revoke-api').map(actionButton)}</div>
-      <div className="poc-activation-note">
-        <span aria-hidden="true">i</span>
-        <div>
-          <p>{t('workers.activationPrerequisite')}</p>
-          {administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
-          <Button color="tertiary" size="sm" className="poc-refresh-button" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh()}>{t('shared.refreshAuthoritativeState')}</Button>
-        </div>
-      </div>
+    <PanelHeading id="poc-controls-heading" title={t('workers.schedulingControls')} />
+    <div className="poc-scheduling-content">
+      <p className="poc-scheduling-state"><span className={`poc-worker-card-dot ${policy === 'Enabled' ? 'tone-success' : policy === 'Draining' ? 'tone-warning' : 'tone-gray'}`} aria-hidden="true" />{currentPolicy}{policy === 'Enabled' ? ` · ${t('workers.acceptingAssignments')}` : ''}</p>
+      <Button color={actionKey === 'Draining' ? 'secondary' : 'primary'} size="md" className="w-full" iconLeading={actionKey === 'Draining' ? PauseCircle : Play}
+        isDisabled={!action || !!action.reason || administration?.pending || administration?.needsRefresh || !administration?.onAction}
+        aria-describedby="poc-scheduling-action-help" onPress={() => administration?.onAction?.(actionKey)}>{actionLabel}</Button>
+      <p id="poc-scheduling-action-help" className="poc-scheduling-help">{actionKey === 'Draining' ? t('workers.currentExecutionsContinue') : t('workers.activationPrerequisite')}<span className="sr-only">{localizeText(action?.reason || t('shared.confirmationRequired'))}</span></p>
+      {administration?.message && <p className="poc-control-message" role="status" aria-live="polite">{localizeText(administration.message)}</p>}
+      <Button color="tertiary" size="sm" className="poc-refresh-button" isDisabled={administration?.pending || !administration?.onRefresh} onPress={() => administration?.onRefresh?.()}>{t('shared.refreshAuthoritativeState')}</Button>
     </div>
   </TableCard.Root>;
-}
-
-function DeliveryControl({ administration }) {
-  useLanguage();
-  const actions = administration?.actions?.filter(item => ['repair-delivery', 'revoke-delivery'].includes(item.key)) ?? [];
-  return actions.map(action => <div key={action.key} className="poc-extra-control">
-    <Button color={action.key === 'revoke-delivery' ? 'tertiary-destructive' : 'secondary'} size="md" className="w-full justify-start" isDisabled={!!action.reason || !administration?.onAction} aria-describedby={`poc-delivery-${action.key}-reason`} onPress={() => administration?.onAction(action.key)}>
-      {localizeText(action.label)}
-    </Button>
-    <p id={`poc-delivery-${action.key}-reason`} className="sr-only">{localizeText(action.reason || t('shared.confirmationRequired'))}</p>
-  </div>);
 }
 
 export function CapabilityCard({ capability, commands, children }) {
@@ -450,7 +469,7 @@ export function CapabilityCard({ capability, commands, children }) {
 
 export { CapabilityCard as Capability };
 
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null }) {
   useLanguage();
   const worker = observations?.find(item => item.workerId === id);
   const node = nodes?.find(item => item.id === id && item.kind === 'worker');
@@ -460,18 +479,23 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
     {!worker ? <div className="poc-worker-state"><p role="status">{loading ? t('shared.loadingCurrentWorkerObservations') : observations ? t('shared.workerUnavailableOrDeletedReturnToWorkersToRefreshTheInventory') : t('shared.currentWorkerObservationsUnavailableSignInOrRefreshToRecoverCurrentState')}</p></div> : <>
-      <WorkerHeading worker={worker} node={node} diagnostics={diagnostics} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} />
+      <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} restart={restart} />
+      <WorkerOperationalStatus worker={worker} node={node} diagnostics={diagnostics} />
       <div className={readOnly ? 'poc-worker-layout poc-worker-read-only' : 'poc-worker-layout'}>
         <div className="poc-worker-main poc-main">
           <CurrentExecutions items={active} projects={projects} now={now} worker={worker} unavailable={executions === null} />
-          <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
-          <CapabilitiesPanel node={node} />
-          <WorkerResources worker={worker} node={node} now={now} />
         </div>
         {!readOnly && <aside className="poc-worker-rail poc-secondary-rail" aria-label={t('workers.workerControlsAndReadiness')}>
-          <ControlRail administration={administration} />
-          <ReadinessPanel worker={worker} node={node} diagnostics={diagnostics} now={now} />
+          <SchedulingControls administration={administration} />
         </aside>}
+      </div>
+      <RecentExecutions items={recent} projects={projects} now={now} loading={executions === null} />
+      <div className="poc-worker-lower-grid">
+        <ReadinessPanel worker={worker} node={node} diagnostics={diagnostics} now={now} />
+        <div className="poc-worker-technical-column">
+          <WorkerResources worker={worker} node={node} now={now} />
+          <CapabilitiesPanel node={node} />
+        </div>
       </div>
       <div className="poc-worker-extra">
         {diagnostics && <AdvancedDisclosure title={t('shared.readinessEvidence')}>
@@ -491,7 +515,6 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
             <p id="poc-delivery-effect">{t('shared.revokingDeliveryAuthorizationStopsFutureServerCredentialDeliveryWorkerAPIAuthenticationAnd')}</p>
             <p id="poc-token-effect">{t('shared.revokingWorkerAPIAuthenticationDeniesCallsUsingItsTokenActiveLeasesMay')}</p>
             {administration?.actions?.map(action => <p key={action.key}>{localizeText(action.label)} · {localizeText(action.reason || t('shared.confirmationRequired'))}</p>)}
-            <DeliveryControl administration={administration} />
           </AdvancedDisclosure>
         </>}
         <AdvancedDisclosure title={t('shared.observationDetails')}>

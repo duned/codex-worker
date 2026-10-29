@@ -64,6 +64,41 @@ export function workerDetailStatuses(worker, node, diagnostics) {
   };
 }
 
+/** Classify a heartbeat by the age of the Server-reported observation. */
+export function workerHeartbeatAge(lastHeartbeatAtUtc, now) {
+  const heartbeat = Date.parse(lastHeartbeatAtUtc ?? '');
+  if (!Number.isFinite(heartbeat)) return { state: 'Lost', ageMilliseconds: null, tone: 'error' };
+  const ageMilliseconds = Math.max(0, now - heartbeat);
+  if (ageMilliseconds < 60_000) return { state: 'Fresh', ageMilliseconds, tone: 'success' };
+  if (ageMilliseconds < 5 * 60_000) return { state: 'Delayed', ageMilliseconds, tone: 'warning' };
+  return { state: 'Lost', ageMilliseconds, tone: 'error' };
+}
+
+/** Keep absent capacity distinct from a Worker reporting zero free slots. */
+export function workerSlotSummary(worker) {
+  return {
+    occupied: worker?.activeExecutions ?? null,
+    capacity: worker?.maximumCapacity ?? worker?.capacity ?? null,
+    available: worker?.availableCapacity ?? null
+  };
+}
+
+/** A Worker with no managed synchronization contract is not presented as synced. */
+export function workerManagedSettingsState(worker, diagnostics) {
+  if (!diagnostics) return 'Unavailable';
+  const synchronization = diagnostics.configurationSynchronization?.toLowerCase();
+  const hasHeartbeat = Number.isFinite(Date.parse(worker?.lastHeartbeatAtUtc ?? '')) &&
+    ['online', 'draining', 'offline', 'stale'].includes(worker?.availability?.toLowerCase());
+  const currentObservation = workerDetailStatuses(worker, null, diagnostics).freshness.state === 'Fresh';
+  if (synchronization === 'synchronized') return currentObservation ? 'Synced' : 'Unknown';
+  if (synchronization === 'cached') return 'Cached';
+  if (synchronization === 'not-synchronized') return 'Pending';
+  if (synchronization === 'error' || synchronization === 'out-of-sync') return 'Needs attention';
+  if (synchronization === 'unavailable') return 'Unavailable';
+  if (synchronization === 'unknown' && !diagnostics.workerReportedManagedDiagnostics) return hasHeartbeat ? 'Standalone' : 'Unknown';
+  return 'Unknown';
+}
+
 /** Presentation can only downgrade readiness when connection evidence is not current. */
 export function currentWorkerExecutionReadiness(worker, node) {
   if (!node) return 'Unknown';

@@ -66,6 +66,14 @@ function renderScreen(screen, worker, node) {
 }
 
 function hasColoredStatusBadge(html, label, color) {
+  if (html.includes('class="poc-worker-status-card"')) {
+    const tone = color === 'text-utility-red-500' ? 'error'
+      : color === 'text-utility-green-500' ? 'success' : 'gray';
+    const cardStart = html.indexOf(`aria-label="Connection: ${label}"`);
+    const start = html.lastIndexOf('<article', cardStart);
+    const end = html.indexOf('</article>', start);
+    return cardStart >= 0 && end > start && html.slice(start, end).includes(`poc-worker-card-dot tone-${tone}`);
+  }
   let offset = 0;
   while (true) {
     const labelIndex = html.indexOf(label, offset);

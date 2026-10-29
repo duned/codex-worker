@@ -1,6 +1,7 @@
 import type { NodeSummary, WorkerObservation } from '../../shared/api/contracts';
 import { t, useLanguage } from '../../shared/i18n';
 import { timestamp, workerConnectionStatus } from '../../model';
+import { TableCard } from '../../untitled/components/application/table/table';
 
 export function WorkerResources({ worker, node, now }: { worker: WorkerObservation; node?: NodeSummary; now: number }) {
   useLanguage();
@@ -24,11 +25,14 @@ export function WorkerResources({ worker, node, now }: { worker: WorkerObservati
     [t('workers.diskCapacity'), bytes(resources?.diskTotalBytes)],
     [t('workers.diskFree') + sampleLabel, metricsUnavailable ? unavailable : bytes(resources?.diskAvailableBytes)],
   ];
-  return <section className="rounded-xl border border-secondary bg-primary p-5 my-4">
-    <h2 className="text-lg font-semibold text-primary">{t('workers.hostResources')}</h2>
-    <p className="text-sm text-tertiary">{t('workers.lastMeasured')} {measured ? <time dateTime={measured}>{timestamp(measured)}</time> : unavailable}{measured && ` · ${measuredAge}`}{stale && ` · ${t('workers.staleOrUnavailable')}`}</p>
-    <dl className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">{facts.map(([label, value]) => <div key={label}><dt className="text-sm text-tertiary">{label}</dt><dd className="text-sm font-medium text-primary">{value}</dd></div>)}</dl>
-  </section>;
+  return <TableCard.Root className="poc-dashboard-panel poc-technical-panel">
+    <div className="poc-panel-heading"><h2 id="poc-technical-heading">{t('workers.technicalDetails')}</h2><span className="poc-technical-caption">{t('workers.forTroubleshooting')}</span></div>
+    <div className="poc-technical-content">
+      <p className="poc-technical-summary">{t('workers.technicalDetailsSummary')}</p>
+      <p className="poc-technical-measured">{t('workers.lastMeasured')} {measured ? <time dateTime={measured}>{timestamp(measured)}</time> : unavailable}{measured && ` · ${measuredAge}`}{stale && ` · ${t('workers.staleOrUnavailable')}`}</p>
+      <dl className="poc-technical-facts">{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    </div>
+  </TableCard.Root>;
 }
 
 function relativeAge(measuredAt: number, now: number) {

@@ -5,10 +5,11 @@ import type { WorkerObservation } from '../../shared/api/contracts';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Notice } from '../../shared/Presentation';
 import { t, useLanguage } from '../../shared/i18n';
+import { AdvancedDisclosure } from '../../shared/Presentation';
 import { workerUpdate } from './worker-update';
 import { restartAvailable, restartPending } from './worker-restart-model.mjs';
 
-export function WorkerRestart({ worker }: { worker: WorkerObservation }) {
+export function WorkerRestart({ worker, compact = false }: { worker: WorkerObservation; compact?: boolean }) {
   useLanguage();
   const runtime = useRuntime();
   const [refreshError, setRefreshError] = useState(false);
@@ -37,12 +38,25 @@ export function WorkerRestart({ worker }: { worker: WorkerObservation }) {
     } catch { setRefreshError(true); }
   }
   const current = operation.data;
+  const message = current?.restart ? t(`workers.restartState.${current.state}`) : restartPending(current) ? t('workers.restartUnavailable') : '';
+  const unavailable = mutation.isError || operation.hasError || refreshError;
+  const action = <Button color={compact ? 'primary' : 'secondary'} isDisabled={mutation.isPending || mutation.locked || operation.fetching || operation.hasError || !restartAvailable(worker, current)} onPress={() => { void request(); }}>{t('workers.restart')}</Button>;
+  if (compact) return <div className="poc-worker-restart-control">
+    {action}
+    {message && <span role="status" className="poc-worker-restart-message">{message}</span>}
+    {unavailable && <span role="alert" className="poc-worker-restart-message is-error">{t('workers.restartUnavailable')}</span>}
+    <AdvancedDisclosure title={t('workers.restartStatus')}>
+      <p>{t('workers.restartHelp')}</p>
+      {current?.restart && current.diagnostic && <p>{current.diagnostic}</p>}
+      <Button color="secondary" onPress={() => { void refresh(); }}>{t('workers.restartRefresh')}</Button>
+    </AdvancedDisclosure>
+  </div>;
   return <Notice>
-    <Button color="secondary" isDisabled={mutation.isPending || mutation.locked || operation.fetching || operation.hasError || !restartAvailable(worker, current)} onPress={() => { void request(); }}>{t('workers.restart')}</Button>
+    {action}
     <p>{t('workers.restartHelp')}</p>
-    <p role="status">{current?.restart ? t(`workers.restartState.${current.state}`) : restartPending(current) ? t('workers.restartUnavailable') : ''}</p>
+    <p role="status">{message}</p>
     {current?.restart && current.diagnostic && <p>{current.diagnostic}</p>}
-    {(mutation.isError || operation.hasError || refreshError) && <p role="alert">{t('workers.restartUnavailable')}</p>}
+    {unavailable && <p role="alert">{t('workers.restartUnavailable')}</p>}
     <Button color="secondary" onPress={() => { void refresh(); }}>{t('workers.restartRefresh')}</Button>
   </Notice>;
 }

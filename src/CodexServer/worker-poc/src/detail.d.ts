@@ -3,7 +3,7 @@ import type { NodeCommandSummary, WorkerObservation, ProjectSummary, ExecutionSu
 import type { AdministrationPresentation } from './features/workers/WorkerPocPage';
 // Typed boundary for the retained, fixture-tested PoC presentation.
 export function WorkerDetail(props: {
-  preparation?: ReactNode; provisioning?: ReactNode; id: string; observations: WorkerObservation[] | null; loading?: boolean;
+  preparation?: ReactNode; provisioning?: ReactNode; restart?: ReactNode; id: string; observations: WorkerObservation[] | null; loading?: boolean;
   nodes?: NodeSummary[] | null; projects?: ProjectSummary[] | null;
   executions?: ExecutionSummary[] | null; diagnostics?: WorkerDiagnostics | null;
   administrationHref?: string; workersHref?: string; nodeCommands?: NodeCommandSummary[] | null; administration?: AdministrationPresentation; readOnly: boolean; now?: number;

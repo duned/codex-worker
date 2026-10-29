@@ -32,8 +32,8 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
       projects={projects.data ?? null} executions={executions.data ?? null} diagnostics={diagnostics.data ?? null}
       preparation={administration && observation ? <WorkerPreparation worker={observation} diagnostics={diagnostics.data} projects={projects.data} node={nodes.data?.find(item => item.id === resourceId)} /> : undefined}
       provisioning={administration ? <NodeProvisioning key={resourceId} nodeId={resourceId} repository={projects.data?.find(item => item.id === projectId)?.repository} /> : undefined}
+      restart={administration && observation ? <WorkerRestart key={resourceId} worker={observation} compact /> : undefined}
       nodeCommands={nodeCommands.data ?? null} loading={!observations.data && !observations.error} now={Date.now()} administration={administration} readOnly={!administration} />
-    {administration && observation && <WorkerRestart key={resourceId} worker={observation} />}
     {observation && <WorkerJournal workerId={resourceId} />}
     {administration && observation && <WorkerAdvanced worker={observation} diagnostics={diagnostics.data} />}
   </div>;
