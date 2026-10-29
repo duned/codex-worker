@@ -46,7 +46,8 @@ const render = () => renderToStaticMarkup(createElement(MemoryRouter, null,
 test('Worker current and recent executions render cached titles and internal Issue links', () => {
   reads.length = 0;
   const html = render();
-  assert.equal(reads.length, 6);
+  assert.equal(reads.length, 5);
+  assert.equal(reads.includes('/api/v1/nodes/worker/commands'), false);
   assert.equal(reads.some(path => path.includes('/issues')), false);
   assert.match(html, /#27 · Cached title 0/);
   assert.match(html, /#28 · Cached title 1/);
@@ -61,7 +62,7 @@ test('Worker title cache misses retain Issue numbers without additional requests
     const html = render();
     assert.match(html, /#27 · title unavailable/);
     assert.match(html, /#28 · title unavailable/);
-    assert.equal(reads.length, 6);
+    assert.equal(reads.length, 5);
     assert.equal(reads.filter(path => path.includes('/executions')).length, 1);
     assert.equal(reads.some(path => path.includes('/issues')), false);
   }

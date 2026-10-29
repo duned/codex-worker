@@ -38,6 +38,8 @@ const openReact = {
 const ariaComponents = require('react-aria-components');
 const openStateComponents = {
   ...ariaComponents,
+  DialogTrigger: ({ children }) => createElement('div', { 'data-dialog-trigger': true }, children),
+  Popover: ({ children }) => createElement('div', { 'data-popover': true }, children),
   ModalOverlay: ({ children, isOpen, className }) => isOpen ? createElement('div', { className }, children) : null,
   Modal: ({ children, className }) => createElement('div', { className }, children),
   Dialog: ({ children, 'aria-describedby': describedBy }) => createElement('div', { role: 'dialog', 'aria-describedby': describedBy }, children),
@@ -75,14 +77,19 @@ const actions = [
 ];
 function props(overrides = {}) {
   const currentWorker = { ...worker, ...(overrides.worker ?? {}) };
+  const currentNode = { ...node, ...(overrides.node ?? {}) };
   const currentDiagnostics = overrides.diagnostics === undefined ? diagnostics : overrides.diagnostics;
   const administration = overrides.administration === undefined ? {
     worker: currentWorker, actions: overrides.actions ?? actions, onAction() {}, onRefresh() {}
   } : overrides.administration;
   return {
-    id: worker.workerId, observations: [currentWorker], nodes: [node], diagnostics: currentDiagnostics,
+    id: worker.workerId, observations: [currentWorker], nodes: [currentNode], diagnostics: currentDiagnostics,
     executions: [execution], projects: [{ id: 'project-1', name: 'Project one', repository: 'team/repo' }],
     administration, now, readOnly: false,
+    preparation: overrides.preparation,
+    provisioning: overrides.provisioning,
+    journal: overrides.journal,
+    advanced: overrides.advanced,
     restart: overrides.restart ?? (administration ? createElement('div', null, 'Restart worker Check restart status This reads the existing result and current service status. It does not send another restart.') : undefined),
     onRefreshStatus: overrides.onRefreshStatus ?? (administration ? () => Promise.resolve() : undefined),
     statusUpdatedAt: now,
@@ -99,6 +106,9 @@ function renderOpenActions(overrides = {}) {
   } finally {
     openActionsPanel = false;
   }
+}
+function renderCapabilityPopups(overrides = {}) {
+  return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(OpenWorkerDetail, props(overrides))));
 }
 
 test('operational cards follow the approved order and keep known slot counts', () => {
@@ -186,11 +196,12 @@ test('recent executions use the cached title and retain the Issue link', () => {
   assert.doesNotMatch(html, /\/issues\?/);
 });
 
-test('readiness and technical details stack at narrow widths', async () => {
+test('capabilities replace readiness checks in the lower grid and remaining details use one outer card', async () => {
   const html = render();
-  const sections = ['Technical details', 'Capabilities &amp; provisioning', 'Readiness checks'].map(label => html.indexOf(label));
+  const sections = ['Technical details', 'Capabilities &amp; provisioning', 'Worker information'].map(label => html.indexOf(label));
   assert.ok(sections.every(position => position >= 0));
   assert.deepEqual(sections, [...sections].sort((left, right) => left - right));
+  assert.doesNotMatch(html, /Readiness checks|Capability details|Observation details|Operation history/);
   const css = await readFile(new URL('../src/poc.css', import.meta.url), 'utf8');
   assert.match(css, /\.poc-worker-lower-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
@@ -198,6 +209,34 @@ test('readiness and technical details stack at narrow widths', async () => {
   assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('capability details are contextual popups and node provisioning status stays with the capability area', () => {
+  const git = { definition: { id: 'git', displayName: 'Git', requiresAuthentication: false, requiresConfiguration: false },
+    state: { installation: 'Installed', health: 'Healthy', detectedVersion: '2.45', detectedAtUtc: '2026-10-29T11:00:00Z', diagnosticCode: 'git-check-ok' }, availableActions: ['refresh'] };
+  const codex = { definition: { id: 'codex-cli', displayName: 'Codex CLI', requiresAuthentication: true, requiresConfiguration: false },
+    state: { installation: 'Installed', health: 'Healthy', authentication: 'Satisfied', detectedVersion: '0.99', detectedAtUtc: '2026-10-29T11:00:00Z', diagnosticCode: 'codex-check-ok' }, availableActions: ['checkauthentication'] };
+  const html = renderCapabilityPopups({ node: { ...node, provisioningReadiness: 'ready', capabilities: [git, codex] } });
+  assert.match(html, /aria-label="View details for Git"/);
+  assert.match(html, /aria-label="View details for Codex CLI"/);
+  assert.match(html, /data-popover="true"[\s\S]*?<h2>Git<\/h2>[\s\S]*?git-check-ok/);
+  assert.match(html, /data-popover="true"[\s\S]*?<h2>Codex CLI<\/h2>[\s\S]*?codex-check-ok/);
+  assert.match(html, /Node provisioning[\s\S]*?Provisioning readiness:[\s\S]*?Worker-reported provisioning[\s\S]*?ready/);
+  assert.doesNotMatch(html, /Readiness checks|Capability details/);
+});
+
+test('preparation, journal and advanced recovery details remain available in the consolidated card', () => {
+  const html = render({
+    preparation: createElement('div', null, 'Preparation project action'),
+    journal: createElement('section', null, 'Recent Worker journal refresh'),
+    advanced: createElement('details', null, 'Advanced recovery information')
+  });
+  for (const text of ['Worker information', 'Readiness evidence', 'Control effects and current state', 'Preparation project action', 'Recent Worker journal refresh', 'Advanced recovery information']) {
+    assert.ok(html.includes(text), text);
+  }
+  const cardStart = html.indexOf('poc-worker-information-card');
+  const cardEnd = html.indexOf('</section>', cardStart);
+  assert.ok(cardStart >= 0 && cardEnd > cardStart);
 });
 
 test('More actions reuses the Edit worker side-panel behavior and responsive shell', async () => {

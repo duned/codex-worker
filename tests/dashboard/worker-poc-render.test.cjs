@@ -15,12 +15,14 @@ const moduleResult={exports:{}};
 const issueTitleApi={useApiRead(){throw Error('Worker rendering must not fetch Issue details.');},useApiMutation(){return {};},useSession(){return {};},useRuntime(){throw Error('Unexpected runtime access in static render.');}};
 const context={module:moduleResult,exports:moduleResult.exports,require:id=>id==='../../shared/api/session'?issueTitleApi:frontendRequire(id),URL};
 vm.runInNewContext(output,context);
-const {WorkerDetail}=moduleResult.exports;
+const {WorkerDetail,CapabilityCard}=moduleResult.exports;
 const openModule={exports:{}};
 let openActionsPanel=false;
 const openReact={...react,useState(initialValue){if(openActionsPanel&&initialValue===false){openActionsPanel=false;return [true,()=>{}];}return react.useState(initialValue);}};
 const ariaComponents=frontendRequire('react-aria-components');
 const openStateComponents={...ariaComponents,
+ DialogTrigger:({children})=>createElement('div',{'data-dialog-trigger':true},children),
+ Popover:({children})=>createElement('div',{'data-popover':true},children),
  ModalOverlay:({children,isOpen,className})=>isOpen?createElement('div',{className},children):null,
  Modal:({children,className})=>createElement('div',{className},children),
  Dialog:({children,'aria-describedby':describedBy})=>createElement('div',{role:'dialog','aria-describedby':describedBy},children),
@@ -33,7 +35,7 @@ const render=data=>{return renderToStaticMarkup(createElement(MemoryRouter,null,
 const renderOpen=data=>{openActionsPanel=true;try{return renderToStaticMarkup(createElement(MemoryRouter,null,createElement(OpenWorkerDetail,{...props,...data})));}finally{openActionsPanel=false;}};
 test('Worker detail renders real identity, current stage, outcomes, links and capability tiles',()=>{
  const html=render({});
- for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Synced','Managed settings','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','v1.2.3','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Readiness checks','Current stage'])assert.ok(html.includes(text),text);
+ for(const text of ['Build Worker North','worker-a','1 / 2','Connected','Fresh','Synced','Managed settings','Active','Validating','2m 30s','Completed','1m 0s','/projects/project-a/issues/27','/projects/project-a/issues/26','Sample project','GitHub CLI','.NET SDK','Capabilities &amp; provisioning','Node provisioning','Worker information','Current stage'])assert.ok(html.includes(text),text);
  assert.ok(html.includes('aria-label="Connection: Connected"'));
  assert.ok(html.includes('aria-label="Heartbeat: Fresh"'));
  assert.ok(html.includes('aria-label="Managed settings: Synced"'));
@@ -47,11 +49,18 @@ test('Current execution retains its Issue number when the title cannot be loaded
  assert.ok(html.includes('#27 · title unavailable'));
  assert.ok(html.includes('href="/projects/project-a/issues/27"'));
 });
-test('Readiness heartbeat uses the same current, stale and unknown status projection as Worker detail',()=>{
- const heartbeatText=html=>{const start=html.indexOf('poc-readiness-panel');const end=html.indexOf('poc-worker-extra',start);return html.slice(start,end<0?undefined:end);};
- assert.match(heartbeatText(render({})),/>Fresh</);
- assert.match(heartbeatText(render({observations:[{...worker,availability:'stale'}]})),/>Stale</);
- assert.match(heartbeatText(render({observations:[{...worker,lastHeartbeatAtUtc:undefined}]})),/>Unknown</);
+test('readiness stays in the operational header and there is no standalone readiness block',()=>{
+ assert.match(render({}),/aria-label="Heartbeat: Fresh"/);
+ assert.match(render({observations:[{...worker,lastHeartbeatAtUtc:undefined}]}),/aria-label="Last heartbeat: Lost, heartbeat unavailable"/);
+ assert.doesNotMatch(render({}),/Readiness checks|poc-readiness-panel/);
+});
+test('capability popups contain matching details and the preparation workflow remains available',()=>{
+ const html=renderOpen({preparation:createElement('div',null,'Prepare this project')});
+ assert.match(html,/aria-label="View details for Codex CLI"/);
+ assert.match(html,/data-popover="true"[\s\S]*?Codex CLI[\s\S]*?Available typed actions/);
+ assert.match(html,/Node provisioning[\s\S]*?ready/);
+ assert.match(html,/Worker information[\s\S]*?Prepare this project/);
+ assert.doesNotMatch(html,/Capability details|Readiness checks/);
 });
 test('Configuration failure is independent, unknown/stale evidence is never healthy, and safe diagnostics are discoverable',()=>{
  const html=render({ diagnostics:{...props.diagnostics,configurationSynchronization:'error',workerReportedManagedDiagnostics:{retrieval:'retrieved',synchronization:'error',source:'server-retrieved',failureStage:'contract-validation',diagnosticCode:'managed-contract-invalid'}} });
@@ -85,11 +94,11 @@ test('The execution rail keeps cumulative checks and renders durations only for 
  assert.equal((integrating.match(/class="poc-stage-duration"/g)||[]).length,5);
  assert.ok(integrating.includes('Duration unavailable'));
 });
-test('Capability tiles use each reported service version and authentication field',()=>{
+test('Capability detail popups retain each reported service version and authentication field',()=>{
  const service=(id,displayName,detectedVersion)=>({definition:{id,displayName,requiresAuthentication:true,requiresConfiguration:true},state:{installation:'Installed',health:'Healthy',authentication:'Satisfied',configuration:'Satisfied',detectedVersion},availableActions:[]});
  const services=[service('git','Git','2.43.0'),service('github-cli','GitHub CLI','2.65.0'),service('codex-cli','Codex CLI','0.157.0'),service('dotnet-sdk','.NET SDK','10.0')];
- const html=render({nodes:[{...node,capabilities:services}],diagnostics:{...props.diagnostics,projects:[{projectId:'project-a',projectName:'Sample project',isEligible:true,observationStatus:'worker-reported-current-revision'},{projectId:'project-b',projectName:'Other project',isEligible:false,observationStatus:'worker-reported-current-revision'}]}});
- for(const text of ['Git','GitHub CLI','Codex CLI','.NET SDK','v2.43.0','Token available','v0.157.0','10.0','Runtime version','1 eligible project(s)'])assert.ok(html.includes(text),text);
+ const html=renderOpen({nodes:[{...node,capabilities:services}],diagnostics:{...props.diagnostics,projects:[{projectId:'project-a',projectName:'Sample project',isEligible:true,observationStatus:'worker-reported-current-revision'},{projectId:'project-b',projectName:'Other project',isEligible:false,observationStatus:'worker-reported-current-revision'}]}});
+ for(const text of ['Git','GitHub CLI','Codex CLI','.NET SDK','2.43.0','Authentication','0.157.0','10.0','Installation','Configuration'])assert.ok(html.includes(text),text);
  for(const mark of ['poc-service-mark','poc-service-mark-github','poc-service-mark-terminal','poc-service-mark-dotnet'])assert.ok(html.includes(mark),mark);
 });
 test('Stale, missing, failed reads and absent resources remain understandable',()=>{
@@ -108,24 +117,25 @@ test('Stale, missing, failed reads and absent resources remain understandable',(
  assert.ok(render({executions:[]}).includes('Worker reports active work'));
 });
 
-test('Last reported checks survive disconnect while current execution readiness stays blocked',()=>{
+test('Readiness evidence remains distinct from current connectivity and is consolidated below the status cards',()=>{
  const offlineWorker={...worker,availability:'offline',platform:'Linux',hostResources:{measuredAtUtc:'2026-01-01T00:02:00Z',logicalCpuCount:8,totalMemoryBytes:16*1024**3,usedMemoryBytes:8*1024**3,diskTotalBytes:128*1024**3,diskAvailableBytes:64*1024**3,cpuUsagePercent:25,memoryUsagePercent:50,sampleSeconds:1}};
  const disconnectedNode={...node,connectivity:'disconnected',observationsStale:true,executionReadiness:'ready'};
  const passed=render({observations:[offlineWorker],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,projects:[{projectId:'project-a',projectName:'Sample project',isEligible:true,missingRequirements:[],observationStatus:'worker-reported-current-revision'}]}});
  assert.ok(passed.includes('Disconnected'));
- assert.ok(passed.includes('Last reported execution preflight'));
- assert.ok(passed.includes('>Ready<'));
- assert.ok(passed.includes('Last reported project eligibility'));
- assert.ok(passed.includes('Current execution readiness'));
+ assert.ok(passed.includes('Readiness evidence'));
+ assert.ok(passed.includes('Codex preflight Yes'));
+ assert.ok(passed.includes('GitHub access Yes'));
+ assert.ok(passed.includes('Git access Yes'));
+ assert.ok(passed.includes('Worker information'));
  assert.ok(passed.includes('not-ready'));
  for(const fact of ['Linux','8','16.0 GiB','128.0 GiB','Unavailable'])assert.ok(passed.includes(fact),fact);
  for(const liveValue of ['25.0%','50.0%','8.0 GiB','64.0 GiB'])assert.doesNotMatch(passed,new RegExp(`>${liveValue.replaceAll('.','\\.')}(?:<| ·)`),liveValue);
 
  const failedCapability={...capability,state:{...capability.state,health:'Failed',authentication:'Missing'}};
- const failed=render({observations:[offlineWorker],nodes:[{...disconnectedNode,capabilities:[failedCapability]}]});
+ const failed=renderOpen({observations:[offlineWorker],nodes:[{...disconnectedNode,capabilities:[failedCapability]}]});
  assert.ok(failed.includes('Failed'));assert.ok(failed.includes('Missing'));
  const failedReadiness=render({observations:[offlineWorker],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,aiAgentReady:false,projects:[],capabilityObservationsCurrent:false}});
- assert.ok(failedReadiness.includes('Last reported execution preflight'));assert.ok(failedReadiness.includes('Not ready'));
+ assert.ok(failedReadiness.includes('Codex preflight No'));
  const noHistory=render({observations:[{...offlineWorker,lastHeartbeatAtUtc:undefined}],nodes:[disconnectedNode],diagnostics:{...props.diagnostics,aiAgentReady:false,projects:[]}});
  assert.ok(noHistory.includes('Not checked'));
 
@@ -142,12 +152,14 @@ test('Current execution empty state reflects reported activity without reserving
  assert.ok(idle.includes('No current execution is reported in the latest 50 requests.'));
  assert.ok(!idle.includes('Worker reports active work'));
 });
-test('Capabilities expose pending and failed operations without provisioning mutation controls or raw diagnostics',()=>{
+test('Capability popup retains operation status without exposing raw diagnostic details or mutation controls in read-only mode',()=>{
  const request={nodeId:'worker-a',capabilityId:'codex-cli',action:'CheckAuthentication'};
- const html=render({nodeCommands:[{id:'pending',request,status:'Pending',createdAtUtc:'2026-01-01',diagnostic:'Pending'},{id:'failed',request,status:'Failed',createdAtUtc:'2025-12-31',diagnostic:'Denied',failureDetail:{description:'raw private detail'}}],nodes:[{...node,capabilities:[{...capability,state:{...capability.state,operation:{state:'Failed',action:'checkauthentication',diagnosticCode:'authentication-required'}}}]}]});
+ const commands=[{id:'pending',request,status:'Pending',createdAtUtc:'2026-01-01',diagnostic:'Pending'},{id:'failed',request,status:'Failed',createdAtUtc:'2025-12-31',diagnostic:'Denied',failureDetail:{description:'raw private detail'}}];
+ const currentCapability={...capability,state:{...capability.state,operation:{state:'Failed',action:'checkauthentication',diagnosticCode:'authentication-required'}}};
+ const html=renderOpen({provisioning:id=>id==='codex-cli'?createElement(CapabilityCard,{capability:currentCapability,commands}):undefined,nodes:[{...node,capabilities:[currentCapability]}]});
  assert.ok(html.includes('Pending'));assert.ok(html.includes('Failed'));assert.ok(html.includes('authentication-required'));
  assert.ok(!html.includes('CheckAuthentication</button>'));assert.ok(!html.includes('raw private detail'));
- const failed=render({nodeCommands:[{id:'failed',request,status:'Failed',createdAtUtc:'2026-01-01',diagnostic:'Denied'}]});
+ const failed=renderOpen({provisioning:id=>id==='codex-cli'?createElement(CapabilityCard,{capability,commands:[{id:'failed',request,status:'Failed',createdAtUtc:'2026-01-01',diagnostic:'Denied'}]}):undefined});
  assert.ok(failed.includes('Latest command:'));assert.ok(failed.includes('Failed'));
 });
 test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
@@ -160,7 +172,7 @@ test('Resource text is escaped and unsafe Issue URLs never become links',()=>{
 
 test('More actions side panel preserves scheduling guards, descriptions and direct status reload',()=>{
  const html=renderOpen({administration:{worker:{...worker,schedulingPolicy:'Draining',authenticationCredentialStatus:'revoked',activeAssignments:2},actions:[{key:'Enabled',label:'Activate scheduling',reason:'Activation blocked: Codex preflight required'},{key:'Draining',label:'Drain worker',reason:'This scheduling policy is already applied.'},{key:'Disabled',label:'Deactivate',reason:''},{key:'revoke-api',label:'Revoke Worker API token',reason:'No active Worker API token is registered.'}],onAction:()=>{},onRefresh:()=>{}},onRefreshStatus:()=>{}});
- for(const text of ['aria-expanded="true"','role="dialog"','Scheduling controls','Draining','Current executions continue to completion.','Activation blocked: Codex preflight required','Additional actions','No active Worker API token','id="poc-action-revoke-api-reason"','id="poc-action-Enabled-reason"','Worker status','Reload worker status','One direct read · no confirmation step','Revoke Worker API token'])assert.ok(html.includes(text),text);
+ for(const text of ['aria-expanded="true"','role="dialog"','Scheduling controls','Draining','Current executions continue to completion.','Activation blocked: Codex preflight required','Additional actions','No active Worker API token','id="poc-action-revoke-api-reason"','id="poc-action-Enabled-reason"','Worker status','Reload worker status','One direct read · no confirmation step','Revoke API token'])assert.ok(html.includes(text),text);
  assert.ok(!html.includes('Revoke delivery authorization'));
 });
 test('Migration preview reuses Worker presentation without unfinished administration actions',()=>{
@@ -176,7 +188,7 @@ test('Migration preview reuses Worker presentation without unfinished administra
 test('Canonical detail preserves multiple actual slots, linked concurrent stages and independent delivery revocation', () => {
  const second = { ...current, id: 'second-slot', currentStage: 'Codex', workReference: { type: 'github-issue', id: '28', title: 'Issue title 28' } };
  const html = render({ observations: [{ ...worker, activeExecutions: 2, availableCapacity: 0 }], executions: [current, second, completed], administration: { worker, delivery: { status: 'active' }, actions: [{ key: 'revoke-delivery', label: 'Revoke delivery authorization', reason: '' }], onAction: () => {}, onRefresh: () => {} } });
- for (const text of ['2 / 2', 'Current execution', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoke delivery authorization', 'poc-delivery-effect', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
+ for (const text of ['2 / 2', 'Current execution', 'Validating', 'Codex', '#28 · Issue title 28', '/projects/project-a', 'Revoking delivery authorization stops future Server credential delivery', 'Already delivered credentials are not removed']) assert.ok(html.includes(text), text);
  assert.ok(!html.includes('Detail preview'));
 });
 test('Credential delivery repair exposes pending guidance and an accessible action without secrets',()=>{

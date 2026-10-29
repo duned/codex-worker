@@ -9,15 +9,16 @@ public sealed class WorkerJournalRequests
 {
     private readonly object gate = new();
     private readonly Dictionary<string, (WorkerJournalRequest Request, DateTimeOffset Expires, WorkerJournalResult? Result)> requests = new();
-    public WorkerJournalResult Read(string worker, int lines)
+    public WorkerJournalResult Read(string worker, int lines, bool refresh = false)
     {
         if (lines is < 1 or > WorkerJournalProtocol.MaximumLines) throw new ArgumentOutOfRangeException(nameof(lines));
         lock (gate)
         {
             foreach (var key in requests.Where(pair => pair.Value.Expires <= DateTimeOffset.UtcNow).Select(pair => pair.Key).ToArray()) requests.Remove(key);
-            if (requests.TryGetValue(worker, out var current) && current.Request.Lines == lines)
+            if (requests.TryGetValue(worker, out var current) && current.Request.Lines == lines &&
+                (current.Result is null || !refresh))
                 return current.Result ?? new("pending", []);
-            if (requests.Count >= 64) return new("busy", []);
+            if (requests.Count >= 64 && !requests.ContainsKey(worker)) return new("busy", []);
             requests[worker] = (new(Guid.NewGuid(), lines), DateTimeOffset.UtcNow.AddSeconds(90), null);
             return new("pending", []);
         }
@@ -41,13 +42,13 @@ public static partial class ServerApplication
 {
     private static void MapWorkerJournal(WebApplication app)
     {
-        app.MapGet("/api/v1/workers/{workerId}/journal", async (string workerId, int? lines, HttpContext context, ServerConfiguration settings, IRegistryStore store, WorkerJournalRequests journal) =>
+        app.MapGet("/api/v1/workers/{workerId}/journal", async (string workerId, int? lines, bool? refresh, HttpContext context, ServerConfiguration settings, IRegistryStore store, WorkerJournalRequests journal) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (lines is < 1 or > WorkerJournalProtocol.MaximumLines) return Results.BadRequest();
             var worker = await store.GetWorkerAsync(workerId, context.RequestAborted);
             if (worker is null) return Results.NotFound();
-            return Results.Ok(worker.Availability == "online" ? journal.Read(workerId, lines ?? 100) : new WorkerJournalResult("unavailable", []));
+            return Results.Ok(worker.Availability == "online" ? journal.Read(workerId, lines ?? 100, refresh ?? false) : new WorkerJournalResult("unavailable", []));
         });
         app.MapGet("/api/v1/workers/{workerId}/journal/request", async (string workerId, HttpContext context, IRegistryStore store, WorkerJournalRequests journal) =>
         {

@@ -1,7 +1,6 @@
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { useLocation } from 'react-router-dom';
 import type { NodeSummary, ProjectSummary, WorkerObservation, WorkerReadiness } from '../../shared/api/contracts';
-import { TableCard } from '../../untitled/components/application/table/table';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { Notice } from '../../shared/Presentation';
 const steps = ['registration', 'preparation', 'project', 'activation'];
@@ -14,7 +13,8 @@ export function WorkerPreparation({ worker, diagnostics, node, projects }: { wor
   const href = (value: string) => { const next = new URLSearchParams(params); next.set('step', value); return `${location.pathname}?${next}`; };
   const current = worker.availability === 'online' && diagnostics?.configurationSynchronization === 'synchronized' && diagnostics.capabilityObservationsCurrent === true && node && !node.observationsStale;
   const evidence = (value?: boolean) => current && value ? t("workers.workerReportedEvidencePresent") : t("workers.unavailableOrUnverified");
-  return <TableCard.Root><TableCard.Header title={t("workers.workerPreparation")} description={t("workers.resumeFromAuthoritativeObservationsPreparationNeverEnablesScheduling")} /><div className="space-y-4 p-5">
+  return <div className="poc-worker-preparation-content">
+    <p className="text-sm text-tertiary">{t("workers.resumeFromAuthoritativeObservationsPreparationNeverEnablesScheduling")}</p>
     <nav aria-label={t("workers.workerPreparationSteps")} className="flex flex-wrap gap-2">{steps.map((value, index) => <Button key={value} href={href(value)} color="secondary" size="sm" aria-current={step === value ? 'step' : undefined}>{index + 1} · {localizeText(titles[index])}</Button>)}</nav>
     {step === 'registration' && <p>{t("workers.registered2")}{' '}{localizeText(worker.availability)} · {localizeText(worker.lifecycleState ?? t("workers.lifecycleUnreported"))}{t("workers.connectivityDoesNotEstablishExecutionReadinessLeaveAndReturnAtAnyTime")}</p>}
     {step === 'preparation' && <><p>{t("workers.workerVersion")}{' '}{worker.workerVersion ?? diagnostics?.workerVersion ?? t("workers.unreported")}.</p><p>{t("workers.managedConfiguration")}{' '}{localizeText(diagnostics?.configurationSynchronization ?? t("workers.unavailable"))}{t("workers.repairInvalidRuntimeDefaultsOnTheNodeThenRefreshConfigurationAndRe")}</p>
@@ -35,5 +35,5 @@ export function WorkerPreparation({ worker, diagnostics, node, projects }: { wor
         })}</>}
     </>}
     {step === 'activation' && <><p>{diagnostics?.canActivate ? t("workers.currentServerEvidencePermitsAnExplicitActivationRequestInWorkerControls") : t("workers.activationBlockedUntilCurrentServerEvidenceIsReported")}{' '}{t("workers.existingAssignmentsRetainLeasesWhenDrainingOrDisablingScheduling")}</p>{(diagnostics?.activationBlockingReasons ?? [t("workers.readinessEvidenceUnavailable")]).map(reason => <p key={reason}>{reason}</p>)}</>}
-  </div></TableCard.Root>;
+  </div>;
 }

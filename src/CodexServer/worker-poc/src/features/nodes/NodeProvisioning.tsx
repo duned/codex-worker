@@ -15,12 +15,13 @@ import { CapabilityCard } from '../../detail.jsx';
 import { commandActive, commandExpired, deviceLoginUrl, nodeActions, provisioningReason } from './provisioning';
 type Selection = { capabilityId: string; action: string } | { command: NodeCommandSummary; action: 'cancel' | 'reconcile' };
 /** Node-scoped operations and capability views are shared with Settings. */
-export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; repository?: string }) {
+export function NodeProvisioning({ nodeId, repository = '', capabilityId, readOnly = false }: { nodeId: string; repository?: string; capabilityId?: string; readOnly?: boolean }) {
   useLanguage();
   const runtime = useRuntime(), session = useSession();
   const nodes = useApiRead('/api/v1/nodes', validateNodes), path = `/api/v1/nodes/${encodeURIComponent(nodeId)}/commands`;
   const commands = useApiRead(path, validateCommands), resource = path;
   const node = nodes.data?.find(item => item.id === nodeId);
+  const visibleCapabilities = node?.capabilities.filter(item => !capabilityId || item.definition.id === capabilityId) ?? [];
   const [selected, setSelected] = useState<Selection>(), [message, setMessage] = useState(''), [pending, setPending] = useState(false);
   const [elevation, setElevation] = useState(false), [quiescent, setQuiescent] = useState(false), [targetRepository, setRepository] = useState(repository);
   const locked = runtime.locked(resource);
@@ -79,6 +80,13 @@ export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; 
   }
   function controls(capability: Capability) {
     const matching = commands.data?.filter(item => item.request.nodeId === nodeId && item.request.capabilityId === capability.definition.id) ?? [];
+    const history = <AdvancedDisclosure title={t("nodes.operationHistoryAndPublicSSHIdentities")}>
+      {commands.loading ? <p role="status">{t("workers.loadingHistory")}</p>
+        : commands.error ? <p>{t("shared.commandHistoryUnavailable")}</p>
+          : matching.length ? matching.map(item => <div key={item.id} className="break-all"><p>{localizeText(item.request.action)} · {localizeText(item.status)} · {localizeText(item.diagnostic ?? t("nodes.noDiagnosticReported"))}</p><p>{t("nodes.iD")}{' '}{item.id} · {timestamp(item.createdAtUtc)}</p>{item.publicIdentity && <pre className="whitespace-pre-wrap">{item.publicIdentity.publicKey}{'\n'}{item.publicIdentity.fingerprint}</pre>}</div>)
+            : <p>{t("nodes.noCommandsReportedInBoundedNodeHistory")}</p>}
+    </AdvancedDisclosure>;
+    if (readOnly) return history;
     const actions = capability.availableActions.filter(action => Object.hasOwn(nodeActions, action));
     return <div className="mt-4 space-y-3">
       {matching.filter(commandActive).map(item => {
@@ -92,7 +100,7 @@ export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; 
       <AdvancedDisclosure title={t("nodes.localPreparationAndAuthorization")}><p>{t("nodes.serverPermissionCannotOverrideLocalPolicyAuthenticationMustUseTheNodeService")}</p></AdvancedDisclosure>
       <div className="flex flex-wrap gap-2">{actions.map(action => <Button key={action} color="secondary" size="sm" isDisabled={pending || locked || !!provisioningReason(node, commands.data, capability.definition.id, action)} onPress={() => choose({ capabilityId: capability.definition.id, action })}>{localizeText(nodeActions[action].label)}</Button>)}</div>
       {!actions.length && <p>{t("nodes.noSupportedRemoteActionsAvailablePrepareThisToolInTheNodeService")}</p>}
-      <AdvancedDisclosure title={t("nodes.operationHistoryAndPublicSSHIdentities")}>{matching.length ? matching.map(item => <div key={item.id} className="break-all"><p>{localizeText(item.request.action)} · {localizeText(item.status)} · {localizeText(item.diagnostic ?? t("nodes.noDiagnosticReported"))}</p><p>{t("nodes.iD")}{' '}{item.id} · {timestamp(item.createdAtUtc)}</p>{item.publicIdentity && <pre className="whitespace-pre-wrap">{item.publicIdentity.publicKey}{'\n'}{item.publicIdentity.fingerprint}</pre>}</div>) : <p>{t("nodes.noCommandsReportedInBoundedNodeHistory")}</p>}</AdvancedDisclosure>
+      {history}
     </div>;
   }
   const spec = selected && 'capabilityId' in selected ? nodeActions[selected.action] : undefined;
@@ -100,7 +108,7 @@ export function NodeProvisioning({ nodeId, repository = '' }: { nodeId: string; 
     {(nodes.error || commands.error) && <Notice error>{t("nodes.capabilityOrOperationStateUnavailableRefreshBeforeAnotherAction")}</Notice>}
     {message && <Notice>{message}</Notice>}
     <Button color="secondary" isDisabled={pending} onPress={() => { void refresh(); }}>{t("nodes.refreshAuthoritativeOperationState")}</Button>
-    {node ? node.capabilities.length ? <div className="poc-capabilities">{node.capabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands.data ?? null}>{controls(capability)}</CapabilityCard>)}</div> : <Notice>{t("nodes.noCapabilitiesReported")}</Notice> : <Notice>{t("nodes.capabilityObservationsUnavailable")}</Notice>}
+    {node ? visibleCapabilities.length ? <div className="poc-capabilities">{visibleCapabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands.error ? null : commands.data ?? []}>{controls(capability)}</CapabilityCard>)}</div> : <Notice>{capabilityId ? t('workers.capabilityObservationsUnavailable') : t("nodes.noCapabilitiesReported")}</Notice> : <Notice>{t("nodes.capabilityObservationsUnavailable")}</Notice>}
     <ActionDialog key={selected ? JSON.stringify(selected) : 'closed'} isOpen={!!selected} onClose={() => { setSelected(undefined); setElevation(false); setQuiescent(false); }}
       title={spec?.label ?? (selected?.action === 'cancel' ? t("nodes.cancelQueuedOperation") : t("nodes.reconcileAfterNodeQuiescence"))} actionLabel={t("nodes.confirm")} destructive={!!spec?.destructive || selected?.action === 'reconcile'} disabled={pending || locked || (!!spec?.elevation && !elevation) || (selected?.action === 'reconcile' && !quiescent)} onSubmit={submit}
       description={selected?.action === 'reconcile' ? t("nodes.releaseTheRetainedOperationLockOnlyAfterIndependentlyVerifyingTheNodeIs") : selected?.action === 'cancel' ? t("nodes.cancelThisQueuedCommandRunningMutationsAreNotCancelled") : t("nodes.runOnlyThisAdvertisedTypedActionNodeLocalPermissionAndServiceAccount")}>

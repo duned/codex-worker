@@ -50,7 +50,10 @@ test('restart status checks read existing operation and service status without r
   assert.match(check, /runtime\.read\(paths\.worker, signal, validateWorker\)/);
   assert.match(check, /onStatusChecked\?\.\(\)/);
   assert.doesNotMatch(check, /mutateAsync|runtime\.mutate|method:\s*['"]POST/);
-  assert.match(await read(new URL('../src/features/workers/WorkerJournal.tsx', import.meta.url)), /\/journal`/);
+  const journal = await read(new URL('../src/features/workers/WorkerJournal.tsx', import.meta.url));
+  assert.match(journal, /journalPath\(workerId, true\)/);
+  assert.match(journal, /workers\.journalRefresh/);
+  assert.match(journal, /aria-expanded=\{open\}/);
 });
 
 test('scheduling mutations retain confirmation and Server enforcement without duplicate client preflights', async () => {
@@ -78,7 +81,7 @@ test('scheduling mutations retain confirmation and Server enforcement without du
   assert.match(runtime, /csrf: this\.csrf/);
 });
 
-test('Worker controls use the shared side panel and lower information keeps its approved responsive ordering', async () => {
+test('Worker controls use the shared side panel and lower information keeps its responsive grouping', async () => {
   const view = await read(detailView);
   const trigger = view.indexOf('aria-haspopup="dialog" aria-expanded={isOpen}');
   const panel = view.indexOf('<FormDialog isOpen={isOpen}', trigger);
@@ -93,8 +96,10 @@ test('Worker controls use the shared side panel and lower information keeps its 
   assert.match(view, /onClose=\{\(\) => onOpenChange\(false\)\}/);
 
   const technical = view.indexOf('<div className="poc-worker-technical-column">', refresh);
-  const readiness = view.indexOf('<ReadinessPanel', technical);
-  assert.ok(technical >= 0 && readiness > technical);
+  const capabilities = view.indexOf('<CapabilitiesPanel', technical);
+  const information = view.indexOf('<WorkerInformationPanel', capabilities);
+  assert.ok(technical >= 0 && capabilities > technical && information > capabilities);
+  assert.doesNotMatch(view, /ReadinessPanel|shared\.capabilityDetails|shared\.operationHistory/);
 
   const css = await read(styles);
   assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);

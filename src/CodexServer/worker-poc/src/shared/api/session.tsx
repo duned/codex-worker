@@ -28,9 +28,9 @@ export function useSession() {
   return { ...state, onSignIn: (token: string) => runtime.session('POST', token),
     onRestore: () => runtime.session('GET'), onSignOut: state.logoutAvailable ? () => runtime.session('DELETE') : undefined };
 }
-export function useApiRead<T>(path: string, validate: Validator<T>) {
+export function useApiRead<T>(path: string, validate: Validator<T>, enabled = true) {
   const runtime = useRuntime(), session = useSession();
-  const query = useQuery({ queryKey: queryKeys.read(session.generation, path), enabled: session.authenticated,
+  const query = useQuery({ queryKey: queryKeys.read(session.generation, path), enabled: session.authenticated && enabled,
     // Only the three marker-backed collections stay fresh across navigation.
     // Other resources have no background freshness contract: refresh on entry.
     refetchOnMount: /^\/api\/v1\/(projects|workers|executions)(\?|$)/.test(path) || path === '/api/status' ? true : 'always',

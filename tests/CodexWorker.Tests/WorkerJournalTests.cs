@@ -118,6 +118,8 @@ public sealed class WorkerJournalTests
         Assert.Null(requests.Pending("worker-b"));
         var request = Assert.IsType<WorkerJournalRequest>(requests.Pending("worker-a"));
         Assert.Equal(100, request.Lines);
+        Assert.Equal("pending", requests.Read("worker-a", 100, refresh: true).State);
+        Assert.Equal(request.Id, requests.Pending("worker-a")?.Id);
         Assert.False(requests.Complete("worker-b", request.Id, new("ready", [])));
         Assert.False(requests.Complete("worker-a", Guid.NewGuid(), new("ready", [])));
         Assert.False(requests.Complete("worker-a", request.Id, new("ready", Enumerable.Repeat("line", 101).ToArray())));
@@ -127,6 +129,12 @@ public sealed class WorkerJournalTests
         Assert.Equal("2026-01-01 first", result.Lines[0]);
         Assert.DoesNotContain("sensitive", result.Lines[1]);
         Assert.Null(requests.Pending("worker-a"));
+
+        Assert.Equal("pending", requests.Read("worker-a", 100, refresh: true).State);
+        var refreshed = Assert.IsType<WorkerJournalRequest>(requests.Pending("worker-a"));
+        Assert.NotEqual(request.Id, refreshed.Id);
+        Assert.True(requests.Complete("worker-a", refreshed.Id, new("ready", ["2026-01-03 latest"])));
+        Assert.Equal("2026-01-03 latest", Assert.Single(requests.Read("worker-a", 100).Lines));
     }
 
     [Trait("TestType", "Unit")]

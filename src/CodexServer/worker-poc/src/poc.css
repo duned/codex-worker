@@ -192,20 +192,19 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-recent-recovery { max-width: 14rem; color: var(--color-text-tertiary); font-size: 9px; text-align: right; }
 .poc-view-all { display: inline-flex; align-items: center; gap: 7px; color: var(--color-text-brand-secondary); font-size: 12px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 .poc-view-all:hover { text-decoration: underline; text-underline-offset: 3px; }
-.poc-capabilities-panel { min-width: 0; margin-top: 8px; }
+.poc-capabilities-panel { min-width: 0; margin-top: 0; }
 .poc-service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px 16px 16px; }
-.poc-service-tile { min-width: 0; border: 1px solid var(--color-border-secondary); border-radius: 9px; padding: 24px 15px 16px; background: var(--color-bg-secondary); }
+.poc-service-tile { display: grid; min-width: 0; min-height: 118px; align-content: space-between; gap: 14px; border: 1px solid var(--color-border-secondary); border-radius: 9px; padding: 15px; background: var(--color-bg-secondary); }
 .poc-service-top { display: flex; min-width: 0; align-items: flex-start; gap: 10px; }
 .poc-service-mark { display: block; width: 38px; height: 38px; flex: 0 0 38px; }
 .poc-service-mark-github { width: 40px; height: 40px; flex-basis: 40px; }
 .poc-service-mark-dotnet { width: 42px; height: 38px; flex-basis: 42px; }
+.poc-service-mark-generic { padding: 2px; }
 .poc-service-heading { display: grid; min-width: 0; gap: 5px; padding-top: 1px; }
 .poc-service-heading h3 { overflow: hidden; margin: 0; color: var(--color-text-primary); font-size: 13px; font-weight: 650; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .poc-service-heading .text-sm { font-size: 11px; }
-.poc-service-detail { overflow: hidden; margin: 24px 0 0; border-bottom: 1px solid var(--color-border-secondary); padding-bottom: 15px; color: var(--color-text-secondary); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-.poc-service-support { margin: 12px 0 0; color: var(--color-text-tertiary); font-size: 11px; line-height: 16px; }
+.poc-service-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--color-border-secondary); padding-top: 10px; color: var(--color-text-tertiary); font-size: 10px; line-height: 15px; }
 .poc-service-tile .poc-service-heading .inline-flex { min-height: 20px; }
-.poc-readiness-panel { min-width: 0; }
 .poc-worker-lower-grid { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 24px; margin-top: 24px; }
 .poc-worker-technical-column { display: grid; min-width: 0; align-content: start; gap: 16px; }
 .poc-technical-panel { min-width: 0; }
@@ -216,27 +215,33 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-technical-facts > div { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; border-top: 1px solid var(--color-border-secondary); padding-top: 7px; }
 .poc-technical-facts dt { color: var(--color-text-tertiary); font-size: 10px; line-height: 14px; }
 .poc-technical-facts dd { min-width: 0; margin: 0; color: var(--color-text-primary); font-size: 10px; font-weight: 550; line-height: 14px; text-align: right; overflow-wrap: anywhere; }
-.poc-worker-technical-column .poc-capabilities-panel { margin-top: 0; }
-.poc-readiness-list { padding: 0 24px 8px; }
-.poc-readiness-row { display: grid; min-height: 70px; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 0 12px; border-bottom: 1px solid var(--color-border-secondary); }
-.poc-readiness-row:last-child { border-bottom: 0; }
-.poc-readiness-icon { display: inline-flex; width: 22px; height: 24px; align-items: center; justify-content: center; color: var(--color-fg-quaternary); }
-.poc-readiness-icon > svg { width: 21px; height: 21px; }
-.poc-readiness-copy { min-width: 0; }
-.poc-readiness-copy h3 { overflow: hidden; margin: 0; color: var(--color-text-secondary); font-size: 12px; font-weight: 650; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-.poc-readiness-copy p { overflow: hidden; margin: 2px 0 0; color: var(--color-text-tertiary); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
-.poc-readiness-row > span:last-child { font-size: 10px; }
-.poc-project-readiness-icon { position: relative; display: block; width: 19px; height: 19px; border: 1.7px solid currentColor; border-radius: 50%; }
-.poc-project-readiness-icon::before, .poc-project-readiness-icon::after { position: absolute; background: currentColor; content: ''; }
-.poc-project-readiness-icon::before { top: 8px; left: 3px; width: 10px; height: 1.5px; }
-.poc-project-readiness-icon::after { top: 3px; left: 8px; width: 1.5px; height: 10px; }
+.poc-node-provisioning-state { display: grid; gap: 8px; border-bottom: 1px solid var(--color-border-secondary); padding: 12px 20px; }
+.poc-node-provisioning-state h3 { margin: 0; color: var(--color-text-primary); font-size: 12px; font-weight: 650; }
+.poc-node-provisioning-state > div { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--color-text-tertiary); font-size: 11px; }
+.poc-worker-information-card { min-width: 0; margin-top: 24px; }
+.poc-worker-information-content { display: grid; min-width: 0; padding: 0 20px 8px; }
+.poc-worker-information-section { min-width: 0; border-bottom: 1px solid var(--color-border-secondary); padding: 16px 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; }
+.poc-worker-information-section:last-child { border-bottom: 0; }
+.poc-worker-information-section h3 { margin: 0 0 8px; color: var(--color-text-primary); font-size: 13px; font-weight: 650; line-height: 18px; }
+.poc-worker-information-section p { margin: 6px 0 0; overflow-wrap: anywhere; }
+.poc-worker-information-section .poc-control-facts { margin: 10px 0; }
+.poc-worker-information-section a { color: var(--color-text-brand-secondary); text-decoration: underline; text-underline-offset: 2px; }
+.poc-worker-information-heading { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.poc-worker-information-heading h3 { margin: 0; color: var(--color-text-primary); font-size: 13px; font-weight: 650; line-height: 18px; }
+.poc-worker-journal-content { min-width: 0; padding-top: 12px; }
+.poc-worker-journal-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.poc-worker-journal-output { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; padding: 12px; background: var(--color-bg-secondary); color: var(--color-text-secondary); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.poc-worker-information-disclosure { min-width: 0; border-bottom: 1px solid var(--color-border-secondary); padding: 16px 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.55; }
+.poc-worker-information-disclosure summary { color: var(--color-text-primary); font-size: 13px; font-weight: 650; cursor: pointer; }
+.poc-worker-information-disclosure summary:focus-visible { outline: 2px solid var(--color-border-brand); outline-offset: 3px; }
+.poc-worker-advanced-content { display: grid; gap: 7px; padding-top: 10px; overflow-wrap: anywhere; }
+.poc-worker-advanced-content p { margin: 0; }
+.poc-worker-preparation-content { display: grid; min-width: 0; gap: 12px; }
 .poc-control-facts { display: grid; gap: 10px; }
 .poc-control-facts > div { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(0, 1fr); gap: 8px; }
 .poc-control-facts dt { color: var(--color-text-tertiary); }
 .poc-control-facts dd { margin: 0; color: var(--color-text-secondary); }
 .poc-worker-state { border: 1px solid var(--color-border-secondary); border-radius: 10px; padding: 24px; background: var(--color-bg-primary); }
-.poc-worker-extra { min-width: 0; padding-top: 16px; }
-.poc-worker-extra > details { margin-top: 14px; }
 .worker-editor-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .worker-editor-form { display: flex; min-height: 0; min-width: 0; flex: 1; flex-direction: column; }
 .worker-editor-body { display: flex; min-height: 0; min-width: 0; flex: 1; flex-direction: column; gap: 20px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border: 0; margin: 0; padding: 20px; }

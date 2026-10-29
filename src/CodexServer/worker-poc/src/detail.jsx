@@ -6,7 +6,8 @@ import { GuidDisplay } from './shared/GuidDisplay';
 import { StatusBadge, AdvancedDisclosure, Notice } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
-import { Activity, ChevronDown, Shield01 } from '@untitledui/icons';
+import { ChevronDown } from '@untitledui/icons';
+import { Dialog, DialogTrigger, Heading, Popover } from 'react-aria-components';
 import { FormDialog } from './shared/Dialogs';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses, workerHeartbeatAge, workerManagedSettingsState, workerSlotSummary } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
@@ -19,11 +20,6 @@ function statusTone(value) {
   if ([t('workers.fresh'), t('workers.ready'), t('workers.available'), t('workers.connected')].includes(value)) return 'success';
   if (value === t('workers.notReady')) return 'warning';
   return statusColor(value);
-}
-
-function freshnessLabel(state) {
-  return state === 'Fresh' ? t('workers.fresh')
-    : state === 'Stale' ? t('workers.staleHeartbeat') : t('shared.unknown');
 }
 
 function configurationFailureDiagnostic(diagnostics) {
@@ -328,14 +324,15 @@ function ServiceMark({ type }) {
   if (type === 'git') return <svg aria-hidden="true" viewBox="0 0 48 48" className="poc-service-mark"><path d="M18.2 3.9 3.9 18.2a5.3 5.3 0 0 0 0 7.5l18.4 18.4a5.3 5.3 0 0 0 7.5 0l14.3-14.3a5.3 5.3 0 0 0 0-7.5L25.7 3.9a5.3 5.3 0 0 0-7.5 0Z" fill="#f04438"/><path d="m15.4 17.4 15.2 15.2M23 13.5v7.2m7.7 4.5v6.1" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round"/><circle cx="23" cy="13" r="3.2" fill="#fff"/><circle cx="30.8" cy="24.8" r="3.2" fill="#fff"/><circle cx="30.8" cy="32.5" r="3.2" fill="#fff"/></svg>;
   if (type === 'github-cli') return <svg aria-hidden="true" viewBox="0 0 48 48" className="poc-service-mark poc-service-mark-github"><circle cx="24" cy="24" r="22" fill="#0b1020"/><path fill="#f5f5f6" d="M24 10.1c-7.7 0-14 6.3-14 14 0 6.2 4 11.4 9.6 13.2.7.1 1-.3 1-.7v-2.6c-3.9.9-4.7-1.6-4.7-1.6-.6-1.6-1.6-2-1.6-2-1.3-.9.1-.9.1-.9 1.4.1 2.1 1.5 2.1 1.5 1.2 2.1 3.2 1.5 4 .1.1-.9.5-1.5.9-1.9-3.1-.4-6.4-1.6-6.4-6.9 0-1.5.5-2.7 1.5-3.7-.2-.4-.7-1.8.1-3.7 0 0 1.2-.4 3.9 1.5a13.4 13.4 0 0 1 7.1 0c2.7-1.9 3.9-1.5 3.9-1.5.8 1.9.3 3.3.1 3.7 1 1 1.5 2.2 1.5 3.7 0 5.3-3.3 6.5-6.4 6.9.5.4 1 1.3 1 2.7v4c0 .4.3.8 1 .7 5.6-1.8 9.6-7 9.6-13.2 0-7.7-6.3-14-14-14Z"/></svg>;
   if (type === 'codex-cli') return <svg aria-hidden="true" viewBox="0 0 48 48" className="poc-service-mark poc-service-mark-terminal"><rect x="2" y="2" width="44" height="44" rx="10" fill="#0b1020" stroke="#303748"/><path d="m14 16 8 8-8 8m12 0h9" fill="none" stroke="#d0d5dd" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+  if (type === 'generic') return <svg aria-hidden="true" viewBox="0 0 48 48" className="poc-service-mark poc-service-mark-generic"><circle cx="24" cy="24" r="20" fill="var(--color-bg-tertiary)" stroke="var(--color-border-secondary)" strokeWidth="2"/><path d="M16 24h16M24 16v16" stroke="var(--color-fg-quaternary)" strokeWidth="3" strokeLinecap="round"/></svg>;
   return <svg aria-hidden="true" viewBox="0 0 48 48" className="poc-service-mark poc-service-mark-dotnet"><rect x="2" y="2" width="44" height="44" rx="10" fill="#53389e"/><text x="24" y="29" textAnchor="middle" fill="#fff" fontSize="11" fontWeight="700">.NET</text></svg>;
 }
 
 const serviceTiles = [
-  { id: 'git', type: 'git', name: 'Git', detail: 'version' },
-  { id: 'github-cli', type: 'github-cli', name: 'GitHub CLI', detail: 'authentication' },
-  { id: 'codex-cli', type: 'codex-cli', name: 'Codex CLI', detail: 'version-authentication' },
-  { id: 'dotnet-sdk', type: 'dotnet-sdk', name: '.NET SDK', detail: 'sdk' }
+  { id: 'git', type: 'git', name: 'Git' },
+  { id: 'github-cli', type: 'github-cli', name: 'GitHub CLI' },
+  { id: 'codex-cli', type: 'codex-cli', name: 'Codex CLI' },
+  { id: 'dotnet-sdk', type: 'dotnet-sdk', name: '.NET SDK' }
 ];
 
 function capabilityStatus(capability, id) {
@@ -354,88 +351,55 @@ function capabilityStatus(capability, id) {
   return t('shared.unknown');
 }
 
-function capabilityDetail(tile, capability) {
-  if (!capability) return t('workers.notReported');
-  const { state } = capability;
-  if (tile.detail === 'authentication') {
-    if (state.authentication?.toLowerCase() === 'satisfied') return t('workers.authenticated');
-    return localizeText(state.authentication ?? t('workers.notReported'));
-  }
-  if (tile.detail === 'version-authentication') return state.detectedVersion ? `v${state.detectedVersion}` : t('shared.versionUnknown');
-  if (tile.detail === 'sdk') return state.detectedVersion ?? t('shared.versionUnknown');
-  return state.detectedVersion ? `v${state.detectedVersion}` : t('shared.versionUnknown');
-}
-
-function capabilitySupportingText(tile, capability) {
-  if (!capability) return t('workers.capabilityObservationsUnavailable');
-  if (tile.detail === 'version') return capability.state.detectedVersion ? t('workers.versionDetected') : t('workers.versionNotReported');
-  if (tile.detail === 'sdk') return t('workers.runtimeVersion');
-  if (['authentication', 'version-authentication'].includes(tile.detail)) {
-    if (capability.state.authentication?.toLowerCase() === 'satisfied') {
-      return t(tile.detail === 'authentication' ? 'workers.tokenAvailable' : 'workers.authenticated');
-    }
-    return t('workers.authenticationStatus');
-  }
-  return t('workers.runtimeVersion');
-}
-
-function CapabilityTile({ tile, capability }) {
+function CapabilityDetailsPopup({ tile, capability, provisioning }) {
   useLanguage();
-  const name = localizeText(tile.name);
+  const name = capability ? localizeText(capability.definition.displayName) : localizeText(tile.name);
+  return <DialogTrigger>
+    <Button color="secondary" size="sm" aria-label={t('workers.viewCapabilityDetailsFor', { capability: name })}>{t('workers.details')}</Button>
+    <Popover placement="bottom start" className="z-50 max-w-[min(42rem,calc(100vw-2rem))] rounded-xl border border-secondary bg-primary p-4 shadow-lg">
+      <Dialog className="max-h-[min(80vh,42rem)] overflow-y-auto outline-none">
+        <Heading slot="title" className="mb-3 text-sm font-semibold text-primary">{name}</Heading>
+        {capability ? provisioning ? provisioning(capability.definition.id) : <CapabilityCard capability={capability} />
+          : <p className="text-sm text-tertiary">{t('workers.capabilityObservationsUnavailable')}</p>}
+      </Dialog>
+    </Popover>
+  </DialogTrigger>;
+}
+
+function CapabilityTile({ tile, capability, provisioning }) {
+  useLanguage();
+  const name = capability ? localizeText(capability.definition.displayName) : localizeText(tile.name);
   const status = capabilityStatus(capability, tile.id);
   const tone = status === t('workers.ready') || status === t('workers.available') ? 'success' : statusTone(status);
   const lastReported = capability?.state.detectedAtUtc
-    ? `${t('workers.lastReported')} ${timestamp(capability.state.detectedAtUtc)}`
-    : t('workers.notChecked');
+    ? `${t('workers.lastReported')} ${timestamp(capability.state.detectedAtUtc)}` : t('workers.notChecked');
   return <article className="poc-service-tile" aria-label={`${name}: ${localizeText(status)}`}>
     <div className="poc-service-top">
       <ServiceMark type={tile.type} />
       <div className="poc-service-heading"><h3>{name}</h3><Status value={status} tone={tone} /></div>
     </div>
-    <p className="poc-service-detail">{capabilityDetail(tile, capability)}</p>
-    <p className="poc-service-support">{capabilitySupportingText(tile, capability)} · {lastReported}</p>
+    <div className="poc-service-actions"><span>{lastReported}</span><CapabilityDetailsPopup tile={tile} capability={capability} provisioning={provisioning} /></div>
   </article>;
 }
 
-function CapabilitiesPanel({ node }) {
+function CapabilitiesPanel({ node, diagnostics, provisioning }) {
   useLanguage();
   const capabilityById = new Map((node?.capabilities ?? []).map(capability => [capability.definition.id, capability]));
+  const extraTiles = (node?.capabilities ?? []).filter(capability => !serviceTiles.some(tile => tile.id === capability.definition.id))
+    .map(capability => ({ id: capability.definition.id, type: 'generic', name: capability.definition.displayName }));
+  const capabilities = [...serviceTiles, ...extraTiles];
+  const readiness = node?.provisioningReadiness ?? t('shared.unknown');
+  const state = diagnostics?.provisioningState ?? t('shared.unknown');
   return <TableCard.Root className="poc-dashboard-panel poc-capabilities-panel">
     <PanelHeading id="poc-capabilities-heading" title={t('shared.capabilitiesAndProvisioning')} />
-    {node ? <div className="poc-service-grid">{serviceTiles.map(tile => <CapabilityTile key={tile.id} tile={tile} capability={capabilityById.get(tile.id)} />)}</div>
-      : <p className="poc-empty-panel">{t('shared.capabilityObservationsUnavailableRefreshProvisioningState')}</p>}
-  </TableCard.Root>;
-}
-
-function ReadinessRow({ icon, title, detail, value, tone }) {
-  return <div className="poc-readiness-row">
-    <span className="poc-readiness-icon" aria-hidden="true">{icon}</span>
-    <div className="poc-readiness-copy"><h3>{title}</h3><p>{detail}</p></div>
-    <Status value={value} tone={tone} />
-  </div>;
-}
-
-function ReadinessPanel({ worker, node, diagnostics, now }) {
-  useLanguage();
-  const hasReportedChecks = !!worker.lastHeartbeatAtUtc;
-  const preflight = !diagnostics || !hasReportedChecks ? t('shared.unknown') : diagnostics.aiAgentReady ? t('workers.ready') : t('workers.notReady');
-  const eligibleCount = diagnostics?.projects?.filter(project => project.isEligible).length;
-  const eligibilityStatus = eligibleCount == null || !hasReportedChecks ? t('shared.unknown') : eligibleCount > 0 ? t('workers.ready') : t('workers.notReady');
-  const eligible = eligibilityStatus === t('shared.unknown') ? t('workers.notChecked') : t('workers.eligibleProjects', { count: eligibleCount });
-  const heartbeat = worker.lastHeartbeatAtUtc ? relativeAge(worker.lastHeartbeatAtUtc, now) : t('workers.heartbeatUnavailable');
-  const freshness = workerDetailStatuses(worker, node, diagnostics).freshness;
-  const preflightTone = preflight === t('workers.ready') ? 'success' : statusTone(preflight);
-  const projectTone = statusTone(eligibilityStatus);
-  const readinessValue = localizeText(currentWorkerExecutionReadiness(worker, node));
-  const reportedAt = worker.lastHeartbeatAtUtc ? timestamp(worker.lastHeartbeatAtUtc) : t('workers.notChecked');
-  return <TableCard.Root className="poc-dashboard-panel poc-readiness-panel">
-    <PanelHeading id="poc-readiness-heading" title={t('workers.readinessChecks')} />
-    <div className="poc-readiness-list">
-      <ReadinessRow icon={<Shield01 />} title={t('workers.lastReportedExecutionPreflight')} detail={preflight === t('shared.unknown') ? t('workers.notChecked') : `${diagnostics.aiAgentReady ? t('workers.environmentAndToolsReady') : t('workers.preflightNotReady')} · ${t('workers.lastReported')} ${reportedAt}`} value={preflight} tone={preflightTone} />
-      <ReadinessRow icon={<span className="poc-project-readiness-icon"><i/><i/></span>} title={t('workers.lastReportedProjectEligibility')} detail={eligibilityStatus === t('shared.unknown') ? eligible : `${eligible} · ${t('workers.lastReported')} ${reportedAt}`} value={eligibilityStatus} tone={projectTone} />
-      <ReadinessRow icon={<Activity />} title={t('workers.currentExecutionReadiness')} detail={!node ? t('workers.readinessUnavailable') : node.connectivity === 'disconnected' ? t('workers.disconnectedBlocksReadiness') : node.observationsStale ? t('workers.observationIsStale') : t('workers.currentServerReadiness')} value={readinessValue} tone={statusTone(readinessValue)} />
-      <ReadinessRow icon={<Activity />} title={t('workers.heartbeatFreshness')} detail={`${t('workers.lastHeartbeat')}: ${heartbeat}`} value={freshnessLabel(freshness.state)} tone={freshness.tone} />
-    </div>
+    {node ? <>
+      <div className="poc-node-provisioning-state" aria-label={t('workers.nodeProvisioningState')}>
+        <h3>{t('workers.nodeProvisioningState')}</h3>
+        <div><span>{t('shared.provisioningReadiness')}</span><Status value={readiness} /></div>
+        <div><span>{t('workers.workerProvisioningState')}</span><Status value={state} /></div>
+      </div>
+      <div className="poc-service-grid">{capabilities.map(tile => <CapabilityTile key={tile.id} tile={tile} capability={capabilityById.get(tile.id)} provisioning={provisioning} />)}</div>
+    </> : <p className="poc-empty-panel">{t('shared.capabilityObservationsUnavailableRefreshProvisioningState')}</p>}
   </TableCard.Root>;
 }
 
@@ -526,7 +490,39 @@ export function CapabilityCard({ capability, commands, children }) {
 
 export { CapabilityCard as Capability };
 
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, nodeCommands = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus, restartMessage = null }) {
+function WorkerInformationPanel({ worker, diagnostics, administration, readOnly, preparation, journal, advanced }) {
+  useLanguage();
+  const reported = !!worker.lastHeartbeatAtUtc;
+  const evidence = value => reported ? value ? t('shared.yes') : t('shared.no') : t('workers.notChecked');
+  return <TableCard.Root className="poc-worker-information-card">
+    <PanelHeading id="poc-worker-information-heading" title={t('workers.workerInformation')} />
+    <div className="poc-worker-information-content">
+      {diagnostics && <section className="poc-worker-information-section" aria-labelledby="poc-readiness-evidence-heading">
+        <h3 id="poc-readiness-evidence-heading">{t('shared.readinessEvidence')}</h3>
+        <p>{t('shared.reportedReadinessEvidenceCodexPreflight')} {evidence(diagnostics.aiAgentReady)} · {t('shared.gitHubAccess')} {evidence(diagnostics.gitHubReady)} · {t('shared.gitAccess')} {evidence(diagnostics.gitReady)}</p>
+      </section>}
+      {!readOnly && <section className="poc-worker-information-section" aria-labelledby="poc-control-effects-heading">
+        <h3 id="poc-control-effects-heading">{t('workers.controlEffectsAndCurrentState')}</h3>
+        <dl className="poc-control-facts">
+          <div><dt>{t('shared.credentialDeliveryAuthorization')}</dt><dd><Status value={administration?.delivery?.status ?? t('shared.unavailable')} />{administration?.delivery?.revokedAtUtc && <p>{t('shared.revoked')} {timestamp(administration.delivery.revokedAtUtc)}</p>}</dd></div>
+          <div><dt>{t('shared.workerAPIToken')}</dt><dd><Status value={administration?.worker?.authenticationCredentialStatus ?? t('shared.unavailable')} />{administration?.worker?.authenticationCredentialRevokedAtUtc && <p>{t('shared.revoked')} {timestamp(administration.worker.authenticationCredentialRevokedAtUtc)}</p>}</dd></div>
+        </dl>
+        <p>{t('shared.schedulingControlsAffectNewAssignmentsExistingAssignmentsAndLeasesAreNotCancelled')}</p>
+        {['pending', 'failed', 'not-configured', 'revoked'].includes(administration?.delivery?.status) && <p role="status">{t('workers.repairDeliveryDescription')}</p>}
+        <p>{t('shared.revokingDeliveryAuthorizationStopsFutureServerCredentialDeliveryWorkerAPIAuthenticationAnd')}</p>
+        <p>{t('shared.revokingWorkerAPIAuthenticationDeniesCallsUsingItsTokenActiveLeasesMay')}</p>
+      </section>}
+      {preparation && <section className="poc-worker-information-section" aria-labelledby="poc-worker-preparation-heading">
+        <h3 id="poc-worker-preparation-heading">{t('workers.workerPreparation')}</h3>
+        {preparation}
+      </section>}
+      {journal}
+      {advanced}
+    </div>
+  </TableCard.Root>;
+}
+
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, journal = null, advanced = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus, restartMessage = null }) {
   useLanguage();
   const [actionsOpen, setActionsOpen] = useState(false);
   const worker = observations?.find(item => item.workerId === id);
@@ -534,7 +530,6 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
   const items = workerExecutions(executions, id);
   const active = items.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state));
   const recent = items.filter(item => terminalStates.includes(item.state));
-  const commands = nodeCommands?.filter(command => command.request.nodeId === id) ?? null;
   const actionNotice = !actionsOpen ? restartMessage ?? statusMessage ?? (administration?.message ? { text: localizeText(administration.message), failed: false } : null) : null;
   return <section className="poc-worker-detail-screen" aria-label={t('shared.workerDetail')}>
     {!worker ? <>
@@ -554,42 +549,10 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
       <div className="poc-worker-lower-grid">
         <div className="poc-worker-technical-column">
           <WorkerResources worker={worker} node={node} now={now} />
-          <CapabilitiesPanel node={node} />
         </div>
-        <ReadinessPanel worker={worker} node={node} diagnostics={diagnostics} now={now} />
+        <CapabilitiesPanel node={node} diagnostics={diagnostics} provisioning={provisioning} />
       </div>
-      <div className="poc-worker-extra">
-        {diagnostics && <AdvancedDisclosure title={t('shared.readinessEvidence')}>
-          <p>{t('shared.reportedReadinessEvidenceCodexPreflight')} {worker.lastHeartbeatAtUtc ? diagnostics.aiAgentReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')} · {t('shared.gitHubAccess')} {worker.lastHeartbeatAtUtc ? diagnostics.gitHubReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')} · {t('shared.gitAccess')} {worker.lastHeartbeatAtUtc ? diagnostics.gitReady ? t('shared.yes') : t('shared.no') : t('workers.notChecked')}</p>
-          <p>{t('shared.configurationSynchronization')} {localizeText(diagnostics.configurationSynchronization)}</p>
-          {diagnostics.latestProvisioningOperation && <p>{localizeText(diagnostics.latestProvisioningOperation.action)} · {localizeText(diagnostics.latestProvisioningOperation.status)}</p>}
-        </AdvancedDisclosure>}
-        {!readOnly && <>
-          <AdvancedDisclosure title={t('workers.currentControlState')}>
-            <dl className="poc-control-facts">
-              <div><dt>{t('shared.schedulingPolicy')}</dt><dd><Status value={administration?.worker?.schedulingPolicy ?? t('shared.unavailable')} />{administration?.worker?.schedulingPolicy === 'Draining' && <p>{administration.worker.activeAssignments === 0 ? t('shared.drainedSchedulingIsPaused') : t('shared.drainingAssignments', { count: administration.worker.activeAssignments })}</p>}</dd></div>
-              <div><dt>{t('shared.credentialDeliveryAuthorization')}</dt><dd><Status value={administration?.delivery?.status ?? t('shared.unavailable')} />{administration?.delivery?.revokedAtUtc && <p>{t('shared.revoked')} {timestamp(administration.delivery.revokedAtUtc)}</p>}</dd></div>
-              <div><dt>{t('shared.workerAPIToken')}</dt><dd><Status value={administration?.worker?.authenticationCredentialStatus ?? t('shared.unavailable')} />{administration?.worker?.authenticationCredentialRevokedAtUtc && <p>{t('shared.revoked')} {timestamp(administration.worker.authenticationCredentialRevokedAtUtc)}</p>}</dd></div>
-            </dl>
-            <p id="poc-policy-effect">{t('shared.schedulingControlsAffectNewAssignmentsExistingAssignmentsAndLeasesAreNotCancelled')}</p>
-            {['pending', 'failed', 'not-configured', 'revoked'].includes(administration?.delivery?.status) && <p role="status">{t('workers.repairDeliveryDescription')}</p>}
-            <p id="poc-delivery-effect">{t('shared.revokingDeliveryAuthorizationStopsFutureServerCredentialDeliveryWorkerAPIAuthenticationAnd')}</p>
-            <p id="poc-token-effect">{t('shared.revokingWorkerAPIAuthenticationDeniesCallsUsingItsTokenActiveLeasesMay')}</p>
-            {administration?.actions?.map(action => <p key={action.key}>{localizeText(action.label)} · {localizeText(action.reason || t('shared.confirmationRequired'))}</p>)}
-          </AdvancedDisclosure>
-        </>}
-        <AdvancedDisclosure title={t('shared.observationDetails')}>
-          <p>{t('shared.connectivityExecutionPrerequisitesAndSchedulingPolicyAreSeparateObservationsStaleEvidenceDoes')}</p>
-          {node && <p>{t('shared.executionPrerequisites')} {localizeText(node.executionReadiness)} · {t('shared.node')} {localizeText(node.connectivity)}</p>}
-          {node?.provisioningReadiness && <p>{t('shared.provisioningReadiness')} {localizeText(node.provisioningReadiness)}</p>}
-        </AdvancedDisclosure>
-        {preparation}
-        {node?.capabilities?.length ? <AdvancedDisclosure title={t('shared.capabilityDetails')}>{node.capabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands} />)}</AdvancedDisclosure> : null}
-        {commands === null ? <AdvancedDisclosure title={t('shared.operationHistory')}><p>{t('shared.commandHistoryUnavailable')}</p></AdvancedDisclosure> : <AdvancedDisclosure title={t('shared.operationHistory')}>
-          {commands.length ? commands.slice(0, 8).map(command => <p key={command.id}>{localizeText(node?.capabilities?.find(item => item.definition.id === command.request.capabilityId)?.definition.displayName ?? command.request.capabilityId)} · {localizeText(command.request.action)} · {localizeText(command.status)}</p>) : <p>{t('nodes.noCommandsReportedInBoundedNodeHistory')}</p>}
-        </AdvancedDisclosure>}
-        {provisioning && <AdvancedDisclosure title={t('nodes.nodeProvisioning')}>{provisioning}</AdvancedDisclosure>}
-      </div>
+      <WorkerInformationPanel worker={worker} diagnostics={diagnostics} administration={administration} readOnly={readOnly} preparation={preparation} journal={journal} advanced={advanced} />
     </>}
   </section>;
 }

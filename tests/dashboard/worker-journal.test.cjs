@@ -6,7 +6,7 @@ const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const directory = mkdtempSync(join(tmpdir(), 'worker-journal-'));
 buildSync({ stdin: { contents: `export { renderToStaticMarkup } from 'react-dom/server'; export { createElement } from 'react'; export * from './src/features/workers/WorkerJournal';`, resolveDir: resolve('src/CodexServer/worker-poc') }, bundle: true, platform: 'node', format: 'cjs', outfile: join(directory, 'journal.cjs') });
-const { renderToStaticMarkup, createElement, JournalContent, journal } = require(join(directory, 'journal.cjs'));
+const { renderToStaticMarkup, createElement, JournalContent, journal, journalPath } = require(join(directory, 'journal.cjs'));
 after(() => rmSync(directory, { recursive: true, force: true }));
 const render = props => renderToStaticMarkup(createElement(JournalContent, props));
 test('journal loading, empty, unavailable and error states are readable', () => {
@@ -17,10 +17,13 @@ test('journal loading, empty, unavailable and error states are readable', () => 
   assert.match(render({ error: 'Retrieval failed' }), /Retrieval failed/);
   assert.match(render({ timedOut: true }), /did not respond/);
 });
+test('journal reads request exactly 100 lines and refresh through the Server request protocol', () => {
+  assert.equal(journalPath('worker/a'), '/api/v1/workers/worker%2Fa/journal?lines=100');
+  assert.equal(journalPath('worker/a', true), '/api/v1/workers/worker%2Fa/journal?lines=100&refresh=true');
+});
 test('journal preserves chronological text, wraps, scrolls and escapes markup', () => {
   const html = render({ data: journal({ state: 'ready', lines: ['01 first', '02 <script>'] }) });
   assert.match(html, /01 first\n02 &lt;script&gt;/);
-  assert.match(html, /pre-wrap/);
-  assert.match(html, /overflow:auto/);
+  assert.match(html, /poc-worker-journal-output/);
   assert.throws(() => journal({ state: 'ready', lines: ['x'.repeat(1001)] }));
 });

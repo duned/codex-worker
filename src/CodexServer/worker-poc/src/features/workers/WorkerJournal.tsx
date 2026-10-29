@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react';
-import { useApiRead } from '../../shared/api/session';
+import { useEffect, useRef, useState } from 'react';
+import { useApiRead, useRuntime } from '../../shared/api/session';
 import { Notice } from '../../shared/Presentation';
 import { t, useLanguage } from '../../shared/i18n';
+import { Button } from '../../untitled/components/base/buttons/button';
 
 export type Journal = { state: string; lines: string[] };
+export function journalPath(workerId: string, refresh = false) {
+  return `/api/v1/workers/${encodeURIComponent(workerId)}/journal?lines=100${refresh ? '&refresh=true' : ''}`;
+}
 export function journal(value: unknown): Journal {
   const item = value as Journal;
   if (!item || !['pending', 'ready', 'unsupported', 'error', 'unavailable', 'busy'].includes(item.state) ||
@@ -22,23 +26,70 @@ export function JournalContent({ data, error, timedOut = false }: { data?: Journ
     return <Notice error>{message}</Notice>;
   }
   if (!data.lines.length) return <p role="status">{t('workers.journalEmpty')}</p>;
-  return <pre tabIndex={0} aria-label={t('workers.journalLabel')} style={{ maxHeight: '32rem', overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{data.lines.join('\n')}</pre>;
+  return <pre tabIndex={0} className="poc-worker-journal-output" aria-label={t('workers.journalLabel')}>{data.lines.join('\n')}</pre>;
 }
 function JournalRead({ workerId }: { workerId: string }) {
-  const result = useApiRead(`/api/v1/workers/${encodeURIComponent(workerId)}/journal`, journal);
+  const runtime = useRuntime();
+  const [requestStarted, setRequestStarted] = useState(false);
+  const [refreshing, setRefreshing] = useState(true);
+  const [refreshError, setRefreshError] = useState<string>();
   const [timedOut, setTimedOut] = useState(false);
-  useEffect(() => { const timer = setTimeout(() => setTimedOut(true), 80000); return () => clearTimeout(timer); }, []);
+  const refreshController = useRef<AbortController | undefined>(undefined);
+  const result = useApiRead(journalPath(workerId), journal, requestStarted);
   useEffect(() => {
-    if (result.data?.state !== 'pending' || timedOut) return;
+    const controller = new AbortController();
+    refreshController.current = controller;
+    void runtime.read(journalPath(workerId, true), controller.signal, journal)
+      .then(() => { if (!controller.signal.aborted) setRequestStarted(true); })
+      .catch(() => { if (!controller.signal.aborted) { setRefreshError(t('workers.journalFailure')); setRequestStarted(true); } })
+      .finally(() => {
+        if (!controller.signal.aborted) setRefreshing(false);
+        if (refreshController.current === controller) refreshController.current = undefined;
+      });
+    return () => { controller.abort(); refreshController.current?.abort(); refreshController.current = undefined; };
+  }, [runtime, workerId]);
+  useEffect(() => {
+    if (!requestStarted || result.data?.state !== 'pending') return;
+    const timer = setTimeout(() => setTimedOut(true), 80000);
+    return () => clearTimeout(timer);
+  }, [requestStarted, result.data?.state, result.updatedAt]);
+  useEffect(() => {
+    if (!requestStarted || result.data?.state !== 'pending' || timedOut || refreshing) return;
     const timer = setTimeout(() => { void result.refetch(); }, 2000);
     return () => clearTimeout(timer);
-  }, [result.data, result.refetch, result.fetching, timedOut]);
-  return <JournalContent data={result.data} error={result.error} timedOut={timedOut && result.data?.state === 'pending'} />;
+  }, [requestStarted, result.data, result.refetch, result.fetching, result.updatedAt, timedOut, refreshing]);
+  async function refresh() {
+    if (refreshing || result.fetching) return;
+    const controller = new AbortController();
+    refreshController.current?.abort();
+    refreshController.current = controller;
+    setRefreshing(true);
+    setRefreshError(undefined);
+    setTimedOut(false);
+    try {
+      await runtime.read(journalPath(workerId, true), controller.signal, journal);
+      if (!controller.signal.aborted) {
+        setRequestStarted(true);
+        await result.refetch();
+      }
+    } catch {
+      if (!controller.signal.aborted) setRefreshError(t('workers.journalFailure'));
+    } finally {
+      if (!controller.signal.aborted) setRefreshing(false);
+      if (refreshController.current === controller) refreshController.current = undefined;
+    }
+  }
+  return <div className="poc-worker-journal-content">
+    <div className="poc-worker-journal-actions"><Button color="secondary" size="sm" isDisabled={refreshing || result.fetching} aria-busy={refreshing || result.fetching} onPress={() => { void refresh(); }}>{refreshing || result.fetching ? t('workers.journalLoading') : t('workers.journalRefresh')}</Button></div>
+    <JournalContent data={refreshing ? undefined : result.data} error={refreshError ?? result.error} timedOut={timedOut && result.data?.state === 'pending'} />
+  </div>;
 }
 export function WorkerJournal({ workerId, openRequest = 0 }: { workerId: string; openRequest?: number }) {
   useLanguage();
   const [open, setOpen] = useState(false);
   useEffect(() => { if (openRequest > 0) setOpen(true); }, [openRequest]);
-  return <section className="poc-card"><button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{t('workers.journalHeading')}</button>
+  return <section className="poc-worker-information-section" aria-labelledby="poc-worker-journal-heading">
+    <div className="poc-worker-information-heading"><h3 id="poc-worker-journal-heading">{t('workers.journalHeading')}</h3>
+      <Button color="secondary" size="sm" aria-expanded={open} onPress={() => setOpen(!open)}>{open ? t('workers.hideJournal') : t('workers.loadJournal')}</Button></div>
     {open && <JournalRead key={workerId} workerId={workerId} />}</section>;
 }
