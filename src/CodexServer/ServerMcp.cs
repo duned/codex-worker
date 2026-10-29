@@ -10,15 +10,16 @@ using ModelContextProtocol.Server;
 
 internal static class ServerMcp
 {
-    public static void AddReadOnlyMcp(this IServiceCollection services) => services
+    public static void AddServerMcp(this IServiceCollection services) => services
         .AddMcpServer(options => options.ServerInfo = new Implementation
         {
             Name = "Codex Server", Version = ServerApplication.DisplayVersion
         })
         .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
-        .WithTools<ServerReadOnlyTools>();
+        .WithTools<ServerReadOnlyTools>()
+        .WithTools<ServerExecutionTools>();
 
-    public static void UseReadOnlyMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
+    public static void UseServerMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
     {
         if (!context.Request.Path.StartsWithSegments("/mcp"))
         {

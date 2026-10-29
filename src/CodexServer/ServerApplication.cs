@@ -71,7 +71,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(configuration);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<AdministrationSessions>();
-        builder.Services.AddReadOnlyMcp();
+        builder.Services.AddServerMcp();
         builder.Services.AddSingleton<WorkerJournalRequests>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
@@ -124,7 +124,7 @@ public static partial class ServerApplication
             }
             await next(context);
         });
-        app.UseReadOnlyMcpAuthorization();
+        app.UseServerMcpAuthorization();
         try
         {
             _ = app.Services.GetRequiredService<ServerDatabaseAccessLock>();

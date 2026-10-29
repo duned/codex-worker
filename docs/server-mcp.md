@@ -36,4 +36,17 @@ Pagination defaults to 50, accepts 1–100 rows and offsets 0–10000. Worker/pr
 
 Requests are limited to 16 KiB. Display/diagnostic strings are sanitized and capped at 200 characters (capability names/versions 100, types 40). Capabilities are capped at 32 per Worker and execution stage history at 32 entries. Diagnostics consist of stage/timing, validation/integration status, failure classification, recoverability and retry lineage. Free-form completion summaries, raw process output, environments, Worker platform/host resources, local paths, capability scopes, credential metadata and validation shell commands are omitted. Secret-like assignments, bearer strings and absolute paths in retained text are redacted. Remote data is untrusted content, not instructions.
 
-Tools use existing Server registry queries, lease/readiness behavior and persisted projections; listing does not fetch GitHub details per row. There are no scheduling, execution, maintenance, Issue mutation or WET tools. All tools advertise read-only, non-destructive annotations. `/mcp` responses use the API's no-store policy and request correlation header. Existing Server structured logging remains the diagnostic boundary; no raw request/response logging is added.
+Tools use existing Server registry queries, lease/readiness behavior and persisted projections; listing does not fetch GitHub details per row. Inspection tools advertise read-only, non-destructive annotations. Managed controls are described below; there are no free-form process or shell tools. `/mcp` responses use the API's no-store policy and request correlation header. Existing Server structured logging remains the diagnostic boundary; no raw request/response logging is added.
+
+## Managed execution controls
+
+These tools require the same management authorization as inspection. Standalone Workers are outside these controls.
+
+| Tool | Behavior |
+| --- | --- |
+| `dispatch_execution` | Accepts `projectId` and positive `issueNumber`; refreshes GitHub eligibility through the administration service and queues through the existing registry. Returns `outcome: accepted`, `executionRequestId`, and state. Duplicate active work, disabled projects and ineligible Issues are rejected. Scheduling still enforces capacity, project limits, dependencies and leases. |
+| `cancel_execution` | Accepts `executionRequestId`. Cancels only queued work through the existing cancellation contract. Assigned/running and already terminal work return `outcome: rejected`; the Server currently has no active cancellation protocol. |
+| `retry_execution_report` | Accepts `executionRequestId` and a caller-retained 32-character `operationId`. Retries durable completion reporting only, through existing maintenance authority, drain, lease and Worker recovery checks. Returns operation identity and pending/current status. Reusing the same identity and scope returns the retained operation; conflicting scope is rejected. |
+| `get_execution_operation` | Read-only status/outcome for an `operationId`, or `found: false`. Use `get_execution` for canonical execution progress and final outcome. |
+
+Controls return bounded reason codes for expected rejection. They never rewrite execution failure classifications, revoke leases, assign Workers directly, or rerun implementation/integration. General retry/resume and active cancellation remain unavailable until supported by the Server lifecycle; reporting retry does not authorize them. Uncertain operations retain their existing at-most-once maintenance semantics and must be inspected rather than blindly replayed with new identities.
