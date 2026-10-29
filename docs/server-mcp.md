@@ -76,3 +76,33 @@ same 16 KiB request limit as other MCP calls.
 `request_worker_provisioning(workerId, capabilityId, action, timeoutSeconds?, allowElevation?, repository?)` queues only existing typed provisioning actions, with a 5–600 second deadline. An accepted request returns an operation ID, not proof of node authorization or completion. Poll `get_worker_provisioning_operation(workerId, operationId)` for pending, running, succeeded, failed, cancelled or timedout status and typed diagnostics. Duplicate active capability operations are rejected. `cancel_worker_provisioning` cancels queued commands only; running or uncertain commands retain existing deadline and node inspection/reconciliation semantics. Requests are never automatically replayed. These tools target registered managed Workers only and do not affect standalone ownership.
 
 Outputs omit private keys, public identities, device login instructions, local paths, raw logs and credential payloads. Authentication setup remains on the existing node-local path. No caller-selected package, version, executable or shell text is accepted. All tools require the existing management authorization.
+
+## Parent/child work packages
+
+`plan_project_work_package` composes Issue planning, the existing native relationship service,
+and managed execution controls within one registered `projectId`. Supply `parent`, `children`
+(1–20), and `dependencies` (at most 100). Each Issue has a unique `key`, stable GUID
+`operationId`, `title`, `body`, and optional existing `issueNumber`. Dependencies contain
+`childKey` and `blockerKey` referring to children in this request. Existing Issues receive text
+updates; new Issues use the durable creation reservations described above.
+
+The tool creates/updates Issues, assigns native parent/sub-issue relationships, adds native
+blocked-by links, and refreshes every child to verify those relationships. It adds requested
+links without removing other dependencies. Relationship mutations retain the administration
+service's existing behavior, including parent reassignment. It does not infer child completion.
+Native GitHub dependency state and Server eligibility remain authoritative.
+
+Readiness and dispatch default to no action. To request them explicitly, pass child keys in
+`readyChildren` and/or `dispatchChildren`. Readiness uses the project's configured ready label;
+dispatch refreshes eligibility and queues through the existing scheduler. No Git operations or
+alternative integration-base rules are introduced.
+
+The response includes `projectId`, an `issues` key-to-number map, and ordered `steps` with each
+operation's result (including execution identifiers for accepted dispatch). `outcome: partial`
+stops at the first failed or unverified stage; prior writes are retained, not rolled back.
+Refresh uncertain writes before retrying. Reuse original creation identities and payloads on
+retry, or provide reconciled existing Issue numbers for subsequent updates. Relationship
+operations set desired state and skip unchanged links. Dispatch retries retain the existing
+active-execution conflict behavior: inspect `list_executions` for the project and Issue rather
+than creating a second execution. Cancellation can interrupt a response; retain the request's
+creation identities even when no response arrives. The normal 16 KiB request bound applies.

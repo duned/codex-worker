@@ -1270,6 +1270,87 @@ public sealed class ServerGitHubAdministrationTests
         Assert.Equal(count, writer.Operations.Count);
     }
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task McpWorkPackageComposesPlanningRelationshipsAndSchedulerWithoutImplicitReadiness()
+    {
+        using var temporary = new TemporaryDirectory();
+        var path = Path.Combine(temporary.Path, "package.db");
+        var registry = new SqliteRegistryStore(path);
+        await registry.InitializeAsync();
+        var project = await registry.CreateProjectAsync(ProjectDefinition(issueReadyLabel: "reviewed"));
+        var read = new FakeServerGitHubReadService();
+        foreach (var number in new[] { 101, 102, 103 }) read.Add(project.Repository, Issue(number));
+        read.Add(project.Repository, Issue(103, labels: ["reviewed"], blockers: [BlockingIssue(102, "open")]));
+        GitHubRelationshipIssue Ref(int number) => new(number, "Task", "open", $"https://github.com/{project.Repository}/issues/{number}");
+        read.AddRelationships(new(1, project.Repository, 102, Ref(102), Ref(101), [], [], []));
+        read.AddRelationships(new(1, project.Repository, 103, Ref(103), Ref(101), [], [Ref(102)], []));
+        var writer = new FakeGitHubIssueWriteService();
+        var service = new ServerGitHubAdministrationService(registry, read, issueWriter: writer);
+        ServerWorkPackageTools Tools() => new(registry, service, new IssuePlanningOperations(path), new ExecutionMaintenanceStore(path));
+        WorkPackageIssue Spec(string key, int? number = null) => new(key, Guid.NewGuid().ToString("N"), "Plan", "Details", number);
+        var parent = Spec("parent");
+        WorkPackageIssue[] children = [Spec("first", 102), Spec("second", 103)];
+        WorkPackageDependency[] dependencies = [new("second", "first")];
+        static JsonElement Json(object result) => JsonSerializer.SerializeToElement(result);
+        var result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default));
+        Assert.Equal("accepted", result.GetProperty("outcome").GetString());
+        Assert.Equal(101, result.GetProperty("issues").GetProperty("parent").GetInt32());
+        Assert.DoesNotContain("label:add", writer.Operations);
+        Assert.Empty(await registry.ListExecutionsAsync(new()));
+        // The native dependency already exists; orchestration must report it without rewriting it.
+        var dependencyStep = Assert.Single(result.GetProperty("steps").EnumerateArray(),
+            step => step.GetProperty("Operation").GetString() == "blocked-by");
+        Assert.Equal("second", dependencyStep.GetProperty("Key").GetString());
+        var dependency = Assert.Single(dependencyStep.GetProperty("Result").GetProperty("items").EnumerateArray());
+        Assert.Equal(103, dependency.GetProperty("IssueNumber").GetInt32());
+        Assert.Equal(102, dependency.GetProperty("RelatedIssueNumber").GetInt32());
+        Assert.Equal("unchanged", dependency.GetProperty("Status").GetString());
+        Assert.DoesNotContain("blocked-by:add", writer.Operations);
+        // A reconstructed tool reuses the durable creation reservation.
+        await Tools().Plan(project.Id, parent, children, dependencies, default);
+        Assert.Single(writer.Operations, operation => operation == "create");
+        result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default, readyChildren: ["first"]));
+        Assert.Equal("accepted", result.GetProperty("outcome").GetString());
+        Assert.Single(writer.Operations, operation => operation == "label:add");
+        read.Add(project.Repository, Issue(102, labels: ["reviewed"]));
+        result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default, dispatchChildren: ["first"]));
+        Assert.Equal("accepted", result.GetProperty("outcome").GetString());
+        var dispatched = result.GetProperty("steps").EnumerateArray().Last().GetProperty("Result");
+        var queued = Assert.Single(await registry.ListExecutionsAsync(new()));
+        Assert.Equal(queued.Id, dispatched.GetProperty("executionRequestId").GetString());
+        result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default, dispatchChildren: ["first"]));
+        Assert.Equal("execution-conflict", result.GetProperty("steps").EnumerateArray().Last().GetProperty("Result").GetProperty("reason").GetString());
+        result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default, dispatchChildren: ["second"]));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        Assert.Equal("issue-ineligible", result.GetProperty("steps").EnumerateArray().Last().GetProperty("Result").GetProperty("reason").GetString());
+        Assert.Single(await registry.ListExecutionsAsync(new()));
+        // An unverified relationship stops before explicit ready/dispatch operations.
+        read.AddRelationships(new(1, project.Repository, 103, Ref(103), null, [], [], []));
+        result = Json(await Tools().Plan(project.Id, parent, children, dependencies, default, readyChildren: ["first"]));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        Assert.Single(writer.Operations, operation => operation == "label:add");
+        var count = writer.Operations.Count;
+        result = Json(await Tools().Plan("missing", parent, children, dependencies, default));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        Assert.Equal(count, writer.Operations.Count);
+        await Assert.ThrowsAsync<ModelContextProtocol.McpException>(() => Tools().Plan(project.Id, parent,
+            children, [new("second", "outside")], default));
+        // Creation identities cannot migrate to another configured project.
+        var other = await registry.CreateProjectAsync(ProjectDefinition("Other", "other/repository"));
+        result = Json(await Tools().Plan(other.Id, parent, children, dependencies, default));
+        Assert.Equal("operation-scope-conflict", result.GetProperty("steps")[0].GetProperty("Result").GetProperty("reason").GetString());
+        var uncertainParent = Spec("uncertain-parent");
+        writer.FailNextCreate = true;
+        result = Json(await Tools().Plan(project.Id, uncertainParent, children, dependencies, default));
+        Assert.Equal("partial", result.GetProperty("outcome").GetString());
+        count = writer.Operations.Count;
+        result = Json(await Tools().Plan(project.Id, uncertainParent, children, dependencies, default));
+        Assert.Equal("creation-uncertain-reconcile-before-retry", result.GetProperty("steps")[0].GetProperty("Result").GetProperty("reason").GetString());
+        Assert.Equal(count, writer.Operations.Count);
+    }
+
     private sealed class FakeGitHubIssueWriteService : IServerGitHubIssueWriteService
     {
         public List<string> Operations { get; } = [];

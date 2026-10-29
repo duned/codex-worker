@@ -19,6 +19,7 @@ internal static class ServerMcp
         .WithTools<ServerReadOnlyTools>()
         .WithTools<ServerExecutionTools>()
         .WithTools<ServerIssuePlanningTools>()
+        .WithTools<ServerWorkPackageTools>()
         .WithTools<ServerWorkerTools>();
 
     public static void UseServerMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
