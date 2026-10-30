@@ -1028,9 +1028,13 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         return result;
     }
 
-    public Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default) =>
-        ServerOperationalDiagnostics.RunAsync(_logger, "assignment", () => RequestAssignmentCoreAsync(request, cancellationToken),
+    public async Task<WorkAssignmentResponse> RequestAssignmentAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default)
+    {
+        var response = await ServerOperationalDiagnostics.RunAsync(_logger, "assignment", () => RequestAssignmentCoreAsync(request, cancellationToken),
             cancellationToken, workerId: request?.WorkerId);
+        if (request is not null) RecordAssignmentDecision(request, response);
+        return response;
+    }
 
     private async Task<WorkAssignmentResponse> RequestAssignmentCoreAsync(WorkerAssignmentRequest request, CancellationToken cancellationToken = default)
     {
@@ -1041,10 +1045,10 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 !Printable(item.ProjectId, 80) || !Guid.TryParse(item.ServerExecutionId, out _) ||
                 item.Kind is not ("Integration" or "Codex") || !Guid.TryParse(item.WorkerExecutionId, out _) || item.IntegrationBase is null || !Regex.IsMatch(item.IntegrationBase, "^(?:[0-9a-f]{40}|[0-9a-f]{64})$")) == true)
             throw new InvalidDataException("Worker assignment request contract is invalid.");
-        if (!request.WorkerEnabled) return NoAssignment(request.WorkerId, "worker-disabled-or-no-capacity");
-        if (request.AvailableCapacity == 0) return NoAssignment(request.WorkerId, "worker-capacity");
+        if (!request.WorkerEnabled) return NoAssignment("worker-disabled-or-no-capacity");
+        if (request.AvailableCapacity == 0) return NoAssignment("worker-capacity");
         if (request.ProjectCapacities.Count == 0 || request.ProjectCapacities.All(p => p.Value == 0))
-            return NoAssignment(request.WorkerId, "no-eligible-work");
+            return NoAssignment("project-capacity-not-advertised");
 
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
@@ -1068,7 +1072,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             if (!await workerReader.ReadAsync(cancellationToken))
             {
                 await transaction.CommitAsync(cancellationToken);
-                return NoAssignment(request.WorkerId, "worker-unregistered");
+                return NoAssignment("worker-unregistered");
             }
             heartbeatJson = workerReader.IsDBNull(0) ? null : workerReader.GetString(0);
             lastSeen = workerReader.IsDBNull(1) ? null : DateTimeOffset.Parse(workerReader.GetString(1));
@@ -1084,7 +1088,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (updating || schedulingPolicy != WorkerSchedulingPolicy.Enabled)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "scheduling-paused");
+            return NoAssignment("scheduling-paused");
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
@@ -1092,14 +1096,14 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             heartbeat.CapabilityInventory is { } inventory && !CapabilityCatalog.ExecutionReadiness(inventory).Available)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "worker-not-ready");
+            return NoAssignment("worker-not-ready");
         }
 
         // Stop reserving new work while local capacity changes wait for the existing idle synchronization.
         if (workerExecutionSlots is { } slots && slots != heartbeat.MaximumCapacity)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "worker-configuration-pending");
+            return NoAssignment("worker-configuration-pending");
         }
 
         command.Parameters.Clear();
@@ -1115,7 +1119,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (assigned >= Math.Min(workerCapacity, configuredCapacity))
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "worker-capacity");
+            return NoAssignment("worker-capacity");
         }
 
         var registration = await ReadWorkerRegistrationAsync(command, request.WorkerId, cancellationToken);
@@ -1131,26 +1135,32 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             while (await reservationsReader.ReadAsync(cancellationToken))
             {
                 var projectId = reservationsReader.GetString(1);
-                if (!projects.ContainsKey(projectId)) continue;
+                if (!projects.TryGetValue(projectId, out var reservationProject)) continue;
                 var work = JsonSerializer.Deserialize<WorkReference>(reservationsReader.GetString(2), ProjectJson);
                 if (work is null) continue;
                 try
                 {
-                    var canonical = ExecutionRequestValidation.NormalizeIdentity(work);
+                    // Reservations must use the same repository identity as candidate admission.
+                    // A reference retained across a repository edit cannot reserve an
+                    // unrelated, same-numbered Issue in the project's current repository.
+                    var canonical = ExecutionRequestValidation.Canonicalize(work, reservationProject.Repository);
                     issueReservations.TryAdd((projectId, canonical.Type, canonical.Id), reservationsReader.GetString(0));
                 }
                 catch (InvalidDataException) { }
             }
         }
 
+        var noAssignmentReason = "no-eligible-work";
         command.Parameters.Clear();
-        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, workspace_recovery FROM execution_requests WHERE state = 'Queued' AND managed_eligibility_state!='blocked' ORDER BY queue_order;";
+        command.CommandText = "SELECT id, project_id, work_reference_json, created_at_utc, workspace_recovery, managed_eligibility_state FROM execution_requests WHERE state = 'Queued' ORDER BY queue_order;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var queued = new List<(string Id, string ProjectId, WorkReference Work, string Created, string? WorkspaceRecovery)>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var projectId = reader.GetString(1);
-            if (!request.ProjectCapacities.TryGetValue(projectId, out var projectCapacity) || projectCapacity <= 0) continue;
+            if (!request.ProjectCapacities.TryGetValue(projectId, out var projectCapacity) || projectCapacity <= 0)
+            { noAssignmentReason = "project-capacity-not-advertised"; continue; }
+            if (reader.GetString(5) == "blocked") { noAssignmentReason = "managed-eligibility-blocked"; continue; }
             queued.Add((reader.GetString(0), projectId,
                 JsonSerializer.Deserialize<WorkReference>(reader.GetString(2), ProjectJson) ?? throw new InvalidDataException("Stored work reference is invalid."),
                 reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)));
@@ -1168,13 +1178,13 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             {
                 if (await metadataReader.ReadAsync(cancellationToken))
                 {
-                    if (metadataReader.GetString(0) != request.WorkerId) continue;
+                    if (metadataReader.GetString(0) != request.WorkerId) { noAssignmentReason = "recovery-worker-required"; continue; }
                     try { recoveryMetadata = JsonSerializer.Deserialize<Dictionary<string, string>>(metadataReader.GetString(1)); }
                     catch (JsonException) { recoveryMetadata = null; }
                 }
                 else recoveryMetadata = null;
             }
-            if (queuedItem.WorkspaceRecovery == "ReturnedCodexWorkspaceRequired") continue;
+            if (queuedItem.WorkspaceRecovery == "ReturnedCodexWorkspaceRequired") { noAssignmentReason = "recovery-workspace-required"; continue; }
             if (queuedItem.WorkspaceRecovery is "PreservedIntegrationImplementation" or "PreservedCodexImplementation" &&
                 (recoveryMetadata is null || !recoveryMetadata.TryGetValue(queuedItem.WorkspaceRecovery == "PreservedCodexImplementation" ? "codexRecoveryExecutionId" : "integrationRecoveryExecutionId", out var localId) ||
                     !Guid.TryParse(localId, out _) || !recoveryMetadata.TryGetValue("originalServerExecutionId", out var originalId) ||
@@ -1185,16 +1195,18 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 command.Parameters.AddWithValue("$id", queuedItem.Id);
                 command.Parameters.AddWithValue("$reason", JsonSerializer.Serialize(new[] { "Preserved integration recovery ownership metadata is missing or corrupt; human reconciliation is required." }));
                 await command.ExecuteNonQueryAsync(cancellationToken);
+                noAssignmentReason = "recovery-metadata-invalid";
                 continue;
             }
-            if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) ||
-                !candidateProject.Enabled ||
-                !WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities, heartbeat.CapabilityInventory).IsEligible) continue;
+            if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) || !candidateProject.Enabled)
+            { noAssignmentReason = "project-disabled-or-missing"; continue; }
+            if (!WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities, heartbeat.CapabilityInventory).IsEligible)
+            { noAssignmentReason = "worker-incompatible"; continue; }
             WorkReference canonicalWork;
             try { canonicalWork = ExecutionRequestValidation.Canonicalize(queuedItem.Work, candidateProject.Repository); }
-            catch (InvalidDataException) { continue; }
+            catch (InvalidDataException) { noAssignmentReason = "work-reference-repository-mismatch"; continue; }
             if (!issueReservations.TryGetValue((queuedItem.ProjectId, canonicalWork.Type, canonicalWork.Id), out var reservationId) ||
-                reservationId != queuedItem.Id) continue;
+                reservationId != queuedItem.Id) { noAssignmentReason = "issue-reserved"; continue; }
             command.Parameters.Clear();
             command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE project_id = $project AND (state IN ('Assigned','Running') OR (state='Failed' AND recovery_state='LeaseExpiredUncertain'));";
             command.Parameters.AddWithValue("$project", queuedItem.ProjectId);
@@ -1210,7 +1222,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (candidate is null)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, projectCapacityBlocked ? "project-capacity" : "no-eligible-work", recoveryRejections);
+            return NoAssignment(projectCapacityBlocked ? "project-capacity" : noAssignmentReason, recoveryRejections);
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -1225,7 +1237,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment(request.WorkerId, "assignment-race", recoveryRejections);
+            return NoAssignment("assignment-race", recoveryRejections);
         }
         command.Parameters.Clear();
         command.CommandText = "SELECT COALESCE(MAX(generation), 0) + 1 FROM execution_leases WHERE execution_id = $id;";
@@ -1266,10 +1278,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             new ExecutionLease(candidate.Value.Id, request.WorkerId, generation, now, expires, "Active", _leaseRenewalIntervalSeconds)), recoveryRejections);
     }
 
-    private WorkAssignmentResponse NoAssignment(string workerId, string reason,
+    private static WorkAssignmentResponse NoAssignment(string reason,
         IReadOnlyDictionary<string, string>? recoveryRejections = null)
     {
-        ServerOperationalDiagnostics.Write(_logger, LogLevel.Debug, "assignment", reason, workerId: workerId);
         return new(false, null, recoveryRejections, reason);
     }
 
@@ -1667,22 +1678,36 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         return result;
     }
 
-    private static string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
+    private string PendingReasonFor(ExecutionRequest execution, IReadOnlyDictionary<string, CentralProject> projects,
         IReadOnlyList<WorkerRegistrationResponse> workers, IReadOnlyDictionary<string, int> projectActivity)
     {
-        if (!projects.TryGetValue(execution.ProjectId, out var project)) return "waiting for available worker";
+        if (!projects.TryGetValue(execution.ProjectId, out var project)) return "project is unavailable";
+        try { ExecutionRequestValidation.Canonicalize(execution.WorkReference, project.Repository); }
+        catch (InvalidDataException) { return "work reference does not match project repository"; }
         if (!project.Enabled) return "project is disabled";
         if (execution.ManagedEligibilityState == "blocked") return "work is blocked by managed eligibility";
         if (execution.ManagedEligibilityState == "unavailable") return "managed eligibility is unavailable";
-        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
+        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
         var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
-        var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running").ToArray();
+        var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running" &&
+            WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
         if (accepting.Length > 0 && project.MaxParallelTasks is { } limit && projectActivity.GetValueOrDefault(project.Id) >= limit)
             return "project-capacity";
-        if (accepting.Length == 0 || accepting.Any(worker => worker.AvailableCapacity > 0)) return "waiting for available worker";
-        return "compatible workers currently at capacity";
+        if (accepting.Length == 0) return "compatible Workers are offline or not ready";
+        var withCapacity = accepting.Where(worker => Math.Min(worker.MaximumCapacity,
+            worker.ConfiguredMaximumCapacity ?? worker.MaximumCapacity) > Math.Max(worker.ActiveExecutions, worker.ActiveAssignments)).ToArray();
+        if (withCapacity.Length == 0) return "compatible workers currently at capacity";
+        if (withCapacity.All(worker => worker.WorkerExecutionSlots is { } slots && slots != worker.MaximumCapacity))
+            return "worker-configuration-pending";
+        var decisions = withCapacity.Select(worker => RecentAssignmentDecision(worker.WorkerId)).ToArray();
+        if (decisions.All(decision => decision is not null && decision.ProjectCapacities.GetValueOrDefault(project.Id) <= 0))
+            return "project-capacity-not-advertised";
+        if (decisions.All(decision => decision?.Reason == "scheduling-paused")) return "scheduling-paused";
+        if (decisions.All(decision => decision?.Reason == "worker-disabled-or-no-capacity"))
+            return "compatible Workers are not accepting assignments";
+        return "eligible work awaiting assignment; Worker capacity available";
     }
 
     private static IReadOnlyList<string> MissingFor(ExecutionRequest execution,

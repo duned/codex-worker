@@ -215,6 +215,144 @@ public sealed class ServerOperationalDiagnosticsTests
         Assert.Single(fixture.Logger.Events);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task UncertainIssueFromPreviousRepositoryDoesNotReserveCurrentRepositoryIssue()
+    {
+        using var fixture = new Fixture();
+        var (project, worker) = await fixture.InitializeAsync();
+        var store = fixture.Store;
+        var old = await store.EnqueueExecutionAsync(new(project.Id, new("issue", "7")));
+        var original = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(Request(project.Id, worker))).Assignment);
+        var originalLease = Assert.IsType<ExecutionLease>(original.Lease);
+        await store.ReportExecutionAsync(old.Id, new(worker, original.AssignmentId, "old-local", "Running", "Integration", Generation: originalLease.Generation));
+        fixture.Clock.Advance(TimeSpan.FromSeconds(121));
+        await store.ExpireLeasesAsync();
+        var updated = await store.UpdateProjectAsync(project.Id,
+            new(project.Name, "team/replacement", project.DefaultBranch, project.Description), project.Revision);
+        Assert.NotNull(updated);
+        WorkerCapability[] capabilities = [.. WorkerAuthenticationRequirements.ForRepository(updated.Repository).Select(requirement =>
+            new WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)), new("agent-provider", "codex")];
+        await store.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 1, capabilities, [], "synchronized"));
+        var current = await store.EnqueueExecutionAsync(new(project.Id, new("github-issue", "7", Title: "secret=private-issue")));
+        var ready = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(worker));
+        Assert.True(updated.Enabled);
+        Assert.Equal("online", ready.Availability);
+        Assert.Equal("running", ready.LifecycleState);
+        Assert.Equal(WorkerSchedulingPolicy.Enabled, ready.SchedulingPolicy);
+        Assert.Equal(1, ready.AvailableCapacity);
+        Assert.True(WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(updated), ready.Capabilities).IsEligible);
+        Assert.Equal("eligible", current.ManagedEligibilityState);
+        var request = Request(project.Id, worker);
+        var response = await store.RequestAssignmentAsync(request);
+        var assignment = Assert.IsType<WorkAssignment>(response.Assignment);
+        Assert.True(response.HasWork);
+        Assert.Equal(current.Id, assignment.ServerExecutionId);
+        Assert.Equal("https://github.com/team/replacement/issues/7", assignment.Work.Url);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        Assert.Equal(worker, lease.WorkerId);
+        Assert.Equal(1, lease.Generation);
+        Assert.Equal("Active", lease.State);
+        Assert.Equal(lease, (await store.GetExecutionAsync(current.Id))?.Lease);
+        Assert.Equal("LeaseExpiredUncertain", (await store.GetExecutionAsync(old.Id))?.RecoveryState);
+        Assert.All(fixture.Logger.Events, entry => Assert.DoesNotContain("private-issue", entry.Message));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("ready", null, "eligible work awaiting assignment; Worker capacity available")]
+    [InlineData("not-ready", "worker-not-ready", "compatible Workers are offline or not ready")]
+    [InlineData("disabled", "scheduling-paused", "compatible Workers are disabled or draining")]
+    [InlineData("incompatible", "worker-incompatible", "no compatible worker")]
+    [InlineData("project-unavailable", "project-capacity-not-advertised", "project-capacity-not-advertised")]
+    [InlineData("slots-pending", "worker-configuration-pending", "worker-configuration-pending")]
+    [InlineData("full", "worker-capacity", "compatible workers currently at capacity")]
+    [InlineData("request-disabled", "worker-disabled-or-no-capacity", "compatible Workers are not accepting assignments")]
+    [InlineData("project-disabled", "project-disabled-or-missing", "project is disabled")]
+    [InlineData("managed-blocked", "managed-eligibility-blocked", "work is blocked by managed eligibility")]
+    [InlineData("stale", "worker-not-ready", "compatible Workers are offline or not ready")]
+    [InlineData("inventory-not-ready", "worker-not-ready", "compatible Workers are offline or not ready")]
+    public async Task AdmissionExplainsReadinessCompatibilityAndCapacityWithoutPollNoise(string scenario, string? reason, string pending)
+    {
+        using var fixture = new Fixture();
+        var (project, worker) = await fixture.InitializeAsync();
+        var store = fixture.Store;
+        var execution = await store.EnqueueExecutionAsync(new(project.Id, new("issue", "11", Title: "secret=private-issue")));
+        var request = Request(project.Id, worker);
+        var capabilities = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(worker)).Capabilities;
+        if (scenario is "not-ready" or "incompatible" or "full")
+            await store.HeartbeatWorkerAsync(new(2, worker, "1", scenario == "not-ready" ? "not-ready" : "running",
+                scenario == "full" ? 1 : 0, 1, scenario == "incompatible" ? [] : capabilities, [], "synchronized"));
+        if (scenario == "stale") fixture.Clock.Advance(TimeSpan.FromSeconds(91));
+        if (scenario == "inventory-not-ready")
+            await store.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 1, capabilities, [], CapabilityInventory: []));
+        if (scenario == "project-disabled") await store.UpdateProjectLifecycleAsync(project.Id, false, project.Revision);
+        if (scenario == "managed-blocked")
+            await store.UpdateManagedEligibilityAsync(execution.Id, new("blocked", ["secret=private-issue"], fixture.Clock.GetUtcNow()));
+        if (scenario == "request-disabled") request = request with { WorkerEnabled = false };
+        if (scenario == "disabled") await store.SetWorkerSchedulingPolicyAsync(worker, WorkerSchedulingPolicy.Disabled);
+        if (scenario == "slots-pending") await store.UpdateWorkerConfigurationAsync(worker, "Worker", 1, 1, workerExecutionSlots: 2);
+        if (scenario == "project-unavailable") request = request with { ProjectCapacities = new Dictionary<string, int> { [project.Id] = 0 } };
+        if (scenario == "ready")
+        {
+            Assert.Equal(pending, Assert.Single(await store.GetExecutionsAsync()).PendingReason);
+            Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+            return;
+        }
+        for (var poll = 0; poll < 4; poll++)
+        {
+            var response = await store.RequestAssignmentAsync(request);
+            Assert.False(response.HasWork);
+            Assert.Equal(reason, response.Reason);
+        }
+        Assert.Equal(pending, Assert.Single(await store.GetExecutionsAsync()).PendingReason);
+        var decision = Assert.Single(fixture.Logger.Events, entry => entry.Reason == reason);
+        Assert.Equal(worker, decision.Fields["WorkerId"]);
+        Assert.True(decision.Message.Length < 1000);
+        Assert.DoesNotContain("private-issue", decision.Message);
+        Assert.Null(decision.Exception);
+        // A different decision is visible immediately, then repeated idle polls stay quiet.
+        await store.RequestAssignmentAsync(request with { WorkerEnabled = false });
+        await store.RequestAssignmentAsync(request with { WorkerEnabled = false });
+        Assert.Single(fixture.Logger.Events, entry => entry.Reason == "worker-disabled-or-no-capacity");
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ProjectLimitAndIdleDecisionsAreLoggedOnceAndAdvertisementObservationsExpire()
+    {
+        using var fixture = new Fixture();
+        var (project, worker) = await fixture.InitializeAsync();
+        var store = fixture.Store;
+        var capabilities = Assert.IsType<WorkerRegistrationResponse>(await store.GetWorkerAsync(worker)).Capabilities;
+        await store.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 2, capabilities, []));
+        var limited = await store.UpdateProjectAsync(project.Id,
+            new(project.Name, project.Repository, project.DefaultBranch, project.Description, MaxParallelTasks: 1), project.Revision);
+        Assert.NotNull(limited);
+        var request = Request(project.Id, worker) with { AvailableCapacity = 2, ProjectCapacities = new Dictionary<string, int> { [project.Id] = 2 } };
+        await store.RequestAssignmentAsync(request);
+        await store.RequestAssignmentAsync(request);
+        Assert.Single(fixture.Logger.Events, entry => entry.Reason == "no-eligible-work");
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        Assert.True((await store.RequestAssignmentAsync(request)).HasWork);
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "2")));
+        Assert.Equal("project-capacity", (await store.RequestAssignmentAsync(request)).Reason);
+        Assert.Equal("project-capacity", (await store.RequestAssignmentAsync(request)).Reason);
+        Assert.Single(fixture.Logger.Events, entry => entry.Reason == "project-capacity");
+        Assert.Equal("project-capacity", Assert.Single(await store.GetExecutionsAsync(), item => item.State == "Queued").PendingReason);
+        await store.UpdateProjectAsync(project.Id,
+            new(project.Name, project.Repository, project.DefaultBranch, project.Description), limited.Revision);
+        await store.RequestAssignmentAsync(request with { ProjectCapacities = new Dictionary<string, int>() });
+        Assert.Equal("project-capacity-not-advertised", Assert.Single(await store.GetExecutionsAsync(), item => item.State == "Queued").PendingReason);
+        fixture.Clock.Advance(TimeSpan.FromSeconds(91));
+        await store.HeartbeatWorkerAsync(new(2, worker, "1", "running", 0, 2, capabilities, []));
+        Assert.Equal("eligible work awaiting assignment; Worker capacity available",
+            Assert.Single(await store.GetExecutionsAsync(), item => item.State == "Queued").PendingReason);
+    }
+
     private static WorkerAssignmentRequest Request(string project, string worker) => new(worker, true, 1,
         new Dictionary<string, int> { [project] = 1 });
 

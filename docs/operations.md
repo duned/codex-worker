@@ -74,4 +74,28 @@ For Worker maintenance, request local drain and wait for completion before clean
 | Queued work stays pending | Project/Worker enablement, readiness, requirements, slots/capacity, Issue labels/blockers and authoritative lease/reconciliation state. |
 | Uncertain completion/update | Inspect service/history and remote Git evidence before retrying; do not rerun integrated implementation. |
 
+Managed assignment admission checks the Worker's advertised project capacities, current
+readiness and scheduling policy, unresolved update fences, slot synchronization,
+unacknowledged assignments, project requirements, Issue reservations and fleet-wide
+project concurrency before creating a generation-fenced lease. GitHub eligibility is
+rechecked before returning the assignment. A running Worker with spare heartbeat
+capacity can still be waiting on one of these checks. Queued execution pending reasons
+distinguish compatibility, readiness/policy, project capacity and capacity available
+while awaiting assignment. Recent project-capacity advertisements are explanatory
+observations only, expire with heartbeat freshness and are lost on Server restart.
+The structured Server `assignment` decision reports a bounded reason code when a
+Worker's no-assignment reason changes; unchanged polling does not repeat the event.
+Idle `no-eligible-work` is Debug; admission blockers are Information.
+
+A reproduced reservation failure involved a retained `LeaseExpiredUncertain`
+execution followed by a project repository edit and an eligible same-numbered Issue
+in the new repository. Reservation scanning previously used only project/type/number,
+while candidate admission checked the repository URL. The old reservation prevented
+the new Issue from being assigned despite spare capacity. Reservation scanning now
+uses the same repository validation as admission; the uncertain execution and its
+reconciliation requirement remain intact. The regression
+`UncertainIssueFromPreviousRepositoryDoesNotReserveCurrentRepositoryIssue` covers this
+sequence and verifies the new lease. This reproduces queued work with spare capacity;
+it does not establish that the historical incident involved a repository edit.
+
 Use bounded request/execution IDs to correlate journals. Keep tokens, environment contents and raw process output out of incident reports. Detailed safe diagnostics are in [Worker administration](worker-local-administration.md), [Server administration](server-local-administration.md) and [HTTPS recovery](remote-https-deployment.md#upgrade-recovery-and-bounded-rejection-diagnostics). Optional features: [Telegram](worker-telegram-settings.md), [guided enrollment](worker-onboarding.md), [dashboard Worker updates](worker-dashboard-updates.md), and [standalone planning CLI](work-execution-toolbox.md).
