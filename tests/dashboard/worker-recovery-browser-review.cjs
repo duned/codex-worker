@@ -19,16 +19,19 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
     let blocked = true, recovered = false;
     const worker = () => ({ ...props.observations[0], workerId, schedulingPolicy: recovered ? 'Enabled' : 'Draining',
       schedulingBlocker: recovered ? null : 'worker-operation-unresolved', activeExecutions: 0, activeAssignments: 0,
+      lifecycleState: 'stopped', availability: 'offline', availableCapacity: 0,
       workerVersion: '0.15.0', capabilities: [{ type: 'protocol', name: 'worker-restart-v1' }] });
-    const operation = () => ({ operationId: 'b'.repeat(32), workerId, state: recovered ? 'succeeded' : 'failed',
+    const operation = () => ({ operationId: 'b'.repeat(32), workerId, state: 'failed',
+      drainReleasedAtUtc: recovered ? new Date(props.now).toISOString() : null,
       restart: true, originalVersion: '0.15.0', expectedVersion: '0.15.0', diagnostic: 'timeout-inspect-service-and-journal-before-retry', recovery: {
-        reportedVersion: '0.15.1', checkedAtUtc: new Date(props.now).toISOString(), schedulingBlocked: !recovered, eligible: !blocked,
+        reportedVersion: '0.15.1', checkedAtUtc: new Date(props.now).toISOString(), schedulingBlocked: !recovered, eligible: false, releaseDrainEligible: !blocked && !recovered,
         checks: [{ code: 'fresh-heartbeat', satisfied: true, description: 'Worker heartbeat is fresh.', nextStep: 'Restore the connection.' },
-          { code: 'configuration-synchronized', satisfied: !blocked, description: 'Managed configuration is synchronized.', nextStep: 'Resolve configuration errors and wait for synchronization.' },
-          ...['Operation has failed or timed out.', 'Worker lifecycle is running.', 'Worker reports the expected version.',
-            'No active Server assignments.', 'No active Server leases.', 'Worker reports no active executions.',
-            'Required capabilities are present.', 'Heartbeat was received after the operation started.']
-            .map((description, index) => ({ code: `ready-${index}`, satisfied: true, description, nextStep: '' }))]
+          { code: 'no-active-executions', satisfied: !blocked, description: 'Worker reports no active executions.', nextStep: 'Wait for an idle heartbeat.' },
+          { code: 'running-lifecycle', satisfied: false, description: 'Worker lifecycle is running.', nextStep: 'Inspect the Worker service.' },
+          ...[['failed-operation', 'Operation has failed or timed out.'],
+            ['no-active-assignments', 'No active Server assignments.'], ['no-active-leases', 'No active Server leases.'],
+            ['post-operation-heartbeat', 'Heartbeat was received after the operation started.']]
+            .map(([code, description]) => ({ code, satisfied: true, description, nextStep: '' }))]
       } });
     await page.route('https://dashboard.test/**', async route => {
       const request = route.request(), pathname = new URL(request.url()).pathname;
@@ -38,7 +41,8 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
       if (pathname === '/api/v1/events/stream') return route.fulfill({ status: 503 });
       if (request.method() !== 'GET') {
         writes.push(pathname);
-        assert.equal(pathname, `${endpoint}/update/reconcile`, 'Recovery never requests another restart.');
+        assert.equal(pathname, `${endpoint}/update/release-drain`, 'Recovery only releases the Server drain.');
+        assert.deepEqual(request.postDataJSON(), { operationId: 'b'.repeat(32) });
         assert.equal(new URL(request.url()).searchParams.get('nodeQuiescent'), 'true');
         assert.equal(request.headers()['x-codex-csrf'], 'fixture-csrf');
         if (blocked) return route.fulfill({ status: 409, json: { reason: 'worker-update-recovery-readiness-required', recovery: operation().recovery } });
@@ -50,7 +54,7 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
         '/api/v1/workers': [worker()], [endpoint]: worker(), [`${endpoint}/update/recovery`]: operation(),
         [`${endpoint}/diagnostics`]: { ...props.diagnostics, canActivate: true, activationBlockingReasons: [], capabilityObservationsCurrent: true },
         [`${endpoint}/credential-access`]: { status: 'active' }, [`${endpoint}/journal`]: { state: 'ready', lines: [] },
-        '/api/v1/nodes': [{ ...props.nodes[0], id: workerId }], [`/api/v1/nodes/${workerId}/commands`]: [],
+        '/api/v1/nodes': [{ ...props.nodes[0], id: workerId, connectivity: 'disconnected', executionReadiness: 'not-ready' }], [`/api/v1/nodes/${workerId}/commands`]: [],
         '/api/v1/projects': props.projects, '/api/v1/executions': [], '/api/v1/provisioning': []
       };
       assert.ok(Object.hasOwn(fixtures, pathname), `Unexpected request ${pathname}`);
@@ -58,13 +62,13 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto(`https://dashboard.test/workers/${workerId}`);
-    const action = page.getByRole('button', { name: 'Reconcile and restore scheduling' });
+    const action = page.getByRole('button', { name: 'Restore Server scheduling policy' });
     await action.waitFor();
     await page.getByText('Latest heartbeat version', { exact: true }).waitFor();
     await page.getByText('0.15.1', { exact: true }).waitFor();
     assert.equal(await action.isDisabled(), true);
     await page.getByText('Paused by operation', { exact: true }).waitFor();
-    await page.getByText('Resolve configuration errors and wait for synchronization.', { exact: true }).waitFor();
+    await page.getByText('Wait for an idle heartbeat.', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Refresh recovery checks', exact: true }).click();
     assert.equal(writes.length, 0, 'Status refresh is read-only.');
     for (const width of [1440, 375]) {
@@ -74,13 +78,16 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
     }
     blocked = false;
     await page.getByRole('button', { name: 'Refresh recovery checks', exact: true }).click();
-    await page.getByText('Resolve configuration errors and wait for synchronization.', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByText('Wait for an idle heartbeat.', { exact: true }).waitFor({ state: 'hidden' });
     assert.equal(await action.isDisabled(), true, 'Node quiescence still needs operator confirmation.');
-    await page.getByRole('checkbox', { name: /I inspected the node service/ }).focus();
+    await page.getByRole('checkbox', { name: 'I confirm the node is quiescent and no restart is pending.' }).focus();
     await page.keyboard.press('Space');
     await action.click();
-    await page.getByText('Recovery completed. Scheduling follows the restored policy.', { exact: true }).waitFor();
-    await page.getByText('Active', { exact: true }).first().waitFor();
+    await page.getByText('Server scheduling policy restored. The restart remains failed; Worker service recovery has not been confirmed.', { exact: true }).waitFor();
+    await page.getByText('failed: timeout-inspect-service-and-journal-before-retry', { exact: true }).waitFor();
+    await page.getByText('Disconnected', { exact: true }).waitFor();
+    await page.getByText('not-ready', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Restore Server scheduling policy' }).count(), 0);
     assert.equal(writes.length, 1);
     assert.deepEqual(errors, []);
     await page.setViewportSize({ width: 1440, height: 1000 });
