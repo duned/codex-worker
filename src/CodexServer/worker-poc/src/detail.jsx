@@ -159,7 +159,7 @@ function WorkerOperationalStatus({ worker, node, diagnostics }) {
   const statuses = workerDetailStatuses(worker, node, diagnostics);
   const connection = statuses.connection.state === 'Connected' ? t('workers.connected')
     : statuses.connection.state === 'Disconnected' ? t('workers.disconnected') : t('shared.unknown');
-  const scheduling = statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
+  const scheduling = statuses.scheduling.state === 'Paused' ? t('workers.recoveryPaused') : statuses.scheduling.state === 'Active' ? t('workers.schedulingActive')
     : statuses.scheduling.state === 'Inactive' ? t('workers.schedulingInactive')
       : statuses.scheduling.state === 'Draining' ? t('workers.schedulingDraining') : t('shared.unknown');
   const readiness = currentWorkerExecutionReadiness(worker, node);
@@ -188,7 +188,7 @@ function WorkerOperationalStatus({ worker, node, diagnostics }) {
     <div className="poc-operational-status-heading"><h2 id="poc-operational-status-heading">{t('workers.operationalStatus')}</h2><p>{t('workers.operationalStatusSummary')}</p></div>
     <div className="poc-worker-status-grid">
       <WorkerStatusCard label={t('workers.connection')} value={connection} tone={statuses.connection.tone} detail={connectionDetail} />
-      <WorkerStatusCard label={t('workers.schedulingStatus')} value={scheduling} tone={statuses.scheduling.tone} detail={scheduling === t('workers.schedulingActive') ? t('workers.acceptingAssignments') : scheduling === t('workers.schedulingDraining') ? t('workers.noNewAssignments') : t('workers.schedulingPolicyUnavailable')} />
+      <WorkerStatusCard label={t('workers.schedulingStatus')} value={scheduling} tone={statuses.scheduling.tone} detail={worker.schedulingBlocker === 'worker-operation-unresolved' ? t('workers.recoverySchedulingPaused') : scheduling === t('workers.schedulingActive') ? t('workers.acceptingAssignments') : scheduling === t('workers.schedulingDraining') ? t('workers.noNewAssignments') : t('workers.schedulingPolicyUnavailable')} />
       <WorkerStatusCard label={t('workers.executionReadiness')} value={readinessLabel} tone={readiness === 'ready' ? 'success' : readiness === 'not-ready' ? 'error' : 'gray'} detail={readinessDetail} />
       <WorkerStatusCard label={t('workers.managedSettings')} value={configurationLabel} tone={settingsTone} detail={settingsDetail} />
       <WorkerStatusCard label={t('workers.workSlots')} value={`${occupied} / ${capacity}`} tone={slots.available === 0 ? 'warning' : slots.available == null ? 'gray' : 'success'} detail={slotDetail} />
@@ -522,7 +522,7 @@ function WorkerInformationPanel({ worker, diagnostics, administration, readOnly,
   </TableCard.Root>;
 }
 
-export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, journal = null, advanced = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus, restartMessage = null }) {
+export function WorkerDetail({ id, observations, loading, diagnostics = null, nodes = null, executions = null, projects = null, administration = null, readOnly = false, administrationHref = null, workersHref = '/workers', now = Date.now(), preparation = null, provisioning = null, restart = null, recovery = null, journal = null, advanced = null, statusRefreshing = false, statusMessage = null, statusUpdatedAt = null, onRefreshStatus, restartMessage = null }) {
   useLanguage();
   const [actionsOpen, setActionsOpen] = useState(false);
   const worker = observations?.find(item => item.workerId === id);
@@ -539,6 +539,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
     </> : <>
       <WorkerHeading worker={worker} now={now} readOnly={readOnly} administrationHref={administrationHref} workersHref={workersHref} administration={administration} restart={restart} statusRefreshing={statusRefreshing} statusMessage={statusMessage} statusUpdatedAt={statusUpdatedAt ?? observations?.updatedAt} onRefreshStatus={onRefreshStatus} actionsOpen={actionsOpen} onActionsOpenChange={setActionsOpen} />
       <WorkerOperationalStatus worker={worker} node={node} diagnostics={diagnostics} />
+      {recovery}
       {actionNotice && <div className="poc-worker-action-toast"><Notice error={actionNotice.failed}>{actionNotice.text}</Notice></div>}
       <div className="poc-worker-layout">
         <div className="poc-worker-main poc-main">

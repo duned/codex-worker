@@ -7,7 +7,12 @@ public sealed record WorkerUpdateRequest(string OperationId, bool Restart = fals
 public sealed record WorkerUpdateOperation(string OperationId, string WorkerId, string State,
     DateTimeOffset RequestedAtUtc, DateTimeOffset DeadlineUtc, string PriorPolicy, bool OwnsDrain,
     string OriginalVersion, string? ExpectedVersion = null, DateTimeOffset? StartedAtUtc = null,
-    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false, bool Restart = false, string? OriginalInstanceId = null);
+    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false, bool Restart = false, string? OriginalInstanceId = null, WorkerUpdateRecovery? Recovery = null);
+public sealed record WorkerUpdateRecovery(bool SchedulingBlocked, DateTimeOffset CheckedAtUtc, IReadOnlyList<WorkerUpdateRecoveryCheck> Checks)
+{
+    public bool Eligible => Checks.All(check => check.Satisfied);
+}
+public sealed record WorkerUpdateRecoveryCheck(string Code, bool Satisfied, string Description, string NextStep);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkerUpdatePreparation(string Version);
 public static class WorkerUpdateProtocol

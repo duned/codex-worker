@@ -56,3 +56,21 @@ This explicit acknowledgement checks current Server readiness and assignment/lea
 counts; it does not execute an installer. Failure diagnostics remain in the retained
 operation. Concurrent policy changes still prevent automatic restoration. Merely
 changing scheduling policy cannot bypass an unresolved update's admission fence.
+
+The Worker detail page identifies this admission fence as **Paused by operation**,
+separately from the configured scheduling policy and connection status. Its recovery
+panel shows the operation state, timeout uncertainty, and timestamped readiness
+checklist. **Refresh recovery checks** reads
+`GET /api/v1/workers/{workerId}/update/recovery` without advancing the operation,
+changing policy, or recording a timeout. Each unmet prerequisite includes a stable
+code and a sanitized next step. Unsafe reconciliation returns HTTP 409 with
+`reason` and the same current `recovery` checklist.
+
+After inspecting the node service and journal, confirm that no restart/updater
+process remains active, then select **Reconcile and restore scheduling**. The Server
+rechecks readiness under the assignment admission gate. Fresh post-operation
+heartbeat, running lifecycle, synchronized configuration, expected version,
+required capabilities, and no active assignments, leases or executions are required.
+Successful reconciliation releases the operation fence and restores only a temporary
+drain still owned by the operation; intentional disabled/draining policies remain.
+Queued work can then be assigned under the normal eligibility and capacity rules.

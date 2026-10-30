@@ -8,6 +8,13 @@ public static partial class ServerApplication
 {
     private static void MapWorkerUpdates(WebApplication app)
     {
+        app.MapGet("/api/v1/workers/{workerId}/update/recovery", async (string workerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            try { return Results.Ok(await store.InspectWorkerUpdateAsync(workerId, context.RequestAborted)); }
+            catch (InvalidDataException) { return Results.BadRequest(new { reason = "invalid-worker-update" }); }
+        });
         app.MapGet("/api/v1/workers/{workerId}/update", async (string workerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
@@ -30,6 +37,8 @@ public static partial class ServerApplication
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (!nodeQuiescent) return Results.Conflict(new { reason = "inspect-quiescent-node-before-recovery" });
             try { return Results.Ok(await store.ReconcileWorkerUpdateAsync(workerId, context.RequestAborted)); }
+            catch (InvalidDataException) { return Results.BadRequest(new { reason = "invalid-worker-update" }); }
+            catch (WorkerUpdateRecoveryException ex) { return Results.Conflict(new { reason = ex.Message, recovery = ex.Recovery }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
         });
         app.MapPost("/api/v1/workers/{workerId}/update/request", async (string workerId, HttpContext context, IRegistryStore store) =>

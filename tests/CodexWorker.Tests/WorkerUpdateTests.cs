@@ -2,7 +2,13 @@ namespace CodexWorker.Tests;
 
 using CodexProvisioning;
 using CodexServer;
+using Microsoft.Extensions.DependencyInjection;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Net.Sockets;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class WorkerUpdateTests
 {
     private sealed class TemporaryDirectory : IDisposable
@@ -28,6 +34,121 @@ public sealed class WorkerUpdateTests
         await store.RegisterWorkerAsync(new(2, worker, "Worker", "1.0.0", "test", 2, Capabilities));
         await Beat(store, worker);
         return (store, worker);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task RecoveryApiReturnsActionableConflictAndRechecksBeforeRestoringPolicy()
+    {
+        using var temporary = new TemporaryDirectory();
+        var prior = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "update-recovery-test-management");
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+            listener.Stop();
+            await using var app = await ServerApplication.BuildAsync([
+                $"--Server:ListenUrl={url}", $"--Server:DatabasePath={Path.Combine(temporary.Path, "server.db")}",
+                "--Logging:LogLevel:Default=Warning"]);
+            await app.StartAsync();
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var worker = Guid.NewGuid().ToString("N");
+            await store.RegisterWorkerAsync(new(2, worker, "Worker", "1.0.0", "test", 2, Capabilities));
+            await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, Capabilities, [], ConfigurationSynchronization: "error"));
+            var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+            await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, fail: true);
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            var path = $"/api/v1/workers/{worker}/update";
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"{path}/recovery")).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "update-recovery-test-management");
+            var status = await client.GetFromJsonAsync<WorkerUpdateOperation>($"{path}/recovery");
+            Assert.False(status?.Recovery?.Eligible);
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync($"{path}/reconcile?nodeQuiescent=false", null)).StatusCode);
+            var rejected = await client.PostAsync($"{path}/reconcile?nodeQuiescent=true", null);
+            Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+            using var payload = System.Text.Json.JsonDocument.Parse(await rejected.Content.ReadAsStringAsync());
+            Assert.Equal("worker-update-recovery-readiness-required", payload.RootElement.GetProperty("reason").GetString());
+            var checks = payload.RootElement.GetProperty("recovery").GetProperty("checks").EnumerateArray().ToArray();
+            Assert.Contains(checks, check => check.GetProperty("code").GetString() == "configuration-synchronized" && !check.GetProperty("satisfied").GetBoolean());
+            Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+            await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, Capabilities, [], ConfigurationSynchronization: "synchronized"));
+            var recovered = await client.PostAsync($"{path}/reconcile?nodeQuiescent=true", null);
+            Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+            Assert.Equal("succeeded", (await recovered.Content.ReadFromJsonAsync<WorkerUpdateOperation>())?.State);
+            Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+            Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task RecoveryChecklistIsReadOnlyAndExplainsAllCurrentBlockers()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var path = Path.Combine(temporary.Path, "registry.db");
+        var (store, worker) = await Create(path, clock);
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+        await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, "1.1.0");
+        clock.Now = operation.DeadlineUtc.AddDays(1);
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "not-ready", 1, 2, [], [], ConfigurationSynchronization: "error"));
+        var markers = (await store.GetResourceStatusAsync()).Freshness;
+        var status = Assert.IsType<WorkerUpdateOperation>(await store.InspectWorkerUpdateAsync(worker));
+        Assert.Equal(markers, (await store.GetResourceStatusAsync()).Freshness);
+        Assert.Equal("failed", status.State);
+        var recovery = Assert.IsType<WorkerUpdateRecovery>(status.Recovery);
+        Assert.True(recovery.SchedulingBlocked);
+        Assert.False(recovery.Eligible);
+        Assert.Equal(new[] { "running-lifecycle", "configuration-synchronized", "expected-version", "no-active-executions", "required-capabilities" },
+            recovery.Checks.Where(check => !check.Satisfied).Select(check => check.Code));
+        // Inspection must not even persist an elapsed deadline as a failure.
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT operation_json FROM worker_updates WHERE operation_id=$id";
+        command.Parameters.AddWithValue("$id", operation.OperationId);
+        var retained = System.Text.Json.JsonSerializer.Deserialize<WorkerUpdateOperation>((string)(await command.ExecuteScalarAsync() ?? ""));
+        Assert.Equal("updating", retained?.State);
+        var rejected = await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
+        Assert.Equal(recovery.Checks, rejected.Recovery.Checks);
+        clock.Now += TimeSpan.FromMinutes(2);
+        var stale = Assert.IsType<WorkerUpdateOperation>(await store.InspectWorkerUpdateAsync(worker));
+        Assert.Contains(stale.Recovery?.Checks ?? [], check => check.Code == "fresh-heartbeat" && !check.Satisfied);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("Enabled")]
+    [InlineData("Disabled")]
+    [InlineData("Draining")]
+    public async Task ReconciliationRestoresPriorPolicyAndResumesEligibleQueueWithoutReplay(string policy)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        await store.SetWorkerSchedulingPolicyAsync(worker, policy);
+        var project = await store.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+        await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, fail: true);
+        var status = Assert.IsType<WorkerUpdateOperation>(await store.InspectWorkerUpdateAsync(worker));
+        Assert.True(status.Recovery?.Eligible);
+        Assert.Equal("worker-operation-unresolved", (await store.GetWorkerAsync(worker))?.SchedulingBlocker);
+        Assert.Contains("unresolved Worker", (await store.GetExecutionsAsync()).Single().PendingReason);
+        var capacities = new Dictionary<string, int> { [project.Id] = 1 };
+        Assert.Equal("worker-operation-unresolved", (await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).Reason);
+        Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
+        Assert.Null((await store.GetWorkerAsync(worker))?.SchedulingBlocker);
+        Assert.Equal(policy, (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        Assert.Equal(policy == "Enabled", (await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
     }
 
     [Trait("TestType", "Integration")]
@@ -152,7 +273,7 @@ public sealed class WorkerUpdateTests
         await store.SetWorkerSchedulingPolicyAsync(worker, "Enabled");
         var assignment = await store.RequestAssignmentAsync(new(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 }));
         Assert.False(assignment.HasWork);
-        Assert.Equal("scheduling-paused", assignment.Reason);
+        Assert.Equal("worker-operation-unresolved", assignment.Reason);
         await Beat(store, worker);
         Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));
     }
@@ -174,6 +295,9 @@ public sealed class WorkerUpdateTests
             "local-execution", "Running", "Codex", clock.Now, Generation: lease.Generation));
         await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
         Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        var recovery = (await store.InspectWorkerUpdateAsync(worker))?.Recovery;
+        Assert.Contains(recovery?.Checks ?? [], check => check.Code == "no-active-assignments" && !check.Satisfied);
+        Assert.Contains(recovery?.Checks ?? [], check => check.Code == "no-active-leases" && !check.Satisfied);
         await store.ReportExecutionAsync(assignment.ServerExecutionId, new(worker, assignment.AssignmentId,
             "local-execution", "Completed", CompletedAtUtc: clock.Now, Generation: lease.Generation));
         Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));

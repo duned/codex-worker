@@ -27,7 +27,7 @@ test('worker status reload uses authenticated reads and does not invoke a mutati
 test('restart status checks read existing operation and service status without replaying restart', async () => {
   const paths = restartStatusPaths('worker id/with spaces');
   assert.deepEqual(paths, {
-    operation: '/api/v1/workers/worker%20id%2Fwith%20spaces/update',
+    operation: '/api/v1/workers/worker%20id%2Fwith%20spaces/update/recovery',
     worker: '/api/v1/workers/worker%20id%2Fwith%20spaces'
   });
 
@@ -41,7 +41,7 @@ test('restart status checks read existing operation and service status without r
   assert.match(request, /operationId: id\.current, restart: true/);
   assert.doesNotMatch(request, /runtime\.read|refetch\(/);
   assert.match(source, /const actionDisabled = mutation\.isPending \|\| mutation\.locked \|\| operation\.fetching \|\| \(operation\.hasError && current === undefined\) \|\| !restartAvailable\(worker, current\)/);
-  assert.match(source, /const statusCheckAvailable = Boolean\(current\?\.restart \|\| operation\.hasError \|\| mutation\.isError \|\| mutation\.locked \|\| requestMessage\)/);
+  assert.match(source, /const statusCheckAvailable = Boolean\(current \|\| operation\.hasError \|\| mutation\.isError \|\| mutation\.locked \|\| requestMessage\)/);
   assert.match(source, /<Button color="primary" aria-describedby="poc-restart-state" isDisabled=\{actionDisabled\}/);
   assert.match(source, /statusCheckAvailable && <div/);
   assert.match(source, /onPress=\{\(\) => \{ void checkStatus\(\); \}\}/);

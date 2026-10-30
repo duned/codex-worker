@@ -6,6 +6,7 @@ import { workers, nodes as validateNodes, projects as validateProjects, executio
 import type { AdministrationPresentation } from './WorkerPocPage';
 import { Notice } from '../../shared/Presentation';
 import { canonicalPath } from '../../app/routes';
+import { WorkerRecoveryPanel } from './WorkerRecovery';
 import { WorkerRestart } from './WorkerRestart';
 import { WorkerJournal } from './WorkerJournal';
 import { WorkerAdvanced } from './WorkerAdvanced';
@@ -76,6 +77,10 @@ export function WorkerDetailPage({ workerId, administration }: { workerId?: stri
       preparation={administration && observation ? <WorkerPreparation worker={observation} diagnostics={diagnostics.data} projects={projects.data} node={nodes.data?.find(item => item.id === resourceId)} /> : undefined}
       provisioning={(capabilityId: string) => <NodeProvisioning key={`${resourceId}-${capabilityId}`} nodeId={resourceId} capabilityId={capabilityId} readOnly={!administration} repository={projects.data?.find(item => item.id === projectId)?.repository} />}
       restart={administration && observation ? <WorkerRestart key={resourceId} worker={observation} onStatusChecked={refreshAfterRestartCheck} onNotification={reportRestartNotification} /> : undefined}
+      recovery={administration && observation ? <WorkerRecoveryPanel key={resourceId} worker={observation} onRecovered={() => {
+        reportRestartNotification({ text: t('workers.recoverySuccess'), failed: false });
+        refreshAfterRestartCheck();
+      }} /> : undefined}
       journal={observation ? <WorkerJournal workerId={resourceId} openRequest={journalOpenRequest} /> : undefined}
       advanced={administration && observation ? <WorkerAdvanced worker={observation} diagnostics={diagnostics.data} /> : undefined}
       loading={!observations.data && !observations.error} now={Date.now()} administration={detailAdministration} readOnly={!administration}

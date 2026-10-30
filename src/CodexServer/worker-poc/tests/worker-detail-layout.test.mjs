@@ -252,3 +252,9 @@ test('More actions reuses the Edit worker side-panel behavior and responsive she
   assert.match(dialogs, /lg:w-\[60vw\] lg:max-w-5xl/);
   assert.match(dialogs, /React Aria owns focus containment\/restoration, Escape and outside dismissal/);
 });
+
+test('unresolved operation overrides Enabled scheduling without conflating connection or intentional drain', () => {
+  const html = render({ worker: { ...worker, schedulingPolicy: 'Enabled', schedulingBlocker: 'worker-operation-unresolved' } });
+  assert.match(html, /Paused by operation/);
+  assert.match(html, /New work is paused by an unresolved Worker restart\/update operation/);
+});

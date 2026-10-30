@@ -17,7 +17,7 @@ export function WorkerRestart({ worker, onStatusChecked, onNotification }: { wor
   const [requestMessage, setRequestMessage] = useState<{ text: string; failed: boolean } | null>(null);
   const path = `/api/v1/workers/${encodeURIComponent(worker.workerId)}/update`;
   const paths = restartStatusPaths(worker.workerId);
-  const operation = useApiRead(path, workerUpdate);
+  const operation = useApiRead(paths.operation, workerUpdate);
   const id = useRef(crypto.randomUUID().replaceAll('-', ''));
   const guard = useRef(false);
   const checkGuard = useRef(false);
@@ -97,7 +97,7 @@ export function WorkerRestart({ worker, onStatusChecked, onNotification }: { wor
       : current?.restart ? t(`workers.restartState.${current.state}`)
         : ready ? t('workers.restartReady') : t('workers.restartUnavailable');
   const actionDisabled = mutation.isPending || mutation.locked || operation.fetching || (operation.hasError && current === undefined) || !restartAvailable(worker, current);
-  const statusCheckAvailable = Boolean(current?.restart || operation.hasError || mutation.isError || mutation.locked || requestMessage);
+  const statusCheckAvailable = Boolean(current || operation.hasError || mutation.isError || mutation.locked || requestMessage);
   return <section className="worker-editor-section" aria-label={t('workers.restart')}>
     <div className="worker-editor-section-heading"><h2>{t('workers.restart')}</h2></div>
     <div className="worker-editor-card">

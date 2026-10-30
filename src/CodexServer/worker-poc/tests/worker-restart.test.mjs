@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { restartAvailable, restartPending } from '../src/features/workers/worker-restart-model.mjs';
+import { restartAvailable, restartPending, recoveryAvailable } from '../src/features/workers/worker-restart-model.mjs';
 const worker = { availability: 'online', capabilities: [{ type: 'protocol', name: 'worker-restart-v1' }] };
 test('restart requires online Worker with the controlled restart protocol', () => {
   assert.equal(restartAvailable(worker, null), true);
@@ -14,4 +14,15 @@ test('pending operations and failed operations prevent another dispatch', () => 
   }
   assert.equal(restartAvailable(worker, { state: 'failed' }), false);
   assert.equal(restartAvailable(worker, { state: 'succeeded' }), true);
+});
+
+test('recovery requires authoritative eligibility and confirmed node quiescence', () => {
+  const operation = { state: 'failed', recovery: { eligible: true } };
+  assert.equal(recoveryAvailable(operation, true), true);
+  assert.equal(recoveryAvailable(operation, false), false);
+  assert.equal(recoveryAvailable({ ...operation, recovery: { eligible: false } }, true), false);
+  for (const state of ['waiting-for-idle', 'updating', 'reconnecting', 'succeeded']) {
+    assert.equal(recoveryAvailable({ ...operation, state }, true), false);
+  }
+  assert.equal(recoveryAvailable(null, true), false);
 });

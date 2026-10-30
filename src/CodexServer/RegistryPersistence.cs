@@ -32,6 +32,7 @@ public interface IRegistryStore
     Task<WorkerRegistrationResponse?> UpdateWorkerConfigurationAsync(string workerId, string displayName, int maximumParallelExecutions,
         long expectedRevision, CancellationToken cancellationToken = default, int? workerExecutionSlots = null, WorkerTelegramConfiguration? telegram = null);
     Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> InspectWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default, bool restart = false);
     Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default);
@@ -449,7 +450,7 @@ public sealed record WorkerRegistrationResponse(int ContractVersion, string Work
     string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null,
     string SchedulingPolicy = WorkerSchedulingPolicy.Enabled, int ActiveAssignments = 0,
     string AuthenticationCredentialStatus = "not-configured", DateTimeOffset? AuthenticationCredentialRevokedAtUtc = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null,
-    int? ConfiguredMaximumCapacity = null, long ConfigurationRevision = 1, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null);
+    int? ConfiguredMaximumCapacity = null, long ConfigurationRevision = 1, int? WorkerExecutionSlots = null, WorkerTelegramConfiguration? Telegram = null, string? SchedulingBlocker = null);
 
 public static class WorkerSchedulingPolicy
 {
@@ -819,7 +820,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             await freshness.ExecuteNonQueryAsync(cancellationToken);
             foreach (var (table, category) in new[] { ("projects", "projects"), ("workers", "workers"),
                 ("execution_requests", "executions"), ("execution_leases", "executions"),
-                ("execution_metadata", "executions"), ("worker_auth_tokens", "workers") })
+                ("execution_metadata", "executions"), ("worker_auth_tokens", "workers"), ("worker_updates", "executions") })
             {
                 foreach (var operation in new[] { "INSERT", "UPDATE", "DELETE" })
                 {
@@ -1088,7 +1089,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (updating || schedulingPolicy != WorkerSchedulingPolicy.Enabled)
         {
             await transaction.CommitAsync(cancellationToken);
-            return NoAssignment("scheduling-paused");
+            return NoAssignment(updating ? "worker-operation-unresolved" : "scheduling-paused");
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
@@ -1688,7 +1689,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (execution.ManagedEligibilityState == "blocked") return "work is blocked by managed eligibility";
         if (execution.ManagedEligibilityState == "unavailable") return "managed eligibility is unavailable";
         var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
-        var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled).ToArray();
+        var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled && worker.SchedulingBlocker is null).ToArray();
+        if (eligible.Length == 0 && compatible.Any(worker => worker.SchedulingBlocker is not null))
+            return "new work is paused by an unresolved Worker restart/update operation";
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
         var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running" &&
@@ -2368,7 +2371,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await using var connection = new SqliteConnection(limit is null ? ConnectionString : new SqliteConnectionStringBuilder(ConnectionString) { Mode = SqliteOpenMode.ReadOnly }.ToString());
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc, w.configured_display_name, w.configured_maximum_capacity, w.configuration_revision, w.worker_execution_slots, w.telegram_json FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.registration_json IS NOT NULL ORDER BY w.worker_id;";
+        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc, w.configured_display_name, w.configured_maximum_capacity, w.configuration_revision, w.worker_execution_slots, w.telegram_json, (SELECT operation_json FROM worker_updates u WHERE u.worker_id=w.worker_id ORDER BY u.rowid DESC LIMIT 1) FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.registration_json IS NOT NULL ORDER BY w.worker_id;";
         if (limit is { } pageSize)
         {
             command.CommandText = command.CommandText.TrimEnd(';') + " LIMIT $limit OFFSET $offset;";
@@ -2384,7 +2387,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
                 reader.IsDBNull(6) ? "not-configured" : reader.IsDBNull(7) ? "active" : "revoked",
                 reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7)),
-                reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt32(11), reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<WorkerTelegramConfiguration>(reader.GetString(12))));
+                reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt32(11), reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<WorkerTelegramConfiguration>(reader.GetString(12))) with { SchedulingBlocker = UpdateSchedulingBlocker(reader) });
         }
         return workers;
     }
@@ -2401,7 +2404,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc, w.configured_display_name, w.configured_maximum_capacity, w.configuration_revision, w.worker_execution_slots, w.telegram_json FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.worker_id = $id AND w.registration_json IS NOT NULL;";
+        command.CommandText = "SELECT w.registration_json, w.registered_at_utc, w.last_seen_at_utc, w.heartbeat_json, w.scheduling_policy, (SELECT COUNT(*) FROM execution_requests e WHERE e.assigned_worker_id=w.worker_id AND e.state IN ('Assigned','Running')), a.worker_id, a.revoked_at_utc, w.configured_display_name, w.configured_maximum_capacity, w.configuration_revision, w.worker_execution_slots, w.telegram_json, (SELECT operation_json FROM worker_updates u WHERE u.worker_id=w.worker_id ORDER BY u.rowid DESC LIMIT 1) FROM workers w LEFT JOIN worker_auth_tokens a ON a.worker_id=w.worker_id WHERE w.worker_id = $id AND w.registration_json IS NOT NULL;";
         command.Parameters.AddWithValue("$id", workerId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
@@ -2410,7 +2413,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4), reader.GetInt32(5),
             reader.IsDBNull(6) ? "not-configured" : reader.IsDBNull(7) ? "active" : "revoked",
             reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7)),
-            reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt32(11), reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<WorkerTelegramConfiguration>(reader.GetString(12)));
+            reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt64(10), reader.IsDBNull(11) ? null : reader.GetInt32(11), reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<WorkerTelegramConfiguration>(reader.GetString(12))) with { SchedulingBlocker = UpdateSchedulingBlocker(reader) };
     }
 
     public async Task<WorkerRegistrationResponse?> UpdateWorkerConfigurationAsync(string workerId, string displayName,
@@ -2457,6 +2460,10 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (affected == 0) return null;
         return await GetWorkerAsync(workerId, cancellationToken);
     }
+
+    private static string? UpdateSchedulingBlocker(SqliteDataReader reader) =>
+        !reader.IsDBNull(13) && JsonSerializer.Deserialize<WorkerUpdateOperation>(reader.GetString(13)) is { State: not "succeeded" }
+            ? "worker-operation-unresolved" : null;
 
     private WorkerRegistrationResponse ToResponse(WorkerRegistrationRequest request, DateTimeOffset registered, DateTimeOffset seen,
         string? heartbeatJson, string schedulingPolicy, int activeAssignments, string authenticationCredentialStatus,

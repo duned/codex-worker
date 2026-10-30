@@ -4,10 +4,18 @@ using System.Text.Json;
 using CodexProvisioning;
 using Microsoft.Data.Sqlite;
 
+public sealed class WorkerUpdateRecoveryException(WorkerUpdateRecovery recovery) : InvalidOperationException("worker-update-recovery-readiness-required")
+{
+    public WorkerUpdateRecovery Recovery { get; } = recovery;
+}
+
 public sealed partial class SqliteRegistryStore
 {
     public Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default) =>
         ChangeWorkerUpdateAsync(workerId, null, "reconcile", null, cancellationToken);
+
+    public Task<WorkerUpdateOperation?> InspectWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default) =>
+        ChangeWorkerUpdateAsync(workerId, null, "inspect", null, cancellationToken);
 
     public Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default) =>
         ChangeWorkerUpdateAsync(workerId, null, "observe", null, cancellationToken);
@@ -37,7 +45,7 @@ public sealed partial class SqliteRegistryStore
         command.Parameters.AddWithValue("$worker", workerId);
         // Same database write gate as assignment admission and scheduling policy changes.
         command.CommandText = "UPDATE workers SET worker_id=worker_id WHERE worker_id=$worker;";
-        await command.ExecuteNonQueryAsync(ct);
+        if (action != "inspect") await command.ExecuteNonQueryAsync(ct);
         if (action is "request" or "restart")
         {
             command.CommandText = "SELECT operation_json FROM worker_updates WHERE operation_id=$operation;";
@@ -70,17 +78,24 @@ public sealed partial class SqliteRegistryStore
         command.CommandText = "SELECT COUNT(*) FROM execution_requests WHERE assigned_worker_id=$worker AND state IN ('Assigned','Running');";
         var assignments = Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
         command.CommandText = "SELECT COUNT(*) FROM execution_leases WHERE worker_id=$worker AND state='Active';";
-        assignments += Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
+        var leases = Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
         var now = _timeProvider.GetUtcNow();
-        var fresh = heartbeat is not null && now - seen <= _staleAfter && heartbeat.LifecycleState != WorkerLifecycleStates.Stopped;
-        var idle = fresh && assignments == 0 && heartbeat?.ActiveExecutions == 0;
+        var heartbeatFresh = heartbeat is not null && now - seen <= _staleAfter;
+        var fresh = heartbeatFresh && heartbeat?.LifecycleState != WorkerLifecycleStates.Stopped;
+        var idle = fresh && assignments == 0 && leases == 0 && heartbeat?.ActiveExecutions == 0;
         if (operation is { State: not ("succeeded" or "failed") } && now >= operation.DeadlineUtc)
             operation = operation with { State = "failed", Diagnostic = "timeout-inspect-service-and-journal-before-retry" };
+        var recovery = RecoveryReadiness(operation, heartbeat, seen, heartbeatFresh, assignments, leases, now);
+        if (action == "inspect")
+        {
+            // Project an expired outcome without advancing or persisting lifecycle state.
+            await transaction.CommitAsync(ct);
+            return operation is null ? null : operation with { Recovery = recovery };
+        }
         if (action == "reconcile")
         {
-            if (operation?.State != "failed" || !idle || heartbeat?.WorkerVersion != (operation.ExpectedVersion ?? operation.OriginalVersion) ||
-                heartbeat.LifecycleState != WorkerLifecycleStates.Running || heartbeat.ConfigurationSynchronization != "synchronized")
-                throw new InvalidOperationException("worker-update-recovery-readiness-required");
+            if (!recovery.Eligible) throw new WorkerUpdateRecoveryException(recovery);
+            if (operation is null || heartbeat is null) throw new InvalidOperationException("worker-update-unavailable");
             // Explicit operator reconciliation only, after inspecting the quiescent local updater.
             // This never dispatches or repeats installation and retains the prior failure diagnostic.
             operation = operation with { State = "updating", InstallerVerified = true,
@@ -155,4 +170,20 @@ public sealed partial class SqliteRegistryStore
         await transaction.CommitAsync(ct);
         return action == "poll" && (operation?.State is not ("waiting-for-idle" or "updating" or "reconnecting") || !idle) ? null : operation;
     }
+    private static WorkerUpdateRecovery RecoveryReadiness(WorkerUpdateOperation? operation,
+        WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now) =>
+        new(operation is { State: not "succeeded" }, now,
+        [
+            new("failed-operation", operation?.State == "failed", "Operation has failed or timed out.", "Wait for the operation to finish or its deadline; inspect the service and journal."),
+            new("fresh-heartbeat", fresh, "Worker heartbeat is fresh.", "Restore the Worker connection and wait for a new heartbeat."),
+            new("running-lifecycle", heartbeat?.LifecycleState == WorkerLifecycleStates.Running, "Worker lifecycle is running.", "Inspect the Worker service and resolve its lifecycle state."),
+            new("configuration-synchronized", heartbeat?.ConfigurationSynchronization == "synchronized", "Managed configuration is synchronized.", "Resolve configuration errors and wait for synchronization."),
+            new("expected-version", heartbeat is not null && heartbeat.WorkerVersion == (operation?.ExpectedVersion ?? operation?.OriginalVersion), "Worker reports the expected version.", "Inspect the installed version and complete or repair the local update."),
+            new("no-active-assignments", assignments == 0, "No active Server assignments.", "Allow assigned work to finish or reconcile it through execution recovery."),
+            new("no-active-leases", leases == 0, "No active Server leases.", "Wait for active leases to finish or reconcile uncertain executions."),
+            new("no-active-executions", heartbeat?.ActiveExecutions == 0, "Worker reports no active executions.", "Wait for executions to finish and a fresh idle heartbeat."),
+            new("required-capabilities", heartbeat is not null && (operation?.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current => $"{current.Type}/{current.Name}/{current.Scope}" == required)), "Required capabilities are present.", "Restore capabilities reported before the operation."),
+            new("post-operation-heartbeat", operation is not null && seen > (operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1)), "Heartbeat was received after the operation started.", "Wait for a new Worker heartbeat.")
+        ]);
+
 }

@@ -3,7 +3,7 @@ export interface WorkerObservation {
   authenticationCredentialStatus?: string; capabilities?: { type: string; name: string; scope?: string; version?: string }[]; workerVersion?: string;
   workerId: string; displayName?: string; availability: string; lifecycleState?: string;
   capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
-  activeAssignments?: number; schedulingPolicy?: string; lastHeartbeatAtUtc?: string;
+  activeAssignments?: number; schedulingPolicy?: string; schedulingBlocker?: string; lastHeartbeatAtUtc?: string;
   telegram?: { enabled: boolean; chatId?: string | null; credentialId?: string | null; tokenConfigured: boolean };
   configuredMaximumCapacity?: number; workerExecutionSlots?: number; configurationRevision?: number;
   hostResources?: { measuredAtUtc: string; logicalCpuCount?: number; totalMemoryBytes?: number; usedMemoryBytes?: number; diskTotalBytes?: number; diskAvailableBytes?: number; cpuUsagePercent?: number; memoryUsagePercent?: number; sampleSeconds?: number };

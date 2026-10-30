@@ -1,5 +1,21 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "workers.recoveryMet": "Cumplido",
+  "workers.recoveryBlocked": "Bloqueado",
+  "workers.recoveryUncertain": "La operación agotó el plazo; su resultado local es incierto. Revise el servicio y el registro.",
+  "workers.recoveryFailed": "La operación informó de un fallo. Revise el servicio y el registro.",
+  "workers.recoveryPaused": "Pausada por operación",
+  "workers.recoverySchedulingPaused": "El trabajo nuevo está pausado por una operación de reinicio o actualización sin resolver.",
+  "workers.recoveryHelp": "Operación: {state}. La conciliación comprueba el estado actual y restaura la política anterior cuando se permite. No reinicia el Worker ni repite trabajo.",
+  "workers.recoveryChecked": "Recuperación comprobada: {time}",
+  "workers.recoveryStale": "No se pudo actualizar el estado. Actualice antes de conciliar.",
+  "workers.recoveryChecklist": "Requisitos de recuperación",
+  "workers.recoveryQuiescent": "He revisado el servicio y el registro del nodo: no queda ningún proceso de reinicio o actualización en curso.",
+  "workers.recoveryRefresh": "Actualizar requisitos",
+  "workers.recoveryAction": "Conciliar y restaurar programación",
+  "workers.recoverySuccess": "Recuperación completada. Se aplica la política restaurada.",
+  "workers.recoveryFailure": "La recuperación fue rechazada o su resultado es incierto. Actualice los requisitos y resuelva los bloqueos antes de reintentar.",
+
   "workers.restart": "Reiniciar Worker",
   "workers.restartHelp": "Detiene las asignaciones nuevas, espera a que terminen las ejecuciones activas y reinicia el servicio instalado.",
   "workers.restartUnavailable": "El reinicio no está disponible. Recarga el estado del Worker para comprobar su preparación.",

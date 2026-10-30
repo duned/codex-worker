@@ -48,7 +48,9 @@ export function workerDetailStatuses(worker, node, diagnostics) {
         ? { state: 'Ko', tone: 'error' }
         : { state: 'Unknown', tone: 'gray' };
   const policy = typeof worker?.schedulingPolicy === 'string' ? worker.schedulingPolicy : '';
-  const scheduling = policy === 'Enabled'
+  const scheduling = worker?.schedulingBlocker === 'worker-operation-unresolved'
+    ? { state: 'Paused', tone: 'warning' }
+    : policy === 'Enabled'
     ? { state: 'Active', tone: 'success' }
     : policy === 'Disabled'
       ? { state: 'Inactive', tone: 'gray' }

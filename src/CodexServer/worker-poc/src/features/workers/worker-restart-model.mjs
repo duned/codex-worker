@@ -10,7 +10,11 @@ export function restartAvailable(worker, operation) {
 export function restartStatusPaths(workerId) {
   const workerPath = `/api/v1/workers/${encodeURIComponent(workerId)}`;
   return {
-    operation: `${workerPath}/update`,
+    operation: `${workerPath}/update/recovery`,
     worker: workerPath
   };
+}
+
+export function recoveryAvailable(operation, nodeQuiescent) {
+  return Boolean(operation?.state === 'failed' && operation.recovery?.eligible && nodeQuiescent);
 }
