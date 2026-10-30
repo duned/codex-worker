@@ -38,6 +38,111 @@ public sealed class WorkerUpdateTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(true, "Enabled")]
+    [InlineData(true, "Disabled")]
+    [InlineData(false, "Enabled")]
+    [InlineData(false, "Draining")]
+    public async Task VersionMismatchRecoveryRestoresPolicyAndQueueWithoutReplayingWork(bool restart, string policy)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        Task Heartbeat(string version) => store.HeartbeatWorkerAsync(new(2, worker, version, "running", 0, 2,
+            capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: "same-instance"));
+        await Heartbeat("1.0.0");
+        await store.SetWorkerSchedulingPolicyAsync(worker, policy);
+        var project = await store.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var original = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: restart);
+        await store.AdvanceWorkerUpdateAsync(worker, original.OperationId, restart ? "1.0.0" : "1.1.0");
+        await store.AdvanceWorkerUpdateAsync(worker, original.OperationId, fail: true);
+        clock.Now += TimeSpan.FromSeconds(1);
+        await Heartbeat(restart ? "1.1.0" : "1.0.0");
+        var status = Assert.IsType<WorkerUpdateOperation>(await store.InspectWorkerUpdateAsync(worker));
+        Assert.Equal(restart ? "1.1.0" : "1.0.0", status.Recovery?.ReportedVersion);
+        Assert.Equal("1.0.0", status.OriginalVersion);
+        var capacities = new Dictionary<string, int> { [project.Id] = 1 };
+        Assert.False((await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
+        if (restart)
+        {
+            Assert.True(status.Recovery?.Eligible);
+            Assert.False(status.Recovery?.RetryEligible);
+            Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
+            Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
+            // Preserve the original expectation as audit evidence; reconciliation dispatches nothing.
+            Assert.Equal("1.0.0", (await store.GetWorkerUpdateAsync(worker))?.ExpectedVersion);
+        }
+        else
+        {
+            Assert.False(status.Recovery?.Eligible);
+            Assert.True(status.Recovery?.RetryEligible);
+            await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
+            var retryId = Guid.NewGuid().ToString("N");
+            var retry = Assert.IsType<WorkerUpdateOperation>(await store.RetryWorkerUpdateAsync(worker, retryId));
+            Assert.Equal("waiting-for-idle", retry.State);
+            Assert.Equal("1.1.0", retry.ExpectedVersion);
+            Assert.Equal(original.OperationId, retry.RetryOfOperationId);
+            Assert.Equal(retryId, (await store.RetryWorkerUpdateAsync(worker, retryId))?.OperationId);
+            await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.RetryWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N")));
+            // Late reports from the failed operation cannot fail the retry or authorize another target.
+            await store.AdvanceWorkerUpdateAsync(worker, original.OperationId, fail: true);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.AdvanceWorkerUpdateAsync(worker, retryId, "1.2.0"));
+            Assert.Equal("updating", (await store.AdvanceWorkerUpdateAsync(worker, retryId, "1.1.0"))?.State);
+            await store.AdvanceWorkerUpdateAsync(worker, retryId, verified: true);
+            clock.Now += TimeSpan.FromSeconds(1);
+            await Heartbeat("1.1.0");
+            Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
+        }
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        Assert.Null((await store.GetWorkerAsync(worker))?.SchedulingBlocker);
+        Assert.Equal(policy, (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Equal(policy == "Enabled", (await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(true, "stale")]
+    [InlineData(true, "protocol")]
+    [InlineData(true, "capabilities")]
+    [InlineData(true, "configuration")]
+    [InlineData(true, "executions")]
+    [InlineData(false, "stale")]
+    [InlineData(false, "protocol")]
+    [InlineData(false, "capabilities")]
+    [InlineData(false, "configuration")]
+    [InlineData(false, "executions")]
+    [InlineData(false, "newer-version")]
+    public async Task VersionMismatchRecoveryRejectsUnsafeCurrentState(bool restart, string blocker)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2, capabilities, [],
+            ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: restart);
+        await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, restart ? "1.0.0" : "1.1.0");
+        await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, fail: true);
+        clock.Now += TimeSpan.FromSeconds(1);
+        await store.HeartbeatWorkerAsync(new(blocker == "protocol" ? 99 : 2, worker,
+            restart || blocker == "newer-version" ? "1.2.0" : "1.0.0", "running", blocker == "executions" ? 1 : 0,
+            2, blocker == "capabilities" ? [] : capabilities, [],
+            ConfigurationSynchronization: blocker == "configuration" ? "error" : "synchronized", InstanceId: "original"));
+        if (blocker == "stale") clock.Now += TimeSpan.FromMinutes(5);
+        var status = Assert.IsType<WorkerUpdateOperation>(await store.InspectWorkerUpdateAsync(worker));
+        Assert.False(status.Recovery?.Eligible);
+        Assert.False(status.Recovery?.RetryEligible);
+        await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
+        await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.RetryWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N")));
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RecoveryApiReturnsActionableConflictAndRechecksBeforeRestoringPolicy()
     {
@@ -80,6 +185,17 @@ public sealed class WorkerUpdateTests
             Assert.Equal("succeeded", (await recovered.Content.ReadFromJsonAsync<WorkerUpdateOperation>())?.State);
             Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
             Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+            var failedUpdate = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
+            await store.AdvanceWorkerUpdateAsync(worker, failedUpdate.OperationId, "1.1.0");
+            await store.AdvanceWorkerUpdateAsync(worker, failedUpdate.OperationId, fail: true);
+            await Beat((SqliteRegistryStore)store, worker);
+            var retryId = Guid.NewGuid().ToString("N");
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"{path}/retry?nodeQuiescent=false", new WorkerUpdateRequest(retryId))).StatusCode);
+            var retry = await client.PostAsJsonAsync($"{path}/retry?nodeQuiescent=true", new WorkerUpdateRequest(retryId));
+            Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+            Assert.Equal("waiting-for-idle", (await retry.Content.ReadFromJsonAsync<WorkerUpdateOperation>())?.State);
+            var repeated = await client.PostAsJsonAsync($"{path}/retry?nodeQuiescent=true", new WorkerUpdateRequest(retryId));
+            Assert.Equal(retryId, (await repeated.Content.ReadFromJsonAsync<WorkerUpdateOperation>())?.OperationId);
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", prior); }
@@ -295,12 +411,18 @@ public sealed class WorkerUpdateTests
             "local-execution", "Running", "Codex", clock.Now, Generation: lease.Generation));
         await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"));
         Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        await store.AdvanceWorkerUpdateAsync(worker, (await store.GetWorkerUpdateAsync(worker))?.OperationId, fail: true);
+        await Beat(store, worker, "1.1.0");
         var recovery = (await store.InspectWorkerUpdateAsync(worker))?.Recovery;
+        Assert.False(recovery?.Eligible);
+        Assert.False(recovery?.RetryEligible);
+        await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
         Assert.Contains(recovery?.Checks ?? [], check => check.Code == "no-active-assignments" && !check.Satisfied);
         Assert.Contains(recovery?.Checks ?? [], check => check.Code == "no-active-leases" && !check.Satisfied);
         await store.ReportExecutionAsync(assignment.ServerExecutionId, new(worker, assignment.AssignmentId,
             "local-execution", "Completed", CompletedAtUtc: clock.Now, Generation: lease.Generation));
-        Assert.NotNull(await store.AdvanceWorkerUpdateAsync(worker));
+        await Beat(store, worker);
+        Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
     }
 
     [Trait("TestType", "Integration")]

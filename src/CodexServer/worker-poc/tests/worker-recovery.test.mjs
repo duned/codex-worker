@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 
 // Exercise the component's interactions with deterministic hook/API seams.
@@ -25,13 +26,13 @@ function setup({ eligible = false, reject = false } = {}) {
     checks: [{ code: 'configuration-synchronized', satisfied: eligible, description: 'Configuration synchronized.', nextStep: 'Resolve configuration errors.' }]
   } }, refetch: async () => { calls.push('read'); } };
   const mutation = { isPending: false, locked: false,
-    mutateAsync: async () => { calls.push('reconcile'); if (reject) throw new Error('409'); return { state: 'succeeded' }; },
+    mutateAsync: async body => { harness.body = body; calls.push('reconcile'); if (reject) throw new Error('409'); return { state: 'succeeded' }; },
     reconcile: async read => { calls.push('refresh'); await read(); }, reset: () => {} };
   const harness = { mutation: (...args) => { harness.path = args[1]; return mutation; },
     runtime: { queries: { invalidateQueries: async () => { calls.push('invalidate'); } } } };
   const module = { exports: {} };
   const jsx = (type, props) => ({ type, props });
-  vm.runInNewContext(outputFiles[0].text, { module, exports: module.exports, harness,
+  vm.runInNewContext(outputFiles[0].text, { module, exports: module.exports, harness, crypto: webcrypto,
     require(name) {
       if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
       if (name === 'react') return { useState(initial) { const index = cursor++; if (!(index in state)) state[index] = initial; return [state[index], value => { state[index] = value; }]; },
@@ -79,4 +80,39 @@ test('a rejected recovery refreshes authoritative blockers without replaying res
   await flush();
   assert.deepEqual(view.calls, ['reconcile', 'read']);
   assert.match(JSON.stringify(view.render()), /workers.recoveryFailure/);
+});
+
+test('update mismatch displays all versions and submits one idempotent managed retry', async () => {
+  const view = setup({ eligible: false });
+  Object.assign(view.operation.data, { operationId: 'a'.repeat(32), restart: false, expectedVersion: '1.1.0', originalVersion: '1.0.0' });
+  Object.assign(view.operation.data.recovery, { retryEligible: true, reportedVersion: '1.0.1' });
+  let tree = view.render();
+  assert.match(JSON.stringify(tree), /1\.1\.0/);
+  assert.match(JSON.stringify(tree), /1\.0\.0/);
+  assert.match(JSON.stringify(tree), /1\.0\.1/);
+  assert.equal(button(tree, 'workers.recoveryRetryAction').props.isDisabled, true);
+  nodes(tree).find(node => node.type === 'checkbox').props.onChange(true);
+  tree = view.render();
+  const action = button(tree, 'workers.recoveryRetryAction');
+  action.props.onPress();
+  action.props.onPress();
+  await flush();
+  assert.equal(view.harness.path, '/api/v1/workers/worker/update/retry?nodeQuiescent=true');
+  assert.match(view.harness.body.operationId, /^[a-f0-9]{32}$/);
+  assert.equal(view.calls.filter(call => call === 'reconcile').length, 1);
+});
+test('restart mismatch uses explicit reconciliation and unavailable versions stay explicit', async () => {
+  const view = setup({ eligible: true });
+  Object.assign(view.operation.data, { restart: true, expectedVersion: '1.0.0', originalVersion: '1.0.0' });
+  view.operation.data.recovery.reportedVersion = '1.1.0';
+  nodes(view.render()).find(node => node.type === 'checkbox').props.onChange(true);
+  const tree = view.render();
+  assert.equal(button(tree, 'workers.recoveryAction').props.isDisabled, false);
+  assert.match(JSON.stringify(tree), /1\.1\.0/);
+  button(tree, 'workers.recoveryAction').props.onPress();
+  await flush();
+  assert.equal(view.harness.path, '/api/v1/workers/worker/update/reconcile?nodeQuiescent=true');
+  assert.equal(view.harness.body, undefined);
+  delete view.operation.data.recovery.reportedVersion;
+  assert.match(JSON.stringify(view.render()), /workers.recoveryUnavailable/);
 });

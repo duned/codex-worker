@@ -21,8 +21,8 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
       schedulingBlocker: recovered ? null : 'worker-operation-unresolved', activeExecutions: 0, activeAssignments: 0,
       workerVersion: '0.15.0', capabilities: [{ type: 'protocol', name: 'worker-restart-v1' }] });
     const operation = () => ({ operationId: 'b'.repeat(32), workerId, state: recovered ? 'succeeded' : 'failed',
-      restart: true, diagnostic: 'timeout-inspect-service-and-journal-before-retry', recovery: {
-        checkedAtUtc: new Date(props.now).toISOString(), schedulingBlocked: !recovered, eligible: !blocked,
+      restart: true, originalVersion: '0.15.0', expectedVersion: '0.15.0', diagnostic: 'timeout-inspect-service-and-journal-before-retry', recovery: {
+        reportedVersion: '0.15.1', checkedAtUtc: new Date(props.now).toISOString(), schedulingBlocked: !recovered, eligible: !blocked,
         checks: [{ code: 'fresh-heartbeat', satisfied: true, description: 'Worker heartbeat is fresh.', nextStep: 'Restore the connection.' },
           { code: 'configuration-synchronized', satisfied: !blocked, description: 'Managed configuration is synchronized.', nextStep: 'Resolve configuration errors and wait for synchronization.' },
           ...['Operation has failed or timed out.', 'Worker lifecycle is running.', 'Worker reports the expected version.',
@@ -60,6 +60,8 @@ const output = path.resolve(process.argv[3] || '/tmp/worker-recovery-review');
     await page.goto(`https://dashboard.test/workers/${workerId}`);
     const action = page.getByRole('button', { name: 'Reconcile and restore scheduling' });
     await action.waitFor();
+    await page.getByText('Latest heartbeat version', { exact: true }).waitFor();
+    await page.getByText('0.15.1', { exact: true }).waitFor();
     assert.equal(await action.isDisabled(), true);
     await page.getByText('Paused by operation', { exact: true }).waitFor();
     await page.getByText('Resolve configuration errors and wait for synchronization.', { exact: true }).waitFor();

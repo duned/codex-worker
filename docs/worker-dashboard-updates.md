@@ -59,8 +59,9 @@ changing scheduling policy cannot bypass an unresolved update's admission fence.
 
 The Worker detail page identifies this admission fence as **Paused by operation**,
 separately from the configured scheduling policy and connection status. Its recovery
-panel shows the operation state, timeout uncertainty, and timestamped readiness
-checklist. **Refresh recovery checks** reads
+panel shows restart/update type, expected and original versions, the version from
+the latest heartbeat (including explicit unavailable values), timeout uncertainty,
+and a timestamped readiness checklist. **Refresh recovery checks** reads
 `GET /api/v1/workers/{workerId}/update/recovery` without advancing the operation,
 changing policy, or recording a timeout. Each unmet prerequisite includes a stable
 code and a sanitized next step. Unsafe reconciliation returns HTTP 409 with
@@ -74,3 +75,23 @@ required capabilities, and no active assignments, leases or executions are requi
 Successful reconciliation releases the operation fence and restores only a temporary
 drain still owned by the operation; intentional disabled/draining policies remain.
 Queued work can then be assigned under the normal eligibility and capacity rules.
+
+For a failed update reporting an older version than expected, **Retry managed update**
+is available when all other recovery checks pass and the operator confirms quiescence.
+It creates one idempotent managed update attempt linked to the failed attempt,
+retaining the expected release, original capabilities and prior scheduling policy.
+Late reports for the failed attempt cannot change the retry. Scheduling stays fenced
+through installation and readiness verification. The existing updater installs the
+latest stable release: retry start authorization rejects a different discovered
+version. If the expected release is no longer latest, or the running version is newer,
+use the [versioned Linux Worker installer](linux-installation.md) for the expected
+release after confirming quiescence, then refresh and reconcile. A release changing
+between discovery and installation still requires inspection; an unexpected version
+never clears the fence automatically.
+
+For a failed restart, explicit reconciliation may accept a different running stable
+version. The fresh post-operation heartbeat must report a supported protocol,
+running lifecycle, synchronized configuration, all original required capabilities
+and no active executions; Server assignments and leases must also be zero. This
+records the accepted running version in the reconciliation diagnostic while retaining
+the original expected version. It sends no restart/update command and replays no work.

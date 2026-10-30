@@ -11,6 +11,9 @@ public sealed class WorkerUpdateRecoveryException(WorkerUpdateRecovery recovery)
 
 public sealed partial class SqliteRegistryStore
 {
+    public Task<WorkerUpdateOperation?> RetryWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default) =>
+        ChangeWorkerUpdateAsync(workerId, operationId, "retry", null, cancellationToken);
+
     public Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default) =>
         ChangeWorkerUpdateAsync(workerId, null, "reconcile", null, cancellationToken);
 
@@ -33,7 +36,7 @@ public sealed partial class SqliteRegistryStore
         string action, string? version, CancellationToken ct)
     {
         if (!WorkerUpdateProtocol.ValidId(workerId) ||
-            action is "request" or "restart" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
+            action is "request" or "restart" or "retry" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
             operationId is not null && !WorkerUpdateProtocol.ValidId(operationId) ||
             version is not null && !WorkerUpdateProtocol.ValidVersion(version))
             throw new InvalidDataException("invalid-worker-update");
@@ -46,7 +49,7 @@ public sealed partial class SqliteRegistryStore
         // Same database write gate as assignment admission and scheduling policy changes.
         command.CommandText = "UPDATE workers SET worker_id=worker_id WHERE worker_id=$worker;";
         if (action != "inspect") await command.ExecuteNonQueryAsync(ct);
-        if (action is "request" or "restart")
+        if (action is "request" or "restart" or "retry")
         {
             command.CommandText = "SELECT operation_json FROM worker_updates WHERE operation_id=$operation;";
             command.Parameters.AddWithValue("$operation", operationId);
@@ -92,25 +95,40 @@ public sealed partial class SqliteRegistryStore
             await transaction.CommitAsync(ct);
             return operation is null ? null : operation with { Recovery = recovery };
         }
+        if (action == "retry")
+        {
+            if (!recovery.RetryEligible) throw new WorkerUpdateRecoveryException(recovery);
+            if (operation is null) throw new InvalidOperationException("worker-update-unavailable");
+            // A fresh operation identity fences late installer reports from the failed attempt.
+            // Retain target, capability requirements and drain ownership across the retry.
+            operation = operation with { OperationId = operationId ?? throw new InvalidDataException("operation-id-required"),
+                RetryOfOperationId = operation.OperationId, State = "waiting-for-idle", RequestedAtUtc = now, DeadlineUtc = now.AddHours(24),
+                StartedAtUtc = null, InstallerVerified = false, Recovery = null, Diagnostic = "retry-managed-update" };
+        }
+        if (action == "reconcile" && operation?.State == "succeeded")
+        {
+            await transaction.CommitAsync(ct);
+            return operation;
+        }
         if (action == "reconcile")
         {
             if (!recovery.Eligible) throw new WorkerUpdateRecoveryException(recovery);
             if (operation is null || heartbeat is null) throw new InvalidOperationException("worker-update-unavailable");
             // Explicit operator reconciliation only, after inspecting the quiescent local updater.
             // This never dispatches or repeats installation and retains the prior failure diagnostic.
-            operation = operation with { State = "updating", InstallerVerified = true,
-                ExpectedVersion = heartbeat.WorkerVersion, StartedAtUtc = operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1), DeadlineUtc = now.AddMinutes(20) };
+            operation = operation with { State = "updating", InstallerVerified = true, ExpectedVersion = operation.ExpectedVersion ?? operation.OriginalVersion,
+                StartedAtUtc = operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1), DeadlineUtc = now.AddMinutes(20) };
         }
         if (operation is { State: "updating", StartedAtUtc: not null } && heartbeat is not null && seen > operation.StartedAtUtc &&
             (heartbeat.WorkerVersion == operation.ExpectedVersion || heartbeat.LifecycleState == WorkerLifecycleStates.Stopped))
             operation = operation with { State = "reconnecting" };
         if (operation is { State: "updating" or "reconnecting", ExpectedVersion: not null, StartedAtUtc: not null, InstallerVerified: true } && (!operation.Restart || action == "reconcile" || !string.IsNullOrEmpty(heartbeat?.InstanceId) && heartbeat.InstanceId != operation.OriginalInstanceId) && fresh && seen > operation.StartedAtUtc &&
-            heartbeat?.WorkerVersion == operation.ExpectedVersion && heartbeat.LifecycleState == WorkerLifecycleStates.Running &&
-            heartbeat.ConfigurationSynchronization == "synchronized" &&
+            (heartbeat?.WorkerVersion == operation.ExpectedVersion || action == "reconcile" && operation.Restart) && heartbeat?.LifecycleState == WorkerLifecycleStates.Running &&
+            heartbeat.ConfigurationSynchronization == "synchronized" && heartbeat.ContractVersion is 1 or 2 &&
             (operation.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current =>
                  $"{current.Type}/{current.Name}/{current.Scope}" == required)))
         {
-            operation = operation with { State = "succeeded", Diagnostic = action == "reconcile" ? $"reconciled:{operation.Diagnostic}" : "ready" };
+            operation = operation with { State = "succeeded", Diagnostic = action == "reconcile" ? $"reconciled:{heartbeat.WorkerVersion}:{operation.Diagnostic}" : "ready" };
             if (operation.OwnsDrain && policy == WorkerSchedulingPolicy.Draining)
             {
                 command.CommandText = "UPDATE workers SET scheduling_policy=$policy WHERE worker_id=$worker;";
@@ -141,6 +159,10 @@ public sealed partial class SqliteRegistryStore
         {
             if (operation.OperationId != operationId || operation.State != "waiting-for-idle" || !idle)
                 throw new InvalidOperationException("worker-update-not-authorized");
+            if (!operation.Restart && operation.ExpectedVersion is not null &&
+                (!WorkerUpdateProtocol.ValidVersion(heartbeat?.WorkerVersion) || version != operation.ExpectedVersion || heartbeat?.WorkerVersion != version &&
+                    !WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? operation.OriginalVersion, version ?? throw new InvalidDataException("version-required"))))
+                throw new InvalidOperationException("worker-update-target-changed-use-versioned-installer");
             var update = operation.Restart || WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? operation.OriginalVersion, version ?? throw new InvalidDataException("version-required"));
             operation = operation with { ExpectedVersion = version, State = update ? "updating" : "succeeded",
                 StartedAtUtc = now, DeadlineUtc = now.AddMinutes(20), Diagnostic = update ? null : "already-current" };
@@ -171,19 +193,31 @@ public sealed partial class SqliteRegistryStore
         return action == "poll" && (operation?.State is not ("waiting-for-idle" or "updating" or "reconnecting") || !idle) ? null : operation;
     }
     private static WorkerUpdateRecovery RecoveryReadiness(WorkerUpdateOperation? operation,
-        WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now) =>
-        new(operation is { State: not "succeeded" }, now,
+        WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now)
+    {
+        var recovery = new WorkerUpdateRecovery(operation is { State: not "succeeded" }, now,
         [
             new("failed-operation", operation?.State == "failed", "Operation has failed or timed out.", "Wait for the operation to finish or its deadline; inspect the service and journal."),
             new("fresh-heartbeat", fresh, "Worker heartbeat is fresh.", "Restore the Worker connection and wait for a new heartbeat."),
             new("running-lifecycle", heartbeat?.LifecycleState == WorkerLifecycleStates.Running, "Worker lifecycle is running.", "Inspect the Worker service and resolve its lifecycle state."),
             new("configuration-synchronized", heartbeat?.ConfigurationSynchronization == "synchronized", "Managed configuration is synchronized.", "Resolve configuration errors and wait for synchronization."),
-            new("expected-version", heartbeat is not null && heartbeat.WorkerVersion == (operation?.ExpectedVersion ?? operation?.OriginalVersion), "Worker reports the expected version.", "Inspect the installed version and complete or repair the local update."),
+            new("expected-version", heartbeat is not null && (operation?.Restart == true ? WorkerUpdateProtocol.ValidVersion(heartbeat.WorkerVersion) : heartbeat.WorkerVersion == (operation?.ExpectedVersion ?? operation?.OriginalVersion)),
+                operation?.Restart == true ? "Running version can be explicitly reconciled for this restart." : "Worker reports the expected version.",
+                $"Expected {operation?.ExpectedVersion ?? "unavailable"}; original {operation?.OriginalVersion ?? "unavailable"}; reported {heartbeat?.WorkerVersion ?? "unavailable"}. " +
+                (operation?.Restart == true
+                    ? "Restore a supported stable Worker version, then refresh and explicitly reconcile the running version."
+                    : "Use Retry managed update when available. Otherwise, after confirming the updater is quiescent, use the documented versioned Worker installer for the expected release, then refresh and reconcile.")),
+            new("supported-protocol", heartbeat?.ContractVersion is 1 or 2, "Worker protocol is supported.", "Install a Worker release supporting the Server protocol, then refresh recovery checks."),
             new("no-active-assignments", assignments == 0, "No active Server assignments.", "Allow assigned work to finish or reconcile it through execution recovery."),
             new("no-active-leases", leases == 0, "No active Server leases.", "Wait for active leases to finish or reconcile uncertain executions."),
             new("no-active-executions", heartbeat?.ActiveExecutions == 0, "Worker reports no active executions.", "Wait for executions to finish and a fresh idle heartbeat."),
-            new("required-capabilities", heartbeat is not null && (operation?.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current => $"{current.Type}/{current.Name}/{current.Scope}" == required)), "Required capabilities are present.", "Restore capabilities reported before the operation."),
+            new("required-capabilities", heartbeat is not null && heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (operation?.Restart == true ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)) && (operation?.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current => $"{current.Type}/{current.Name}/{current.Scope}" == required)), "Required capabilities are present.", "Restore capabilities reported before the operation."),
             new("post-operation-heartbeat", operation is not null && seen > (operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1)), "Heartbeat was received after the operation started.", "Wait for a new Worker heartbeat.")
-        ]);
+        ], heartbeat?.WorkerVersion);
+        return recovery with { RetryEligible = operation is { State: "failed", Restart: false, ExpectedVersion: not null } &&
+            WorkerUpdateProtocol.ValidVersion(operation.ExpectedVersion) && WorkerUpdateProtocol.ValidVersion(heartbeat?.WorkerVersion) &&
+            WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? string.Empty, operation.ExpectedVersion) &&
+            recovery.Checks.Where(check => check.Code != "expected-version").All(check => check.Satisfied) };
+    }
 
 }

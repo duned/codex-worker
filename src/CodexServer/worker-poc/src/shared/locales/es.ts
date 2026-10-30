@@ -1,5 +1,17 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "workers.recoveryRestartMismatch": "La conciliación acepta explícitamente la versión actual de este reinicio fallido cuando se cumplen todas las comprobaciones. No reinicia ni actualiza el servicio.",
+  "workers.recoveryOperationType": "Tipo de operación",
+  "workers.recoveryRestart": "Reinicio",
+  "workers.recoveryUpdate": "Actualización",
+  "workers.recoveryExpectedVersion": "Versión esperada",
+  "workers.recoveryOriginalVersion": "Versión original",
+  "workers.recoveryReportedVersion": "Versión del último latido",
+  "workers.recoveryUnavailable": "No disponible",
+  "workers.recoveryRetryAction": "Reintentar actualización administrada",
+  "workers.recoveryInProgress": "Actualización solicitada. Actualice las comprobaciones para seguir la instalación y reconexión; la programación sigue pausada.",
+  "workers.recoveryRetryHelp": "El reintento usa el actualizador administrado y requiere que la versión esperada siga siendo la última estable. Si ha cambiado o la versión actual es posterior, use el instalador documentado con la versión esperada tras confirmar la inactividad; después actualice y concilie.",
+
   "workers.recoveryMet": "Cumplido",
   "workers.recoveryBlocked": "Bloqueado",
   "workers.recoveryUncertain": "La operación agotó el plazo; su resultado local es incierto. Revise el servicio y el registro.",

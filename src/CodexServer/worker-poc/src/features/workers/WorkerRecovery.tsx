@@ -30,23 +30,27 @@ export function WorkerRecovery({ workerId, operation, onRecovered }: {
   const guard = useRef(false);
   const [nodeQuiescent, setNodeQuiescent] = useState(false);
   const [message, setMessage] = useState<string>();
-  const path = `/api/v1/workers/${encodeURIComponent(workerId)}/update/reconcile?nodeQuiescent=true`;
-  const mutation = useApiMutation(path, path, 'POST', workerUpdate);
+  const retryId = useRef<{ source: string; id: string } | undefined>(undefined);
   const current = operation.data;
+  const retry = Boolean(!current?.restart && current?.expectedVersion && current.expectedVersion !== current.recovery?.reportedVersion);
+  const available = retry ? current?.state === 'failed' && current.recovery?.retryEligible && nodeQuiescent : recoveryAvailable(current, nodeQuiescent);
+  const path = `/api/v1/workers/${encodeURIComponent(workerId)}/update/${retry ? 'retry' : 'reconcile'}?nodeQuiescent=true`;
+  const mutation = useApiMutation(path, path, 'POST', workerUpdate);
   async function refresh() {
     await mutation.reconcile(async () => { await operation.refetch({ throwOnError: true }); });
     mutation.reset();
   }
   async function recover() {
-    if (guard.current || !recoveryAvailable(current, nodeQuiescent) || operation.hasError || operation.fetching || mutation.isPending || mutation.locked) return;
+    if (guard.current || !available || operation.hasError || operation.fetching || mutation.isPending || mutation.locked) return;
     guard.current = true;
     setMessage(undefined);
+    setNodeQuiescent(false);
     try {
-      const result = await mutation.mutateAsync(undefined);
-      setMessage(result?.state === 'succeeded' ? t('workers.recoverySuccess') : t('workers.recoveryFailure'));
-      setNodeQuiescent(false);
+      if (retry && current && retryId.current?.source !== current.operationId) retryId.current = { source: current.operationId, id: crypto.randomUUID().replaceAll('-', '') };
+      const result = await mutation.mutateAsync(retry ? { operationId: retryId.current?.id } : undefined);
+      setMessage(result?.state === 'succeeded' ? t('workers.recoverySuccess') : result?.state === 'failed' ? t('workers.recoveryFailure') : t('workers.recoveryInProgress'));
       await runtime.queries.invalidateQueries();
-      await onRecovered?.();
+      if (result?.state === 'succeeded') await onRecovered?.();
     } catch {
       setMessage(t('workers.recoveryFailure'));
       // Keep the uncertain mutation fence until an explicit authoritative refresh.
@@ -58,6 +62,14 @@ export function WorkerRecovery({ workerId, operation, onRecovered }: {
   if (!current?.recovery?.schedulingBlocked) return null;
   return <div className="space-y-3">
     <h3 className="text-sm font-semibold text-primary">{t('workers.recoverySchedulingPaused')}</h3>
+    <dl className="grid grid-cols-2 gap-2 text-sm text-secondary">
+      <dt>{t('workers.recoveryOperationType')}</dt><dd>{t(current.restart ? 'workers.recoveryRestart' : 'workers.recoveryUpdate')}</dd>
+      <dt>{t('workers.recoveryExpectedVersion')}</dt><dd>{current.expectedVersion ?? t('workers.recoveryUnavailable')}</dd>
+      <dt>{t('workers.recoveryOriginalVersion')}</dt><dd>{current.originalVersion ?? t('workers.recoveryUnavailable')}</dd>
+      <dt>{t('workers.recoveryReportedVersion')}</dt><dd>{current.recovery.reportedVersion ?? t('workers.recoveryUnavailable')}</dd>
+    </dl>
+    {current.restart && current.expectedVersion !== current.recovery.reportedVersion && <p className="worker-editor-help">{t('workers.recoveryRestartMismatch')}</p>}
+    {retry && <p className="worker-editor-help">{t('workers.recoveryRetryHelp')}</p>}
     <p className="worker-editor-help">{t('workers.recoveryHelp', { state: current.state })}</p>
     {current.state === 'failed' && <p className="worker-editor-help">{current.diagnostic?.startsWith('timeout-') ? t('workers.recoveryUncertain') : t('workers.recoveryFailed')}</p>}
     <p className="worker-editor-help">{t('workers.recoveryChecked', { time: new Date(current.recovery.checkedAtUtc).toLocaleString() })}</p>
@@ -72,8 +84,8 @@ export function WorkerRecovery({ workerId, operation, onRecovered }: {
     <Checkbox label={t('workers.recoveryQuiescent')} isSelected={nodeQuiescent} onChange={setNodeQuiescent} />
     <div className="flex flex-wrap gap-3">
       <Button color="secondary" isDisabled={operation.fetching || mutation.isPending} onPress={() => { void refresh().catch(() => setMessage(t('workers.recoveryStale'))); }}>{t('workers.recoveryRefresh')}</Button>
-      <Button color="primary" isDisabled={!recoveryAvailable(current, nodeQuiescent) || operation.hasError || operation.fetching || mutation.isPending || mutation.locked}
-        onPress={() => { void recover(); }}>{t('workers.recoveryAction')}</Button>
+      <Button color="primary" isLoading={mutation.isPending} isDisabled={!available || operation.hasError || operation.fetching || mutation.isPending || mutation.locked}
+        onPress={() => { void recover(); }}>{t(retry ? 'workers.recoveryRetryAction' : 'workers.recoveryAction')}</Button>
     </div>
     {message && <p role="status" className="text-sm text-secondary">{message}</p>}
   </div>;

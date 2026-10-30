@@ -31,6 +31,7 @@ public interface IRegistryStore
     Task<WorkerRegistrationResponse?> GetWorkerAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> UpdateWorkerConfigurationAsync(string workerId, string displayName, int maximumParallelExecutions,
         long expectedRevision, CancellationToken cancellationToken = default, int? workerExecutionSlots = null, WorkerTelegramConfiguration? telegram = null);
+    Task<WorkerUpdateOperation?> RetryWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> InspectWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);

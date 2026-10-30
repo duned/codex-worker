@@ -7,8 +7,8 @@ public sealed record WorkerUpdateRequest(string OperationId, bool Restart = fals
 public sealed record WorkerUpdateOperation(string OperationId, string WorkerId, string State,
     DateTimeOffset RequestedAtUtc, DateTimeOffset DeadlineUtc, string PriorPolicy, bool OwnsDrain,
     string OriginalVersion, string? ExpectedVersion = null, DateTimeOffset? StartedAtUtc = null,
-    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false, bool Restart = false, string? OriginalInstanceId = null, WorkerUpdateRecovery? Recovery = null);
-public sealed record WorkerUpdateRecovery(bool SchedulingBlocked, DateTimeOffset CheckedAtUtc, IReadOnlyList<WorkerUpdateRecoveryCheck> Checks)
+    string? Diagnostic = null, IReadOnlyList<string>? RequiredCapabilities = null, bool InstallerVerified = false, bool Restart = false, string? OriginalInstanceId = null, WorkerUpdateRecovery? Recovery = null, string? RetryOfOperationId = null);
+public sealed record WorkerUpdateRecovery(bool SchedulingBlocked, DateTimeOffset CheckedAtUtc, IReadOnlyList<WorkerUpdateRecoveryCheck> Checks, string? ReportedVersion = null, bool RetryEligible = false)
 {
     public bool Eligible => Checks.All(check => check.Satisfied);
 }

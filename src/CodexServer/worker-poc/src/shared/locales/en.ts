@@ -1,4 +1,16 @@
 export const en = {
+  "workers.recoveryRestartMismatch": "Reconciliation explicitly accepts the reported running version for this failed restart after all checks pass. It does not restart or update the service.",
+  "workers.recoveryOperationType": "Operation type",
+  "workers.recoveryRestart": "Restart",
+  "workers.recoveryUpdate": "Update",
+  "workers.recoveryExpectedVersion": "Expected version",
+  "workers.recoveryOriginalVersion": "Original version",
+  "workers.recoveryReportedVersion": "Latest heartbeat version",
+  "workers.recoveryUnavailable": "Unavailable",
+  "workers.recoveryRetryAction": "Retry managed update",
+  "workers.recoveryInProgress": "Recovery update requested. Refresh recovery checks to follow installation and reconnection; scheduling remains paused.",
+  "workers.recoveryRetryHelp": "Retry uses the managed updater and requires the expected release to remain the latest stable release. If it has changed or the running version is newer, use the documented versioned Worker installer for the expected version after confirming quiescence, then refresh and reconcile.",
+
   "workers.recoveryMet": "Passed",
   "workers.recoveryBlocked": "Blocked",
   "workers.recoveryUncertain": "The operation timed out; its local outcome is uncertain. Inspect the service and journal.",
