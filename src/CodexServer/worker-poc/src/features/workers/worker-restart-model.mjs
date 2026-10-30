@@ -18,3 +18,8 @@ export function restartStatusPaths(workerId) {
 export function recoveryAvailable(operation, nodeQuiescent) {
   return Boolean(operation?.state === 'failed' && operation.recovery?.eligible && nodeQuiescent);
 }
+
+export function releaseRestartDrainAvailable(operation, nodeQuiescent) {
+  return Boolean(operation?.restart && operation.state === 'failed' &&
+    !operation.drainReleasedAtUtc && operation.recovery?.releaseDrainEligible && nodeQuiescent);
+}

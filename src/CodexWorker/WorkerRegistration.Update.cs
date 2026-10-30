@@ -43,11 +43,11 @@ public sealed partial class WorkerRegistrationClient
         // Local lifecycle shares its reservation gate with execution admission. Never interrupt work.
         if (runtime.Lifecycle.Snapshot.ActiveExecutions != 0) return false;
         var priorDrain = runtime.Lifecycle.Snapshot.DrainRequested;
-        runtime.Registry.DrainWorker();
+        var localDrainStarted = false;
         async Task<bool> RecordFailureAsync()
         {
-            if (operation.Restart) runtime.Lifecycle.RecordRestartFailure("Inspect codex-worker.service status and journal before retrying.");
-            else runtime.Lifecycle.RecordUpdateResult("Inspect service status and the codex-worker-self-update journal before retrying.", false);
+            if (localDrainStarted && operation.Restart) runtime.Lifecycle.RecordRestartFailure("Inspect codex-worker.service status and journal before retrying.");
+            else if (localDrainStarted) runtime.Lifecycle.RecordUpdateResult("Inspect service status and the codex-worker-self-update journal before retrying.", false);
             if (!ct.IsCancellationRequested)
             {
                 using var failure = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/update/{operation.OperationId}/fail");
@@ -58,10 +58,10 @@ public sealed partial class WorkerRegistrationClient
         }
         try
         {
-            if (!policy.Enabled || !policy.AllowedPrivilegedActions.Contains((operation.Restart ? WorkerUpdateProtocol.RestartPolicyKey : WorkerUpdateProtocol.PolicyKey), StringComparer.Ordinal) ||
-                policy.DeniedActions.Contains((operation.Restart ? WorkerUpdateProtocol.RestartPolicyKey : WorkerUpdateProtocol.PolicyKey), StringComparer.Ordinal) ||
-                !(operation.Restart ? RestartSupported : SelfUpdateSupported))
+            if (!(operation.Restart ? RestartSupported : SelfUpdateSupported) ||
+                !TryDrainForWorkerUpdate(runtime.Registry, policy, operation.Restart))
                 return await RecordFailureAsync();
+            localDrainStarted = true;
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             var release = operation.Restart ? null : await new PackagedSelfUpdate(http).FindReleaseAsync(
                 new("worker", "Codex Worker", ApplicationVersion.Display, "/opt/codex-worker/CodexWorker"), ct);
@@ -103,6 +103,16 @@ public sealed partial class WorkerRegistrationClient
         {
             return await RecordFailureAsync();
         }
+    }
+
+    internal static bool TryDrainForWorkerUpdate(ProjectRuntimeRegistry registry, ProvisioningPolicy policy, bool restart)
+    {
+        var action = restart ? WorkerUpdateProtocol.RestartPolicyKey : WorkerUpdateProtocol.PolicyKey;
+        // Rejection must not turn a healthy idle process into restart-failed or leave a local drain.
+        if (!policy.Enabled || !policy.AllowedPrivilegedActions.Contains(action, StringComparer.Ordinal) ||
+            policy.DeniedActions.Contains(action, StringComparer.Ordinal)) return false;
+        registry.DrainWorker();
+        return true;
     }
 
     private static async Task<string> ReadUpdaterStateAsync(CancellationToken ct)

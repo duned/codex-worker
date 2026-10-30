@@ -31,6 +31,16 @@ public static partial class ServerApplication
             catch (InvalidDataException) { return Results.BadRequest(new { reason = "invalid-worker-update" }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
         });
+        app.MapPost("/api/v1/workers/{workerId}/update/release-drain", async (string workerId, bool nodeQuiescent,
+            WorkerUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            if (!nodeQuiescent) return Results.Conflict(new { reason = "inspect-quiescent-node-before-recovery" });
+            try { return Results.Ok(await store.ReleaseWorkerRestartDrainAsync(workerId, request.OperationId, context.RequestAborted)); }
+            catch (InvalidDataException) { return Results.BadRequest(new { reason = "invalid-worker-update" }); }
+            catch (WorkerUpdateRecoveryException ex) { return Results.Conflict(new { reason = ex.Message, recovery = ex.Recovery }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { reason = ex.Message }); }
+        });
         app.MapPost("/api/v1/workers/{workerId}/update/retry", async (string workerId, bool nodeQuiescent,
             WorkerUpdateRequest request, HttpContext context, ServerConfiguration settings, IRegistryStore store) =>
         {

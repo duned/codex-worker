@@ -46,3 +46,40 @@ operations are quiescent and the Worker is healthy, use the existing
 [explicit operation reconciliation](worker-dashboard-updates.md#recovery) endpoint;
 it acknowledges readiness without dispatching another restart. If restart itself
 failed, reconcile the healthy original instance after inspection before retrying.
+
+### Abandon a failed restart's Server drain
+
+Worker detail offers **Restore Server scheduling policy** for a failed or timed-out
+restart. Confirm that the node is quiescent and no restart is pending. This action
+requires no VM command, installation or service restart. The Server rechecks, in the
+assignment admission transaction, a fresh post-operation heartbeat reporting zero
+executions and zero active Server assignments and leases. The checklist identifies
+each blocker. Missing/stale observations cannot establish quiescence.
+
+The authenticated, CSRF-protected endpoint is
+`POST /api/v1/workers/{id}/update/release-drain?nodeQuiescent=true`, with
+`{ "operationId": "<failed operation ID>" }`. It releases only that operation's
+scheduling fence and restores its prior policy only while it still owns the drain.
+An operator's subsequent policy change is respected. Repeated requests for the same
+released operation return its retained result. A different current operation rejects
+the request. The failed state, diagnostic and release timestamp remain inspectable;
+late acknowledgements cannot change it to success. No completion effects are replayed.
+
+This is separate from reconciling a healthy Worker or recovering its service.
+The Worker observation is unchanged: an unavailable/draining lifecycle remains
+unavailable for assignment. Only a subsequent fresh running heartbeat and normal
+execution readiness checks permit assignment. Other eligible Workers remain usable.
+
+### Failure path corrected
+
+Code tracing found that the managed restart handler previously called `DrainWorker`
+before checking the node's provisioning authorization. Disabled provisioning, a
+missing `worker:restart` allow rule, or a deny rule then recorded `restart-failed`
+on the live Worker despite never dispatching systemd. That local lifecycle suppresses
+readiness updates while drained; Server reconciliation requires a running lifecycle,
+so fresh idle heartbeats alone could not clear the failed operation. Version equality
+is expected for a restart and is not evidence of service replacement or its failure.
+The handler now checks authorization before mutating the local drain/lifecycle.
+An actual dispatch failure still retains the local fence for inspection. Without
+node diagnostics, this code defect does not establish which failure happened on a
+particular deployed node; the new Server-only release works safely for either case.

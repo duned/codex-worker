@@ -26,7 +26,7 @@ function setup({ eligible = false, reject = false } = {}) {
     checks: [{ code: 'configuration-synchronized', satisfied: eligible, description: 'Configuration synchronized.', nextStep: 'Resolve configuration errors.' }]
   } }, refetch: async () => { calls.push('read'); } };
   const mutation = { isPending: false, locked: false,
-    mutateAsync: async body => { harness.body = body; calls.push('reconcile'); if (reject) throw new Error('409'); return { state: 'succeeded' }; },
+    mutateAsync: async body => { harness.body = body; calls.push('reconcile'); if (reject) throw new Error('409'); return harness.result ?? { state: 'succeeded' }; },
     reconcile: async read => { calls.push('refresh'); await read(); }, reset: () => {} };
   const harness = { mutation: (...args) => { harness.path = args[1]; return mutation; },
     runtime: { queries: { invalidateQueries: async () => { calls.push('invalidate'); } } } };
@@ -101,18 +101,30 @@ test('update mismatch displays all versions and submits one idempotent managed r
   assert.match(view.harness.body.operationId, /^[a-f0-9]{32}$/);
   assert.equal(view.calls.filter(call => call === 'reconcile').length, 1);
 });
-test('restart mismatch uses explicit reconciliation and unavailable versions stay explicit', async () => {
-  const view = setup({ eligible: true });
-  Object.assign(view.operation.data, { restart: true, expectedVersion: '1.0.0', originalVersion: '1.0.0' });
-  view.operation.data.recovery.reportedVersion = '1.1.0';
+test('failed restart restores only Server policy with separate eligibility and confirmation', async () => {
+  const view = setup({ eligible: false });
+  Object.assign(view.operation.data, { operationId: 'a'.repeat(32), restart: true, expectedVersion: '1.0.0', originalVersion: '1.0.0' });
+  Object.assign(view.operation.data.recovery, { reportedVersion: '1.1.0', releaseDrainEligible: false });
+  view.operation.data.recovery.checks = [{ code: 'no-active-executions', satisfied: false, description: 'Executions unknown.', nextStep: 'Wait for an idle heartbeat.' }];
+  assert.match(JSON.stringify(view.render()), /Wait for an idle heartbeat/);
+  assert.equal(button(view.render(), 'workers.recoveryReleaseAction').props.isDisabled, true);
+  view.operation.data.recovery.releaseDrainEligible = true;
+  assert.equal(button(view.render(), 'workers.recoveryReleaseAction').props.isDisabled, true);
   nodes(view.render()).find(node => node.type === 'checkbox').props.onChange(true);
   const tree = view.render();
-  assert.equal(button(tree, 'workers.recoveryAction').props.isDisabled, false);
+  assert.equal(button(tree, 'workers.recoveryReleaseAction').props.isDisabled, false);
   assert.match(JSON.stringify(tree), /1\.1\.0/);
-  button(tree, 'workers.recoveryAction').props.onPress();
+  assert.match(JSON.stringify(tree), /workers.recoveryReleaseHelp/);
+  view.harness.result = { state: 'failed', drainReleasedAtUtc: '2026-10-30T01:00:00Z' };
+  button(tree, 'workers.recoveryReleaseAction').props.onPress();
   await flush();
-  assert.equal(view.harness.path, '/api/v1/workers/worker/update/reconcile?nodeQuiescent=true');
-  assert.equal(view.harness.body, undefined);
+  assert.equal(view.harness.path, '/api/v1/workers/worker/update/release-drain?nodeQuiescent=true');
+  assert.equal(view.harness.body.operationId, 'a'.repeat(32));
+  assert.deepEqual(view.calls, ['reconcile', 'invalidate', 'recovered']);
+  assert.match(JSON.stringify(view.render()), /workers.recoveryReleaseSuccess/);
   delete view.operation.data.recovery.reportedVersion;
   assert.match(JSON.stringify(view.render()), /workers.recoveryUnavailable/);
+  Object.assign(view.operation.data, { drainReleasedAtUtc: '2026-10-30T01:00:00Z', diagnostic: 'restart-failed' });
+  assert.match(JSON.stringify(view.render()), /restart-failed/);
+  assert.equal(button(view.render(), 'workers.recoveryReleaseAction'), undefined);
 });

@@ -36,6 +36,97 @@ public sealed class WorkerUpdateTests
         return (store, worker);
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void HeartbeatCannotDefaultAnUnknownExecutionCountToZero()
+    {
+        Assert.Throws<System.Text.Json.JsonException>(() => System.Text.Json.JsonSerializer.Deserialize<WorkerHeartbeatRequest>(
+            """{"ContractVersion":2,"WorkerId":"worker","WorkerVersion":"1.0.0","LifecycleState":"stopped","MaximumCapacity":2,"Capabilities":[],"ActiveProjects":[]}"""));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("safe", null)]
+    [InlineData("stopped", null)]
+    [InlineData("timeout", null)]
+    [InlineData("policy-changed", null)]
+    [InlineData("stale", "fresh-heartbeat")]
+    [InlineData("executions", "no-active-executions")]
+    [InlineData("unknown", "no-active-executions")]
+    [InlineData("missing", "fresh-heartbeat")]
+    [InlineData("assignment", "no-active-assignments")]
+    [InlineData("lease", "no-active-leases")]
+    [InlineData("pre-operation", "post-operation-heartbeat")]
+    public async Task FailedRestartDrainRecoveryPreservesFailureAndRequiresFreshQuiescence(string scenario, string? blocker)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        Task Heartbeat(string state, int active = 0) => store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", state,
+            active, 2, capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        await Heartbeat("running");
+        var project = await store.CreateProjectAsync(new("Project", "team/project", "main", ""));
+        var capacities = new Dictionary<string, int> { [project.Id] = 1 };
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).Assignment);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        if (scenario is not ("assignment" or "lease"))
+            await store.ReportExecutionAsync(assignment.ServerExecutionId, new(worker, assignment.AssignmentId,
+                "local-execution", "Completed", CompletedAtUtc: clock.Now, Generation: lease.Generation));
+        // Execution completion precedes the dashboard restart; no completion is replayed by recovery.
+        await Heartbeat("running");
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+        if (scenario is not ("assignment" or "lease"))
+            await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, "1.0.0");
+        if (scenario == "timeout") clock.Now += TimeSpan.FromMinutes(21);
+        else await store.AdvanceWorkerUpdateAsync(worker, operation.OperationId, fail: true);
+        if (scenario == "policy-changed") await store.SetWorkerSchedulingPolicyAsync(worker, "Disabled");
+        if (scenario != "pre-operation")
+        {
+            clock.Now += TimeSpan.FromSeconds(1);
+            await Heartbeat(scenario == "stopped" ? "stopped" : "draining", scenario == "executions" ? 1 : scenario == "unknown" ? -1 : 0);
+        }
+        if (scenario == "missing")
+            await store.RegisterWorkerAsync(new(2, worker, "Worker", "1.0.0", "test", 2, capabilities));
+        if (scenario == "stale") clock.Now += TimeSpan.FromHours(1);
+        if (blocker is not null)
+        {
+            var error = await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReleaseWorkerRestartDrainAsync(worker, operation.OperationId));
+            Assert.Contains(error.Recovery.Checks, check => check.Code == blocker && !check.Satisfied);
+            Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+            return;
+        }
+        var failed = Assert.IsType<WorkerUpdateOperation>(await store.GetWorkerUpdateAsync(worker));
+        var released = Assert.IsType<WorkerUpdateOperation>(await store.ReleaseWorkerRestartDrainAsync(worker, operation.OperationId));
+        Assert.Equal("failed", released.State);
+        Assert.Equal(failed.Diagnostic, released.Diagnostic);
+        Assert.NotNull(released.DrainReleasedAtUtc);
+        var repeated = Assert.IsType<WorkerUpdateOperation>(await store.ReleaseWorkerRestartDrainAsync(worker, operation.OperationId));
+        Assert.Equal(released.OperationId, repeated.OperationId);
+        Assert.Equal(released.DrainReleasedAtUtc, repeated.DrainReleasedAtUtc);
+        Assert.Equal(released.State, repeated.State);
+        Assert.Equal(released.Diagnostic, repeated.Diagnostic);
+        Assert.Equal(scenario == "policy-changed" ? "Disabled" : "Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Null((await store.GetWorkerAsync(worker))?.SchedulingBlocker);
+        Assert.NotEqual("running", (await store.GetWorkerAsync(worker))?.LifecycleState);
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "2")));
+        Assert.False((await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
+        var other = Guid.NewGuid().ToString("N");
+        await store.RegisterWorkerAsync(new(2, other, "Other", "1.0.0", "test", 2, capabilities));
+        await Beat(store, other);
+        Assert.True((await store.RequestAssignmentAsync(new(other, true, 1, capacities))).HasWork);
+        await store.EnqueueExecutionAsync(new(project.Id, new("issue", "3")));
+        if (scenario == "policy-changed") await store.SetWorkerSchedulingPolicyAsync(worker, "Enabled");
+        clock.Now += TimeSpan.FromSeconds(1);
+        await Heartbeat("running");
+        Assert.True((await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
+        Assert.Equal("Completed", (await store.GetExecutionAsync(assignment.ServerExecutionId))?.State);
+        Assert.Equal("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
@@ -169,6 +260,11 @@ public sealed class WorkerUpdateTests
             var path = $"/api/v1/workers/{worker}/update";
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"{path}/recovery")).StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "update-recovery-test-management");
+            var releasePath = $"{path}/release-drain";
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"{releasePath}?nodeQuiescent=false", new WorkerUpdateRequest(operation.OperationId))).StatusCode);
+            // A failed update must never be abandoned through the restart-only release action.
+            Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"{releasePath}?nodeQuiescent=true", new WorkerUpdateRequest(operation.OperationId))).StatusCode);
+
             var status = await client.GetFromJsonAsync<WorkerUpdateOperation>($"{path}/recovery");
             Assert.False(status?.Recovery?.Eligible);
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsync($"{path}/reconcile?nodeQuiescent=false", null)).StatusCode);

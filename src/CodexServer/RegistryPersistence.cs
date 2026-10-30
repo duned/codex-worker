@@ -35,6 +35,7 @@ public interface IRegistryStore
     Task<WorkerUpdateOperation?> ReconcileWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> InspectWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation?> GetWorkerUpdateAsync(string workerId, CancellationToken cancellationToken = default);
+    Task<WorkerUpdateOperation?> ReleaseWorkerRestartDrainAsync(string workerId, string operationId, CancellationToken cancellationToken = default);
     Task<WorkerUpdateOperation> RequestWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default, bool restart = false);
     Task<WorkerUpdateOperation?> AdvanceWorkerUpdateAsync(string workerId, string? operationId = null, string? version = null, bool fail = false, bool verified = false, CancellationToken cancellationToken = default);
     Task<WorkerRegistrationResponse?> SetWorkerSchedulingPolicyAsync(string workerId, string policy, CancellationToken cancellationToken = default);
@@ -441,7 +442,7 @@ public sealed record WorkerRegistrationRequest(int ContractVersion, string Worke
 
 }
 public sealed record WorkerHeartbeatRequest(int ContractVersion, string WorkerId, string WorkerVersion,
-    string LifecycleState, int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
+    string LifecycleState, [property: System.Text.Json.Serialization.JsonRequired] int ActiveExecutions, int MaximumCapacity, IReadOnlyList<WorkerCapability> Capabilities,
     IReadOnlyList<string> ActiveProjects, string? ConfigurationSynchronization = null, string? ConfigurationVersion = null, IReadOnlyList<CapabilityState>? CapabilityInventory = null, ManagedWorkerDiagnostics? ManagedDiagnostics = null, WorkerHostResources? HostResources = null, string? InstanceId = null);
 public sealed record WorkerRegistrationResponse(int ContractVersion, string WorkerId, string DisplayName,
     string WorkerVersion, string Platform, int Capacity, IReadOnlyList<WorkerCapability> Capabilities,
@@ -1086,7 +1087,8 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         command.CommandText = "SELECT operation_json FROM worker_updates WHERE worker_id=$worker ORDER BY rowid DESC LIMIT 1;";
         command.Parameters.AddWithValue("$worker", request.WorkerId);
         var updateJson = await command.ExecuteScalarAsync(cancellationToken) as string;
-        var updating = updateJson is not null && JsonSerializer.Deserialize<WorkerUpdateOperation>(updateJson)?.State != "succeeded";
+        var latestUpdate = updateJson is null ? null : JsonSerializer.Deserialize<WorkerUpdateOperation>(updateJson);
+        var updating = latestUpdate is { State: not "succeeded", DrainReleasedAtUtc: null };
         if (updating || schedulingPolicy != WorkerSchedulingPolicy.Enabled)
         {
             await transaction.CommitAsync(cancellationToken);
@@ -1094,6 +1096,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         }
         var heartbeat = heartbeatJson is null ? null : JsonSerializer.Deserialize<WorkerHeartbeatRequest>(heartbeatJson);
         if (heartbeat is null || lastSeen is null || _timeProvider.GetUtcNow() - lastSeen > _staleAfter ||
+            latestUpdate?.DrainReleasedAtUtc is { } releasedAt && lastSeen <= releasedAt ||
             heartbeat.LifecycleState != "running" ||
             heartbeat.CapabilityInventory is { } inventory && !CapabilityCatalog.ExecutionReadiness(inventory).Available)
         {
@@ -2463,7 +2466,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     }
 
     private static string? UpdateSchedulingBlocker(SqliteDataReader reader) =>
-        !reader.IsDBNull(13) && JsonSerializer.Deserialize<WorkerUpdateOperation>(reader.GetString(13)) is { State: not "succeeded" }
+        !reader.IsDBNull(13) && JsonSerializer.Deserialize<WorkerUpdateOperation>(reader.GetString(13)) is { State: not "succeeded", DrainReleasedAtUtc: null }
             ? "worker-operation-unresolved" : null;
 
     private WorkerRegistrationResponse ToResponse(WorkerRegistrationRequest request, DateTimeOffset registered, DateTimeOffset seen,

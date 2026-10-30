@@ -11,6 +11,9 @@ public sealed class WorkerUpdateRecoveryException(WorkerUpdateRecovery recovery)
 
 public sealed partial class SqliteRegistryStore
 {
+    public Task<WorkerUpdateOperation?> ReleaseWorkerRestartDrainAsync(string workerId, string operationId, CancellationToken cancellationToken = default) =>
+        ChangeWorkerUpdateAsync(workerId, operationId, "release-drain", null, cancellationToken);
+
     public Task<WorkerUpdateOperation?> RetryWorkerUpdateAsync(string workerId, string operationId, CancellationToken cancellationToken = default) =>
         ChangeWorkerUpdateAsync(workerId, operationId, "retry", null, cancellationToken);
 
@@ -36,7 +39,7 @@ public sealed partial class SqliteRegistryStore
         string action, string? version, CancellationToken ct)
     {
         if (!WorkerUpdateProtocol.ValidId(workerId) ||
-            action is "request" or "restart" or "retry" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
+            action is "release-drain" or "request" or "restart" or "retry" or "start" or "fail" or "verified" && !WorkerUpdateProtocol.ValidId(operationId ?? string.Empty) ||
             operationId is not null && !WorkerUpdateProtocol.ValidId(operationId) ||
             version is not null && !WorkerUpdateProtocol.ValidVersion(version))
             throw new InvalidDataException("invalid-worker-update");
@@ -95,6 +98,25 @@ public sealed partial class SqliteRegistryStore
             await transaction.CommitAsync(ct);
             return operation is null ? null : operation with { Recovery = recovery };
         }
+        if (action == "release-drain")
+        {
+            if (operation?.OperationId != operationId) throw new InvalidOperationException("worker-operation-changed");
+            if (operation is { Restart: true, State: "failed", DrainReleasedAtUtc: not null })
+            {
+                await transaction.CommitAsync(ct);
+                return operation;
+            }
+            if (!recovery.ReleaseDrainEligible) throw new WorkerUpdateRecoveryException(recovery);
+            if (operation is null) throw new InvalidOperationException("worker-update-unavailable");
+            if (operation.OwnsDrain && policy == WorkerSchedulingPolicy.Draining)
+            {
+                command.CommandText = "UPDATE workers SET scheduling_policy=$prior WHERE worker_id=$worker;";
+                command.Parameters.AddWithValue("$prior", operation.PriorPolicy);
+                await command.ExecuteNonQueryAsync(ct);
+            }
+            // Retain the failed outcome and diagnostics; this changes no Worker observation.
+            operation = operation with { DrainReleasedAtUtc = now, OwnsDrain = false };
+        }
         if (action == "retry")
         {
             if (!recovery.RetryEligible) throw new WorkerUpdateRecoveryException(recovery);
@@ -112,7 +134,7 @@ public sealed partial class SqliteRegistryStore
         }
         if (action == "reconcile")
         {
-            if (!recovery.Eligible) throw new WorkerUpdateRecoveryException(recovery);
+            if (operation?.DrainReleasedAtUtc is not null || !recovery.Eligible) throw new WorkerUpdateRecoveryException(recovery);
             if (operation is null || heartbeat is null) throw new InvalidOperationException("worker-update-unavailable");
             // Explicit operator reconciliation only, after inspecting the quiescent local updater.
             // This never dispatches or repeats installation and retains the prior failure diagnostic.
@@ -180,7 +202,7 @@ public sealed partial class SqliteRegistryStore
         }
         if (operation is { State: "updating" or "reconnecting" } && action == "verified" && operation.OperationId == operationId)
             operation = operation with { InstallerVerified = true };
-        if (operation is not null && action == "fail" && operation.OperationId == operationId && operation.State != "succeeded")
+        if (operation is not null && action == "fail" && operation.OperationId == operationId && operation.State != "succeeded" && operation.DrainReleasedAtUtc is null)
             operation = operation with { State = "failed", Diagnostic = operation.Restart ? "restart-failed-inspect-service-and-journal-before-retry" : "update-failed-inspect-service-and-journal-before-retry" };
         if (operation is not null)
         {
@@ -195,7 +217,7 @@ public sealed partial class SqliteRegistryStore
     private static WorkerUpdateRecovery RecoveryReadiness(WorkerUpdateOperation? operation,
         WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now)
     {
-        var recovery = new WorkerUpdateRecovery(operation is { State: not "succeeded" }, now,
+        var recovery = new WorkerUpdateRecovery(operation is { State: not "succeeded", DrainReleasedAtUtc: null }, now,
         [
             new("failed-operation", operation?.State == "failed", "Operation has failed or timed out.", "Wait for the operation to finish or its deadline; inspect the service and journal."),
             new("fresh-heartbeat", fresh, "Worker heartbeat is fresh.", "Restore the Worker connection and wait for a new heartbeat."),
@@ -212,9 +234,11 @@ public sealed partial class SqliteRegistryStore
             new("no-active-leases", leases == 0, "No active Server leases.", "Wait for active leases to finish or reconcile uncertain executions."),
             new("no-active-executions", heartbeat?.ActiveExecutions == 0, "Worker reports no active executions.", "Wait for executions to finish and a fresh idle heartbeat."),
             new("required-capabilities", heartbeat is not null && heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (operation?.Restart == true ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)) && (operation?.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current => $"{current.Type}/{current.Name}/{current.Scope}" == required)), "Required capabilities are present.", "Restore capabilities reported before the operation."),
-            new("post-operation-heartbeat", operation is not null && seen > (operation.StartedAtUtc ?? operation.RequestedAtUtc.AddTicks(-1)), "Heartbeat was received after the operation started.", "Wait for a new Worker heartbeat.")
+            new("post-operation-heartbeat", operation is not null && seen > (operation.StartedAtUtc ?? (operation.Restart ? operation.RequestedAtUtc : operation.RequestedAtUtc.AddTicks(-1))), "Heartbeat was received after the operation started.", "Wait for a new Worker heartbeat.")
         ], heartbeat?.WorkerVersion);
-        return recovery with { RetryEligible = operation is { State: "failed", Restart: false, ExpectedVersion: not null } &&
+        return recovery with { ReleaseDrainEligible = operation is { Restart: true, State: "failed", DrainReleasedAtUtc: null } &&
+            recovery.Checks.Where(check => check.Code is "fresh-heartbeat" or "no-active-assignments" or "no-active-leases" or "no-active-executions" or "post-operation-heartbeat").All(check => check.Satisfied),
+            RetryEligible = operation is { State: "failed", Restart: false, ExpectedVersion: not null } &&
             WorkerUpdateProtocol.ValidVersion(operation.ExpectedVersion) && WorkerUpdateProtocol.ValidVersion(heartbeat?.WorkerVersion) &&
             WorkerUpdateProtocol.NeedsUpdate(heartbeat?.WorkerVersion ?? string.Empty, operation.ExpectedVersion) &&
             recovery.Checks.Where(check => check.Code != "expected-version").All(check => check.Satisfied) };

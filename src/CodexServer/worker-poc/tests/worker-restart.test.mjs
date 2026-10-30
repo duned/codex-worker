@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { restartAvailable, restartPending, recoveryAvailable } from '../src/features/workers/worker-restart-model.mjs';
+import { restartAvailable, restartPending, recoveryAvailable, releaseRestartDrainAvailable } from '../src/features/workers/worker-restart-model.mjs';
 const worker = { availability: 'online', capabilities: [{ type: 'protocol', name: 'worker-restart-v1' }] };
 test('restart requires online Worker with the controlled restart protocol', () => {
   assert.equal(restartAvailable(worker, null), true);
@@ -25,4 +25,15 @@ test('recovery requires authoritative eligibility and confirmed node quiescence'
     assert.equal(recoveryAvailable({ ...operation, state }, true), false);
   }
   assert.equal(recoveryAvailable(null, true), false);
+});
+
+test('Server drain release permits an unavailable service but needs its own authoritative checks', () => {
+  const operation = { restart: true, state: 'failed', recovery: { eligible: false, releaseDrainEligible: true } };
+  assert.equal(releaseRestartDrainAvailable(operation, true), true);
+  assert.equal(releaseRestartDrainAvailable(operation, false), false);
+  assert.equal(releaseRestartDrainAvailable({ ...operation, restart: false }, true), false);
+  assert.equal(releaseRestartDrainAvailable({ ...operation, state: 'reconnecting' }, true), false);
+  assert.equal(releaseRestartDrainAvailable({ ...operation, drainReleasedAtUtc: '2026-01-01' }, true), false);
+  assert.equal(releaseRestartDrainAvailable({ ...operation, recovery: { eligible: true } }, true), false);
+  assert.equal(releaseRestartDrainAvailable(null, true), false);
 });

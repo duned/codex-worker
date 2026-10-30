@@ -6,6 +6,27 @@ public sealed class ProjectRuntimeRegistryTests
 {
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void RejectedRestartAfterExecutionCompletionDoesNotChangeLocalLifecycle(bool enabled, bool denied)
+    {
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha"))]);
+        registry.Lifecycle.SetReady();
+        Assert.True(registry.TryReserve("alpha"));
+        registry.Release("alpha");
+        var prior = registry.Lifecycle.Snapshot;
+        var policy = new ProvisioningPolicy { Enabled = enabled,
+            AllowedPrivilegedActions = [CodexProvisioning.WorkerUpdateProtocol.RestartPolicyKey],
+            DeniedActions = denied ? [CodexProvisioning.WorkerUpdateProtocol.RestartPolicyKey] : [] };
+        Assert.False(WorkerRegistrationClient.TryDrainForWorkerUpdate(registry, policy, restart: true));
+        Assert.Equal(prior, registry.Lifecycle.Snapshot);
+        Assert.True(registry.TryReserve("alpha"));
+        registry.Release("alpha");
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void RestartReservationWaitsForWorkAndPreventsDrainCancellationAndMaintenance()
     {
