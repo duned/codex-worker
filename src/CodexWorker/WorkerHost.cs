@@ -334,13 +334,16 @@ public sealed class WorkerHost
             IAgentAuthenticationProvider agentAuthentication = _agentAuthentication ?? new CodexAgentAuthenticationProvider(
                 new CodexExecutor(_runner, new CodexSettings { Model = null }), _global.Worker.PreflightTimeoutSeconds);
             var readiness = new ManagedCodexReadiness(agentAuthentication, _timeProvider);
+            var claudeReadiness = new ClaudeReadiness((executable, arguments, directory, timeout, token) =>
+                _runner.RunAsync(executable, arguments, directory, timeout, token, standardInput: ""));
+            await claudeReadiness.RefreshAsync(ct);
             var agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, false, ct);
             if (agentReady) await CodexQuotaReader.Local.ReadAsync(ct);
             var executionDependenciesReady = false;
             IReadOnlyList<string> executionReadinessBlockers = [];
             async Task PublishReadinessAsync(CancellationToken token)
             {
-                heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider").ToArray();
+                heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider" && capability.Type != "agent-readiness").Append(claudeReadiness.Observation).ToArray();
                 if (agentReady)
                     heartbeatCapabilities = heartbeatCapabilities.Append(
                         WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();
@@ -393,6 +396,7 @@ public sealed class WorkerHost
                 heartbeatCapabilities = discoveredCapabilities.Concat(heartbeatCapabilities.Where(
                     capability => capability.Type == "authentication")).Distinct().ToArray();
                 await InitializeProjectsAsync(token);
+                await claudeReadiness.RefreshAsync(token);
                 agentReady = await readiness.EvaluateAsync(_registration.InventoryDiscovery, true, token);
                 await PublishReadinessAsync(token);
             }
@@ -596,6 +600,7 @@ public sealed class WorkerHost
                     if (!observations.SequenceEqual(projectObservations))
                     {
                         projectObservations = observations;
+                        await claudeReadiness.RefreshAsync(executionToken);
                         discoveredCapabilities = await _registration.CapabilityDiscovery.RefreshAsync(executionToken);
                         validatedConfigurations.Clear();
                         heartbeatCapabilities = discoveredCapabilities;

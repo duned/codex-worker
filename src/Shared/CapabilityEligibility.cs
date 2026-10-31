@@ -44,7 +44,11 @@ public static class CapabilityEligibility
             var matching = matches.FirstOrDefault();
             if (matching is null)
             {
-                missing.Add(DescribeRequired(normalized));
+                var observation = normalized.Type == "agent-provider"
+                    ? available.FirstOrDefault(capability => capability.Type == "agent-readiness" && capability.Name == normalized.Name)
+                    : null;
+                missing.Add(observation is null ? DescribeRequired(normalized) :
+                    $"{DescribeRequired(normalized)}; execution readiness: {observation.Scope}; engine execution unsupported on this Worker");
                 continue;
             }
             if (normalized.Version is null) continue;
