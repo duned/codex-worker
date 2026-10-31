@@ -354,6 +354,7 @@ public sealed class McpOAuthTests
             var resource = await http.GetFromJsonAsync<JsonElement>("/.well-known/oauth-protected-resource/mcp");
             Assert.Equal(Origin + "/mcp", resource.GetProperty("resource").GetString());
             var fields = AuthorizationFields();
+            fields["ui_locales"] = "es-ES";
             var url = QueryHelpers.AddQueryString("/oauth/authorize", fields.Select(pair => new KeyValuePair<string, string?>(pair.Key, pair.Value)));
             using (var response = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields)))
                 Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -363,7 +364,23 @@ public sealed class McpOAuthTests
             var sessions = app.Services.GetRequiredService<AdministrationSessions>();
             var session = Assert.IsType<AdministrationSessions.Session>(sessions.Create(context));
             http.DefaultRequestHeaders.Add("Cookie", context.Response.Headers.SetCookie.ToString().Split(';')[0]);
-            Assert.Contains("Requested permissions: mcp:read", await http.GetStringAsync(url));
+            var consentHtml = await http.GetStringAsync(url);
+            Assert.Contains("Requested permissions: mcp:read", consentHtml);
+            Assert.Contains("name='ui_locales' value='es-ES'", consentHtml);
+            Assert.Contains("name='csrf' value='" + session.CsrfToken + "'", consentHtml);
+            foreach (var suffix in new[] { "&ui_locales=en", "&unknown=value" })
+            {
+                using var invalidParameter = await http.GetAsync(url + suffix);
+                Assert.Equal(HttpStatusCode.BadRequest, invalidParameter.StatusCode);
+            }
+            foreach (var locale in new[] { new string('a', 2049), "es-ES\n" })
+            {
+                var invalidFields = AuthorizationFields();
+                invalidFields["ui_locales"] = locale;
+                using var invalidLocale = await http.GetAsync(QueryHelpers.AddQueryString("/oauth/authorize",
+                    invalidFields.Select(pair => new KeyValuePair<string, string?>(pair.Key, pair.Value))));
+                Assert.Equal(HttpStatusCode.BadRequest, invalidLocale.StatusCode);
+            }
             using (var duplicate = await http.GetAsync(url + "&state=duplicate"))
                 Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
             http.DefaultRequestHeaders.Host = "attacker.example";
@@ -382,6 +399,59 @@ public sealed class McpOAuthTests
                 Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
                 fields[key] = original;
             }
+            http.DefaultRequestHeaders.Remove("Origin");
+            http.DefaultRequestHeaders.Add("Origin", "null");
+            foreach (var site in new[] { "", "same-site", "cross-site", "none", "same-origin, cross-site" })
+            {
+                http.DefaultRequestHeaders.Remove("Sec-Fetch-Site");
+                if (site.Length > 0) http.DefaultRequestHeaders.Add("Sec-Fetch-Site", site);
+                using var invalidMetadata = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Forbidden, invalidMetadata.StatusCode);
+            }
+            http.DefaultRequestHeaders.Remove("Sec-Fetch-Site");
+            http.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-origin");
+            foreach (var origin in new[] { "", "https://foreign.example", Origin + ".evil", "null, null" })
+            {
+                http.DefaultRequestHeaders.Remove("Origin");
+                if (origin.Length > 0) http.DefaultRequestHeaders.Add("Origin", origin);
+                using var invalidOrigin = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Forbidden, invalidOrigin.StatusCode);
+            }
+            http.DefaultRequestHeaders.Remove("Origin");
+            http.DefaultRequestHeaders.Add("Origin", "null");
+            using (var opaqueGet = await http.GetAsync(url)) Assert.Equal(HttpStatusCode.Forbidden, opaqueGet.StatusCode);
+            http.DefaultRequestHeaders.Host = "attacker.example";
+            using (var invalidHost = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields)))
+                Assert.Equal(HttpStatusCode.Forbidden, invalidHost.StatusCode);
+            http.DefaultRequestHeaders.Host = "server.example";
+            var cookie = http.DefaultRequestHeaders.GetValues("Cookie").Single();
+            foreach (var invalidCookie in new[] { "", sessions.CookieName + "=invalid" })
+            {
+                http.DefaultRequestHeaders.Remove("Cookie");
+                if (invalidCookie.Length > 0) http.DefaultRequestHeaders.Add("Cookie", invalidCookie);
+                using var invalidSession = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Unauthorized, invalidSession.StatusCode);
+            }
+            http.DefaultRequestHeaders.Remove("Cookie");
+            http.DefaultRequestHeaders.Add("Cookie", cookie);
+            foreach (var csrf in new[] { "", "invalid" })
+            {
+                fields.Remove("csrf");
+                if (csrf.Length > 0) fields["csrf"] = csrf;
+                using var invalidCsrf = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Forbidden, invalidCsrf.StatusCode);
+            }
+            fields["csrf"] = session.CsrfToken;
+            // The opaque-origin exception does not extend to backchannel or administration routes.
+            foreach (var route in new[] { "/oauth/token", "/oauth/revoke" })
+            {
+                using var opaqueBackchannel = await http.PostAsync(route, new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Forbidden, opaqueBackchannel.StatusCode);
+            }
+            http.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, session.CsrfToken);
+            using (var opaqueAdministration = await http.DeleteAsync("/api/v1/administration/mcp-connections/00000000000000000000000000000000"))
+                Assert.Equal(HttpStatusCode.Unauthorized, opaqueAdministration.StatusCode);
+            http.DefaultRequestHeaders.Remove(AdministrationSessions.CsrfHeader);
             using var consent = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
             Assert.Equal(HttpStatusCode.Redirect, consent.StatusCode);
             var location = Assert.IsType<Uri>(consent.Headers.Location);
@@ -427,6 +497,11 @@ public sealed class McpOAuthTests
             using var denial = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
             Assert.Contains("error=access_denied", denial.Headers.Location?.Query);
             Assert.Contains("iss=", denial.Headers.Location?.Query);
+            http.DefaultRequestHeaders.Remove("Origin");
+            http.DefaultRequestHeaders.Add("Origin", "null");
+            session.Lifetime.Cancel();
+            using (var expiredSession = await http.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields)))
+                Assert.Equal(HttpStatusCode.Unauthorized, expiredSession.StatusCode);
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }

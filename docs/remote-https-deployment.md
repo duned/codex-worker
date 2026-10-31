@@ -587,7 +587,19 @@ read-only when omitted. See [the per-tool scope table](server-mcp.md#hosting-and
 OAuth credentials do not authenticate ordinary administration APIs. Existing broad
 `mcp:admin` connections must reconnect with explicit scopes.
 
-Authorization requires an explicit decision, exact origin and session CSRF value.
+Authorization accepts optional `ui_locales` (for example `es-ES`) within the
+same single-value, length and control-character bounds as other parameters; it
+is carried through the form without changing the consent language. Unknown
+authorization parameters remain rejected.
+
+Authorization requires an explicit decision, canonical Host, live administrator
+session and matching session CSRF value. Non-null browser Origin values must
+exactly match `AdministrationOrigin`. Only the consent POST supports the opaque
+`Origin: null` browser context, and only with `Sec-Fetch-Site: same-origin`;
+missing, same-site or cross-site Fetch Metadata is rejected. Preserve these
+browser headers through the proxy; do not synthesize or rewrite them to bypass
+validation. This exception does not apply to administration APIs, token/revocation
+routes or MCP requests.
 Codes expire after five minutes and require S256 PKCE. Access tokens last ten
 minutes; refresh tokens rotate within an absolute 90-day connection lifetime.
 A refresh replaces the previous access credential. Replaying a consumed code or
@@ -622,7 +634,7 @@ allowlist separately. Paths and query strings must pass through unchanged.
 | `/.well-known/oauth-protected-resource` | GET | Public resource metadata alias |
 | `/.well-known/oauth-protected-resource/mcp` | GET | Public exact `/mcp` resource metadata |
 | `/.well-known/oauth-authorization-server` | GET | Public issuer/endpoints/PKCE metadata |
-| `/oauth/authorize` | GET, POST | Administrator browser on management network; existing dashboard session, exact Host/Origin and consent CSRF |
+| `/oauth/authorize` | GET, POST | Administrator browser on management network; existing dashboard session, canonical Host, consent Origin/Fetch Metadata checks and CSRF |
 | `/oauth/token` | POST | Public OAuth backchannel; code + S256 PKCE or rotating refresh credential, public client `none` |
 | `/oauth/revoke` | POST | Public OAuth backchannel; connection token and client ID |
 | `/mcp` | POST; GET/DELETE forwarded by example | Public transport, Server-enforced OAuth scope or existing administration authorization; stateless host needs no persistent GET/DELETE streams |

@@ -60,13 +60,20 @@ public static class McpOAuthEndpoints
     }
     private static bool BrowserAllowed(HttpContext context, AdministrationSessions sessions) =>
         !context.Request.Headers.ContainsKey("Origin") || sessions.OriginAllowed(context);
+    private static bool ConsentOriginAllowed(HttpContext context, AdministrationSessions sessions) =>
+        sessions.OriginAllowed(context) ||
+        // Opaque browser origins are supported only for consent, with affirmative same-origin
+        // Fetch Metadata. The caller still requires a live session and form CSRF token.
+        (sessions.ConfigurationFailure(context) is null && context.Request.Headers.Origin.ToString() == "null" &&
+            context.Request.Headers["Sec-Fetch-Site"].ToString() == "same-origin");
     private static async Task<IResult> AuthorizeAsync(HttpContext context, ServerConfiguration configuration,
         AdministrationSessions sessions, McpOAuthClients clients, McpOAuthStore store)
     {
         var issuer = Issuer(configuration);
         if (issuer is null) return Results.NotFound();
-        if (sessions.ConfigurationFailure(context) is not null || !BrowserAllowed(context, sessions)) return Results.StatusCode(403);
         var mutation = HttpMethods.IsPost(context.Request.Method);
+        if (sessions.ConfigurationFailure(context) is not null ||
+            !(BrowserAllowed(context, sessions) || mutation && ConsentOriginAllowed(context, sessions))) return Results.StatusCode(403);
         var session = sessions.Validate(context);
         // Navigation from another site does not carry the Strict cookie. A same-site continuation
         // retains the request while the administrator uses the existing dashboard login in another tab.
@@ -74,7 +81,7 @@ public static class McpOAuthEndpoints
             return mutation ? Results.Unauthorized() : Html("<h1>Administrator session required</h1><p>Sign in through the existing Server dashboard, then continue.</p><a href='/home' target='_blank' rel='noopener'>Open dashboard</a> <a href='" + WebUtility.HtmlEncode(context.Request.Path + context.Request.QueryString) + "'>Continue authorization</a>");
         if (context.Request.QueryString.Value?.Length > 8192) return Error();
         var form = mutation ? await FormAsync(context) : null;
-        if (mutation && (form is null || !sessions.OriginAllowed(context) ||
+        if (mutation && (form is null || !ConsentOriginAllowed(context, sessions) ||
             !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(form["csrf"].ToString()), Encoding.UTF8.GetBytes(session.CsrfToken))))
             return Results.StatusCode(403);
         IEnumerable<KeyValuePair<string, StringValues>> fields = mutation && form is not null ? form : context.Request.Query;
@@ -82,7 +89,7 @@ public static class McpOAuthEndpoints
         string Get(string key) => values.GetValueOrDefault(key, "");
         if ((!mutation && (values.ContainsKey("csrf") || values.ContainsKey("decision"))) ||
             (mutation && context.Request.Query.Count != 0)) return Error();
-        if (!Single(fields, "client_id", "redirect_uri", "resource", "response_type", "scope", "state", "code_challenge", "code_challenge_method", "csrf", "decision") ||
+        if (!Single(fields, "client_id", "redirect_uri", "resource", "response_type", "scope", "state", "code_challenge", "code_challenge_method", "ui_locales", "csrf", "decision") ||
             Get("response_type") != "code" || Get("resource") != issuer + "/mcp" || Get("state").Length is < 1 or > 1024 ||
             Get("code_challenge_method") != "S256" || Get("code_challenge").Length != 43 ||
             !Get("code_challenge").All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')) return Error();

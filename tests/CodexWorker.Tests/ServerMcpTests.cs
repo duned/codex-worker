@@ -48,6 +48,11 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Add("Origin", "https://untrusted.example");
             using (var denied = await client.GetAsync("/mcp")) Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
             client.DefaultRequestHeaders.Remove("Origin");
+            client.DefaultRequestHeaders.Add("Origin", "null");
+            client.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-origin");
+            using (var opaqueOrigin = await client.GetAsync("/mcp")) Assert.Equal(HttpStatusCode.Forbidden, opaqueOrigin.StatusCode);
+            client.DefaultRequestHeaders.Remove("Origin");
+            client.DefaultRequestHeaders.Remove("Sec-Fetch-Site");
             using (var oversized = await client.PostAsync("/mcp", new StringContent(new string(' ', 17 * 1024))))
                 Assert.Equal(HttpStatusCode.RequestEntityTooLarge, oversized.StatusCode);
 
