@@ -75,7 +75,7 @@ public sealed class WorkerCapabilityDiscoveryTests
         await discovery.GetCachedAsync();
         await discovery.GetCachedAsync();
 
-        Assert.Equal(14, calls);
+        Assert.Equal(16, calls);
     }
 
     [Trait("TestType", "Unit")]

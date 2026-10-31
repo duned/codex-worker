@@ -44,14 +44,18 @@ public sealed class WorkerCredentialCliTests
         Assert.Empty(git.AuthenticationDependencies);
         Assert.Null(git.Authentication);
         Assert.True(git.Ready);
-        Assert.Equal(6, result.Credentials.Count);
-        foreach (var id in new[] { "github-cli", "codex-cli" })
+        Assert.Equal(7, result.Credentials.Count);
+        foreach (var id in new[] { "github-cli", "codex-cli", "claude-cli" })
         {
             var item = Assert.Single(result.Credentials, item => item.CapabilityId == id);
             Assert.Equal(InstallationState.Installed, item.Installation);
             Assert.Equal(RequirementState.Required, item.Authentication);
-            Assert.Equal(id == "github-cli" ? AuthenticationDependencyKind.GitHubCliLogin : AuthenticationDependencyKind.CodexCliLogin,
-                Assert.Single(item.AuthenticationDependencies));
+            Assert.Equal(id switch
+            {
+                "github-cli" => AuthenticationDependencyKind.GitHubCliLogin,
+                "claude-cli" => AuthenticationDependencyKind.ClaudeCliAuthentication,
+                _ => AuthenticationDependencyKind.CodexCliLogin
+            }, Assert.Single(item.AuthenticationDependencies));
             Assert.False(item.Ready);
         }
         foreach (var id in new[] { "dotnet-sdk", "dotnet-runtime", "docker" })

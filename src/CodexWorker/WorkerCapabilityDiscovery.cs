@@ -14,6 +14,7 @@ public sealed class WorkerCapabilityDiscovery
         ("tool", "github-cli", "gh", ["--version"]),
         ("tool", "docker", "docker", ["--version"]),
         ("tool", "postgresql", "psql", ["--version"]),
+        ("tool", "claude-cli", CodexProvisioning.ClaudeServiceEnvironment.Executable, ["--version"]),
         ("tool", "codex-cli", "codex", ["--version"])
     ];
 

@@ -7,6 +7,7 @@ internal static class AuthenticationDependencyProbes
     {
         AuthenticationDependencyKind.GitHubCliLogin => new("gh", ["auth", "status", "--hostname", "github.com"]),
         AuthenticationDependencyKind.CodexCliLogin => new(CodexServiceEnvironment.Executable, ["login", "status"]),
+        AuthenticationDependencyKind.ClaudeCliAuthentication => new(ClaudeServiceEnvironment.Executable, ["auth", "status"]),
         _ => throw new InvalidOperationException("Unsupported authentication dependency.")
     };
 }

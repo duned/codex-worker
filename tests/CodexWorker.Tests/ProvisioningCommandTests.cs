@@ -80,7 +80,13 @@ public sealed class ProvisioningCommandTests
             if (definition.RequiresAuthentication)
             {
                 Assert.Contains("checkauthentication", capability.AvailableActions);
-                Assert.Contains("logout", capability.AvailableActions);
+                if (definition.Id == "claude-cli")
+                {
+                    Assert.DoesNotContain("login", capability.AvailableActions);
+                    Assert.DoesNotContain("logout", capability.AvailableActions);
+                }
+                else
+                    Assert.Contains("logout", capability.AvailableActions);
             }
             if (definition.RequiresConfiguration)
                 Assert.Contains("checkconfiguration", capability.AvailableActions);

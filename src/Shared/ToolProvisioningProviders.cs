@@ -26,6 +26,7 @@ internal static class ToolProvisioningProviders
         "git" => "/usr/bin/git",
         "github-cli" => "/usr/bin/gh",
         "codex-cli" => "/usr/local/bin/codex",
+        "claude-cli" => ClaudeServiceEnvironment.Executable,
         "dotnet-sdk" or "dotnet-runtime" => "/usr/bin/dotnet",
         "docker" => "/usr/bin/docker",
         _ => throw new InvalidOperationException("Unsupported managed tool.")
@@ -63,6 +64,10 @@ internal static class ToolProvisioningProviders
     internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action,
         bool npmAvailable = false)
     {
+        if (id == "claude-cli")
+            return [new("/usr/bin/npm", ["install", "--global", "--prefix", ClaudeServiceEnvironment.Prefix,
+                "--registry", NpmRegistry, "--userconfig", "/dev/null", "@anthropic-ai/claude-code@latest"],
+                ProvisioningProviderStep.ClaudePackageInstall)];
         var dockerConfiguration = new ToolProvisioningStep(DockerHelper, ["configure"],
             ProvisioningProviderStep.DockerDaemonConfiguration, RequiresElevation: true);
         if (action == ProvisioningCommandAction.Configure)

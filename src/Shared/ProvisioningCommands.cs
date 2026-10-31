@@ -13,7 +13,7 @@ public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, 
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
 public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
-public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions, DockerDaemonConfiguration }
+public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions, DockerDaemonConfiguration, ClaudePackageInstall }
 
 /// <summary>Safe, bounded failure context. It contains no process output or caller-controlled text.</summary>
 public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int? ProcessExitCode = null,
@@ -48,6 +48,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningProviderStep.AptRuntimeInstall => "install the Node.js and npm runtime",
         ProvisioningProviderStep.AptPackageInstall => "install the managed apt package",
         ProvisioningProviderStep.AptPackageRemoval => "remove the managed apt package",
+        ProvisioningProviderStep.ClaudePackageInstall => "install Claude Code under the service user home with npm",
         ProvisioningProviderStep.NpmPackageInstall => "install @openai/codex with npm",
         ProvisioningProviderStep.NpmPackageRemoval => "remove @openai/codex with npm",
         ProvisioningProviderStep.DockerDaemonConfiguration => "configure fixed Worker Docker daemon access",
@@ -97,8 +98,10 @@ public static class ProvisioningCommandProtocol
     {
         ProvisioningCommandAction.Detect => true,
         ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli",
-        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => ToolProvisioningProviders.AptPackage(request.CapabilityId) is not null || request.CapabilityId == "codex-cli",
-        ProvisioningCommandAction.CheckAuthentication or ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
+        ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => ToolProvisioningProviders.AptPackage(request.CapabilityId) is not null || request.CapabilityId == "codex-cli" ||
+            request.CapabilityId == "claude-cli" && request.Action != ProvisioningCommandAction.Uninstall,
+        ProvisioningCommandAction.CheckAuthentication => request.CapabilityId is "github-cli" or "codex-cli" or "claude-cli",
+        ProvisioningCommandAction.Logout => request.CapabilityId is "github-cli" or "codex-cli",
         ProvisioningCommandAction.Configure => request.CapabilityId == "docker",
         ProvisioningCommandAction.CheckConfiguration => request.CapabilityId is "git" or "docker",
         ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey or
@@ -224,7 +227,8 @@ public sealed partial class NodeProvisioningCommandExecutor
             if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure)
             {
                 if (!_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-                if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+                if (request.CapabilityId == "claude-cli" && !_npmAvailable()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+                if (request.CapabilityId != "claude-cli" && !request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
                 var before = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
                 if (request.CapabilityId == "codex-cli" && request.Action == ProvisioningCommandAction.Uninstall &&
                     !_npmAvailable() && before.Single(state => state.Id == request.CapabilityId).Installation == InstallationState.Missing)
@@ -293,7 +297,7 @@ public sealed partial class NodeProvisioningCommandExecutor
             }
             else
             {
-                executable = request.CapabilityId == "codex-cli" ? CodexServiceEnvironment.Executable
+                executable = request.CapabilityId == "claude-cli" ? ClaudeServiceEnvironment.Executable : request.CapabilityId == "codex-cli" ? CodexServiceEnvironment.Executable
                     : CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
                 arguments = request.Action switch
                 {

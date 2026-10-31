@@ -56,7 +56,7 @@ public sealed class ProvisioningPlanExecutorTests
         Assert.Equal("Completed", result.State);
         Assert.Equal("Completed", reports[^1].State);
         Assert.Equal(new[] { "git", "refresh" }, reports.Where(report => report.State == "Running").Select(report => report.CurrentActionId));
-        Assert.Equal(14, discoveryCalls);
+        Assert.Equal(16, discoveryCalls);
     }
 
     [Trait("TestType", "Component")]
