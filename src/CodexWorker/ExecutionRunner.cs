@@ -54,7 +54,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (context.RetryOf is { } source && source.Engine != identity)
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: "The preserved execution engine differs from the selected engine."));
-            var engine = (engines ?? new ImplementationEngineSelector()).Select(identity, executionCodex);
+            var engine = (engines ?? new ImplementationEngineSelector(settings: config.Codex)).Select(identity, executionCodex);
             if (engine is null)
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: $"Execution engine '{identity}' is unavailable on this Worker."));

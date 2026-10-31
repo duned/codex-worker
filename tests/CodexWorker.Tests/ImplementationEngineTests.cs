@@ -8,13 +8,15 @@ public sealed class ImplementationEngineTests
     [Fact]
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
-    public void DefaultIsCodexAndUnavailableEngineNeverFallsBack()
+    public void DefaultRegistersClaudeAndUnavailableEngineNeverFallsBack()
     {
         var selector = new ImplementationEngineSelector();
         Assert.True(selector.IsAvailable("codex"));
-        Assert.False(selector.IsAvailable("ccc"));
+        Assert.True(selector.IsAvailable("ccc"));
         Assert.Equal("codex", selector.Select("codex", new Executor())?.Identity);
-        Assert.Null(selector.Select("ccc", new Executor()));
+        Assert.IsType<ClaudeImplementationEngine>(selector.Select("ccc", new Executor()));
+        Assert.Null(selector.Select("unknown", new Executor()));
+        Assert.Null(new ImplementationEngineSelector([]).Select("ccc", new Executor()));
     }
 
     [Fact]

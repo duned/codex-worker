@@ -344,6 +344,8 @@ public sealed class WorkerHost
             async Task PublishReadinessAsync(CancellationToken token)
             {
                 heartbeatCapabilities = heartbeatCapabilities.Where(capability => capability.Type != "agent-provider" && capability.Type != "agent-readiness").Append(claudeReadiness.Observation).ToArray();
+                if (claudeReadiness.Observation.Scope == "ready")
+                    heartbeatCapabilities = heartbeatCapabilities.Append(new WorkerCapabilityContract("agent-provider", "ccc")).ToArray();
                 if (agentReady)
                     heartbeatCapabilities = heartbeatCapabilities.Append(
                         WorkerAgentCapabilities.AuthenticatedProvider(agentAuthentication.Provider)).Distinct().ToArray();

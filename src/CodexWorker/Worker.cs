@@ -88,7 +88,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             try
             {
                 var selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body);
-                if (!(engines ?? new ImplementationEngineSelector()).IsAvailable(selection.Engine))
+                if (!(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(selection.Engine))
                 {
                     _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · engine {selection.Engine} is unavailable on this Worker; leaving Issue ready.");
                     continue;
@@ -389,7 +389,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         catch (InvalidDataException ex) { throw new IssuePreparationRejectedException(ex.Message); }
         if (CodexProvisioning.IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
             throw new IssuePreparationRejectedException(selectionError);
-        if (!(engines ?? new ImplementationEngineSelector()).IsAvailable(selection.Engine))
+        if (!(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(selection.Engine))
             throw new IssuePreparationRejectedException($"Execution engine '{selection.Engine}' is unavailable on this Worker.");
         if (selection.Engine != assignment.Work.Selection.Engine)
             throw new IssuePreparationRejectedException("Issue execution metadata changed after Server queueing; refresh the execution request before assigning it again.");

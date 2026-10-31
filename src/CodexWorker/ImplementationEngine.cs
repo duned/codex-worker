@@ -25,10 +25,10 @@ public interface IImplementationEngine
 }
 
 /// <summary>Selects an explicitly registered engine; unavailable identities never fall back to Codex.</summary>
-public sealed class ImplementationEngineSelector(IEnumerable<IImplementationEngine>? engines = null)
+public sealed class ImplementationEngineSelector(IEnumerable<IImplementationEngine>? engines = null, CodexSettings? settings = null)
 {
     private readonly IReadOnlyDictionary<string, IImplementationEngine> _engines =
-        (engines ?? []).ToDictionary(engine => engine.Identity, StringComparer.Ordinal);
+        (engines ?? [new ClaudeImplementationEngine(new ProcessRunner(), settings ?? new CodexSettings())]).ToDictionary(engine => engine.Identity, StringComparer.Ordinal);
 
     public bool IsAvailable(string identity) => identity == "codex" || _engines.ContainsKey(identity);
 

@@ -5,6 +5,41 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerV011Tests
 {
+    [Theory]
+    [InlineData(false, IssueOutcomeKind.Succeeded, 2)]
+    [InlineData(true, IssueOutcomeKind.Failed, 3)]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ClaudeProcessUsesAuthoritativeValidationAndBoundedRepairs(bool exhausted, IssueOutcomeKind expected, int invocations)
+    {
+        var calls = 0;
+        var engine = new ClaudeImplementationEngine((args, _, input, _, _, _) =>
+        {
+            if (args[0] == "--version") return Task.FromResult(new ProcessResult(0, "2.1.259 (Claude Code)", ""));
+            if (args[0] == "--help") return Task.FromResult(new ProcessResult(0,
+                "--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence", ""));
+            calls++;
+            Assert.Contains("test instructions", input);
+            return Task.FromResult(new ProcessResult(0,
+                """{"type":"result","is_error":false,"structured_output":{"status":"success","summary":"implemented","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}}""", ""));
+        }, new CodexSettings());
+        using var h = new Harness(engine: engine);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low" };
+        h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+        if (exhausted)
+        {
+            h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+            h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+        }
+        else h.Validation.Results.Enqueue(ValidationResult.Success);
+        Assert.Equal(expected, (await h.ProcessOneAsync())?.Kind);
+        Assert.Equal(invocations, calls);
+        Assert.Equal(invocations, h.Validation.Calls);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Empty(h.Codex.RepairAttempts);
+        Assert.Equal(exhausted ? 0 : 1, h.Git.Integrations);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
@@ -2851,7 +2886,7 @@ public sealed class WorkerV011Tests
             else _telegram = new TelegramNotifier(false, output);
             Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history,
                 operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default, timeProvider: timeProvider,
-                engines: engine is null ? null : new ImplementationEngineSelector([engine]));
+                engines: new ImplementationEngineSelector(engine is null ? [] : [engine]));
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];
