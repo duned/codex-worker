@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
@@ -21,6 +22,172 @@ public sealed class McpOAuthTests
     private const string Redirect = "https://client.example/callback";
     private const string Verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
     private static string Challenge => WebEncoders.Base64UrlEncode(SHA256.HashData(Encoding.ASCII.GetBytes(Verifier)));
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ServerHostOAuthSessionDiscoversToolsEnforcesScopesRefreshesAndRevokes()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "host-oauth-test-management");
+        try
+        {
+            // Only outbound CIMD retrieval is stubbed; all protocol requests use the real host.
+            using var metadataHttp = new HttpClient(new MetadataHandler());
+            var clients = new McpOAuthClients(metadataHttp, new() { OAuthClientMetadataOrigins = ["https://client.example"] });
+            await using var app = await ServerApplication.BuildAsync(
+                ["--Server:ListenUrl=http://127.0.0.1:5090", $"--Server:DatabasePath={Path.Combine(directory.Path, "host.db")}",
+                 $"--Server:AdministrationOrigin={Origin}", "--Server:OAuthClientMetadataOrigins:0=https://client.example",
+                 "--Logging:LogLevel:Default=Warning"],
+                githubReadService: new AlwaysEligibleServerGitHubReadService(), oauthClients: clients);
+            app.Urls.Clear();
+            app.Urls.Add("http://127.0.0.1:0");
+            await app.StartAsync();
+            using var browser = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
+                { BaseAddress = new Uri(Assert.Single(app.Urls)), Timeout = TimeSpan.FromSeconds(15) };
+            browser.DefaultRequestHeaders.Host = "server.example";
+            using var http = new HttpClient { BaseAddress = browser.BaseAddress, Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/event-stream");
+            using (var challenge = await http.PostAsJsonAsync("/mcp", new { jsonrpc = "2.0", id = 1, method = "tools/list" }))
+            {
+                Assert.Equal(HttpStatusCode.Unauthorized, challenge.StatusCode);
+                Assert.Contains(Origin + "/.well-known/oauth-protected-resource/mcp", challenge.Headers.WwwAuthenticate.ToString(), StringComparison.Ordinal);
+                Assert.Equal("no-store", challenge.Headers.CacheControl?.ToString());
+            }
+            using var resourceResponse = await http.GetAsync("/.well-known/oauth-protected-resource/mcp");
+            var resource = await resourceResponse.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(Origin + "/mcp", resource.GetProperty("resource").GetString());
+            Assert.Equal(Origin, Assert.Single(resource.GetProperty("authorization_servers").EnumerateArray()).GetString());
+            var metadata = await http.GetFromJsonAsync<JsonElement>("/.well-known/oauth-authorization-server");
+            Assert.Equal(Origin, metadata.GetProperty("issuer").GetString());
+            Assert.Equal(Origin + "/oauth/authorize", metadata.GetProperty("authorization_endpoint").GetString());
+            Assert.Equal(Origin + "/oauth/token", metadata.GetProperty("token_endpoint").GetString());
+            Assert.Equal(Origin + "/oauth/revoke", metadata.GetProperty("revocation_endpoint").GetString());
+            Assert.Contains("S256", metadata.GetProperty("code_challenge_methods_supported").EnumerateArray().Select(x => x.GetString()));
+            Assert.True(metadata.GetProperty("client_id_metadata_document_supported").GetBoolean());
+
+            var fields = AuthorizationFields();
+            var authorizeUrl = QueryHelpers.AddQueryString("/oauth/authorize", fields.Select(x => new KeyValuePair<string, string?>(x.Key, x.Value)));
+            Assert.Contains("Administrator session required", await browser.GetStringAsync(authorizeUrl));
+            using (var unauthenticated = await browser.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields)))
+                Assert.Equal(HttpStatusCode.Unauthorized, unauthenticated.StatusCode);
+            browser.DefaultRequestHeaders.Add("Origin", Origin);
+            browser.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "host-oauth-test-management");
+            using var login = await browser.PostAsync("/api/v1/administration/session", null);
+            Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+            var session = await login.Content.ReadFromJsonAsync<JsonElement>();
+            browser.DefaultRequestHeaders.Authorization = null;
+            browser.DefaultRequestHeaders.Add("Cookie", Assert.Single(login.Headers.GetValues("Set-Cookie")).Split(';')[0]);
+            fields["csrf"] = session.GetProperty("csrfToken").GetString() ?? throw new InvalidOperationException("Missing CSRF token.");
+            fields["decision"] = "allow";
+
+            var store = app.Services.GetRequiredService<IRegistryStore>();
+            var project = await store.CreateProjectAsync(new("OAuth test", "example/repo", "main", "Controlled OAuth session test"));
+            var execution = await store.EnqueueExecutionAsync(new(project.Id, new("issue", "42")));
+            var cancelArguments = new { executionRequestId = execution.Id };
+            // A second, explicit consent is required to gain write scope; refresh cannot escalate.
+            foreach (var scopes in new[] { ServerMcpScopes.Read, ServerMcpScopes.Read + " " + ServerMcpScopes.Write })
+            {
+                fields["scope"] = scopes;
+                var consentUrl = QueryHelpers.AddQueryString("/oauth/authorize", AuthorizationFields()
+                    .Select(x => new KeyValuePair<string, string?>(x.Key, x.Key == "scope" ? scopes : x.Value)));
+                Assert.Contains("Requested permissions: " + scopes, await browser.GetStringAsync(consentUrl));
+                using var consent = await browser.PostAsync("/oauth/authorize", new FormUrlEncodedContent(fields));
+                Assert.Equal(HttpStatusCode.Redirect, consent.StatusCode);
+                Assert.Equal("no-store", consent.Headers.CacheControl?.ToString());
+                var callback = Assert.IsType<Uri>(consent.Headers.Location);
+                Assert.Equal(Redirect, callback.GetLeftPart(UriPartial.Path));
+                var query = QueryHelpers.ParseQuery(callback.Query);
+                Assert.Equal("opaque-state", query["state"]);
+                Assert.Equal(Origin, query["iss"]);
+                using var exchange = await http.PostAsync("/oauth/token", new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "authorization_code", ["client_id"] = Client, ["redirect_uri"] = Redirect,
+                    ["resource"] = Origin + "/mcp", ["code"] = query["code"].ToString(), ["code_verifier"] = Verifier
+                }));
+                Assert.Equal(HttpStatusCode.OK, exchange.StatusCode);
+                Assert.Equal("no-store", exchange.Headers.CacheControl?.ToString());
+                var tokens = Assert.IsType<McpOAuthStore.Tokens>(await exchange.Content.ReadFromJsonAsync<McpOAuthStore.Tokens>());
+                Assert.Equal(scopes, tokens.scope);
+                using var refreshed = await http.PostAsync("/oauth/token", new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "refresh_token", ["client_id"] = Client, ["resource"] = Origin + "/mcp",
+                    ["refresh_token"] = tokens.refresh_token
+                }));
+                Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokens.access_token);
+                using (var replaced = await http.GetAsync("/mcp")) Assert.Equal(HttpStatusCode.Unauthorized, replaced.StatusCode);
+                var rotated = Assert.IsType<McpOAuthStore.Tokens>(await refreshed.Content.ReadFromJsonAsync<McpOAuthStore.Tokens>());
+                Assert.NotEqual(tokens.refresh_token, rotated.refresh_token);
+                Assert.Equal(scopes, rotated.scope);
+                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rotated.access_token);
+                var initialized = await RpcAsync(http, "initialize", new
+                {
+                    protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "controlled-oauth-client", version = "1" }
+                });
+                Assert.Equal("Codex Server", initialized.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString());
+                http.DefaultRequestHeaders.Remove("MCP-Protocol-Version");
+                http.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
+                var discovery = await RpcAsync(http, "tools/list", new { });
+                var tools = discovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
+                var cancel = Assert.Single(tools, t => t.GetProperty("name").GetString() == "cancel_execution");
+                Assert.False(cancel.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean());
+                Assert.True(cancel.GetProperty("annotations").GetProperty("destructiveHint").GetBoolean());
+                Assert.False(cancel.GetProperty("annotations").GetProperty("openWorldHint").GetBoolean());
+                var scheme = Assert.Single(cancel.GetProperty("_meta").GetProperty("securitySchemes").EnumerateArray());
+                Assert.Equal("oauth2", scheme.GetProperty("type").GetString());
+                Assert.Equal(ServerMcpScopes.Write, Assert.Single(scheme.GetProperty("scopes").EnumerateArray()).GetString());
+                var health = await RpcAsync(http, "tools/call", new { name = "server_health", arguments = new { } });
+                using var healthBody = JsonDocument.Parse(health.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString() ?? "null");
+                Assert.True(healthBody.RootElement.GetProperty("persistenceAvailable").GetBoolean());
+                var called = (await RpcAsync(http, "tools/call", new { name = "cancel_execution", arguments = cancelArguments })).GetProperty("result");
+                if (scopes == ServerMcpScopes.Read)
+                {
+                    Assert.True(called.GetProperty("isError").GetBoolean());
+                    var denied = Assert.Single(called.GetProperty("_meta").GetProperty("mcp/www_authenticate").EnumerateArray()).GetString();
+                    Assert.Contains("insufficient_scope", denied, StringComparison.Ordinal);
+                    Assert.Contains("scope=\"mcp:write\"", denied, StringComparison.Ordinal);
+                    Assert.Equal("Queued", (await store.GetExecutionAsync(execution.Id))?.State);
+                }
+                else
+                {
+                    Assert.False(called.TryGetProperty("isError", out var error) && error.GetBoolean());
+                    using var result = JsonDocument.Parse(called.GetProperty("content")[0].GetProperty("text").GetString() ?? "null");
+                    Assert.Equal("accepted", result.RootElement.GetProperty("outcome").GetString());
+                    Assert.Equal("Cancelled", (await store.GetExecutionAsync(execution.Id))?.State);
+                }
+                // Scoped OAuth credentials cannot administer connections.
+                using (var management = await http.GetAsync("/api/v1/administration/mcp-connections"))
+                    Assert.Equal(HttpStatusCode.Unauthorized, management.StatusCode);
+                http.DefaultRequestHeaders.Authorization = null;
+                using var revoked = await http.PostAsync("/oauth/revoke", new FormUrlEncodedContent(new Dictionary<string, string>
+                    { ["token"] = rotated.refresh_token, ["client_id"] = Client }));
+                Assert.Equal(HttpStatusCode.OK, revoked.StatusCode);
+                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rotated.access_token);
+                using (var rejected = await http.GetAsync("/mcp")) Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+                http.DefaultRequestHeaders.Authorization = null;
+                using var revokedRefresh = await http.PostAsync("/oauth/token", new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "refresh_token", ["client_id"] = Client, ["resource"] = Origin + "/mcp", ["refresh_token"] = rotated.refresh_token
+                }));
+                Assert.Equal(HttpStatusCode.BadRequest, revokedRefresh.StatusCode);
+            }
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    private static async Task<JsonElement> RpcAsync(HttpClient http, string method, object parameters)
+    {
+        using var response = await http.PostAsJsonAsync("/mcp", new { jsonrpc = "2.0", id = 1, method, @params = parameters });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        var json = response.Content.Headers.ContentType?.MediaType == "text/event-stream"
+            ? body.Split('\n').Last(line => line.StartsWith("data: ", StringComparison.Ordinal))[6..] : body;
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
 
     [Fact]
     [Trait("TestType", "Integration")]

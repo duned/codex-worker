@@ -609,3 +609,55 @@ URL logging disabled in additional proxies and tracing: authorization URLs and
 redirect Locations carry transient OAuth data. The Server suppresses framework
 request URL and redirect Location diagnostics, and the example proxy retains no
 request logs.
+
+#### OAuth/MCP proxy route review
+
+Use the checked-in [Nginx configuration](../packaging/linux/nginx/codex-server.conf)
+as the route policy reference. Add only the following MCP/OAuth exceptions to an
+existing deployment's dashboard protection; retain the existing Worker protocol
+allowlist separately. Paths and query strings must pass through unchanged.
+
+| Route | Methods | Reachability / authentication |
+| --- | --- | --- |
+| `/.well-known/oauth-protected-resource` | GET | Public resource metadata alias |
+| `/.well-known/oauth-protected-resource/mcp` | GET | Public exact `/mcp` resource metadata |
+| `/.well-known/oauth-authorization-server` | GET | Public issuer/endpoints/PKCE metadata |
+| `/oauth/authorize` | GET, POST | Administrator browser on management network; existing dashboard session, exact Host/Origin and consent CSRF |
+| `/oauth/token` | POST | Public OAuth backchannel; code + S256 PKCE or rotating refresh credential, public client `none` |
+| `/oauth/revoke` | POST | Public OAuth backchannel; connection token and client ID |
+| `/mcp` | POST; GET/DELETE forwarded by example | Public transport, Server-enforced OAuth scope or existing administration authorization; stateless host needs no persistent GET/DELETE streams |
+| `/api/v1/administration/mcp-connections` and `/{id}` | GET list, DELETE selected ID | Management network and existing administrator authentication/CSRF; never public exceptions |
+
+The example protects the dashboard with the management-network gate plus Server
+login. If an installation also uses Nginx Basic auth for the dashboard, retain it
+on the dashboard, consent and administration locations. Scope any `auth_basic off`
+exception to the exact public method/path pairs above, not `/`, `/oauth/` or all
+`/.well-known/` paths. ChatGPT cannot satisfy that dashboard Basic-auth challenge
+on its backchannel. Proxy exposure does not make MCP anonymous: preserve its
+OAuth Bearer header and let Server enforce scopes, including writes. Do not
+replace the Bearer header with a proxy credential or inject a management token.
+
+Keep valid public HTTPS, canonical SNI/Host rejection and the fixed upstream Host
+matching `AdministrationOrigin`. Keep backend loopback binding; never trust
+caller-supplied forwarded host/origin headers. Preserve browser Origin, cookies,
+CSRF, and MCP `Authorization`, `Accept`, `Content-Type`, `MCP-Protocol-Version`.
+Do not rewrite OAuth errors or redirects into dashboard HTML. Consent stays
+reachable to the administrator through the management network; ChatGPT does not
+need backchannel access to dashboard login.
+
+Retain the example's 4 MiB proxy body ceiling (Server independently caps OAuth/MCP
+requests at 16 KiB), 10 second header, 30 second body/send/keepalive timeouts,
+5 second upstream connect, 30 second upstream send and 180 second upstream read
+timeouts. Keep connection/rate limits, disabled buffering/caching/storage and
+`proxy_next_upstream off`; never replay token exchanges or writes automatically.
+Set `Cache-Control: no-store`, `Pragma: no-cache`, `Expires: 0` on success and error
+responses, including discovery and proxy-generated errors, and strip conditional
+cache headers/validators as in the example. Avoid all URL/body/Location logging
+at every intermediary. These routes need no open-ended timeouts or cache bypass
+workaround. Validate with `nginx -t` before a controlled reload.
+
+For ChatGPT connection steps, scope troubleshooting, connection identification,
+per-connection revocation and the optional live checklist, follow
+[ChatGPT Plugins OAuth connection](server-mcp.md#chatgpt-plugins-oauth-connection).
+The automated Server-host test uses controlled local credentials and does not
+prove this deployment's proxy, public TLS or live ChatGPT account integration.

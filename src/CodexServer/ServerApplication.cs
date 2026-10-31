@@ -59,7 +59,7 @@ public static partial class ServerApplication
 
     public static async Task<WebApplication> BuildAsync(string[] args, CancellationToken cancellationToken = default,
         NodeCapabilityDiscovery? capabilityDiscovery = null, IServerGitHubReadService? githubReadService = null,
-        IServerGitHubIssueWriteService? githubIssueWriteService = null)
+        IServerGitHubIssueWriteService? githubIssueWriteService = null, McpOAuthClients? oauthClients = null)
     {
         // Verify product assets before opening persistent services.
         var preview = EmbeddedDashboardAssets.LoadDevelopmentOverride();
@@ -75,8 +75,11 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<AdministrationSessions>();
         builder.Services.AddServerMcp();
-        builder.Services.AddHttpClient<McpOAuthClients>(client => client.Timeout = TimeSpan.FromSeconds(10))
-            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, UseDefaultCredentials = false });
+        if (oauthClients is not null)
+            builder.Services.AddSingleton(oauthClients);
+        else
+            builder.Services.AddHttpClient<McpOAuthClients>(client => client.Timeout = TimeSpan.FromSeconds(10))
+                .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, UseDefaultCredentials = false });
         builder.Services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

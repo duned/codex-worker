@@ -32,7 +32,130 @@ Claude custom connectors with **Request headers** support can use the same HTTPS
 
 OpenAI API applications can connect through a remote MCP tool with `server_url` set to the HTTPS `/mcp` URL, `server_label` set to a chosen name, and `authorization` populated at runtime from the management-token secret. Keep the API's normal approval policy. See [OpenAI remote MCP tools](https://developers.openai.com/api/docs/guides/tools-connectors-mcp).
 
-**ChatGPT browser custom connectors cannot connect directly using this static bearer flow.** Their documented authentication choices are OAuth or anonymous access; this Server provides neither an OAuth issuer nor anonymous MCP tools. Use a bearer-capable client/API integration for this endpoint. Direct ChatGPT browser support requires an explicitly designed integration with the Server authorization model; do not paste the token into connector URLs or choose “No authentication.” See [ChatGPT custom MCP setup](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+### ChatGPT Plugins OAuth connection
+
+Use this flow for ChatGPT; no Server management token is entered into ChatGPT.
+First complete [the HTTPS/OAuth deployment setup](remote-https-deployment.md#chatgpt-mcp-oauth-connections),
+including `AdministrationOrigin`, public TLS/proxy routing and the trusted CIMD
+origin `https://chatgpt.com`. The administrator's browser needs management-network
+access for dashboard login and consent; ChatGPT's backchannel needs public access
+to discovery, token, revocation and MCP routes.
+
+In **ChatGPT Plugins**, select **+ → Add custom MCP server**, give the connection
+a name and description, and enter the exact public endpoint, for example
+`https://codex-server.example.com/mcp` (replace only the deployment hostname).
+Choose **OAuth**, using discovered CIMD/public-client authentication (`none`),
+review the warning and select **Create as a plugin**. Server supports CIMD, not
+DCR or client secrets. Account/workspace policy may restrict this option. These
+steps follow the [official OpenAI connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+and [OAuth reference](https://developers.openai.com/plugins/build/auth).
+
+Start with **`mcp:read` only**. Review the requested scope on the Server consent
+page before allowing; cancel if broader permissions are requested unexpectedly.
+Sign into the Server dashboard as administrator on the management network, then
+return to consent and select **Continue authorization** if the cross-site
+navigation omitted the Strict session cookie. Check the displayed client ID,
+exact redirect URI and scopes, then **Allow connection**. Never approve an
+unrecognized client or callback. The redirect must match the fetched CIMD document;
+do not substitute a guessed ChatGPT callback. The Server returns `state` and `iss`
+with the authorization code; ChatGPT exchanges it using S256 PKCE.
+
+Review discovered tools, start a new conversation, select the plugin with `@`,
+and ask: “Call server_health only and report persistence readiness; do not change
+anything.” Then optionally request `list_projects`. Tool discovery includes all
+tools even for a read-only grant; visibility does not grant permission to call
+them. `mcp:write` and `mcp:maintain` are independent additions, not implied by
+read access. See the scope table above. Change scopes only through a new,
+explicit administrator consent; refresh cannot increase or reduce the approved
+scope set. This Server does not accept `openid` or `offline_access`; its refresh
+token is issued with the approved MCP scopes.
+
+Mutations advertise `readOnlyHint: false`, their existing `destructiveHint` and
+OAuth scope metadata. Keep ChatGPT's write confirmation enabled and inspect the
+actual action and target before confirming. These are client confirmation hints,
+not a Server dry-run/confirmation handshake. Server scope enforcement and normal
+project, execution and node authorization checks still apply. For a disposable
+queued execution, `cancel_execution` advertises `destructiveHint: true`; an
+approved write-scoped call cancels only queued work, never a running lease.
+
+### Refresh, identify and revoke
+
+After deploying tool/schema/annotation/authentication changes, open the custom MCP
+connection in ChatGPT Plugins, select **Refresh**, inspect the changed metadata,
+and test again in a new conversation. Refreshing metadata does not expand an
+OAuth grant. This is the direct custom-server workflow; published plugin updates
+follow OpenAI's review process ([official refresh instructions](https://developers.openai.com/plugins/deploy/connect-chatgpt)).
+
+For Server-side identification, on the management network use
+`GET /api/v1/administration/mcp-connections` with existing administrator
+authentication. Entries expose `id`, `client`, `resource`, `scope` and absolute
+`expires`, never access/refresh tokens. Match the client, exact resource, scopes
+and expiry to the connection you created; a client ID may have several grants.
+Record the new connection ID at authorization time. If identity is uncertain,
+revoke the relevant grants and reconnect rather than guessing which grant is safe.
+
+Revoke the selected ID with
+`DELETE /api/v1/administration/mcp-connections/{id}`. Browser administrators need
+their current same-origin session and `X-Codex-CSRF`; a trusted management client
+can use its existing management authentication. Do not put that credential in
+ChatGPT. A client can instead POST form fields `token` and `client_id` to
+`/oauth/revoke`, without an Authorization header. This invalidates the whole
+connection, including current access and refresh credentials; unknown tokens
+also receive 200. Removing a plugin from ChatGPT is not evidence of Server-side
+revocation: verify the grant has disappeared from the Server list.
+
+Access credentials expire in ten minutes; refresh rotates both credentials within
+the connection's absolute 90-day lifetime. Consumed code/refresh replay revokes
+the family. Let the OAuth client manage refresh; do not replay captured requests.
+To rotate credentials or change scopes, revoke the old connection on Server,
+remove/disconnect it in ChatGPT, then reconnect and consent again. Verify a new
+connection ID and expected scopes. This requires **no management-token change**;
+rotating that token affects all grants and administrator sessions and is not the
+per-connection revocation mechanism.
+
+### Troubleshooting
+
+| Symptom | Check / action |
+| --- | --- |
+| Discovery fails or returns HTML/Basic-auth challenge | Use the exact HTTPS `/mcp` URL. Public metadata paths must reach Server without proxy Basic auth or dashboard rewrites. `AdministrationOrigin` must be HTTPS; HTTP origins disable OAuth. Inspect the 401 `resource_metadata` challenge and both discovery documents. MCP initialization/tool discovery themselves require authentication. |
+| Consent is proxy 403 or asks for login again | Join the management network; sign into the dashboard and use Continue authorization. Preserve existing dashboard/VPN/Basic-auth restrictions. Do not publish consent or administration APIs to fix a backchannel routing problem. |
+| Host/origin 403 | Match the canonical `AdministrationOrigin` and fixed upstream Host exactly. Browser Origin must match; forwarded headers cannot choose the issuer. |
+| `invalid_client` / redirect rejection | Allow only the actual trusted HTTPS CIMD origin in `OAuthClientMetadataOrigins`. Verify outbound retrieval, exact client ID, exact advertised callback and support for public-client `none`. Metadata redirects are rejected. Do not add wildcard redirects or a DCR endpoint workaround. |
+| PKCE / `invalid_grant` | Require S256, the original 43–128 character verifier, unchanged redirect/client/resource and an unused code less than five minutes old. Start new authorization if expired or consumed; never retry a consumed code. |
+| Token `invalid_target` / `invalid_request` | Resource must be the canonical origin plus `/mcp`, without a trailing slash. Use form-encoded token requests and public-client `none`, not Basic/Bearer token-endpoint authentication. |
+| MCP 401 after connecting | Check expiry, refresh rotation, revoked grant and management authority changes. Use the latest token pair; if refresh fails or replay revoked the connection, re-authorize. Do not retry stale refresh credentials. |
+| `invalid_scope` or tool `insufficient_scope` | Use only the three supported scopes in the table. A tool denial includes `_meta["mcp/www_authenticate"]` and the required scope. Re-consent for the minimal needed scopes; do not bypass authorization or make writes anonymous. |
+| Tools look stale | Deploy/restart, Refresh the custom connection, inspect scope/annotations and start a new conversation. |
+
+Keep debugging bounded and redacted: record status, fixed error code and
+`X-Codex-Request-Id`, not tokens, consent URLs, callback Locations, request bodies
+or raw OAuth traces. Do not paste credentials into prompts or support reports.
+
+### Automated coverage and optional live verification
+
+`McpOAuthTests.ServerHostOAuthSessionDiscoversToolsEnforcesScopesRefreshesAndRevokes`
+starts the real Server host on an ephemeral loopback port with temporary SQLite
+storage, a controlled administrator/client and a stubbed outbound CIMD response.
+It drives HTTP discovery, administrator login/consent, code + PKCE exchange,
+refresh, MCP initialization/discovery/read, denied read-only-grant mutation,
+separately authorized queued cancellation with confirmation metadata, and
+revocation. It uses no ChatGPT account, production credentials or external
+network. Run focused local coverage with:
+
+```sh
+dotnet test tests/CodexWorker.Tests/CodexWorker.Tests.csproj --filter 'FullyQualifiedName~McpOAuthTests|FullyQualifiedName~ServerMcpTests'
+```
+
+That test proves the code-level protocol integration. It does not establish
+public DNS/TLS/proxy reachability or a live ChatGPT account's UI behavior. Optional
+deployed smoke test (record date, deployment version and redacted outcomes):
+
+- Check public discovery/token/MCP routing and management-network-only consent/dashboard access as described in the deployment guide; verify no-store headers and no proxy Basic-auth challenge on backchannel routes.
+- Add the exact public `/mcp` connection using OAuth; review the CIMD identity/callback and approve only `mcp:read`. Record its Server connection ID and scopes privately.
+- In a new conversation select the plugin and run `server_health`; verify a useful read result. Confirm a read-only grant cannot cancel a disposable queued execution and that the queued state remains unchanged.
+- On a disposable project only, reconnect with explicit `mcp:read mcp:write` consent. Confirm the client presents a write confirmation for `cancel_execution`, review its target, approve, and verify the queued execution becomes Cancelled. Leave maintenance scope unapproved unless separately needed.
+- Refresh metadata and repeat the read in a new conversation. After access expiry, verify the OAuth client can refresh and read again without another administrator login.
+- Revoke the recorded connection ID on Server; verify it disappears and subsequent calls/refresh cannot proceed without new authorization. Disconnect in ChatGPT, reconnect read-only, and verify a new ID and a successful read without changing the management token. Revoke test grants when finished.
 
 ## Read-only tools and bounds
 
@@ -90,7 +213,7 @@ same 16 KiB request limit as other MCP calls.
 
 `request_worker_provisioning(workerId, capabilityId, action, timeoutSeconds?, allowElevation?, repository?)` queues only existing typed provisioning actions, with a 5–600 second deadline. An accepted request returns an operation ID, not proof of node authorization or completion. Poll `get_worker_provisioning_operation(workerId, operationId)` for pending, running, succeeded, failed, cancelled or timedout status and typed diagnostics. Duplicate active capability operations are rejected. `cancel_worker_provisioning` cancels queued commands only; running or uncertain commands retain existing deadline and node inspection/reconciliation semantics. Requests are never automatically replayed. These tools target registered managed Workers only and do not affect standalone ownership.
 
-Outputs omit private keys, public identities, device login instructions, local paths, raw logs and credential payloads. Authentication setup remains on the existing node-local path. No caller-selected package, version, executable or shell text is accepted. All tools require the existing management authorization.
+Outputs omit private keys, public identities, device login instructions, local paths, raw logs and credential payloads. Authentication setup remains on the existing node-local path. No caller-selected package, version, executable or shell text is accepted. All tools require their mapped OAuth scope or existing administrator authorization.
 
 ## Parent/child work packages
 
@@ -158,8 +281,7 @@ operations expose existing identifiers for inspection; synchronous planning and 
 their documented partial-write/reconciliation behavior. Creation reservations retain stable identities;
 uncertain writes are never automatically replayed. Standalone Workers remain outside Server controls.
 
-Local final validation was attempted in the implementation environment, but the test project had no
-restored assets and NuGet restore could not reach `api.nuget.org` or resolve required packages.
-The configured Worker validation remains the authoritative gate. No live client or node campaign
-was run. Connection instructions above describe bearer-capable clients; direct ChatGPT browser
-connectors still require a separately designed OAuth integration.
+The OAuth HTTP integration test and optional deployed ChatGPT checklist above cover
+connection authorization separately from the tool/service tests. Local self-validation
+is not the configured Worker's authoritative validation gate; live account and
+node checks must be recorded separately when performed.
