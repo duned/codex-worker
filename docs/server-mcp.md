@@ -1,16 +1,28 @@
 # Remote Server MCP
 
-Codex Server exposes `/mcp` on its existing listener using the official MCP .NET SDK's stateless Streamable HTTP transport. It supports MCP initialization, tool discovery and calls; legacy `/sse` transport and persistent sessions are not enabled. GET/DELETE streams are unnecessary. Responses may use SSE for individual POST requests. No additional database, identity provider or token store is created.
+Codex Server exposes `/mcp` on its existing listener using the official MCP .NET SDK's stateless Streamable HTTP transport. It supports MCP initialization, tool discovery and calls; legacy `/sse` transport and persistent sessions are not enabled. GET/DELETE streams are unnecessary. Responses may use SSE for individual POST requests. OAuth grants and hashed reference credentials use the existing Server database; no external identity provider is required.
 
 ## Hosting and authorization
 
 Set `CODEX_SERVER_MANAGEMENT_TOKEN` in the Server service environment through the existing secret deployment mechanism. Use the same `Server:ListenUrl` and HTTPS reverse proxy as the administration API. Forward `/mcp` and preserve `Authorization`, `Accept`, `Content-Type` and `MCP-Protocol-Version`; disable proxy caching and response buffering. Keep tokens out of URLs, configuration files, prompts and logs. Remote cloud clients must be able to reach the HTTPS endpoint.
 
-Every request, including discovery, requires existing Server administration authorization. Bearer clients send `Authorization: Bearer <management token>`. Missing, incorrect, revoked/rotated, bootstrap and Worker credentials do not grant management access; authentication failure returns HTTP 401 with a Bearer challenge. The management token grants administrator privileges, including the mutation tools below; it is not a scoped read-only credential. Configure client approval for mutations accordingly.
+Every request, including discovery, requires an active scoped OAuth access token or existing Server administration authorization. Bearer clients send `Authorization: Bearer <management token>`. Missing, incorrect, revoked/rotated, bootstrap and Worker credentials do not grant management access; authentication failure returns HTTP 401 with a Bearer challenge. The management token grants administrator privileges, including the mutation tools below; it is not a scoped read-only credential. Configure client approval for mutations accordingly.
 
 Existing administration browser sessions are also subject to their normal host, expiry and CSRF checks. Any request with an `Origin` header must match `Server:AdministrationOrigin` and its expected upstream Host or it receives HTTP 403. Non-browser bearer clients omit `Origin`. Browser clients need the existing session cookie and `X-Codex-CSRF` header for POSTs. There is no cross-origin CORS grant.
 
-The Server does not advertise an OAuth authorization server: its current identity model is the management bearer token and administration session. Do not select anonymous authentication or bypass authentication at a proxy to accommodate a client.
+With an HTTPS `Server:AdministrationOrigin`, the Server advertises OAuth authorization-server and protected-resource metadata. See [HTTPS deployment](remote-https-deployment.md) for consent, PKCE, refresh and revocation setup. Do not select anonymous authentication or bypass authentication at a proxy.
+
+OAuth scopes are independent and may be requested together, separated by spaces. Omitted scope defaults to `mcp:read`. Consent displays the requested permissions; token exchange and refresh retain exactly the approved scope set (scope changes require a new consent).
+
+| Scope | Tools |
+| --- | --- |
+| `mcp:read` | `server_health`, `list_workers`, `list_projects`, `list_executions`, `get_execution`, `get_execution_operation`, `get_worker_maintenance`, `get_worker_provisioning_operation`, `wet_inspect` |
+| `mcp:write` | `dispatch_execution`, `cancel_execution`, `retry_execution_report`, `create_project_issue`, `update_project_issue`, `set_project_issue_label`, `plan_project_work_package`, `wet_dependencies` |
+| `mcp:maintain` | `request_worker_maintenance`, `request_worker_provisioning`, `cancel_worker_provisioning` |
+
+Every tool declares OAuth `securitySchemes` in MCP `_meta`, alongside its existing read-only/destructive annotations. Unmapped or unknown tool calls fail closed for all clients. Each request validates the access credential's server-side hash reference, issuer, exact `/mcp` resource, credential and grant expiry, live grant/revocation state, management authority and supported scopes. The former broad `mcp:admin` grants are no longer accepted; reconnect with explicit scopes.
+
+Missing or invalid credentials return HTTP 401 with a Bearer `resource_metadata` challenge. Insufficient scope returns an MCP tool error with a fixed required scope and `_meta["mcp/www_authenticate"]` challenge containing `insufficient_scope`. Explicit invalid Bearer credentials never fall back to a session cookie. Management tokens and dashboard sessions retain administrator access and their existing protections. Scope grants do not replace project eligibility, capacity, lease, node-local provisioning or WET allowlist checks.
 
 ## Client setup
 
@@ -40,7 +52,7 @@ Tools use existing Server registry queries, lease/readiness behavior and persist
 
 ## Managed execution controls
 
-These tools require the same management authorization as inspection. Standalone Workers are outside these controls.
+These tools require `mcp:write` (`mcp:read` for operation inspection), or existing management/session authorization. Standalone Workers are outside these controls.
 
 | Tool | Behavior |
 | --- | --- |
@@ -53,7 +65,7 @@ Controls return bounded reason codes for expected rejection. They never rewrite 
 
 ## Project Issue planning
 
-Management-authorized clients can use `create_project_issue(projectId, operationId, title, body)`,
+Clients with `mcp:write` or existing management/session authorization can use `create_project_issue(projectId, operationId, title, body)`,
 `update_project_issue(projectId, issueNumber, title?, body?)`, and
 `set_project_issue_label(projectId, issueNumber, label, applied)`. Repository selection always comes
 from the registered project. Labels are limited to its configured ready and blocked labels;

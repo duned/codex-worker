@@ -10,6 +10,7 @@ using ModelContextProtocol.Server;
 public sealed class ServerWorkerTools(IRegistryStore registry, ProvisioningCommandStore commands)
 {
     [McpServerTool(Name = "get_worker_maintenance", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("Inspect registered Worker version, restart/update lifecycle and typed provisioning history. Reloads Server state only; does not restart the Worker. Local provisioning policy remains authoritative.")]
     public async Task<object> Inspect(string workerId, CancellationToken cancellationToken)
     {
@@ -34,6 +35,7 @@ public sealed class ServerWorkerTools(IRegistryStore registry, ProvisioningComma
     }
 
     [McpServerTool(Name = "request_worker_maintenance", ReadOnly = false, Destructive = true, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:maintain"]}]""")]
     [Description("Request restart or update through the managed Worker lifecycle. Supply a stable 32-character operationId for idempotency; poll get_worker_maintenance. No arbitrary version, executable or command is accepted.")]
     public async Task<object> Maintain(string workerId, string operationId, string action, CancellationToken cancellationToken)
     {
@@ -50,6 +52,7 @@ public sealed class ServerWorkerTools(IRegistryStore registry, ProvisioningComma
     }
 
     [McpServerTool(Name = "request_worker_provisioning", ReadOnly = false, Destructive = true, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:maintain"]}]""")]
     [Description("Queue an existing typed provisioning action for a connected managed Worker. Returns operationId; poll get_worker_provisioning_operation. Timeout is 5–600 seconds. Node-local authorization may deny the operation. Active capability operations reject duplicates; requests are never automatically replayed.")]
     public async Task<object> Provision(string workerId, string capabilityId, string action, CancellationToken cancellationToken,
         int timeoutSeconds = 120, bool allowElevation = false, string? repository = null)
@@ -68,6 +71,7 @@ public sealed class ServerWorkerTools(IRegistryStore registry, ProvisioningComma
     }
 
     [McpServerTool(Name = "get_worker_provisioning_operation", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("Inspect a managed Worker provisioning operation, including pending/running/succeeded/failed/cancelled/timedout status. Omits keys, login instructions, paths and raw diagnostics.")]
     public async Task<object> Operation(string workerId, string operationId, CancellationToken cancellationToken)
     {
@@ -78,6 +82,7 @@ public sealed class ServerWorkerTools(IRegistryStore registry, ProvisioningComma
     }
 
     [McpServerTool(Name = "cancel_worker_provisioning", ReadOnly = false, Destructive = true, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:maintain"]}]""")]
     [Description("Cancel a pending provisioning operation. Running or uncertain operations are rejected and require existing node inspection/reconciliation; cancellation never replays a command.")]
     public async Task<object> Cancel(string workerId, string operationId, CancellationToken cancellationToken)
     {

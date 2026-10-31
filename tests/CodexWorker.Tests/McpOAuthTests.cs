@@ -25,6 +25,61 @@ public sealed class McpOAuthTests
     [Fact]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
+    public async Task ScopedReferencesValidateIssuerAudienceAndGrantWithoutRefreshEscalation()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "scoped-oauth-management");
+        try
+        {
+            var database = Path.Combine(directory.Path, "oauth.db");
+            var store = new McpOAuthStore(database, new() { AdministrationOrigin = Origin }, new Clock());
+            await store.InitializeAsync();
+            Assert.Null(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default, "mcp:admin"));
+            const string scopes = ServerMcpScopes.Read + " " + ServerMcpScopes.Write;
+            var code = Assert.IsType<string>(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default, scopes));
+            var tokens = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(code, Client, Origin + "/mcp", false, Redirect, Verifier, default));
+            Assert.Equal(scopes, await store.GrantedScopesAsync(tokens.access_token, default));
+            Assert.Null(await store.ExchangeAsync(tokens.refresh_token, Client, Origin + "/mcp", true, null, null, default, ServerMcpScopes.Maintain));
+            Assert.True(await store.AuthorizedAsync(tokens.access_token, default));
+            tokens = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(tokens.refresh_token, Client, Origin + "/mcp", true, null, null, default,
+                ServerMcpScopes.Write + " " + ServerMcpScopes.Read));
+            Assert.Equal(scopes, tokens.scope);
+
+            await using var connection = new SqliteConnection($"Data Source={database}");
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT body FROM mcp_oauth_grants";
+            var original = Assert.IsType<string>(await command.ExecuteScalarAsync());
+            var grant = Assert.IsType<McpOAuthStore.Grant>(JsonSerializer.Deserialize<McpOAuthStore.Grant>(original));
+            foreach (var invalid in new[]
+            {
+                grant with { Issuer = "https://wrong.example" },
+                grant with { Resource = "https://wrong.example/mcp" },
+                grant with { ApprovedScope = "mcp:admin" },
+                grant with { Expires = DateTimeOffset.UnixEpoch }
+            })
+            {
+                command.CommandText = "UPDATE mcp_oauth_grants SET body=$body";
+                command.Parameters.Clear();
+                command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(invalid));
+                await command.ExecuteNonQueryAsync();
+                Assert.False(await store.AuthorizedAsync(tokens.access_token, default));
+            }
+            command.Parameters.Clear();
+            command.CommandText = "UPDATE mcp_oauth_grants SET body=$body";
+            command.Parameters.AddWithValue("$body", original);
+            await command.ExecuteNonQueryAsync();
+            Assert.True(await store.AuthorizedAsync(tokens.access_token, default));
+            await store.RevokeAsync(tokens.refresh_token, Client, default);
+            Assert.Null(await store.GrantedScopesAsync(tokens.access_token, default));
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     public async Task CredentialsSurviveRestartAreDigestedRotateAndRevokeAsAFamily()
     {
         using var directory = new TemporaryDirectory();
@@ -141,7 +196,7 @@ public sealed class McpOAuthTests
             var sessions = app.Services.GetRequiredService<AdministrationSessions>();
             var session = Assert.IsType<AdministrationSessions.Session>(sessions.Create(context));
             http.DefaultRequestHeaders.Add("Cookie", context.Response.Headers.SetCookie.ToString().Split(';')[0]);
-            Assert.Contains("Permission mcp:admin", await http.GetStringAsync(url));
+            Assert.Contains("Requested permissions: mcp:read", await http.GetStringAsync(url));
             using (var duplicate = await http.GetAsync(url + "&state=duplicate"))
                 Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
             http.DefaultRequestHeaders.Host = "attacker.example";

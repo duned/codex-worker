@@ -15,6 +15,7 @@ public sealed class ServerWorkPackageTools(IRegistryStore registry, IServerGitHu
     IssuePlanningOperations operations, ExecutionMaintenanceStore maintenance)
 {
     [McpServerTool(Name = "plan_project_work_package", ReadOnly = false, Destructive = true, OpenWorld = true)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
     [Description("Create/update a parent and 1–20 children in one project, then assign and verify native parent and blocked-by relationships. Keys are unique within this request; dependencies refer to child keys. Reuse each Issue's stable GUID operationId on retries; never replace an uncertain creation identity. Existing issueNumber updates that Issue. Returns ordered step results and Issue/execution identities, stopping on failure. No readiness or dispatch unless explicitly requested with child keys. Dispatch uses Server eligibility and scheduling; inspect execution IDs with get_execution. No branch operations.")]
     public async Task<object> Plan(string projectId, WorkPackageIssue parent, WorkPackageIssue[] children,
         WorkPackageDependency[] dependencies, CancellationToken cancellationToken,

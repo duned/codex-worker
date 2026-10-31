@@ -1,6 +1,7 @@
 namespace CodexServer;
 
 using System.ComponentModel;
+using System.Text.Json.Nodes;
 using CodexProvisioning;
 using Microsoft.AspNetCore.Http.Features;
 using ModelContextProtocol;
@@ -10,7 +11,12 @@ using ModelContextProtocol.Server;
 
 internal static class ServerMcp
 {
-    public static void AddServerMcp(this IServiceCollection services) => services
+    private static readonly object AuthorizationKey = new();
+
+    public static void AddServerMcp(this IServiceCollection services)
+    {
+        services.AddHttpContextAccessor();
+        services
         .AddMcpServer(options => options.ServerInfo = new Implementation
         {
             Name = "Codex Server", Version = ServerApplication.DisplayVersion
@@ -21,7 +27,46 @@ internal static class ServerMcp
         .WithTools<ServerIssuePlanningTools>()
         .WithTools<ServerWorkPackageTools>()
         .WithTools<ServerToolboxTools>()
-        .WithTools<ServerWorkerTools>();
+        .WithTools<ServerWorkerTools>()
+        .WithRequestFilters(filters =>
+        {
+            filters.AddListToolsFilter(next => async (request, ct) =>
+            {
+                var result = await next(request, ct);
+                foreach (var tool in result.Tools)
+                {
+                    if (ServerMcpScopes.Required(tool.Name) is null)
+                        throw new McpException("Tool authorization policy unavailable.");
+                }
+                return result;
+            });
+            filters.AddCallToolFilter(next => async (request, ct) =>
+            {
+                var required = ServerMcpScopes.Required(request.Params?.Name);
+                if (required is null) throw new McpException("Tool authorization policy unavailable.");
+                var http = request.Services?.GetRequiredService<IHttpContextAccessor>().HttpContext;
+                if (http?.Items[AuthorizationKey] is not string granted)
+                    throw new McpException("Tool authorization required.");
+                // Empty scope marks the existing management/session authority, established only by middleware.
+                if (granted.Length != 0 && !ServerMcpScopes.Includes(granted, required))
+                    return new CallToolResult
+                    {
+                        IsError = true,
+                        Content = [new TextContentBlock { Text = "Insufficient scope. Required: " + required }],
+                        Meta = new JsonObject
+                        {
+                            ["mcp/www_authenticate"] = new JsonArray(Challenge(http.RequestServices.GetRequiredService<ServerConfiguration>()) +
+                                $", error=\"insufficient_scope\", scope=\"{required}\"")
+                        }
+                    };
+                return await next(request, ct);
+            });
+        });
+    }
+
+    private static string Challenge(ServerConfiguration configuration) => McpOAuthEndpoints.Issuer(configuration) is { } issuer
+        ? $"Bearer realm=\"Codex Server\", resource_metadata=\"{issuer}/.well-known/oauth-protected-resource/mcp\""
+        : "Bearer realm=\"Codex Server\"";
 
     public static void UseServerMcpAuthorization(this WebApplication app) => app.Use(async (context, next) =>
     {
@@ -40,17 +85,17 @@ internal static class ServerMcp
         var configuration = context.RequestServices.GetRequiredService<ServerConfiguration>();
         var supplied = context.Request.Headers.Authorization.ToString();
         var existingAuthorized = sessions.Authorized(context);
-        var oauthAuthorized = !existingAuthorized && McpOAuthEndpoints.Issuer(configuration) is not null &&
-            supplied.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
-            await context.RequestServices.GetRequiredService<McpOAuthStore>().AuthorizedAsync(supplied[7..], context.RequestAborted);
-        if (!existingAuthorized && !oauthAuthorized)
+        var granted = !existingAuthorized && McpOAuthEndpoints.Issuer(configuration) is not null &&
+            supplied.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? await context.RequestServices.GetRequiredService<McpOAuthStore>().GrantedScopesAsync(supplied[7..], context.RequestAborted)
+            : null;
+        if (!existingAuthorized && granted is null)
         {
-            context.Response.Headers.WWWAuthenticate = McpOAuthEndpoints.Issuer(configuration) is { } issuer
-                ? $"Bearer realm=\"Codex Server\", resource_metadata=\"{issuer}/.well-known/oauth-protected-resource/mcp\""
-                : "Bearer realm=\"Codex Server\"";
+            context.Response.Headers.WWWAuthenticate = Challenge(configuration);
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
+        context.Items[AuthorizationKey] = existingAuthorized ? "" : granted;
         if (context.Request.ContentLength > 16 * 1024)
         {
             context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
@@ -67,6 +112,7 @@ internal static class ServerMcp
 public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthService health)
 {
     [McpServerTool(Name = "server_health", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("Get Server health, persistence readiness and product version.")]
     public async Task<object> ServerHealth(CancellationToken cancellationToken)
     {
@@ -75,6 +121,7 @@ public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthServi
     }
 
     [McpServerTool(Name = "list_workers", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("List managed Worker status, version, capabilities and current execution references. Current references are capped at 100 per active state; counts remain authoritative.")]
     public async Task<object> Workers(CancellationToken cancellationToken, int limit = 50, int offset = 0)
     {
@@ -103,6 +150,7 @@ public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthServi
     }
 
     [McpServerTool(Name = "list_projects", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("List configured project summaries without validation commands, local configuration or credentials.")]
     public async Task<object> Projects(CancellationToken cancellationToken, int limit = 50, int offset = 0)
     {
@@ -121,6 +169,7 @@ public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthServi
     }
 
     [McpServerTool(Name = "list_executions", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("List execution history, newest first. State: Queued, Assigned, Running, Completed, Failed or Cancelled. Limit 1–100, offset 0–10000.")]
     public async Task<object> Executions(CancellationToken cancellationToken, string? projectId = null, string? state = null,
         string? workType = null, string? workId = null, int limit = 50, int offset = 0)
@@ -132,6 +181,7 @@ public sealed class ServerReadOnlyTools(IRegistryStore store, IServerHealthServi
     }
 
     [McpServerTool(Name = "get_execution", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("Get execution state and bounded structured diagnostics/history: stage, timing, validation, integration, recovery and retry lineage. No raw logs or free-form completion reports.")]
     public async Task<object> Execution(string executionRequestId, CancellationToken cancellationToken)
     {

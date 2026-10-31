@@ -11,6 +11,7 @@ public sealed class ServerExecutionTools(IRegistryStore registry, IServerGitHubA
     ExecutionMaintenanceStore maintenance)
 {
     [McpServerTool(Name = "dispatch_execution", ReadOnly = false, Destructive = false, OpenWorld = true)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
     [Description("Queue an eligible GitHub Issue through Server scheduling. Returns executionRequestId for get_execution. Duplicate active work is rejected; capacity and leases remain scheduler-owned.")]
     public async Task<object> Dispatch(string projectId, int issueNumber, CancellationToken cancellationToken)
     {
@@ -33,6 +34,7 @@ public sealed class ServerExecutionTools(IRegistryStore registry, IServerGitHubA
     }
 
     [McpServerTool(Name = "cancel_execution", ReadOnly = false, Destructive = true, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
     [Description("Cancel queued managed work. Assigned/running work is rejected because Server has no active cancellation contract; this never revokes a lease or marks running work cancelled.")]
     public async Task<object> Cancel(string executionRequestId, CancellationToken cancellationToken)
     {
@@ -47,6 +49,7 @@ public sealed class ServerExecutionTools(IRegistryStore registry, IServerGitHubA
     }
 
     [McpServerTool(Name = "retry_execution_report", ReadOnly = false, Destructive = true, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:write"]}]""")]
     [Description("Retry only durable managed completion reporting, using existing Worker recovery validation. Does not rerun implementation or integration. Supply a stable 32-character operationId for idempotency; inspect progress with get_execution_operation and get_execution.")]
     public async Task<object> RetryReport(string executionRequestId, string operationId, CancellationToken cancellationToken)
     {
@@ -70,6 +73,7 @@ public sealed class ServerExecutionTools(IRegistryStore registry, IServerGitHubA
     }
 
     [McpServerTool(Name = "get_execution_operation", ReadOnly = true, Destructive = false, OpenWorld = false)]
+    [McpMeta("securitySchemes", JsonValue = """[{"type":"oauth2","scopes":["mcp:read"]}]""")]
     [Description("Inspect a managed reporting retry operation by operationId. Returns bounded status/outcome without Worker paths or raw reports.")]
     public async Task<object> Operation(string operationId, CancellationToken cancellationToken)
     {

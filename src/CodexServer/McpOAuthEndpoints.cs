@@ -29,7 +29,7 @@ public static class McpOAuthEndpoints
                 revocation_endpoint = issuer + "/oauth/revoke", response_types_supported = new[] { "code" },
                 grant_types_supported = new[] { "authorization_code", "refresh_token" },
                 token_endpoint_auth_methods_supported = new[] { "none" }, code_challenge_methods_supported = new[] { "S256" },
-                scopes_supported = new[] { McpOAuthStore.Scope }, client_id_metadata_document_supported = true,
+                scopes_supported = ServerMcpScopes.Supported, client_id_metadata_document_supported = true,
                 authorization_response_iss_parameter_supported = true
             }) : Results.NotFound());
         app.MapMethods("/oauth/authorize", ["GET", "POST"], AuthorizeAsync).RequireRateLimiting("mcp-oauth");
@@ -39,7 +39,7 @@ public static class McpOAuthEndpoints
     public static string? Issuer(ServerConfiguration configuration) =>
         configuration.AdministrationOrigin is { } origin && origin.StartsWith("https://", StringComparison.Ordinal) ? origin : null;
     private static IResult Resource(ServerConfiguration configuration) => Issuer(configuration) is { } issuer
-        ? Results.Json(new { resource = issuer + "/mcp", authorization_servers = new[] { issuer }, scopes_supported = new[] { McpOAuthStore.Scope }, bearer_methods_supported = new[] { "header" } })
+        ? Results.Json(new { resource = issuer + "/mcp", authorization_servers = new[] { issuer }, scopes_supported = ServerMcpScopes.Supported, bearer_methods_supported = new[] { "header" } })
         : Results.NotFound();
     private static IResult Error(string error = "invalid_request") => Results.Json(new { error }, statusCode: 400);
     private static bool Single(IEnumerable<KeyValuePair<string, StringValues>> fields, params string[] allowed) =>
@@ -86,7 +86,7 @@ public static class McpOAuthEndpoints
             Get("response_type") != "code" || Get("resource") != issuer + "/mcp" || Get("state").Length is < 1 or > 1024 ||
             Get("code_challenge_method") != "S256" || Get("code_challenge").Length != 43 ||
             !Get("code_challenge").All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')) return Error();
-        if (Get("scope") != "" && Get("scope") != McpOAuthStore.Scope) return Error("invalid_scope");
+        if (Get("scope") != "" && !ServerMcpScopes.Valid(Get("scope"))) return Error("invalid_scope");
         if (!await clients.ValidAsync(Get("client_id"), Get("redirect_uri"), context.RequestAborted)) return Error("invalid_client");
         // Browsers also apply form-action to the OAuth redirect after a form submission.
         // Permit only the validated callback origin in addition to the same-origin consent POST.
@@ -97,7 +97,8 @@ public static class McpOAuthEndpoints
             var hidden = string.Concat(values.Select(x => "<input type='hidden' name='" + WebUtility.HtmlEncode(x.Key) + "' value='" + WebUtility.HtmlEncode(x.Value) + "'>"));
             return Html("<h1>Authorize Codex Server MCP</h1><p>Client: " + WebUtility.HtmlEncode(Get("client_id")) +
                 "</p><p>Redirect: " + WebUtility.HtmlEncode(Get("redirect_uri")) +
-                "</p><p>Permission mcp:admin: read Server, project, Worker and execution status; create and modify Issues and work packages; dispatch and cancel executions; request Worker maintenance and provisioning. This grants all current MCP tools.</p>" +
+                "</p><p>Requested permissions: " + WebUtility.HtmlEncode(Get("scope") == "" ? McpOAuthStore.Scope : Get("scope")) +
+                ". mcp:read inspects Server, Workers, projects, executions and operations; mcp:write changes executions, Issues, work packages and WET dependencies; mcp:maintain requests Worker maintenance and provisioning.</p>" +
                 "<form method='post' action='/oauth/authorize'>" + hidden + "<input type='hidden' name='csrf' value='" + WebUtility.HtmlEncode(session.CsrfToken) +
                 "'><button name='decision' value='allow'>Allow connection</button> <button name='decision' value='deny'>Deny</button></form>");
         }
@@ -108,7 +109,7 @@ public static class McpOAuthEndpoints
         {
             // Recheck the live session after metadata I/O, before creating durable authority.
             if (sessions.Validate(context) != session) return Results.Unauthorized();
-            var code = await store.AuthorizeAsync(Get("client_id"), Get("redirect_uri"), Get("resource"), Get("code_challenge"), context.RequestAborted);
+            var code = await store.AuthorizeAsync(Get("client_id"), Get("redirect_uri"), Get("resource"), Get("code_challenge"), context.RequestAborted, Get("scope") == "" ? McpOAuthStore.Scope : Get("scope"));
             if (code is null) return Results.StatusCode(503);
             response["code"] = code;
         }
@@ -125,11 +126,11 @@ public static class McpOAuthEndpoints
         var refresh = form["grant_type"] == "refresh_token";
         if (!refresh && form["grant_type"] != "authorization_code") return Error("unsupported_grant_type");
         if (form["resource"] != issuer + "/mcp") return Error("invalid_target");
-        if (form["scope"].ToString() is not ("" or McpOAuthStore.Scope)) return Error("invalid_scope");
+        if (form["scope"].ToString() != "" && !ServerMcpScopes.Valid(form["scope"].ToString())) return Error("invalid_scope");
         var token = form[refresh ? "refresh_token" : "code"].ToString();
         if (token.Length != 43 || form["client_id"].ToString().Length == 0) return Error("invalid_grant");
         var result = await store.ExchangeAsync(token, form["client_id"].ToString(), form["resource"].ToString(), refresh,
-            form["redirect_uri"].ToString(), form["code_verifier"].ToString(), context.RequestAborted);
+            form["redirect_uri"].ToString(), form["code_verifier"].ToString(), context.RequestAborted, form["scope"].ToString());
         return result is null ? Error("invalid_grant") : Results.Json(result);
     }
     private static async Task<IResult> RevokeAsync(HttpContext context, ServerConfiguration configuration, AdministrationSessions sessions, McpOAuthStore store)

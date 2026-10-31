@@ -65,6 +65,54 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauth.access_token);
             var oauthHealth = await Rpc(client, "tools/call", new { name = "server_health", arguments = new { } });
             Assert.True(oauthHealth.TryGetProperty("result", out _));
+            // Every advertised tool is checked against every independent scope. Empty arguments
+            // exercise the authorization filter before binding or any operation can mutate state.
+            var scopedDiscovery = await Rpc(client, "tools/list", new { });
+            var advertised = scopedDiscovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
+            foreach (var scope in ServerMcpScopes.Supported)
+            {
+                var scopedCode = Assert.IsType<string>(await oauthStore.AuthorizeAsync("https://client.example/client.json",
+                    "https://client.example/callback", "https://mcp.example/mcp", challenge, default, scope));
+                var scopedToken = Assert.IsType<McpOAuthStore.Tokens>(await oauthStore.ExchangeAsync(scopedCode,
+                    "https://client.example/client.json", "https://mcp.example/mcp", false, "https://client.example/callback", verifier, default));
+                Assert.Equal(scope, scopedToken.scope);
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", scopedToken.access_token);
+                foreach (var tool in advertised)
+                {
+                    var name = tool.GetProperty("name").GetString();
+                    var required = Assert.IsType<string>(ServerMcpScopes.Required(name));
+                    var scheme = Assert.Single(tool.GetProperty("_meta").GetProperty("securitySchemes").EnumerateArray());
+                    Assert.Equal("oauth2", scheme.GetProperty("type").GetString());
+                    Assert.Equal(required, Assert.Single(scheme.GetProperty("scopes").EnumerateArray()).GetString());
+                    var response = await Rpc(client, "tools/call", new { name, arguments = new { } });
+                    if (scope != required)
+                    {
+                        AssertToolError(response);
+                        var challengeText = response.GetProperty("result").GetProperty("_meta").GetProperty("mcp/www_authenticate")[0].GetString();
+                        Assert.Contains("insufficient_scope", challengeText, StringComparison.Ordinal);
+                        Assert.Contains(required, challengeText, StringComparison.Ordinal);
+                        Assert.Contains("/.well-known/oauth-protected-resource/mcp", challengeText, StringComparison.Ordinal);
+                    }
+                    else
+                    {
+                        Assert.DoesNotContain("Insufficient scope", response.GetRawText(), StringComparison.Ordinal);
+                        Assert.DoesNotContain("Tool authorization required", response.GetRawText(), StringComparison.Ordinal);
+                        Assert.DoesNotContain("Tool authorization policy unavailable", response.GetRawText(), StringComparison.Ordinal);
+                    }
+                }
+                if (scope == ServerMcpScopes.Read)
+                    Assert.True((await Call(client, "server_health", new { })).GetProperty("persistenceAvailable").GetBoolean());
+                else if (scope == ServerMcpScopes.Write)
+                    Assert.Equal("project-not-found", (await Call(client, "dispatch_execution", new { projectId = "missing", issueNumber = 42 })).GetProperty("reason").GetString());
+                else
+                    Assert.Equal("unsupported-or-invalid-provisioning-action", (await Call(client, "request_worker_provisioning", new
+                    {
+                        workerId = Guid.NewGuid().ToString("N"), capabilityId = "shell", action = "Install"
+                    })).GetProperty("reason").GetString());
+                var unknownScoped = await Rpc(client, "tools/call", new { name = "unknown_tool", arguments = new { } });
+                Assert.True(unknownScoped.TryGetProperty("error", out _) || unknownScoped.GetProperty("result").GetProperty("isError").GetBoolean());
+            }
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauth.access_token);
             await oauthStore.RevokeAsync(oauth.refresh_token, "https://client.example/client.json", default);
             using (var revoked = await client.GetAsync("/mcp"))
             {
@@ -82,6 +130,10 @@ public sealed class ServerMcpTests
             client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, session.CsrfToken);
             var sessionHealth = await Rpc(client, "tools/call", new { name = "server_health", arguments = new { } });
             Assert.True(sessionHealth.TryGetProperty("result", out _));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-even-with-valid-cookie");
+            using (var invalidWithSession = await client.PostAsJsonAsync("/mcp", new { jsonrpc = "2.0", id = 1, method = "tools/list" }))
+                Assert.Equal(HttpStatusCode.Unauthorized, invalidWithSession.StatusCode);
+            client.DefaultRequestHeaders.Authorization = null;
             client.DefaultRequestHeaders.Remove(AdministrationSessions.CsrfHeader);
             using (var noCsrf = await client.PostAsync("/mcp", new StringContent("{}")))
                 Assert.Equal(HttpStatusCode.Unauthorized, noCsrf.StatusCode);

@@ -9,9 +9,9 @@ using System.Text.Json;
 /// <summary>Server-owned OAuth grants. Only SHA-256 digests of random credentials reach SQLite.</summary>
 public sealed class McpOAuthStore(string databasePath, ServerConfiguration configuration, TimeProvider clock)
 {
-    public const string Scope = "mcp:admin";
+    public const string Scope = ServerMcpScopes.Read;
     public sealed record Grant(string Id, string Client, string Redirect, string Resource, string Challenge,
-        string ApprovedScope, string Authority, DateTimeOffset Expires);
+        string ApprovedScope, string Authority, DateTimeOffset Expires, string Issuer = "");
     public sealed record Tokens(string access_token, string refresh_token, string token_type = "Bearer",
         int expires_in = 600, string scope = Scope);
     private static string Random() => WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
@@ -35,8 +35,9 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
             """;
         await command.ExecuteNonQueryAsync(ct);
     }
-    public async Task<string?> AuthorizeAsync(string client, string redirect, string resource, string challenge, CancellationToken ct)
+    public async Task<string?> AuthorizeAsync(string client, string redirect, string resource, string challenge, CancellationToken ct, string scope = Scope)
     {
+        if (!ServerMcpScopes.Valid(scope)) return null;
         await using var connection = await OpenAsync(ct);
         using var transaction = connection.BeginTransaction(deferred: false);
         using var command = connection.CreateCommand();
@@ -44,7 +45,7 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
         command.CommandText = "DELETE FROM mcp_oauth_grants WHERE expires <= $now; DELETE FROM mcp_oauth_credentials WHERE grant_id NOT IN (SELECT id FROM mcp_oauth_grants); SELECT COUNT(*) FROM mcp_oauth_grants";
         command.Parameters.AddWithValue("$now", clock.GetUtcNow().ToUnixTimeSeconds());
         if (Convert.ToInt64(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) >= 1024) return null;
-        var grant = new Grant(Guid.NewGuid().ToString("N"), client, redirect, resource, challenge, Scope, Authority, clock.GetUtcNow().AddDays(90));
+        var grant = new Grant(Guid.NewGuid().ToString("N"), client, redirect, resource, challenge, scope, Authority, clock.GetUtcNow().AddDays(90), McpOAuthEndpoints.Issuer(configuration) ?? "");
         command.Parameters.Clear();
         command.CommandText = "INSERT INTO mcp_oauth_grants VALUES($id,$body,$expires)";
         command.Parameters.AddWithValue("$id", grant.Id);
@@ -68,7 +69,7 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
     }
     // A write transaction serializes exchange, replay detection, refresh and revocation across processes.
     public async Task<Tokens?> ExchangeAsync(string token, string client, string resource, bool refresh,
-        string? redirect, string? verifier, CancellationToken ct)
+        string? redirect, string? verifier, CancellationToken ct, string? requestedScope = null)
     {
         await using var connection = await OpenAsync(ct);
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -76,7 +77,9 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
         command.Transaction = transaction;
         var credential = await ReadAsync(command, token, ct);
         if (credential is null || credential.Grant.Client != client || credential.Grant.Resource != resource ||
-            !Valid(credential.Grant) || credential.Kind != (refresh ? "refresh" : "code")) return null;
+            !Valid(credential.Grant) ||
+            (!string.IsNullOrEmpty(requestedScope) && (!ServerMcpScopes.Valid(requestedScope) ||
+                !ServerMcpScopes.Same(requestedScope, credential.Grant.ApprovedScope))) || credential.Kind != (refresh ? "refresh" : "code")) return null;
         if (credential.Used)
         {
             await DeleteAsync(command, credential.Grant.Id, ct);
@@ -91,7 +94,7 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
         command.Parameters.AddWithValue("$hash", Digest(token));
         command.Parameters.AddWithValue("$id", credential.Grant.Id);
         await command.ExecuteNonQueryAsync(ct);
-        var result = new Tokens(Random(), Random());
+        var result = new Tokens(Random(), Random(), scope: credential.Grant.ApprovedScope);
         await InsertAsync(command, result.access_token, credential.Grant.Id, "access", clock.GetUtcNow().AddMinutes(10), ct);
         await InsertAsync(command, result.refresh_token, credential.Grant.Id, "refresh", credential.Grant.Expires, ct);
         await transaction.CommitAsync(ct);
@@ -99,7 +102,7 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
     }
     public static bool ValidVerifier(string? value) => value is { Length: >= 43 and <= 128 } &&
         value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '.' or '_' or '~');
-    private bool Valid(Grant grant) => grant.Expires > clock.GetUtcNow() && grant.ApprovedScope == Scope && grant.Authority == Authority &&
+    private bool Valid(Grant grant) => grant.Expires > clock.GetUtcNow() && ServerMcpScopes.Valid(grant.ApprovedScope) && grant.Issuer == McpOAuthEndpoints.Issuer(configuration) && grant.Authority == Authority &&
         !string.IsNullOrWhiteSpace(configuration.ManagementToken) && grant.Resource == configuration.AdministrationOrigin + "/mcp";
     private sealed record Credential(Grant Grant, string Kind, long Expires, bool Used);
     private static async Task<Credential?> ReadAsync(SqliteCommand command, string token, CancellationToken ct)
@@ -110,13 +113,16 @@ public sealed class McpOAuthStore(string databasePath, ServerConfiguration confi
         return await reader.ReadAsync(ct) && JsonSerializer.Deserialize<Grant>(reader.GetString(0)) is { } grant
             ? new(grant, reader.GetString(1), reader.GetInt64(2), reader.GetBoolean(3)) : null;
     }
-    public async Task<bool> AuthorizedAsync(string token, CancellationToken ct)
+    public async Task<bool> AuthorizedAsync(string token, CancellationToken ct) => await GrantedScopesAsync(token, ct) is not null;
+
+    public async Task<string?> GrantedScopesAsync(string token, CancellationToken ct)
     {
-        if (token.Length != 43) return false;
+        if (token.Length != 43) return null;
         await using var connection = await OpenAsync(ct);
         using var command = connection.CreateCommand();
         var credential = await ReadAsync(command, token, ct);
-        return credential is { Kind: "access", Used: false } && Valid(credential.Grant) && credential.Expires > clock.GetUtcNow().ToUnixTimeSeconds();
+        return credential is { Kind: "access", Used: false } && Valid(credential.Grant) && credential.Expires > clock.GetUtcNow().ToUnixTimeSeconds()
+            ? credential.Grant.ApprovedScope : null;
     }
     private static async Task DeleteAsync(SqliteCommand command, string id, CancellationToken ct)
     {

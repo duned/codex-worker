@@ -580,9 +580,12 @@ The checked-in proxy permits public discovery, `/mcp` and POST requests to
 The administrator must reach consent through the management network, sign into
 the existing dashboard session, and select **Continue authorization** if navigating
 from ChatGPT did not carry the Strict session cookie. Review the client identifier,
-exact callback and `mcp:admin` permission before allowing. This permission grants
-all MCP tools, including Issue changes, execution dispatch/cancellation and Worker
-maintenance/provisioning; it does not authenticate ordinary administration APIs.
+exact callback and requested scopes before allowing. `mcp:read` permits inspection;
+`mcp:write` permits execution, Issue-planning and WET mutations; `mcp:maintain`
+permits Worker maintenance/provisioning. Scopes are independent and default to
+read-only when omitted. See [the per-tool scope table](server-mcp.md#hosting-and-authorization).
+OAuth credentials do not authenticate ordinary administration APIs. Existing broad
+`mcp:admin` connections must reconnect with explicit scopes.
 
 Authorization requires an explicit decision, exact origin and session CSRF value.
 Codes expire after five minutes and require S256 PKCE. Access tokens last ten
