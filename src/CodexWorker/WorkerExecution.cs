@@ -45,7 +45,7 @@ public sealed class WorkerExecution
     }
 
     public CodexQuotaObservation? QuotaAtEnd { get; set; }
-    public Guid ExecutionId { get; }
+    public Guid ExecutionId { get; private init; }
     public string Project { get; }
     public string Repository { get; }
     public int IssueNumber { get; }
@@ -80,6 +80,17 @@ public sealed class WorkerExecution
             try { execution.CodexProfile = CodexExecutionProfile.Resolve(issue.Body, codexSettings, settingsSource); }
             catch (InvalidDataException ex) { execution.MetadataError = ex.Message; }
         }
+        return execution;
+    }
+
+    internal static WorkerExecution Continue(ExecutionHistoryEntry source, WorkerConfiguration config, GitHubIssue issue)
+    {
+        var execution = new WorkerExecution(source.Project, source.Repository, issue, source.BaseBranch,
+            source.FeatureBranch, source.StartedAtUtc, source.RetryOfExecutionId, source.AttemptNumber, source.Resumed)
+        {
+            ExecutionId = source.ExecutionId, State = ExecutionState.Claimed, CodexRecovery = source.CodexRecovery,
+            CodexProfile = CodexExecutionProfile.Resolve(issue.Body, config.Codex, source)
+        };
         return execution;
     }
 

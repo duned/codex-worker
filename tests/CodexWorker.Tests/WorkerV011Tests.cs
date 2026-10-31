@@ -835,7 +835,7 @@ public sealed class WorkerV011Tests
     }
 
     [Trait("TestType", "Integration")]
-    [Trait("Duration", "Medium")]
+    [Trait("Duration", "Slow")]
     [Fact]
     public async Task ValidatedExecutionKeepsActiveClaimUntilTerminalReportingFinishes()
     {
@@ -845,11 +845,17 @@ public sealed class WorkerV011Tests
         h.GitHub.ReadyIssueCount = 3;
         h.GitHub.CancelWhenEmpty = false;
         var releaseReport = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        h.GitHub.CommentAction = () => releaseReport.Task;
+        var reportStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.GitHub.CommentAction = () =>
+        {
+            reportStarted.TrySetResult();
+            return releaseReport.Task;
+        };
 
         var execution = await h.Worker.ClaimNextAsync(h.Cancellation.Token);
 
         Assert.NotNull(execution);
+        await reportStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(execution.IsCompleted);
         Assert.Equal(1, h.Git.Integrations);
         var active = Assert.Single(await history.ReadAllAsync());
@@ -1673,7 +1679,7 @@ public sealed class WorkerV011Tests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    public async Task ShutdownInterruptsActiveExecutionsAndRestartCanClaimFreshAttempts(int count)
+    public async Task ShutdownInterruptsActiveExecutionsAndRestartRequiresRecoveryProof(int count)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
@@ -1702,13 +1708,18 @@ public sealed class WorkerV011Tests
             });
             Assert.Empty(h.GitHub.Comments);
         }
-        // An operator reconciles the preserved state and explicitly applies ready. A new
-        // host has fresh capacity and starts another attempt without changing the old row.
+        // A ready label alone cannot prove that an interrupted attempt is safe to replay.
+        // This repository fake supplies no ownership/remote proof; real verified retry and
+        // continuation are covered by StandaloneInterruptedExecutionTests.
         using var restarted = new Harness(history: history, gracefulShutdown: true);
-        var result = await restarted.ProcessOneAsync();
-        Assert.Equal(IssueOutcomeKind.Succeeded, result!.Kind);
-        Assert.Equal(2, result.Report.AttemptNumber);
-        Assert.Equal(count, (await history.ReadAllAsync()).Count(entry => entry.State == "Cancelled"));
+        restarted.GitHub.CompletionLabels = ["ready"];
+        restarted.GitHub.IssueLabels = ["ready"];
+        Assert.Null(await restarted.ProcessOneAsync());
+        Assert.Equal(count, (await history.ReadAllAsync()).Count);
+        Assert.All(await history.ReadAllAsync(), entry => Assert.Equal("Cancelled", entry.State));
+        Assert.Empty(restarted.Codex.Issues);
+        Assert.Equal(0, restarted.Git.Started);
+        Assert.Contains(restarted.OperationalMessages, message => message.Contains("inspection-unsupported", StringComparison.Ordinal));
     }
 
     [Trait("TestType", "Integration")]

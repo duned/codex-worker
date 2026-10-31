@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-31",
+  "sdk": "10.0.113",
+  "framework": "net10.0",
+  "filter": "FullyQualifiedName~StandaloneInterruptedExecutionTests|FullyQualifiedName~ShutdownInterruptsActiveExecutionsAndRestartRequiresRecoveryProof|FullyQualifiedName~ValidatedExecutionKeepsActiveClaimUntilTerminalReportingFinishes",
+  "passed": 39,
+  "newRegressionCases": 36,
+  "methods": {
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.AmbiguousOrIneligibleInterruptionRetainsEvidence": {
+      "cases": 11,
+      "maxSeconds": 0.373057,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.InspectorClassifiesSupportedRecoveryStatesExplicitly": {
+      "cases": 12,
+      "maxSeconds": 0.003389,
+      "durationTrait": "Fast"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.LostRecoveryClaimLabelResponseKeepsTheAttemptAndUsesTheHostFailureBoundary": {
+      "cases": 1,
+      "maxSeconds": 0.872397,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.ObservedExecution724ce14eResolvesWithRecoveryOrSafeRetry": {
+      "cases": 2,
+      "maxSeconds": 1.23418,
+      "durationTrait": "Slow"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.ReadOnlyReconciliationIsBoundedAndRepeatedStartupDoesNotDuplicateAttempts": {
+      "cases": 1,
+      "maxSeconds": 0.138469,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.RestartAfterRetirementRemovalFinishesReceiptAndCreatesExactlyOneFreshAttempt": {
+      "cases": 1,
+      "maxSeconds": 1.618995,
+      "durationTrait": "Slow"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.RestartBetweenFreshAttemptCreationAndWorkspacePreparationKeepsOneAttempt": {
+      "cases": 4,
+      "maxSeconds": 0.65622,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.ShutdownDuringValidationContinuesSameAttemptWithoutCodex": {
+      "cases": 2,
+      "maxSeconds": 2.192746,
+      "durationTrait": "Slow"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.UnconfirmedValidatedPushIsReadOnlyReconciledWithoutReplayOrRetirement": {
+      "cases": 1,
+      "maxSeconds": 0.805268,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.StandaloneInterruptedExecutionTests.ValidatedRemoteIntegrationFinishesOriginalCompletionWithoutDuplicateEffects": {
+      "cases": 1,
+      "maxSeconds": 0.750586,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.WorkerV011Tests.ShutdownInterruptsActiveExecutionsAndRestartRequiresRecoveryProof": {
+      "cases": 2,
+      "maxSeconds": 0.435081,
+      "durationTrait": "Medium"
+    },
+    "CodexWorker.Tests.WorkerV011Tests.ValidatedExecutionKeepsActiveClaimUntilTerminalReportingFinishes": {
+      "cases": 1,
+      "maxSeconds": 1.297752,
+      "durationTrait": "Slow"
+    }
+  }
+}

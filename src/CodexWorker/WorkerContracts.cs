@@ -65,6 +65,14 @@ public interface IGitRepository : IDisposable
     Task StartCodexRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository cannot safely resume interrupted implementation.");
     Task<GitRecoveryInfo?> InspectExecutionWorkspaceAsync(CancellationToken ct) => Task.FromResult<GitRecoveryInfo?>(null);
+    Task<string?> InspectExecutionProcessesAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        Task.FromResult<string?>("process-inspection-unsupported");
+    Task<InterruptedWorkspaceInspection> InspectInterruptedExecutionAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        Task.FromResult(new InterruptedWorkspaceInspection("inspection-unsupported"));
+    Task StartInterruptedExecutionAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This repository cannot continue interrupted validation/integration.");
+    Task RetireInterruptedExecutionAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
+        throw new WorkerInfrastructureException("This repository cannot safely retire interrupted execution resources.");
     Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
     Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>

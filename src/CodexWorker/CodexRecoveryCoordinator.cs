@@ -31,7 +31,8 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         if (history is null) return;
         var entries = await history.ReadAllAsync(ct);
         foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
-                     entry.CompletedAtUtc is null && entry.CodexRecovery is not null &&
+                     entry.CompletedAtUtc is null && entry.CodexRecovery is { ImplementationSucceeded: not true } &&
+                     entry.RecoveryState is not ("standalone-continuing" or "standalone-retiring") &&
                      entry.State is "Created" or "Claimed" or "Preparing" or "Implementing" or "Repairing"))
         {
             string? reason;

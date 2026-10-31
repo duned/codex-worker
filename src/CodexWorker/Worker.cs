@@ -52,6 +52,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     public async Task<Task<IssueProcessingResult?>?> ClaimNextAsync(CancellationToken ct)
     {
         if (shutdownToken.IsCancellationRequested || ct.IsCancellationRequested) return null;
+        var standalone = await ClaimStandaloneInterruptionAsync(ct);
+        if (standalone is not null) return standalone;
         var interrupted = await ClaimCodexRecoveryAsync(null, ct);
         if (interrupted is not null) return interrupted;
         foreach (var label in new[] { config.GitHub.IntegrationRecoveryLabel, config.GitHub.IntegrationConflictLabel }
@@ -404,6 +406,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             return null;
         }
         var latest = issueHistory.FirstOrDefault();
+        if (serverExecutionId is null && issueHistory.Any(HandlesStandaloneRecovery))
+        {
+            _activeIssues.TryRemove(issueKey, out _);
+            return null;
+        }
         if (freshRecovery && issueHistory.Any(entry => entry.State == "Completed" || entry.IntegrationBranch is not null ||
             entry.CompletedBranch is not null || entry.RecoveryState is "codex-resuming" or "codex-recovery-inspection-required"))
             throw new WorkerInfrastructureException("Fresh recovery conflicts with local completed, integrated, or uncertain execution history; inspect preserved state.");
@@ -420,15 +427,16 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // execution state to resume. A new ready label starts a clean attempt even in resume mode.
         var freshAfterPreparationFailure = issue.Labels?.Contains(config.GitHub.ReadyLabel, StringComparer.OrdinalIgnoreCase) == true &&
             latest?.RecoveryState == "preparation-failed";
-        var retryOf = !freshRecovery && !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
+        var retryOf = latest?.RecoveryState == "standalone-retired" ? latest : !freshRecovery && !freshAfterConflict && !freshAfterPreparationFailure && latest?.State is "Failed" or "Blocked" ? latest : null;
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
-        // Only verified no-change cleanup authorizes a clean retry without recovery inspection.
-        var cleanRetry = retryOf?.RecoveryState == "cleaned-no-changes";
+        // Verified no-change cleanup or safe standalone retirement authorizes a clean retry.
+        var cleanRetry = retryOf?.RecoveryState is "cleaned-no-changes" or "standalone-retired";
         var resumed = retryOf is not null && !cleanRetry && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
         issue = await PrepareCommentContextAsync(issue, ct);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
-            ownershipGeneration: ownershipGeneration, codexSettings: config.Codex, settingsSource: retryOf);
+            ownershipGeneration: ownershipGeneration, codexSettings: config.Codex,
+            settingsSource: retryOf?.RecoveryState == "standalone-retired" ? null : retryOf);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -507,7 +515,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
          entry.FailureReason?.StartsWith($"Integration conflict for Issue #{entry.IssueNumber};", StringComparison.Ordinal) == true);
 
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
-        int issueKey, CancellationToken ct, bool integrationRecovery = false)
+        int issueKey, CancellationToken ct, bool integrationRecovery = false, bool interruptedExecution = false)
     {
         var finalQuotaDisplayed = false;
         try
@@ -521,7 +529,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             }
             await ReadQuotaAsync(final: false, ct);
             var timer = Stopwatch.StartNew();
-            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery), ct);
+            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery, interruptedExecution), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
@@ -558,6 +566,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 throw;
             }
             await CompleteHistoryAsync(execution, report, terminalState, CancellationToken.None);
+            if (terminalState == ExecutionState.Completed && report.Integration is { HasChanges: false } && history is not null &&
+                await history.ReadExecutionAsync(execution.ExecutionId, CancellationToken.None) is { RecoveryState: "standalone-continuing" })
+                await history.UpdateRecoveryAsync(execution.ExecutionId, "cleaned-no-changes", CancellationToken.None);
             var finalEntry = history is null ? CreateEntry(execution, report, null, null) :
                 (await history.ReadAllAsync(CancellationToken.None)).FirstOrDefault(entry => entry.ExecutionId == execution.ExecutionId)
                 ?? CreateEntry(execution, report, null, null);

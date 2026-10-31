@@ -49,7 +49,7 @@ Recovery and reporting take precedence over terminal outcomes and age. The mappi
 
 Missing project configuration takes precedence as `orphaned`. Age never proves cleanup eligibility.
 Canonical `outcome` values are `succeeded`, `blocked`, `failed`, `infrastructure-failure`,
-`cancelled`, `integration-conflict`, and `active`; inventory accepts case variants such as `Failed`.
+`cancelled`, `integration-conflict`, `superseded`, and `active`; inventory accepts case variants such as `Failed`.
 Unknown outcome and attention filters return allowed values. `terminal-clean` distinguishes resource-clean
 failures from successful business results; no successful later Issue attempt alone clears an ambiguous source.
 `includeArchived=true` includes archived history, with the same assessment and filters.
@@ -348,3 +348,46 @@ and check Worker connectivity; an undispatched operation can be cancelled. Runni
 operations past their deadline are uncertain and must be inspected, never replayed.
 An unavailable history is not proof that a command was rejected: refresh the Server
 connection and inspect the operation by its retained ID before submitting another.
+
+### Standalone validation and integration interruptions
+
+Standalone startup no longer treats an earlier `passed` validation result as proof
+that integration or push completed. New executions record `pending` before running
+post-rebase validation. A durable validated completion handoff still follows the
+exact-remote-commit completion protocol above, with idempotent reporting.
+
+After execution readiness is established, the standalone scheduler reconciles
+interrupted local attempts before claiming their Issues. It verifies the original
+base against the freshly fetched authoritative origin base, the registered owned
+worktree and feature history, local process state, Issue eligibility and other
+attempts. With a recorded successful implementation (or the legacy passed-validation
+handoff), unchanged saved Issue intent and configuration, useful work continues
+under the same execution ID through normal authoritative validation and integration;
+implementation is not rerun. A claim interrupted before any workspace was created
+continues under its existing ID through normal workspace preparation, including when
+the claim already replaced ready with working. Managed history and assignments do
+not grant standalone recovery authority.
+
+If continuation cannot be authorized, an open Issue with the configured ready label
+explicitly requests a fresh attempt. Retirement requires verified non-integration,
+no active process or newer attempt, and a clean owned worktree. The Worker durably
+records retirement intent, removes only that worktree, records the old attempt as
+`Superseded` / `standalone-retired`, removes a stale working label, and lets the normal
+claim path create a linked fresh attempt. The original failure and validation
+history remain, and the original feature branch keeps useful commits reachable.
+A restart between worktree removal and its receipt rechecks remote and ownership
+evidence before finishing retirement. Uncommitted work without sufficient continuation
+proof remains retained rather than being discarded.
+
+Ambiguous integration, missing ownership, unavailable remote state, active processes,
+changed or ineligible Issues and newer attempts retain evidence and emit a bounded,
+execution-correlated operational diagnostic. Inspection reports supported uncertain
+states as `review / recovery-ambiguous`, rather than an unknown recovery value.
+Read-only reconciliation checks run at most three times per Worker runtime, at least
+one minute apart; a restart starts a new inspection campaign. These blockers fence
+the affected Issue without silently pausing unrelated project work. Linux process
+inspection is required. The saved cgroup identifies execution children after an
+abrupt restart; a durable graceful-shutdown record also proves the previous child
+sessions were joined. Accessible processes working in the workspace always block
+reuse. Unreadable process state without sufficient ownership/teardown proof fails
+closed, as does an unsupported platform.

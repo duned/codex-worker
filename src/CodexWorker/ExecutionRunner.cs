@@ -4,7 +4,7 @@ namespace CodexWorker;
 
 /// <summary>Explicit identity and Issue input for one execution attempt.</summary>
 public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Issue, ExecutionHistoryEntry? RetryOf = null,
-    bool IntegrationRecovery = false);
+    bool IntegrationRecovery = false, bool InterruptedExecution = false);
 
 /// <summary>
 /// Runs the repository workspace, Codex, validation, repair, and integration lifecycle for one execution.
@@ -45,7 +45,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: metadataError));
             }
-            if (context.IntegrationRecovery)
+            if (context.IntegrationRecovery || context.InterruptedExecution)
                 return await RunIntegrationRecoveryAsync(context, executionCodex, ct);
             await _repositoryGate.WaitAsync(ct);
             try
@@ -81,7 +81,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }
             finally { _repositoryGate.Release(); }
             execution.CodexRecovery ??= new CodexInterruptionRecovery(execution.ExecutionId, execution.AttemptNumber,
-                0, CodexInterruptionRecovery.Fingerprint(config));
+                0, CodexInterruptionRecovery.Fingerprint(config),
+                ProcessScope: await InterruptedWorkspaceProcesses.ReadScopeAsync(ct), ImplementationSucceeded: false);
             var workspaceSnapshot = await git.InspectExecutionWorkspaceAsync(ct);
             await SaveHistoryAsync(CreateEntry(execution, null, null, null) with
             {
@@ -112,6 +113,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             var implementationSummary = outcome.Summary;
             var repairs = context.RetryOf?.RecoveryState == "codex-interrupted"
                 ? context.RetryOf.Repairs.ToList() : new List<ValidationRepairRecord>();
+            if (execution.CodexRecovery is { } implementation)
+                execution.CodexRecovery = implementation with { ImplementationSucceeded = outcome.Status == "success" };
             await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
             if (outcome.Status == "blocked") return await CleanupOutcomeAsync(context, IssueOutcomeKind.Blocked,
                 new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
@@ -150,6 +153,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 repairAttempts++;
                 repairs.Add(new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
                     "Repair invocation interrupted before a structured result was available.", false, failureSummary));
+                if (execution.CodexRecovery is { } repairing)
+                    execution.CodexRecovery = repairing with { ImplementationSucceeded = false };
                 await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
                 outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", execution), () =>
@@ -158,6 +163,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     completion: x => x.Status, succeeded: x => x.Status == "success",
                     warning: x => x.Status == "blocked", ct: ct);
                 await git.VerifyCodexStateAsync(ct);
+                if (execution.CodexRecovery is { } repaired)
+                    execution.CodexRecovery = repaired with { ImplementationSucceeded = outcome.Status == "success" };
                 if (outcome.Status is "blocked" or "failed")
                 {
                     if (outcome.Status == "failed")
@@ -249,8 +256,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             var recoveryState = GitHubOperationException.Find(shutdownError) is { IsMutation: true }
                 ? GitHubOperationException.ReconciliationRequiredState : "uncertain";
-            if (execution.State is ExecutionState.Implementing or ExecutionState.Repairing && execution.CodexRecovery is not null &&
-                recoveryState != GitHubOperationException.ReconciliationRequiredState)
+            if (execution.State is ExecutionState.Implementing or ExecutionState.Repairing &&
+                execution.CodexRecovery is { ImplementationSucceeded: not true } && recoveryState != GitHubOperationException.ReconciliationRequiredState)
                 recoveryState = "codex-interrupted";
             await RecordInfrastructureFailureAsync(execution, "Execution interrupted by Worker shutdown", recoveryState, shutdown: true);
             throw new WorkerShutdownException(shutdownToken, shutdownError);
@@ -304,7 +311,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             try
             {
                 output.Warning($"Reconciling preserved implementation with current {config.Git.BaseBranch} · original execution {source.ExecutionId}");
-                await git.StartIntegrationRecoveryAsync(source, ct);
+                if (context.InterruptedExecution) await git.StartInterruptedExecutionAsync(source, ct);
+                else await git.StartIntegrationRecoveryAsync(source, ct);
             }
             catch (IssuePreparationRejectedException ex) when (!ct.IsCancellationRequested)
             {
@@ -320,7 +328,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }
         }
         finally { _repositoryGate.Release(); }
-        var repairs = new List<ValidationRepairRecord>();
+        var repairs = context.InterruptedExecution ? source.Repairs.ToList() : new List<ValidationRepairRecord>();
         await TransitionAsync(execution, ExecutionState.Integrating, ct);
         await _repositoryGate.WaitAsync(ct);
         try
@@ -335,6 +343,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     token => ValidateAfterRebaseAsync(context, repairs, token),
                     async (details, token) =>
                     {
+                        if (context.InterruptedExecution) return false;
                         var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
                             () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
                             x => x.Status, x => x.Status == "success", ct: token);
@@ -342,7 +351,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     }, (details, token) => RepairIntegrationAsync(context, executionCodex, source.ImplementationSummary, repairs, details, token),
                     ct, token => EnsureIntegrationAuthorityAsync(execution, token)), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.\n\n{source.ImplementationSummary}", repairs, Integration: integration);
-            if (history is not null) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
+            if (history is not null && !context.InterruptedExecution) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded, report);
         }
         catch (GitIntegrationConflictException ex)
@@ -389,11 +398,17 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var attempt = repairs.Count(repair => repair.IntegrationRepair) + 1;
         if (attempt > config.Validation.MaxFixAttempts) return new IntegrationRepairResult(false, false);
         await EnsureIntegrationAuthorityAsync(context.Execution, ct);
+        if (context.Execution.CodexRecovery is { } repairing)
+            context.Execution.CodexRecovery = repairing with { ImplementationSucceeded = false };
+        await SaveHistoryAsync(CreateEntry(context.Execution, new IssueExecutionReport(implementationSummary, repairs), null, null)
+            with { ValidationOutcome = "pending: integration repair" }, ct);
         var outcome = await output.RunProgressAsync(TaskLabel(context.Issue,
             $"Integration repair {attempt}/{config.Validation.MaxFixAttempts}", context.Execution), () =>
             executionCodex.RepairIntegrationAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, context.Issue,
                 details, implementationSummary, config.Validation.Commands, attempt, config.Validation.MaxFixAttempts, ct),
             x => x.Status, x => x.Status == "success", warning: x => x.Status == "blocked", ct: ct);
+        if (context.Execution.CodexRecovery is { } repaired)
+            context.Execution.CodexRecovery = repaired with { ImplementationSucceeded = outcome.Status == "success" };
         var summary = FailureDiagnosticRedactor.Redact(outcome.Summary +
             (outcome.Question is null ? "" : $"\n{outcome.Question}"), config.Environment.Variables.Values.ToArray());
         repairs.Add(new ValidationRepairRecord(details.Failure.Command, attempt, config.Validation.MaxFixAttempts,
@@ -431,6 +446,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     {
         var integrationRepair = repairs.LastOrDefault(repair => repair.IntegrationRepair);
         var stage = integrationRepair is null ? (context.IntegrationRecovery ? "Validation after integration recovery" : "Validation after rebase") : "Validation after integration repair";
+        // Initial validation does not certify the rebased source. Persist this distinction
+        // before invoking a command that may be interrupted by shutdown.
+        await SaveHistoryAsync(CreateEntry(context.Execution, new IssueExecutionReport(null, repairs), null, null)
+            with { ValidationOutcome = $"pending: {stage.ToLowerInvariant()}" }, ct);
         var result = await output.RunProgressAsync(TaskLabel(context.Issue, stage, context.Execution),
             () => RunValidationAsync(context, stage, integrationRepair?.Attempt ?? 0, ct),
             x => x.Succeeded ? (integrationRepair is null ? "passed" : "integration repair succeeded") : $"command {x.Failure!.CommandNumber} failed", x => x.Succeeded, ct: ct);

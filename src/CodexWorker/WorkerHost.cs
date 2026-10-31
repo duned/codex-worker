@@ -1129,7 +1129,8 @@ public sealed class WorkerHost
                 var entries = await history.ReadAllAsync(ct);
                 foreach (var entry in entries.Where(item => item.Project == project.Configuration.Project.Name &&
                              item.Repository == project.Configuration.Project.Repository &&
-                             NeedsCompletionReconciliation(item)))
+                             NeedsCompletionReconciliation(item) &&
+                             !project.Worker.HandlesStandaloneRecovery(item)))
                 {
                     if (entry.CompletionJson is not null || entry.ValidationOutcome == "passed")
                     {

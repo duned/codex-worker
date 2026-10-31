@@ -75,7 +75,8 @@ internal sealed record CodexFailure(string Category, string Reason, bool Recover
 /// <summary>Workspace ownership and a separate, restart-safe infrastructure resume budget.
 /// Configuration is fingerprinted instead of persisting environment secrets. Changed configuration requires inspection.</summary>
 public sealed record CodexInterruptionRecovery(Guid WorkspaceExecutionId, int WorkspaceAttemptNumber,
-    int ResumeCount, string ConfigurationFingerprint, string? SessionId = null, DateTimeOffset? RetryAfterUtc = null)
+    int ResumeCount, string ConfigurationFingerprint, string? SessionId = null, DateTimeOffset? RetryAfterUtc = null,
+    string? ProcessScope = null, bool? ImplementationSucceeded = null)
 {
     public const int MaximumResumes = 3;
     internal static string Fingerprint(WorkerConfiguration config) => Convert.ToHexString(SHA256.HashData(

@@ -348,7 +348,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         if (query.Limit is < 1 or > 5001 || query.Offset is < 0 or > 10000 || query.IssueNumber is <= 0 ||
             query.ExecutionId == Guid.Empty || query.OlderThanDays is < 1 or > 3650 ||
             query.Origin is not (null or "local" or "managed") ||
-            query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active") ||
+            query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "superseded" or "active") ||
             query.Project is { } project && (string.IsNullOrWhiteSpace(project) || project.Length > 80 || project.Any(char.IsControl)))
             throw new ArgumentException("Inventory limits, age, origin or identifiers are invalid.");
         var cutoff = query.OlderThanDays is { } age ? now.AddDays(-age).ToString("O") : null;
@@ -356,7 +356,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
             "AND ($includeArchived=1 OR execution_id NOT IN (SELECT execution_id FROM execution_archives)) AND ($issue IS NULL OR issue_number=$issue) AND ($outcome IS NULL OR " +
             "CASE state WHEN 'Completed' THEN 'succeeded' WHEN 'Blocked' THEN 'blocked' WHEN 'Failed' THEN 'failed' " +
             "WHEN 'InfrastructureFailure' THEN 'infrastructure-failure' WHEN 'Cancelled' THEN 'cancelled' " +
-            "WHEN 'IntegrationConflict' THEN 'integration-conflict' ELSE 'active' END=$outcome) " +
+            "WHEN 'IntegrationConflict' THEN 'integration-conflict' WHEN 'Superseded' THEN 'superseded' ELSE 'active' END=$outcome) " +
             "AND ($cutoff IS NULL OR COALESCE(completed_at_utc, started_at_utc) <= $cutoff) " +
             "AND ($origin IS NULL OR ($origin='managed' AND (server_execution_id IS NOT NULL OR assignment_id IS NOT NULL OR ownership_generation IS NOT NULL)) " +
             "OR ($origin='local' AND server_execution_id IS NULL AND assignment_id IS NULL AND ownership_generation IS NULL)) " +

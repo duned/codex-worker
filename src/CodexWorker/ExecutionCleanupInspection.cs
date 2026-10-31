@@ -115,8 +115,19 @@ public sealed partial class GitRepository
             return Result("review", "lineage-inconsistent", "Attempt lineage is missing or inconsistent.");
         if (entry.RecoveryState is "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or "codex-recovery-inspection-required")
             return Result("keep", "codex-interruption-recovery", "Codex interruption resources are retained for continuation or inspection; automatic cleanup is not authorized.");
+        if (entry.RecoveryState is "uncertain" or "github-reconciliation-required" or "github-reconciled" or
+            "integration-conflict-unavailable" or "integration-recovery-interrupted" or "standalone-retiring" or "standalone-continuing")
+            return Result("review", "recovery-ambiguous", "Interrupted execution requires remote, process and workspace reconciliation; resources are retained.");
+        if (entry.RecoveryState == "preparation-failed")
+            return Result("review", "preparation-resource-proof-missing", "Preparation failed; verify retained resources before cleanup.");
+        if (entry.RecoveryState == "managed-completion-quarantined")
+            return Result("review", "managed-completion-quarantined", "Managed completion requires Server reconciliation.");
+        if (entry.RecoveryState == "standalone-retired")
+            return Result("keep", "retired-commits-retained", "Standalone attempt was safely retired; its feature commits remain retained in the original branch.");
+        if (!acknowledged && entry.RecoveryState == "operator-acknowledged")
+            return Result("review", "operator-acknowledged", "Operator acknowledgment retains resources; use protected acknowledged cleanup inspection.");
         if (!(acknowledged && entry.RecoveryState == "operator-acknowledged") && entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
-            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled"))
+            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled" or "standalone-retired"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
         {
@@ -188,5 +199,5 @@ public sealed partial class GitRepository
     private Task<ProcessResult> InspectionGitAtAsync(string path, IEnumerable<string> args, CancellationToken ct, int[]? allowExitCodes = null) =>
         GitAtAsync(path, args, ct, allowExitCodes, readOnly: true);
 
-    internal static bool IsCommitId(string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
+    internal static bool IsCommitId([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
 }

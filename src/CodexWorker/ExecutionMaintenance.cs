@@ -52,9 +52,10 @@ public static class ExecutionMaintenanceClassifier
                 "missing" => "workspace-missing",
                 "managed-completion-quarantined" => "managed-completion-quarantined",
                 "uncertain" or "integration-conflict" or "integration-conflict-unavailable" or
-                    "integration-recovery-interrupted" => "recovery-ambiguous",
+                    "integration-recovery-interrupted" or "standalone-retiring" or "standalone-continuing" => "recovery-ambiguous",
                 "codex-interrupted" or "codex-resuming" or "codex-recovery-exhausted" or
                     "codex-recovery-inspection-required" => "codex-recovery-pending",
+                "standalone-retired" => "retired-commits-retained",
                 _ => "recovery-state-unknown"
             }, "Recovery lacks verified ownership, integration or cleanup proof; retain resources for inspection.");
         if (!Terminal.Contains(entry.State) || entry.CompletedAtUtc is null)
@@ -75,6 +76,6 @@ public static class ExecutionMaintenanceClassifier
     {
         "Completed" => "succeeded", "Blocked" => "blocked", "Failed" => "failed",
         "InfrastructureFailure" => "infrastructure-failure", "Cancelled" => "cancelled",
-        "IntegrationConflict" => "integration-conflict", _ => "active"
+        "IntegrationConflict" => "integration-conflict", "Superseded" => "superseded", _ => "active"
     };
 }

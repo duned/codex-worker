@@ -197,8 +197,8 @@ public sealed class WorkerRuntimeReadModel
     public async Task<ExecutionInventoryPage> ExecutionInventoryAsync(ExecutionInventoryQuery query, CancellationToken ct)
     {
         query = query with { Outcome = query.Outcome?.ToLowerInvariant() };
-        if (query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "active"))
-            throw new ArgumentException("Invalid outcome. Allowed values: succeeded, blocked, failed, infrastructure-failure, cancelled, integration-conflict, active (case-insensitive).");
+        if (query.Outcome is not (null or "succeeded" or "blocked" or "failed" or "infrastructure-failure" or "cancelled" or "integration-conflict" or "superseded" or "active"))
+            throw new ArgumentException("Invalid outcome. Allowed values: succeeded, blocked, failed, infrastructure-failure, cancelled, integration-conflict, superseded, active (case-insensitive).");
         if (query.Attention is not (null or "healthy-active" or "healthy-terminal" or "terminal-clean" or "recoverable" or "reconciliation-required" or "stale" or "orphaned" or "retained-review"))
             throw new ArgumentException("Invalid attention. Allowed values: healthy-active, healthy-terminal, terminal-clean, recoverable, reconciliation-required, stale, orphaned, retained-review.");
         if (query.Limit is < 1 or > 200 || query.Offset is < 0 or > 10000)
@@ -263,7 +263,7 @@ public sealed class WorkerRuntimeReadModel
     {
         "Completed" => "succeeded", "Blocked" => "blocked", "Failed" => "failed",
         "InfrastructureFailure" => "infrastructure-failure", "Cancelled" => "cancelled",
-        "IntegrationConflict" => "integration-conflict", _ => null
+        "IntegrationConflict" => "integration-conflict", "Superseded" => "superseded", _ => null
     };
 }
 
