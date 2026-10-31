@@ -8,6 +8,8 @@ public sealed class ServerConfiguration
     public CodexProvisioning.GeneratedMessageOrigin MessageOrigin => new(CodexProvisioning.CodexComponent.Server, EffectiveDisplayName);
     /// <summary>Exact browser origin for administration sessions; HTTPS except explicit direct loopback HTTP.</summary>
     public string? AdministrationOrigin { get; set; }
+    /// <summary>Operator-trusted HTTPS origins for fetching public OAuth client metadata (CIMD).</summary>
+    public string[] OAuthClientMetadataOrigins { get; set; } = [];
     public string ListenUrl { get; set; } = "http://127.0.0.1:5090";
     /// <summary>Directory for durable Server state. Relative paths are resolved from the user's home directory.</summary>
     public string DataDirectory { get; set; } = Path.Combine(
@@ -25,6 +27,11 @@ public sealed class ServerConfiguration
 
     public void Validate()
     {
+        if (OAuthClientMetadataOrigins.Length > 16 || OAuthClientMetadataOrigins.Any(value =>
+            !Uri.TryCreate(value, UriKind.Absolute, out var metadataOrigin) || metadataOrigin.Scheme != "https" ||
+            metadataOrigin.IsLoopback || metadataOrigin.UserInfo.Length != 0 ||
+            value != metadataOrigin.GetLeftPart(UriPartial.Authority)))
+            throw new InvalidDataException("Server:OAuthClientMetadataOrigins must contain at most 16 exact trusted HTTPS origins without trailing slashes.");
         if (DisplayName is not null && (DisplayName.Length > 200 || DisplayName.Any(char.IsControl)))
             throw new InvalidDataException("Server:DisplayName must contain at most 200 printable characters.");
         if (!Uri.TryCreate(ListenUrl, UriKind.Absolute, out var uri) ||

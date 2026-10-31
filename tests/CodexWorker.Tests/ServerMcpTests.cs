@@ -23,7 +23,12 @@ public sealed class ServerMcpTests
         {
             await using var app = await ServerApplication.BuildAsync(
                 ["--Server:ListenUrl=http://127.0.0.1:5090", $"--Server:DatabasePath={Path.Combine(directory, "mcp.db")}",
-                 "--Logging:LogLevel:Default=Warning"], githubReadService: new AlwaysEligibleServerGitHubReadService());
+                 "--Server:AdministrationOrigin=https://mcp.example", "--Logging:LogLevel:Default=Warning",
+                 "--Logging:LogLevel:Microsoft.AspNetCore.Hosting.Diagnostics=Information",
+                 "--Logging:LogLevel:Microsoft.AspNetCore.Http.Result.RedirectResult=Information"], githubReadService: new AlwaysEligibleServerGitHubReadService());
+            var loggerFactory = app.Services.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
+            foreach (var category in new[] { "Microsoft.AspNetCore.Hosting.Diagnostics", "Microsoft.AspNetCore.Http.Result.RedirectResult" })
+                Assert.False(loggerFactory.CreateLogger(category).IsEnabled(Microsoft.Extensions.Logging.LogLevel.Information));
             // Let Kestrel choose the test port without a reservation/rebind race.
             app.Urls.Clear();
             app.Urls.Add("http://127.0.0.1:0");
@@ -51,6 +56,39 @@ public sealed class ServerMcpTests
                 protocolVersion = "2025-11-25", capabilities = new { }, clientInfo = new { name = "test-client", version = "1" }
             });
             Assert.Equal(ServerApplication.DisplayVersion, initialize.GetProperty("result").GetProperty("serverInfo").GetProperty("version").GetString());
+            var oauthStore = app.Services.GetRequiredService<McpOAuthStore>();
+            var verifier = new string('v', 43);
+            var challenge = Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlEncode(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier)));
+            var code = Assert.IsType<string>(await oauthStore.AuthorizeAsync("https://client.example/client.json", "https://client.example/callback", "https://mcp.example/mcp", challenge, default));
+            var oauth = Assert.IsType<McpOAuthStore.Tokens>(await oauthStore.ExchangeAsync(code, "https://client.example/client.json", "https://mcp.example/mcp", false, "https://client.example/callback", verifier, default));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauth.access_token);
+            var oauthHealth = await Rpc(client, "tools/call", new { name = "server_health", arguments = new { } });
+            Assert.True(oauthHealth.TryGetProperty("result", out _));
+            await oauthStore.RevokeAsync(oauth.refresh_token, "https://client.example/client.json", default);
+            using (var revoked = await client.GetAsync("/mcp"))
+            {
+                Assert.Equal(HttpStatusCode.Unauthorized, revoked.StatusCode);
+                Assert.Contains("https://mcp.example/.well-known/oauth-protected-resource/mcp", revoked.Headers.WwwAuthenticate.ToString(), StringComparison.Ordinal);
+            }
+            var browser = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+            browser.Request.Host = new("mcp.example");
+            var sessions = app.Services.GetRequiredService<AdministrationSessions>();
+            var session = Assert.IsType<AdministrationSessions.Session>(sessions.Create(browser));
+            client.DefaultRequestHeaders.Authorization = null;
+            client.DefaultRequestHeaders.Host = "mcp.example";
+            client.DefaultRequestHeaders.Add("Cookie", browser.Response.Headers.SetCookie.ToString().Split(';')[0]);
+            client.DefaultRequestHeaders.Add("Origin", "https://mcp.example");
+            client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, session.CsrfToken);
+            var sessionHealth = await Rpc(client, "tools/call", new { name = "server_health", arguments = new { } });
+            Assert.True(sessionHealth.TryGetProperty("result", out _));
+            client.DefaultRequestHeaders.Remove(AdministrationSessions.CsrfHeader);
+            using (var noCsrf = await client.PostAsync("/mcp", new StringContent("{}")))
+                Assert.Equal(HttpStatusCode.Unauthorized, noCsrf.StatusCode);
+            client.DefaultRequestHeaders.Remove("Origin");
+            client.DefaultRequestHeaders.Remove("Cookie");
+            client.DefaultRequestHeaders.Host = null;
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "mcp-test-management");
             client.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
             var discovery = await Rpc(client, "tools/list", new { });
             var tools = discovery.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();

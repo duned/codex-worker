@@ -37,9 +37,17 @@ internal static class ServerMcp
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
-        if (!sessions.Authorized(context))
+        var configuration = context.RequestServices.GetRequiredService<ServerConfiguration>();
+        var supplied = context.Request.Headers.Authorization.ToString();
+        var existingAuthorized = sessions.Authorized(context);
+        var oauthAuthorized = !existingAuthorized && McpOAuthEndpoints.Issuer(configuration) is not null &&
+            supplied.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) &&
+            await context.RequestServices.GetRequiredService<McpOAuthStore>().AuthorizedAsync(supplied[7..], context.RequestAborted);
+        if (!existingAuthorized && !oauthAuthorized)
         {
-            context.Response.Headers.WWWAuthenticate = "Bearer realm=\"Codex Server\"";
+            context.Response.Headers.WWWAuthenticate = McpOAuthEndpoints.Issuer(configuration) is { } issuer
+                ? $"Bearer realm=\"Codex Server\", resource_metadata=\"{issuer}/.well-known/oauth-protected-resource/mcp\""
+                : "Bearer realm=\"Codex Server\"";
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }

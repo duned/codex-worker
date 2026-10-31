@@ -64,6 +64,9 @@ public static partial class ServerApplication
         // Verify product assets before opening persistent services.
         var preview = EmbeddedDashboardAssets.LoadDevelopmentOverride();
         var builder = CreateBuilder(args);
+        // Request URLs and redirect Locations can contain OAuth state or authorization codes.
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result.RedirectResult", LogLevel.Warning);
         var configuration = new ServerConfiguration();
         builder.Configuration.GetSection("Server").Bind(configuration);
         configuration.Validate();
@@ -72,6 +75,18 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<AdministrationSessions>();
         builder.Services.AddServerMcp();
+        builder.Services.AddHttpClient<McpOAuthClients>(client => client.Timeout = TimeSpan.FromSeconds(10))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false, UseDefaultCredentials = false });
+        builder.Services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            Microsoft.AspNetCore.RateLimiting.RateLimiterOptionsExtensions.AddFixedWindowLimiter(options, "mcp-oauth", limiter =>
+            {
+                limiter.PermitLimit = 60;
+                limiter.Window = TimeSpan.FromMinutes(1);
+                limiter.QueueLimit = 0;
+            });
+        });
         builder.Services.AddSingleton<WorkerJournalRequests>();
         var databasePath = configuration.ResolveDatabasePath();
         builder.Services.AddSingleton(_ => new ServerDatabaseAccessLock(databasePath, forRestore: false));
@@ -92,6 +107,7 @@ public static partial class ServerApplication
             logger: services.GetRequiredService<ILogger<SqliteRegistryStore>>()));
         builder.Services.AddSingleton<ICredentialStore>(_ => new SqliteCredentialStore(databasePath, Environment.GetEnvironmentVariable("CODEX_SERVER_CREDENTIAL_ENCRYPTION_KEY")));
         builder.Services.AddSingleton<IServerHealthService, ServerHealthService>();
+        builder.Services.AddSingleton(services => new McpOAuthStore(databasePath, configuration, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ExecutionMaintenanceStore(databasePath));
@@ -108,7 +124,7 @@ public static partial class ServerApplication
             context.Response.Headers["X-Codex-Request-Id"] = context.TraceIdentifier;
             // All control-plane API responses can include private state or transient login
             // challenges. Set this before binding/authentication so errors are covered too.
-            if (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/mcp"))
+            if (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/mcp") || context.Request.Path.StartsWithSegments("/oauth"))
             {
                 context.Response.OnStarting(() =>
                 {
@@ -125,12 +141,24 @@ public static partial class ServerApplication
             }
             await next(context);
         });
+        app.Use(async (context, next) =>
+        {
+            if (context.Request.Path.StartsWithSegments("/oauth"))
+            {
+                context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+                context.Response.Headers["Referrer-Policy"] = "no-referrer";
+                context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            }
+            await next(context);
+        });
+        app.UseRateLimiter();
         app.UseServerMcpAuthorization();
         try
         {
             _ = app.Services.GetRequiredService<ServerDatabaseAccessLock>();
             var persistence = app.Services.GetRequiredService<IRegistryStore>();
             await persistence.InitializeAsync(cancellationToken);
+            await app.Services.GetRequiredService<McpOAuthStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ProvisioningCommandStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<ExecutionMaintenanceStore>().InitializeAsync(cancellationToken);
             await app.Services.GetRequiredService<TelegramTestStore>().InitializeAsync(cancellationToken);
@@ -202,6 +230,7 @@ public static partial class ServerApplication
         });
         app.MapGet("/livez", () => Results.Ok(new { status = "alive" }));
         app.MapMcp("/mcp");
+        app.MapMcpOAuth();
         app.MapGet("/readyz", async (IServerHealthService healthService, HttpContext context) =>
         {
             try

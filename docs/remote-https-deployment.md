@@ -542,3 +542,67 @@ shell. Keep API/protocol route policy unchanged. Historical `/dashboard-preview`
 and `/workers/{id}/poc` links redirect to canonical routes. Do not proxy the removed
 `/dashboard-assets/worker-poc.js` or `.css` as a separate frontend. Installed Server
 assemblies contain the complete Vite asset graph; deployments need no Node/npm/CDN.
+
+### ChatGPT MCP OAuth connections
+
+The Server uses `AdministrationOrigin` as its canonical OAuth issuer and the
+exact resource identifier `AdministrationOrigin` + `/mcp`. OAuth discovery and
+issuance are disabled for HTTP origins, including direct loopback HTTP. Host and
+forwarded headers never select the issuer or resource. Keep the proxy's fixed
+upstream Host equal to the configured origin's authority.
+
+Configure the CIMD origins trusted by this installation in the Server environment
+file, then restart the Server. For ChatGPT, add:
+
+```ini
+Server__OAuthClientMetadataOrigins__0=https://chatgpt.com
+```
+
+The default list is empty. Additional entries use consecutive numeric suffixes;
+only exact HTTPS origins are accepted. This is an operator-controlled outbound
+fetch allowlist, not remote dynamic client registration. Metadata requests have
+no cookies or credentials, cannot follow redirects, and have bounded size and
+duration. The document's exact `client_id`, advertised redirect URI and public
+client authentication method (`none`) must match. No DCR endpoint is provided.
+The current ChatGPT CIMD/public-client behavior is documented in the
+[OpenAI authentication reference](https://developers.openai.com/plugins/build/auth).
+
+Configure the custom connector with the externally reachable HTTPS `/mcp` URL
+and OAuth/CIMD. Discovery is available at
+`/.well-known/oauth-protected-resource/mcp` (also the root protected-resource
+metadata path) and `/.well-known/oauth-authorization-server`. MCP
+authentication challenges link to the configured metadata URL. Authorization
+responses include the configured issuer (`iss`) to support stable client callbacks.
+
+The checked-in proxy permits public discovery, `/mcp` and POST requests to
+`/oauth/token` and `/oauth/revoke`, with the existing rate and connection limits.
+`/oauth/authorize`, the dashboard and all administration APIs remain VPN-only.
+The administrator must reach consent through the management network, sign into
+the existing dashboard session, and select **Continue authorization** if navigating
+from ChatGPT did not carry the Strict session cookie. Review the client identifier,
+exact callback and `mcp:admin` permission before allowing. This permission grants
+all MCP tools, including Issue changes, execution dispatch/cancellation and Worker
+maintenance/provisioning; it does not authenticate ordinary administration APIs.
+
+Authorization requires an explicit decision, exact origin and session CSRF value.
+Codes expire after five minutes and require S256 PKCE. Access tokens last ten
+minutes; refresh tokens rotate within an absolute 90-day connection lifetime.
+A refresh replaces the previous access credential. Replaying a consumed code or
+refresh token revokes its entire connection. Expired or revoked credentials
+receive generic errors. Existing management Bearer tokens and dashboard sessions
+continue to authenticate `/mcp` under their existing origin/CSRF rules.
+
+Administrators can list connections with
+`GET /api/v1/administration/mcp-connections` and revoke one with
+`DELETE /api/v1/administration/mcp-connections/{id}`, using existing management
+Bearer or dashboard session/CSRF authentication. Clients can revoke their own
+connection by posting `token` and `client_id` to `/oauth/revoke`; unknown credentials
+receive the same successful response. Revocation immediately invalidates the
+connection's access and refresh credentials. SQLite stores only one-way credential
+digests and bounded grant metadata; grants survive restart while browser sessions
+do not. Restoring a database also restores its OAuth grants, so revoke restored
+connections when reconciling a backup. Keep HTTP request/response body logging and
+URL logging disabled in additional proxies and tracing: authorization URLs and
+redirect Locations carry transient OAuth data. The Server suppresses framework
+request URL and redirect Location diagnostics, and the example proxy retains no
+request logs.

@@ -36,7 +36,7 @@ def main():
             self.end_headers()
             self.wfile.write(b'synthetic-response')
 
-        do_GET = do_POST = do_PUT = handle_request
+        do_GET = do_POST = do_PUT = do_DELETE = handle_request
 
         def log_message(self, *args):
             pass
@@ -109,6 +109,11 @@ def main():
                             raise
                         time.sleep(0.02)
                 public = [
+                    ('GET', '/.well-known/oauth-protected-resource'),
+                    ('GET', '/.well-known/oauth-protected-resource/mcp'),
+                    ('GET', '/.well-known/oauth-authorization-server'),
+                    ('POST', '/oauth/token'), ('POST', '/oauth/revoke'),
+                    ('GET', '/mcp'), ('POST', '/mcp'), ('DELETE', '/mcp'),
                     ('PUT', '/api/v1/workers/w'), ('POST', '/api/v1/workers/w/heartbeat'),
                     ('GET', '/api/v1/workers/w/configuration'),
                     ('POST', '/api/v1/workers/w/assignments/request'),
@@ -150,6 +155,10 @@ def main():
                                      ('GET', '/dashboard-assets/preview/assets/example.css'),
                                      ('GET', '/executions/request-a?offset=50'),
                                      ('GET', '/settings/credential-a'),
+                                     ('GET', '/oauth/authorize'), ('POST', '/oauth/authorize'),
+                                     ('GET', '/oauth/token'), ('POST', '/.well-known/oauth-authorization-server'),
+                                     ('GET', '/api/v1/administration/mcp-connections'),
+                                     ('DELETE', '/api/v1/administration/mcp-connections/c'),
                                      ('GET', '/api/v1/administration/session'),
                                      ('POST', '/api/v1/administration/session'),
                                      ('DELETE', '/api/v1/administration/session'), ('GET', '/api/v1/projects'),
