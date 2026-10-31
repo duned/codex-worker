@@ -12,7 +12,7 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 public sealed partial class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
     SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
-    WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null)
+    WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null, ImplementationEngineSelector? engines = null)
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly WorkerRegistrationClient _registration = registrationClient ?? new WorkerRegistrationClient();
@@ -88,7 +88,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             try
             {
                 var selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body);
-                if (selection.Engine != "codex")
+                if (!(engines ?? new ImplementationEngineSelector()).IsAvailable(selection.Engine))
                 {
                     _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · engine {selection.Engine} is unavailable on this Worker; leaving Issue ready.");
                     continue;
@@ -389,7 +389,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         catch (InvalidDataException ex) { throw new IssuePreparationRejectedException(ex.Message); }
         if (CodexProvisioning.IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
             throw new IssuePreparationRejectedException(selectionError);
-        if (selection.Engine != "codex")
+        if (!(engines ?? new ImplementationEngineSelector()).IsAvailable(selection.Engine))
             throw new IssuePreparationRejectedException($"Execution engine '{selection.Engine}' is unavailable on this Worker.");
         if (selection.Engine != assignment.Work.Selection.Engine)
             throw new IssuePreparationRejectedException("Issue execution metadata changed after Server queueing; refresh the execution request before assigning it again.");
@@ -865,7 +865,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, engines);
         return runner.RunAsync(context, ct);
     }
 
@@ -981,7 +981,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
-            ModelSelectedByCli: execution.CodexProfile is { Model: null },
+            Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
 

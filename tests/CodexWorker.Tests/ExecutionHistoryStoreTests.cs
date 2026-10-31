@@ -6,6 +6,54 @@ public sealed class ExecutionHistoryStoreTests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ActiveAttemptCannotChangeEngineIdentity()
+    {
+        using var database = new TemporaryDatabase();
+        using var store = new ExecutionHistoryStore(database.Path);
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { Engine = "ccc" };
+        await store.CreateAsync(entry);
+        await Assert.ThrowsAsync<WorkerInfrastructureException>(() => store.UpdateAsync(entry with { Engine = "codex" }));
+        Assert.Equal("ccc", (await store.ReadExecutionAsync(entry.ExecutionId))?.Engine);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task Version18HistoryDefaultsToCodex()
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow);
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(entry);
+        await using (var connection = new SqliteConnection($"Data Source={database.Path}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 18;";
+            await command.ExecuteNonQueryAsync();
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        Assert.Equal("codex", (await reopened.ReadExecutionAsync(entry.ExecutionId))?.Engine);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("ccc")]
+    public async Task EngineIdentitySurvivesHistoryAndRecovery(string engine)
+    {
+        using var database = new TemporaryDatabase();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UtcNow) with { Engine = engine };
+        using (var store = new ExecutionHistoryStore(database.Path)) await store.CreateAsync(entry);
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var saved = Assert.IsType<ExecutionHistoryEntry>(await reopened.ReadExecutionAsync(entry.ExecutionId));
+        Assert.Equal(engine, saved.Engine);
+        Assert.Equal(engine, CodexExecutionProfile.Resolve("## Worker\nengine: codex", new CodexSettings(), saved).Engine);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("original Issue intent is missing from execution history")]
     [InlineData("execution progressed beyond an uncompleted Codex invocation; inspect its lifecycle state")]
@@ -292,7 +340,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; PRAGMA user_version = 11;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 11;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -395,7 +443,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; PRAGMA user_version = 7;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -418,7 +466,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; PRAGMA user_version = 6;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -445,7 +493,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; PRAGMA user_version = 9;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -612,7 +660,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(18L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(19L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);

@@ -7,6 +7,34 @@ public sealed class WorkerV011Tests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task InjectedEngineUsesWorkerValidationIntegrationAndHistory()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var engine = new ImplementationEngineTests.Engine { RepairStatus = "success" };
+        using var h = new Harness(history: history, engine: engine);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low" };
+        h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+        h.Validation.Results.Enqueue(ValidationResult.Success);
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())?.Kind);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Empty(h.Codex.RepairAttempts);
+        Assert.Equal(2, engine.Requests.Count);
+        Assert.All(engine.Requests, request =>
+        {
+            Assert.Equal(h.Git.ExecutionDirectory, request.ProjectDirectory);
+            Assert.Equal("sonnet", request.Model);
+            Assert.Equal("low", request.Effort);
+        });
+        Assert.Equal(2, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal("ccc", Assert.Single(await history.ReadAllAsync()).Engine);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("success", IssueOutcomeKind.Succeeded)]
     [InlineData("failed", IssueOutcomeKind.Failed)]
@@ -2797,7 +2825,7 @@ public sealed class WorkerV011Tests
         private readonly HttpClient? _telegramClient;
         private readonly StubTelegramHandler? _telegramHandler;
 
-        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false, TimeProvider? timeProvider = null)
+        public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false, TimeProvider? timeProvider = null, IImplementationEngine? engine = null)
         {
             Directory.CreateDirectory(_directory);
             var instructions = Path.Combine(_directory, "AGENTS.md");
@@ -2822,7 +2850,8 @@ public sealed class WorkerV011Tests
             }
             else _telegram = new TelegramNotifier(false, output);
             Worker = new Worker(config, GitHub, Git, Codex, Validation, _telegram, output, history,
-                operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default, timeProvider: timeProvider);
+                operationalLog: OperationalMessages.Add, shutdownToken: gracefulShutdown ? Cancellation.Token : default, timeProvider: timeProvider,
+                engines: engine is null ? null : new ImplementationEngineSelector([engine]));
         }
 
         public IEnumerable<string> TelegramMessages => _telegramHandler?.Messages ?? [];

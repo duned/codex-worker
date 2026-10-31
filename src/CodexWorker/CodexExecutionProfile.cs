@@ -12,14 +12,14 @@ public sealed record CodexExecutionProfile(string? Model, string Effort, string?
         // Older history has no snapshot. Resolve it once using today's configured defaults,
         // without applying edited Issue metadata to recovery of an existing execution.
         if (source?.RecoveryState == "codex-interrupted" && source.EffectiveModel is not null && source.EffectiveEffort is not null)
-            return new(source.EffectiveModel, source.EffectiveEffort);
+            return new(source.EffectiveModel, source.EffectiveEffort) { Engine = source.Engine };
         if (source is not null && source.EffectiveEffort is not null)
             return source.ModelSelectedByCli
-                ? new(null, source.EffectiveEffort, source.EffectiveModel)
-                : new(source.EffectiveModel, source.EffectiveEffort);
+                ? new(null, source.EffectiveEffort, source.EffectiveModel) { Engine = source.Engine }
+                : new(source.EffectiveModel, source.EffectiveEffort) { Engine = source.Engine };
         if (source is not null && source.FailureReason?.StartsWith("Invalid ## Codex metadata:", StringComparison.Ordinal) != true &&
             source.FailureReason?.StartsWith("Invalid ## Worker metadata:", StringComparison.Ordinal) != true)
-            return new(DefaultModel(defaults), defaults.ReasoningEffort.ToLowerInvariant());
+            return new(DefaultModel(defaults), defaults.ReasoningEffort.ToLowerInvariant()) { Engine = source.Engine };
 
         var metadata = CodexProvisioning.IssueExecutionMetadata.Parse(body);
         return metadata.Engine == "codex"

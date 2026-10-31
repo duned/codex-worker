@@ -41,12 +41,35 @@ Codex. Worker assignment checks use that selection and reject an Issue whose
 engine changed after queueing. The Issue read API exposes parsed selection for
 administration clients alongside eligibility errors.
 
-This checkout currently advertises and executes only Codex. Standalone CCC
+The default Worker composition currently advertises and executes only Codex. Standalone CCC
 Issues remain ready with an unavailable-engine diagnostic; managed CCC requests
 wait for a Worker advertising the CCC provider. A defensive execution check
-prevents CCC selections from running through the Codex executor. Installing the
+prevents unavailable selections from falling back to the Codex executor. Installing the
 Claude CLI alone does not establish CCC execution readiness.
 
 Metadata selects execution settings only. It cannot authorize credentials,
 permissions, paths, provisioning, or executable commands. Existing lease,
 capacity, validation, Git and recovery ownership rules continue to apply.
+
+## Implementation-engine boundary
+
+`ImplementationEngineSelector` accepts explicitly injected `IImplementationEngine`
+instances; Codex remains the built-in default through its existing executor.
+The Worker and `ExecutionRunner` accept the same selector. Registration is a code
+composition seam, not dynamic plugin loading or proof of execution readiness.
+Global Codex startup preflight remains unchanged.
+
+Engines receive `ImplementationRequest` with the assigned isolated worktree,
+Issue, frozen model/effort and attempt context, and return `ImplementationResult`.
+Implementation, validation repair and integration repair use the same selected
+engine. Engines may edit task files only. Worker-owned validation, Git state
+verification, branches, commits, rebase, integration, push, GitHub reporting and
+lease checks remain outside the engine. Implementations must reuse bounded
+process execution, deadlines, cancellation and credential filtering, and preserve
+the existing task, authentication and infrastructure failure classifications.
+The Codex adapter delegates directly without changing prompts or CLI arguments.
+
+History freezes engine identity when an attempt is created. Older SQLite rows
+migrate to `codex`; retries and recovery retain that identity even if Issue
+metadata changes. An unavailable preserved engine blocks execution rather than
+switching engines. Legacy Codex-session reconstruction applies only to Codex.

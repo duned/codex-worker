@@ -4,7 +4,10 @@ namespace CodexWorker;
 /// With no configured fallback policy, continue using the selected model until cancellation.</summary>
 internal static class CodexCapacityRetry
 {
-    internal static async Task<CodexOutcome> RunAsync(Func<Task<CodexOutcome>> turn,
+    internal static Task<CodexOutcome> RunAsync(Func<Task<CodexOutcome>> turn,
+        Func<CancellationToken, Task> cooldown, CancellationToken ct) => RunAsync<CodexOutcome>(turn, cooldown, ct);
+
+    internal static async Task<T> RunAsync<T>(Func<Task<T>> turn,
         Func<CancellationToken, Task> cooldown, CancellationToken ct)
     {
         while (true)

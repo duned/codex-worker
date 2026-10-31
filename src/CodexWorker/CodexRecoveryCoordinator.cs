@@ -21,7 +21,7 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         var owner = entries.SingleOrDefault(entry => entry.ExecutionId == snapshot.WorkspaceExecutionId);
         if (owner is null || owner.Project != source.Project || owner.Repository != source.Repository ||
             owner.IssueNumber != source.IssueNumber || owner.FeatureBranch != source.FeatureBranch ||
-            owner.AttemptNumber != snapshot.WorkspaceAttemptNumber)
+            owner.AttemptNumber != snapshot.WorkspaceAttemptNumber || owner.Engine != source.Engine)
             return "original workspace ownership history is missing or inconsistent";
         return null;
     }
@@ -59,7 +59,7 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         var changed = 0;
         var newDiagnostics = new List<string>();
         foreach (var entry in entries.Where(entry => entry.Project == config.Project.Name && entry.Repository == config.Project.Repository &&
-                     entry.CodexRecovery is null && entry.State is "InfrastructureFailure" or "Cancelled" && entry.RecoveryState == "uncertain"))
+                     entry.Engine == "codex" && entry.CodexRecovery is null && entry.State is "InfrastructureFailure" or "Cancelled" && entry.RecoveryState == "uncertain"))
         {
             var (reconstructed, reason) = await ReconstructAsync(entry, entries, ct);
             if (reconstructed is not null && await history.TryReconstructCodexRecoveryAsync(reconstructed, ct))

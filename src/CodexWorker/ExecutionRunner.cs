@@ -7,15 +7,20 @@ public sealed record ExecutionContext(WorkerExecution Execution, GitHubIssue Iss
     bool IntegrationRecovery = false, bool InterruptedExecution = false);
 
 /// <summary>
-/// Runs the repository workspace, Codex, validation, repair, and integration lifecycle for one execution.
+/// Runs the repository workspace, implementation engine, validation, repair, and integration lifecycle for one execution.
 /// Repository mutations that share Git metadata are serialized per repository while implementation and
 /// validation use the independent execution worktree concurrently.
 /// </summary>
 public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
-    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null)
+    Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null,
+    ImplementationEngineSelector? engines = null)
 {
+    private ImplementationRequest Request(ExecutionContext context) => new(git.ExecutionDirectory, config.Codex.InstructionsFile,
+        context.Issue, context.RetryOf, context.Execution.Resumed, context.Execution.AttemptNumber,
+        context.Execution.CodexProfile?.EffectiveModel, context.Execution.CodexProfile?.Effort);
+
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
     {
@@ -45,11 +50,16 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: metadataError));
             }
-            if (execution.CodexProfile is { Engine: not "codex" } selectedProfile)
+            var identity = execution.CodexProfile?.Engine ?? "codex";
+            if (context.RetryOf is { } source && source.Engine != identity)
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
-                    new IssueExecutionReport(null, [], HumanInput: $"Execution engine '{selectedProfile.Engine}' is unavailable on this Worker."));
+                    new IssueExecutionReport(null, [], HumanInput: "The preserved execution engine differs from the selected engine."));
+            var engine = (engines ?? new ImplementationEngineSelector()).Select(identity, executionCodex);
+            if (engine is null)
+                return new IssueProcessingResult(IssueOutcomeKind.Blocked,
+                    new IssueExecutionReport(null, [], HumanInput: $"Execution engine '{identity}' is unavailable on this Worker."));
             if (context.IntegrationRecovery || context.InterruptedExecution)
-                return await RunIntegrationRecoveryAsync(context, executionCodex, ct);
+                return await RunIntegrationRecoveryAsync(context, engine, ct);
             await _repositoryGate.WaitAsync(ct);
             try
             {
@@ -93,8 +103,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
             var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
-                CodexCapacityRetry.RunAsync(() => executionCodex.RunAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, context.RetryOf,
-                    execution.Resumed, execution.AttemptNumber, ct), async token =>
+                CodexCapacityRetry.RunAsync(() => engine.RunAsync(Request(context), ct), async token =>
                 {
                     var clock = timeProvider ?? TimeProvider.System;
                     if (execution.CodexRecovery is { } recovery)
@@ -161,7 +170,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 await SaveHistoryAsync(CreateEntry(execution, new IssueExecutionReport(implementationSummary, repairs), null, null), ct);
                 await TransitionAsync(execution, ExecutionState.Repairing, ct);
                 outcome = await output.RunProgressAsync(TaskLabel(issue, $"Repair {repairAttempts}/{config.Validation.MaxFixAttempts}", execution), () =>
-                    executionCodex.RepairAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue,
+                    engine.RepairAsync(Request(context),
                         failure, repairAttempts, config.Validation.MaxFixAttempts, ct),
                     completion: x => x.Status, succeeded: x => x.Status == "success",
                     warning: x => x.Status == "blocked", ct: ct);
@@ -217,10 +226,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                         async (details, token) =>
                         {
                             var resolution = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                                () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile,
-                                    issue, details, token), x => x.Status, x => x.Status == "success", ct: token);
+                                () => engine.ResolveIntegrationConflictAsync(Request(context), details, token), x => x.Status, x => x.Status == "success", ct: token);
                             return resolution.Status == "success";
-                        }, (details, token) => RepairIntegrationAsync(context, executionCodex, implementationSummary, repairs, details, token),
+                        }, (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
                         ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
@@ -303,7 +311,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         });
     }
 
-    private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, ICodexExecutor executionCodex, CancellationToken ct)
+    private async Task<IssueProcessingResult> RunIntegrationRecoveryAsync(ExecutionContext context, IImplementationEngine engine, CancellationToken ct)
     {
         var execution = context.Execution;
         var issue = context.Issue;
@@ -348,10 +356,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     {
                         if (context.InterruptedExecution) return false;
                         var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                            () => executionCodex.ResolveIntegrationConflictAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, issue, details, token),
+                            () => engine.ResolveIntegrationConflictAsync(Request(context), details, token),
                             x => x.Status, x => x.Status == "success", ct: token);
                         return resolved.Status == "success";
-                    }, (details, token) => RepairIntegrationAsync(context, executionCodex, source.ImplementationSummary, repairs, details, token),
+                    }, (details, token) => RepairIntegrationAsync(context, engine, source.ImplementationSummary, repairs, details, token),
                     ct, token => EnsureIntegrationAuthorityAsync(execution, token)), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.\n\n{source.ImplementationSummary}", repairs, Integration: integration);
             if (history is not null && !context.InterruptedExecution) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);
@@ -395,7 +403,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             throw new WorkerInfrastructureException("Integration authority was lost; the execution workspace is preserved for reconciliation.");
     }
 
-    private async Task<IntegrationRepairResult> RepairIntegrationAsync(ExecutionContext context, ICodexExecutor executionCodex,
+    private async Task<IntegrationRepairResult> RepairIntegrationAsync(ExecutionContext context, IImplementationEngine engine,
         string? implementationSummary, List<ValidationRepairRecord> repairs, IntegrationRepairContext details, CancellationToken ct)
     {
         var attempt = repairs.Count(repair => repair.IntegrationRepair) + 1;
@@ -407,7 +415,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             with { ValidationOutcome = "pending: integration repair" }, ct);
         var outcome = await output.RunProgressAsync(TaskLabel(context.Issue,
             $"Integration repair {attempt}/{config.Validation.MaxFixAttempts}", context.Execution), () =>
-            executionCodex.RepairIntegrationAsync(git.ExecutionDirectory, config.Codex.InstructionsFile, context.Issue,
+            engine.RepairIntegrationAsync(Request(context),
                 details, implementationSummary, config.Validation.Commands, attempt, config.Validation.MaxFixAttempts, ct),
             x => x.Status, x => x.Status == "success", warning: x => x.Status == "blocked", ct: ct);
         if (context.Execution.CodexRecovery is { } repaired)
@@ -579,7 +587,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
             AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
-            ModelSelectedByCli: execution.CodexProfile is { Model: null },
+            Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
             OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
 
