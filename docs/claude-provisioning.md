@@ -5,12 +5,13 @@ command API. Management can request Detect, Install, Update (also repair by rein
 and CheckAuthentication. Command authorization, operation IDs, deadlines, cancellation,
 history and inventory refresh use the same protocol as other managed tools.
 
-The Linux provider requires node-local Node.js and npm at `/usr/bin/npm`. It installs
-the official `@anthropic-ai/claude-code@latest` package from the npm registry with a
-fixed per-user prefix `$HOME/.local`. It never invokes sudo. Enable local provisioning
-and `allowNonPrivileged` to permit install/update; explicit denied actions still win.
-Missing npm yields Unsupported rather than installing privileged dependencies implicitly.
-See the [official installation instructions](https://docs.anthropic.com/en/docs/claude-code/getting-started).
+The Linux provider downloads Anthropic's fixed HTTPS native installer from
+`https://claude.ai/install.sh` and selects the stable channel under the service user's
+HOME. It does not require Node.js or npm and never invokes sudo. Enable local
+provisioning and `allowNonPrivileged` to permit install/update; explicit denied
+actions still win. No package name, URL or command is accepted from the request.
+See the [standalone provisioning guide](node-capabilities.md#standalone-claude-code-cli)
+for service PATH, operator authentication and Anthropic terms.
 
 Detection and auth checks use `$HOME/.local/bin/claude` under the running Worker
 service identity. Configure HOME in the service environment, not an administrator's

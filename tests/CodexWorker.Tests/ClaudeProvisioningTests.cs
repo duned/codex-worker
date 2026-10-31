@@ -86,6 +86,10 @@ public sealed class ClaudeProvisioningTests
             reason => reason.StartsWith("claude-cli:", StringComparison.Ordinal));
         Assert.False(WorkerProvisioning.Permitted(request, new ProvisioningPolicy()));
         var policy = new ProvisioningPolicy { Enabled = true, AllowedPrivilegedActions = ["tool:claude-cli:install"] };
+        Assert.False(WorkerProvisioning.Permitted(request, policy));
+        policy.AllowNonPrivileged = true;
+        Assert.False(WorkerProvisioning.Decide(request, policy).RequiresElevation);
+        Assert.True(WorkerProvisioning.Permitted(request with { AllowElevation = false }, policy));
         Assert.True(WorkerProvisioning.Permitted(request, policy));
         policy.DeniedActions.Add("tool:claude-cli:install");
         Assert.False(WorkerProvisioning.Permitted(request, policy));
@@ -104,7 +108,7 @@ public sealed class ClaudeProvisioningTests
         var discovery = new NodeCapabilityDiscovery((executable, arguments, _) =>
         {
             executables.Add(executable);
-            if (executable != ClaudeServiceEnvironment.Executable)
+            if (executable != ClaudeServiceEnvironment.Executable && executable != "claude")
                 return Task.FromException<(int, string)>(new FileNotFoundException());
             calls.Add(arguments.ToArray());
             return Task.FromResult(arguments[0] == "auth" ? (1, "private-diagnostic") : (0, "2.1.0 (Claude Code)"));
@@ -115,6 +119,9 @@ public sealed class ClaudeProvisioningTests
         Assert.Equal(InstallationState.Installed, state.Installation);
         Assert.Equal("2.1.0", state.DetectedVersion);
         Assert.Equal(RequirementState.Required, state.Authentication);
+        Assert.Equal(RequirementState.Satisfied, state.Configuration);
+        Assert.Equal(new[] { ClaudeServiceEnvironment.Executable, "claude", ClaudeServiceEnvironment.Executable },
+            executables.Where(executable => executable == ClaudeServiceEnvironment.Executable || executable == "claude"));
         Assert.Equal(UpdateState.Unknown, state.Update);
         Assert.DoesNotContain("/usr/bin/npm", executables);
         Assert.Equal(3, calls.Count);

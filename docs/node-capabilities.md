@@ -475,16 +475,15 @@ transition and protected environment file, including the native-install PATH.
 For unpackaged installations, run administration **as the actual standalone service account**, with the same
 HOME, PATH and credential environment as the service. For the packaged unit this
 is `codex-worker`, HOME `/var/lib/codex-worker`. Install and upgrade require local
-provisioning enabled, the respective `tool:claude-cli:install` or
-`tool:claude-cli:update` privileged-action allowlist entry and `--allow-elevation`
-under the existing conservative mutation policy. The Claude installer itself is
+provisioning enabled and `worker.provisioning.allowNonPrivileged: true`; explicit
+`deniedActions` entries take precedence. No elevation authorization is required. The Claude installer itself is
 never elevated: files belong to the invoking account under `$HOME/.local`.
 For unpackaged installations, do not run these commands as an administrator expecting another account's
 installation to change. Example (inside that service account's environment):
 
 ```
-codex-worker provision install claude-cli --allow-elevation
-codex-worker provision upgrade claude-cli --allow-elevation
+codex-worker provision install claude-cli
+codex-worker provision upgrade claude-cli
 codex-worker provision detect claude-cli
 codex-worker provision check-authentication claude-cli
 ```
