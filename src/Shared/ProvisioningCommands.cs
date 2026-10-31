@@ -48,7 +48,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningProviderStep.AptRuntimeInstall => "install the Node.js and npm runtime",
         ProvisioningProviderStep.AptPackageInstall => "install the managed apt package",
         ProvisioningProviderStep.AptPackageRemoval => "remove the managed apt package",
-        ProvisioningProviderStep.ClaudePackageInstall => "install Claude Code under the service user home with npm",
+        ProvisioningProviderStep.ClaudePackageInstall => "install native Claude Code under the service user home",
         ProvisioningProviderStep.NpmPackageInstall => "install @openai/codex with npm",
         ProvisioningProviderStep.NpmPackageRemoval => "remove @openai/codex with npm",
         ProvisioningProviderStep.DockerDaemonConfiguration => "configure fixed Worker Docker daemon access",
@@ -226,9 +226,8 @@ public sealed partial class NodeProvisioningCommandExecutor
             IReadOnlyList<string> arguments;
             if (request.Action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall or ProvisioningCommandAction.Configure)
             {
-                if (!_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-                if (request.CapabilityId == "claude-cli" && !_npmAvailable()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
-                if (request.CapabilityId != "claude-cli" && !request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+                if (request.CapabilityId == "claude-cli" ? !OperatingSystem.IsLinux() : !_supportsApt()) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+                if (!request.AllowElevation) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
                 var before = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
                 if (request.CapabilityId == "codex-cli" && request.Action == ProvisioningCommandAction.Uninstall &&
                     !_npmAvailable() && before.Single(state => state.Id == request.CapabilityId).Installation == InstallationState.Missing)
@@ -297,7 +296,8 @@ public sealed partial class NodeProvisioningCommandExecutor
             }
             else
             {
-                executable = request.CapabilityId == "claude-cli" ? ClaudeServiceEnvironment.Executable : request.CapabilityId == "codex-cli" ? CodexServiceEnvironment.Executable
+                executable = request.CapabilityId == "codex-cli" ? CodexServiceEnvironment.Executable
+                    : request.CapabilityId == "claude-cli" ? ClaudeServiceEnvironment.Executable
                     : CapabilityCatalog.Definitions.Single(item => item.Id == request.CapabilityId).Executable;
                 arguments = request.Action switch
                 {

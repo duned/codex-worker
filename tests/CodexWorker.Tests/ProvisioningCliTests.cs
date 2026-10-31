@@ -254,7 +254,7 @@ public sealed class ProvisioningCliTests
         }
         finally { Console.SetOut(originalOutput); }
 
-        Assert.Contains("Node authentication is the Codex/GitHub CLI state observed in the service-account environment", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Node authentication is the Codex/GitHub/Claude CLI state observed in the service-account environment", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("github-cli (GitHub CLI):", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("node-authentication=required", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("authentication-dependencies=GitHubCliLogin", output.ToString(), StringComparison.Ordinal);

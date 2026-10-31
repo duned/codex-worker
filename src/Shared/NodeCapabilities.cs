@@ -22,7 +22,7 @@ public enum AuthenticationDependencyKind { GitHubCliLogin, CodexCliLogin, Claude
 [JsonConverter(typeof(JsonStringEnumConverter<ProvidedToolKind>))]
 public enum ProvidedToolKind { Git, GitHubCli, CodexCli, DotNetSdk, DotNetRuntime, AspNetCoreRuntime, DockerEngine, ClaudeCli }
 [JsonConverter(typeof(JsonStringEnumConverter<LocalConfigurationDependencyKind>))]
-public enum LocalConfigurationDependencyKind { GitIdentity, DockerDaemonAccess }
+public enum LocalConfigurationDependencyKind { GitIdentity, DockerDaemonAccess, ClaudeServicePath }
 
 /// <summary>Required node-local authentication, independent of installation and repository authorization.
 /// An empty dependency list declares that the tool needs no authentication.</summary>
@@ -73,8 +73,8 @@ public static class CapabilityCatalog
         new("git", "Git", "git", Array.Empty<AuthenticationDependencyKind>(), true, ["refresh", "install", "update", "uninstall", "checkconfiguration", "generatesshkey", "inspectsshkey", "removesshkey", "verifyrepositoryaccess"]) { Provides = [ProvidedToolKind.Git], ConfigurationDependency = LocalConfigurationDependencyKind.GitIdentity },
         new("github-cli", "GitHub CLI", "gh", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.GitHubCliLogin]), false, ["refresh", "install", "update", "uninstall", "prepareauthentication", "login", "checkauthentication", "logout"]) { Provides = [ProvidedToolKind.GitHubCli] },
         new("codex-cli", "Codex CLI", "codex", Array.AsReadOnly<AuthenticationDependencyKind>([AuthenticationDependencyKind.CodexCliLogin]), false, ["refresh", "install", "update", "uninstall", "login", "checkauthentication", "logout"]) { Provides = [ProvidedToolKind.CodexCli] },
-        new("claude-cli", "Claude Code", "claude", [AuthenticationDependencyKind.ClaudeCliAuthentication], false, ["refresh", "install", "update", "checkauthentication"])
-            { Provides = [ProvidedToolKind.ClaudeCli], RequiredForExecution = false },
+        new("claude-cli", "Claude Code CLI", "claude", [AuthenticationDependencyKind.ClaudeCliAuthentication], true, ["refresh", "install", "update", "checkauthentication"])
+            { Provides = [ProvidedToolKind.ClaudeCli], ConfigurationDependency = LocalConfigurationDependencyKind.ClaudeServicePath, RequiredForExecution = false },
         new("dotnet-sdk", ".NET 10 SDK", "dotnet", [], false, ["refresh", "install", "update", "uninstall"])
             { Provides = [ProvidedToolKind.DotNetSdk, ProvidedToolKind.DotNetRuntime, ProvidedToolKind.AspNetCoreRuntime], RequiredMajorVersion = 10, RequiredForExecution = false },
         new("dotnet-runtime", ".NET 10 / ASP.NET Core Runtime", "dotnet", [], false, ["refresh", "install", "update", "uninstall"])
@@ -176,13 +176,30 @@ public sealed class NodeCapabilityDiscovery
                 var state = CapabilityCatalog.Unknown(definition);
                 try
                 {
-                    var executable = definition.Id == "claude-cli" ? ClaudeServiceEnvironment.Executable : definition.Id == "codex-cli" ? CodexServiceEnvironment.Executable : definition.Executable;
+                    var executable = definition.Id == "codex-cli" ? CodexServiceEnvironment.Executable
+                        : definition.Id == "claude-cli" ? ClaudeServiceEnvironment.Executable : definition.Executable;
                     var version = await _run(executable, ToolProvisioningProviders.VersionArguments(definition.Id), cancellationToken);
                     var detectedVersion = ToolProvisioningProviders.ParseVersion(definition.Id, version.Output);
                     state = state with { Installation = version.ExitCode == 0 ? InstallationState.Installed : InstallationState.Unknown,
                         DetectedVersion = version.ExitCode == 0 ? detectedVersion : null,
                         Health = version.ExitCode == 0 ? CapabilityHealth.Healthy : CapabilityHealth.Error,
                         DiagnosticCode = version.ExitCode == 0 ? null : "probe-failed" };
+                    if (version.ExitCode == 0 && definition.Id == "claude-cli")
+                    {
+                        var onPath = false;
+                        try
+                        {
+                            var pathVersion = await _run("claude", ["--version"], cancellationToken);
+                            onPath = pathVersion.ExitCode == 0 && detectedVersion is not null &&
+                                ToolProvisioningProviders.ParseVersion(definition.Id, pathVersion.Output) == detectedVersion;
+                        }
+                        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or FileNotFoundException)
+                        {
+                            // Native installation exists, but the service cannot resolve it on PATH.
+                        }
+                        state = state with { Configuration = onPath ? RequirementState.Satisfied : RequirementState.Required,
+                            DiagnosticCode = onPath ? null : "configuration-required" };
+                    }
                     if (version.ExitCode == 0 && definition.RequiredMajorVersion is not null && detectedVersion is null)
                         state = state with { Installation = InstallationState.Missing, DiagnosticCode = "tool-missing" };
                     if (version.ExitCode == 0 && definition.ConfigurationDependency == LocalConfigurationDependencyKind.DockerDaemonAccess)
@@ -243,8 +260,7 @@ public sealed class NodeCapabilityDiscovery
 
     private async Task<UpdateState> DetectUpdateAsync(string id, string? version, CancellationToken token)
     {
-        // Claude has no local package index; status discovery must not query a remote registry.
-        if (id == "claude-cli") return UpdateState.Unknown;
+        if (id == "claude-cli") return UpdateState.Unknown; // Native distribution manages its own release channel.
         try
         {
             var probe = ToolProvisioningProviders.CandidateProbe(id);

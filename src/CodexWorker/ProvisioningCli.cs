@@ -133,7 +133,7 @@ public static class ProvisioningCli
         if (result.Capabilities is not null)
         {
             writer.WriteLine("Local provisioning status:");
-            writer.WriteLine("Node authentication is the Codex/GitHub CLI state observed in the service-account environment; it does not report provider-side permissions, Worker registration, credential delivery, or project scheduling authorization.");
+            writer.WriteLine("Node authentication is the Codex/GitHub/Claude CLI state observed in the service-account environment; it does not report provider-side permissions, Worker registration, credential delivery, or project scheduling authorization.");
             foreach (var capability in result.Capabilities)
             {
                 var state = capability.State;

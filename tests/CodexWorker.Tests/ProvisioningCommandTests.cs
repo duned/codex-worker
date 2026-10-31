@@ -89,7 +89,10 @@ public sealed class ProvisioningCommandTests
                     Assert.Contains("logout", capability.AvailableActions);
             }
             if (definition.RequiresConfiguration)
-                Assert.Contains("checkconfiguration", capability.AvailableActions);
+            {
+                // Claude service PATH is inspected by discovery rather than a separate command.
+                Assert.Contains(definition.Id == "claude-cli" ? "refresh" : "checkconfiguration", capability.AvailableActions);
+            }
             Assert.Empty(CapabilityCatalog.Describe(definition, capability.State, connected: false).AvailableActions);
         }
     }

@@ -13,7 +13,7 @@ internal static class WorkerServiceAdministrationContext
     internal static readonly IReadOnlyList<string> ServiceProperties = Array.AsReadOnly<string>([
         "User=codex-worker", "Group=codex-worker",
         "Environment=HOME=/var/lib/codex-worker",
-        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/var/lib/codex-worker/.local/bin",
         "Environment=TMPDIR=/run/codex-worker",
         "EnvironmentFile=" + EnvironmentFile,
         "WorkingDirectory=/var/lib/codex-worker",

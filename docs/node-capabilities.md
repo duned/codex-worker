@@ -459,3 +459,57 @@ transport or permission bypass is introduced by this sharing. A future typed
 remote administration adapter can invoke the same local executor and return its
 reports, including device-login progress, without relocating authentication or
 private material to Server.
+
+### Standalone Claude Code CLI
+
+`claude-cli` is an optional capability, independent of Codex and the Worker's Codex
+startup preflight. Linux native install and upgrade (also used to repair an
+installation) download only Anthropic's fixed HTTPS native installer and select
+its stable channel. No package, URL, executable path or shell command is accepted
+from a provisioning request. Uninstall and automated login are not exposed.
+Native auto-update remains vendor-controlled; update availability is reported as
+unknown rather than querying npm.
+
+Packaged `sudo codex-worker` administration uses the existing systemd identity
+transition and protected environment file, including the native-install PATH.
+For unpackaged installations, run administration **as the actual standalone service account**, with the same
+HOME, PATH and credential environment as the service. For the packaged unit this
+is `codex-worker`, HOME `/var/lib/codex-worker`. Install and upgrade require local
+provisioning enabled, the respective `tool:claude-cli:install` or
+`tool:claude-cli:update` privileged-action allowlist entry and `--allow-elevation`
+under the existing conservative mutation policy. The Claude installer itself is
+never elevated: files belong to the invoking account under `$HOME/.local`.
+For unpackaged installations, do not run these commands as an administrator expecting another account's
+installation to change. Example (inside that service account's environment):
+
+```
+codex-worker provision install claude-cli --allow-elevation
+codex-worker provision upgrade claude-cli --allow-elevation
+codex-worker provision detect claude-cli
+codex-worker provision check-authentication claude-cli
+```
+
+The packaged unit includes `/var/lib/codex-worker/.local/bin` in PATH. For
+custom services, include `$HOME/.local/bin` in the service PATH, retaining the
+existing entries. Restart after changing its environment. Inventory probes the native executable by absolute path, so an
+installed CLI with a missing PATH entry is reported as installed with required
+configuration, separately from authentication. A successful auth status is only
+local authentication evidence; it does not establish provider/network/model
+execution readiness. Failed or cancelled installs must be inspected before retry.
+Diagnostics contain bounded codes, never installer output or authentication data.
+
+Operators configure their own API key or supported provider credentials through
+their protected local service environment/secret manager, never project YAML,
+provisioning payloads or logs. Alternatively, run the unmodified `claude auth login`
+manually as the service account using Anthropic's official flow. Startup never
+initiates interactive login. This system does not collect, deliver or broker
+Claude subscription tokens. Protect service environment files with owner-only
+permissions; do not paste credentials into command arguments or task prompts.
+
+Hosted preinstallation/running requires agreement to Anthropic's Commercial Terms
+and the hosted-service conditions: preserve the unmodified binary and all its
+authentication methods; users supply their own API keys, supported inference
+provider credentials or official user login, billed under their own agreements.
+Do not resell or intermediate subscription usage. See the vendor
+[setup guidance](https://code.claude.com/docs/en/setup) and
+[legal and compliance terms](https://code.claude.com/docs/en/legal-and-compliance).

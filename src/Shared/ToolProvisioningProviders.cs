@@ -64,10 +64,8 @@ internal static class ToolProvisioningProviders
     internal static IReadOnlyList<ToolProvisioningStep> Plan(string id, ProvisioningCommandAction action,
         bool npmAvailable = false)
     {
-        if (id == "claude-cli")
-            return [new("/usr/bin/npm", ["install", "--global", "--prefix", ClaudeServiceEnvironment.Prefix,
-                "--registry", NpmRegistry, "--userconfig", "/dev/null", "@anthropic-ai/claude-code@latest"],
-                ProvisioningProviderStep.ClaudePackageInstall)];
+        if (id == "claude-cli" && action is ProvisioningCommandAction.Install or ProvisioningCommandAction.Update)
+            return [new("/bin/bash", ["-c", "set -euo pipefail; umask 077; installer=$(/usr/bin/mktemp); trap 'rm -f -- \"$installer\"' EXIT; /usr/bin/curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' https://claude.ai/install.sh -o \"$installer\"; /bin/bash \"$installer\" stable"], ProvisioningProviderStep.ClaudePackageInstall)];
         var dockerConfiguration = new ToolProvisioningStep(DockerHelper, ["configure"],
             ProvisioningProviderStep.DockerDaemonConfiguration, RequiresElevation: true);
         if (action == ProvisioningCommandAction.Configure)
