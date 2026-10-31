@@ -185,7 +185,13 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
             Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
             Assert.True(messages.Any(message => message.Contains(blocker, StringComparison.Ordinal)), string.Join("\n", messages));
             Assert.True(Directory.Exists(git.RecoveryWorkspacePath(source)));
-            Assert.Equal(JsonSerializer.Serialize(source), JsonSerializer.Serialize(await history.ReadExecutionAsync(source.ExecutionId)));
+            var retained = await history.ReadExecutionAsync(source.ExecutionId);
+            Assert.NotNull(retained);
+            Assert.Equal(JsonSerializer.Serialize(source with { StandaloneRecoveryDiagnosticJson = retained.StandaloneRecoveryDiagnosticJson }),
+                JsonSerializer.Serialize(retained));
+            var diagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(retained.StandaloneRecoveryDiagnosticJson!);
+            Assert.NotNull(diagnostic);
+            Assert.Equal(blocker, diagnostic.ReasonCode);
             Assert.Equal(0, codex.Calls);
             Assert.Empty(github.Mutations);
         }
@@ -279,27 +285,72 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
         using var git = fixture.CreateRepository(config.Git);
         await git.InitializeAsync(CancellationToken.None);
-        await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true);
+        var preserved = await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true);
+        for (var index = 1; index < 21; index++)
+        {
+            var executionId = Guid.NewGuid();
+            var recovery = preserved.CodexRecovery is { } snapshot
+                ? snapshot with { WorkspaceExecutionId = executionId }
+                : null;
+            await history.CreateAsync(preserved with
+            {
+                ExecutionId = executionId,
+                IssueNumber = fixture.Issue.Number + index,
+                StartedAtUtc = preserved.StartedAtUtc.AddSeconds(index),
+                CodexRecovery = recovery
+            });
+        }
         var github = new GitHub(fixture.Issue) { Labels = [] };
         using var telegram = new TelegramNotifier(false);
         var clock = new Clock();
         var codex = new Codex(_ => Task.CompletedTask);
-        var messages = new List<string>();
+        using var startupOutput = new StringWriter();
+        var output = new WorkerConsole(startupOutput, interactive: false, errorWriter: startupOutput);
         var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history,
-            operationalLog: messages.Add, timeProvider: clock);
+            output: output, timeProvider: clock);
         for (var check = 0; check < 5; check++)
         {
             Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
             clock.Now += TimeSpan.FromMinutes(1);
         }
         Assert.Equal(3, github.StateReads);
-        Assert.Single(messages, message => message.Contains("issue-no-longer-eligible", StringComparison.Ordinal));
+        Assert.Single(startupOutput.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains("Standalone recovery checks blocked", startupOutput.ToString());
+        Assert.Contains("issue-no-longer-eligible (", startupOutput.ToString());
+        Assert.Contains("codex-worker recovery blocked", startupOutput.ToString());
         var restarted = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
         Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
-        Assert.Equal(4, github.StateReads);
-        Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(6, github.StateReads);
+        var retained = await history.ReadAllAsync();
+        Assert.Equal(21, retained.Count);
+        Assert.Equal(3, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
+        Assert.All(retained.Where(entry => entry.StandaloneRecoveryDiagnosticJson is not null), entry =>
+            Assert.Contains("issue-no-longer-eligible", entry.StandaloneRecoveryDiagnosticJson));
         Assert.Equal(0, codex.Calls);
         Assert.Empty(github.Mutations);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task UnexpectedStandaloneRecoveryFailuresRemainVisible()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true);
+        var github = new GitHub(fixture.Issue) { Labels = [], StateReadFailure = new WorkerInfrastructureException("GitHub state inspection failed unexpectedly.") };
+        using var telegram = new TelegramNotifier(false);
+        using var startupOutput = new StringWriter();
+        var worker = new Worker(config, github, git, new Codex(_ => Task.CompletedTask), new Validation(), telegram,
+            output: new WorkerConsole(startupOutput, interactive: false, errorWriter: startupOutput), history: history);
+
+        Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+        Assert.Contains("Standalone recovery check failed", startupOutput.ToString());
+        Assert.Contains("GitHub state inspection failed unexpectedly", startupOutput.ToString());
     }
 
     private sealed class Clock : TimeProvider
@@ -499,6 +550,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         internal int StateReads { get; private set; }
         internal bool LoseCommentResponse { get; set; }
         internal bool LoseLabelResponse { get; set; }
+        internal Exception? StateReadFailure { get; set; }
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
             Task.FromResult<GitHubIssue?>(Open && Labels.Contains(label) ? issue with { Labels = Labels.ToArray() } : null);
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, IReadOnlySet<int> excludedIssueNumbers, CancellationToken cancellationToken) =>
@@ -508,6 +560,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         public Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(Open);
         public Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct)
         {
+            if (StateReadFailure is { } failure) throw failure;
             StateReads++; return Task.FromResult(new GitHubIssueState(Open, Labels.ToArray()));
         }
         public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken, IReadOnlyList<string>? secretValues = null) => Task.FromResult("");

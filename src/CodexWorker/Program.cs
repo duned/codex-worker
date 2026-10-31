@@ -95,6 +95,8 @@ public static class Program
             return await StandaloneMaintenanceCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "executions")
             return await ExecutionAdministrationCli.RunAsync(commandLine, output, cancellationToken);
+        if (commandLine.Command == "recovery")
+            return await RecoveryDiagnosticsCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "register")
         {
             using var standardInput = registrationInput is null && commandLine.Arguments.Contains("--token-stdin", StringComparer.Ordinal)

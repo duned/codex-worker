@@ -26,6 +26,8 @@ Developer and local Worker operations:
     show ID       Show an exact execution
     show --issue NUMBER  Show all known attempts, grouped by project/repository
   execution inspect ID [--json]  Inspect retained resources through the Worker API
+  recovery blocked [--issue NUMBER] [--execution ID] [--reason CODE] [--limit 1..100] [--offset 0..10000] [--json]
+                  List retained standalone blocked-recovery diagnostics through the Worker API
   maintenance completed-branches --older-than DAYS [--limit 1..100] [--apply] [--json]
                   Preview or prune integrated archives for this source checkout
   execution cleanup ID | --issue NUMBER | --stale [--limit 1..100] [--apply] [--json]
@@ -845,6 +847,68 @@ except (ValueError, KeyError, TypeError, AttributeError):
   fi
 }
 
+recovery_command() {
+  [[ ${1:-} == blocked ]] || { error 'usage: cw recovery blocked [--issue NUMBER] [--execution ID] [--reason CODE] [--limit 1..100] [--offset 0..10000] [--json]'; return 2; }
+  shift
+  need_command curl || return 1
+  need_command python3 || return 1
+  local issue='' execution='' reason='' limit=50 offset=0 json=false
+  while (($#)); do
+    case $1 in
+      --json) [[ $json == false ]] || { error 'duplicate option: --json'; return 2; }; json=true; shift ;;
+      --issue|--execution|--reason|--limit|--offset)
+        local option=$1 value=${2:-}
+        [[ -n $value ]] || { error "option $option requires a value"; return 2; }
+        shift 2
+        case $option in
+          --issue) [[ -z $issue && $value =~ ^[1-9][0-9]*$ && ${#value} -le 10 ]] && ((10#$value <= 2147483647)) || { error 'invalid or duplicate Issue number'; return 2; }; issue=$value ;;
+          --execution) [[ -z $execution && $value =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]] || { error 'invalid or duplicate execution ID'; return 2; }; execution=$value ;;
+          --reason) [[ -z $reason && $value =~ ^[A-Za-z0-9-]{1,120}$ ]] || { error 'invalid or duplicate reason code'; return 2; }; reason=$value ;;
+          --limit) [[ $limit == 50 && $value =~ ^[0-9]+$ ]] && ((10#$value >= 1 && 10#$value <= 100)) || { error 'invalid or duplicate limit (1..100)'; return 2; }; limit=$((10#$value)) ;;
+          --offset) [[ $offset == 0 && $value =~ ^[0-9]+$ ]] && ((10#$value <= 10000)) || { error 'invalid or duplicate offset (0..10000)'; return 2; }; offset=$((10#$value)) ;;
+        esac ;;
+      *) error "unknown recovery option: $1"; return 2 ;;
+    esac
+  done
+  local args=(--get --data-urlencode "limit=$limit" --data-urlencode "offset=$offset") response
+  [[ -z $issue ]] || args+=(--data-urlencode "issueNumber=$issue")
+  [[ -z $execution ]] || args+=(--data-urlencode "executionId=$execution")
+  [[ -z $reason ]] || args+=(--data-urlencode "reasonCode=$reason")
+  response=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 30 "${args[@]}" "${worker_api_url%/}/api/recovery/blocked") || {
+    error 'cannot read retained recovery diagnostics: Management API unavailable; check Worker service and CW_WORKER_API_URL'; return 1
+  }
+  if [[ $json == true ]]; then
+    python3 -c 'import json,sys
+try:
+    data=json.load(sys.stdin)
+    if not isinstance(data,dict) or not isinstance(data.get("items"),list) or type(data.get("hasMore")) is not bool or type(data.get("total")) is not int: raise ValueError()
+    for item in data["items"]:
+        for key in ("executionId","reasonCode","explanation","checkStatus","checkedAtUtc"):
+            if not isinstance(item.get(key),str): raise ValueError()
+        if type(item.get("issueNumber")) is not int: raise ValueError()
+    print(json.dumps(data,separators=(",",":")))
+except (ValueError,TypeError,KeyError,json.JSONDecodeError): sys.exit(1)' <<<"$response" || { error 'Worker returned invalid recovery diagnostics'; return 1; }
+  else
+    python3 -c 'import json,sys,uuid
+def safe(value,limit=500): return "".join(c if c.isprintable() else " " for c in value)[:limit]
+try:
+    data=json.load(sys.stdin)
+    if not isinstance(data,dict) or not isinstance(data.get("items"),list) or type(data.get("hasMore")) is not bool or type(data.get("total")) is not int: raise ValueError()
+    items=data["items"]
+    if not items: print("No retained blocked recovery diagnostics found.")
+    for item in items:
+        identifier=item["executionId"]; uuid.UUID(identifier)
+        if type(item["issueNumber"]) is not int or item["issueNumber"]<1: raise ValueError()
+        for key in ("reasonCode","explanation","checkStatus","checkedAtUtc"):
+            if not isinstance(item.get(key),str): raise ValueError()
+        number=item["issueNumber"]; code=safe(item["reasonCode"],120); explanation=safe(item["explanation"])
+        status=safe(item["checkStatus"],40); checked=safe(item["checkedAtUtc"],50)
+        print(f"Execution {identifier} · Issue #{number} · {code} · {explanation} · {status} · checked {checked}")
+    if data["hasMore"]: print("More results available; use --offset %d (total %d)." % (int(sys.argv[1])+int(sys.argv[2]),data["total"]))
+except (ValueError,TypeError,KeyError,json.JSONDecodeError): sys.exit(1)' "$offset" "$limit" <<<"$response" || { error 'Worker returned invalid recovery diagnostics'; return 1; }
+  fi
+}
+
 execution_cleanup_command() {
   local selector='' value='' limit=20 apply=false json=false response body
   while (($#)); do
@@ -968,6 +1032,7 @@ main() {
     log|l) log_command "$@" ;;
     projects|p) (($# == 0)) || { error 'projects does not accept options'; help_hint; return 2; }; projects_command ;;
     executions|e) executions_command "$@" ;;
+    recovery) recovery_command "$@" ;;
     execution) execution_command "$@" ;;
     maintenance) maintenance_command "$@" ;;
     version|v) version_command "$@" ;;

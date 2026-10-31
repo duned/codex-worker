@@ -23,7 +23,7 @@ internal static class WorkerServiceAdministrationContext
     ]);
 
     internal static bool IsNodeAdministration(WorkerCommandLine command) =>
-        command.Command is "provision" or "credential" or "capabilities" or "status" or "executions" or "diagnostics" or "maintenance";
+        command.Command is "provision" or "credential" or "capabilities" or "status" or "executions" or "recovery" or "diagnostics" or "maintenance";
 
     internal static bool RequiresTransition(WorkerCommandLine command, bool packaged, string user, bool serviceContext = false)
     {

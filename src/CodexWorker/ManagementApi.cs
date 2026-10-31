@@ -226,6 +226,29 @@ public sealed class WorkerRuntimeReadModel
     public async Task<IReadOnlyList<ExecutionRuntimeInfo>> IssueExecutionsAsync(int issueNumber, CancellationToken ct) =>
         (await _history.ReadIssueAsync(issueNumber, ct)).Select(ProjectExecution).ToArray();
 
+    public async Task<StandaloneRecoveryDiagnosticsPage> StandaloneRecoveryDiagnosticsAsync(int? issueNumber, Guid? executionId,
+        string? reasonCode, int limit, int offset, CancellationToken ct)
+    {
+        if (issueNumber is <= 0 || executionId == Guid.Empty || limit is < 1 or > 100 || offset is < 0 or > 10000 ||
+            reasonCode is { Length: > 120 } || reasonCode?.Any(character => !(char.IsAsciiLetterOrDigit(character) || character == '-')) == true)
+            throw new ArgumentException("Invalid standalone recovery diagnostic filters or page bounds.");
+        var entries = await _history.ReadAllAsync(ct);
+        var diagnostics = entries.Where(entry => entry.StandaloneRecoveryDiagnosticJson is not null &&
+                entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null)
+            .Select(entry =>
+            {
+                try { return System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson!); }
+                catch (System.Text.Json.JsonException) { return null; }
+            })
+            .Where(diagnostic => diagnostic is not null && (issueNumber is null || diagnostic.IssueNumber == issueNumber) &&
+                (executionId is null || diagnostic.ExecutionId == executionId) &&
+                (reasonCode is null || string.Equals(diagnostic.ReasonCode, reasonCode, StringComparison.Ordinal)))
+            .Cast<StandaloneRecoveryDiagnostic>().OrderByDescending(diagnostic => diagnostic.CheckedAtUtc).ToArray();
+        return new(diagnostics.Skip(offset).Take(limit).ToArray(), diagnostics.Length > offset + limit, diagnostics.Length);
+    }
+
+    public sealed record StandaloneRecoveryDiagnosticsPage(IReadOnlyList<StandaloneRecoveryDiagnostic> Items, bool HasMore, int Total);
+
     private ExecutionRuntimeInfo ProjectExecution(ExecutionHistoryEntry e)
     {
         var project = _registry.Snapshot().FirstOrDefault(project =>
@@ -377,6 +400,13 @@ public static class ManagementApi
         });
         app.MapGet("/api/executions", async (int? limit, WorkerRuntimeReadModel model, HttpContext context) =>
             Results.Ok(await model.ExecutionsAsync(limit ?? 100, context.RequestAborted)));
+        app.MapGet("/api/recovery/blocked", async (int? issueNumber, Guid? executionId, string? reasonCode, int? limit, int? offset,
+            WorkerRuntimeReadModel model, HttpContext context) =>
+        {
+            try { return (IResult)Results.Ok(await model.StandaloneRecoveryDiagnosticsAsync(issueNumber, executionId, reasonCode,
+                limit ?? 50, offset ?? 0, context.RequestAborted)); }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
         app.MapGet("/api/executions/inventory", async (string? project, Guid? executionId, int? issueNumber,
             string? outcome, int? olderThanDays, string? attention, string? origin, int? limit, int? offset, bool? includeArchived,
             WorkerRuntimeReadModel model, HttpContext context) =>

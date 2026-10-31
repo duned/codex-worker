@@ -16,7 +16,7 @@ public sealed record WorkerCommandLine(string Command, string? ConfigurationPath
 
         var command = args[0] switch
         {
-            "restart" or "run" or "status" or "maintenance" or "executions" or "diagnostics" or "config" or "capabilities" or "provision" or "credential" or "register" => args[0],
+            "restart" or "run" or "status" or "maintenance" or "executions" or "recovery" or "diagnostics" or "config" or "capabilities" or "provision" or "credential" or "register" => args[0],
             _ when !args[0].StartsWith("-", StringComparison.Ordinal) => "run",
             _ => "run"
         };

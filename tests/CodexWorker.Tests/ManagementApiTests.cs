@@ -203,7 +203,9 @@ public sealed class ManagementApiTests
             "feature/4", "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Failed", 1200, null, "failed", 1,
             [new ValidationRepairRecord("dotnet test", 1, 2, "private repair output", false)], null, null, null, "failed",
             "recoverable", "base-sha", "2 changed path(s); 0 staged path(s). Workspace retained for recovery.", Guid.NewGuid(), 2, true,
-            DateTimeOffset.UtcNow.AddDays(7), EffectiveModel: "task-model", EffectiveEffort: "low"));
+            DateTimeOffset.UtcNow.AddDays(7), EffectiveModel: "task-model", EffectiveEffort: "low",
+            StandaloneRecoveryDiagnosticJson: JsonSerializer.Serialize(new StandaloneRecoveryDiagnostic(executionId, 4,
+                "process-inspection-unavailable", "Process state could not be inspected.", "blocked", DateTimeOffset.UtcNow))));
         model.Events.Publish("one", "one");
         model.Events.Publish("two", "two");
         model.Events.Publish("three", "three");
@@ -246,6 +248,16 @@ public sealed class ManagementApiTests
             Assert.NotEqual(Guid.Empty.ToString(), executions[0].GetProperty("retryOfExecutionId").GetString());
             Assert.DoesNotContain("private repair output", executions.GetRawText());
             Assert.DoesNotContain("secret-value", status.GetRawText() + projects.GetRawText() + executions.GetRawText());
+
+            var blocked = JsonDocument.Parse(await client.GetStringAsync("/api/recovery/blocked?issueNumber=4&reasonCode=process-inspection-unavailable&limit=1" )).RootElement;
+            Assert.Equal(1, blocked.GetProperty("total").GetInt32());
+            Assert.False(blocked.GetProperty("hasMore").GetBoolean());
+            Assert.Equal(executionId.ToString(), blocked.GetProperty("items")[0].GetProperty("executionId").GetString());
+            Assert.Equal(4, blocked.GetProperty("items")[0].GetProperty("issueNumber").GetInt32());
+            Assert.Equal("process-inspection-unavailable", blocked.GetProperty("items")[0].GetProperty("reasonCode").GetString());
+            Assert.Equal(0, JsonDocument.Parse(await client.GetStringAsync("/api/recovery/blocked?issueNumber=5")).RootElement.GetProperty("items").GetArrayLength());
+            using var invalidRecoveryFilter = await client.GetAsync("/api/recovery/blocked?reasonCode=bad%20reason");
+            Assert.Equal(HttpStatusCode.BadRequest, invalidRecoveryFilter.StatusCode);
 
             var inspection = JsonDocument.Parse(await client.GetStringAsync($"/api/executions/{executionId}/cleanup-inspection")).RootElement;
             Assert.Equal("review", inspection.GetProperty("decision").GetString());

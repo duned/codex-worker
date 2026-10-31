@@ -42,12 +42,13 @@ public sealed record ExecutionHistoryEntry(
     string? OriginalIssueBody = null,
     bool ModelSelectedByCli = false,
     CodexInterruptionRecovery? CodexRecovery = null,
-    string? CompletionJson = null);
+    string? CompletionJson = null,
+    string? StandaloneRecoveryDiagnosticJson = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed partial class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 17;
+    private const int CurrentSchemaVersion = 18;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -77,12 +78,13 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
                 repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
                 recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc,
-                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json)
+                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
                 $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus,
-                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery,$completion)
+                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery,$completion,$standaloneRecoveryDiagnostic)
             """;
         Bind(command, entry);
+        Add(command, "$standaloneRecoveryDiagnostic", entry.StandaloneRecoveryDiagnosticJson);
         try { await command.ExecuteNonQueryAsync(ct); }
         catch (SqliteException ex) { throw PersistenceFailure("create execution history", ex); }
     }
@@ -286,6 +288,21 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         catch (SqliteException ex) { throw PersistenceFailure("update secondary execution reporting failure", ex); }
     }
 
+    internal async Task SaveStandaloneRecoveryDiagnosticAsync(Guid executionId, string diagnosticJson, CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE executions SET standalone_recovery_diagnostic_json=$diagnostic WHERE execution_id=$id AND server_execution_id IS NULL AND assignment_id IS NULL AND ownership_generation IS NULL";
+        command.Parameters.AddWithValue("$id", executionId.ToString());
+        command.Parameters.AddWithValue("$diagnostic", diagnosticJson);
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new WorkerInfrastructureException("Standalone recovery diagnostic could not be recorded for its local execution.");
+        }
+        catch (SqliteException ex) { throw PersistenceFailure("record standalone recovery diagnostic", ex); }
+    }
+
     public async Task UpdateIntegrationRecoverySnapshotAsync(Guid executionId, string commit, string status,
         DateTimeOffset expiresAtUtc, CancellationToken ct = default, string? integrationBase = null)
     {
@@ -379,7 +396,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json FROM executions" + suffix;
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json FROM executions" + suffix;
         if (parameter is not null) command.Parameters.AddWithValue(parameter, value ?? DBNull.Value);
         foreach (var (name, parameterValue) in additionalParameters) command.Parameters.AddWithValue(name, parameterValue);
         var entries = new List<ExecutionHistoryEntry>();
@@ -396,7 +413,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 reader.IsDBNull(22) ? null : Guid.Parse(reader.GetString(22)), reader.GetInt32(23), reader.GetBoolean(24), NullableDate(reader, 25),
                 NullableString(reader, 26), NullableString(reader, 27), reader.IsDBNull(28) ? null : reader.GetInt64(28),
                 NullableString(reader, 29), NullableString(reader, 30), NullableString(reader, 31),
-                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36)), NullableString(reader, 37)));
+                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36)), NullableString(reader, 37), NullableString(reader, 38)));
         }
         return entries;
     }
@@ -639,6 +656,13 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "CREATE TABLE execution_legacy_reviews (execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id), checked_at_utc TEXT NOT NULL, reason TEXT NOT NULL, evidence TEXT NULL); PRAGMA user_version = 17;";
+                migration.ExecuteNonQuery();
+            }
+            if (schemaVersion < 18)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN standalone_recovery_diagnostic_json TEXT NULL; PRAGMA user_version = 18;";
                 migration.ExecuteNonQuery();
             }
 

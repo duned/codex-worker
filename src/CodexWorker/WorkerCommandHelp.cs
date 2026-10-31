@@ -38,6 +38,11 @@ public static class WorkerCommandHelp
             case "executions":
                 writer.WriteLine(ExecutionAdministrationCli.Help);
                 break;
+            case "recovery":
+                writer.WriteLine(RecoveryDiagnosticsCli.Help);
+                writer.WriteLine("Read retained standalone blocked-recovery diagnostics from the running Worker's local Management API.");
+                writer.WriteLine("Options: --issue NUMBER, --execution ID, --reason CODE, --limit 1..100, --offset 0..10000, --json.");
+                break;
             case "run":
                 writer.WriteLine($"Usage: codex-worker run {configOption}");
                 writer.WriteLine("Start normal Worker execution.");
@@ -114,7 +119,7 @@ public static class WorkerCommandHelp
                 break;
             default:
                 writer.WriteLine("Usage: codex-worker [command] [options]");
-                writer.WriteLine("Commands: run, maintenance, executions, status, diagnostics, config, capabilities, provision, credential, register, restart, update");
+                writer.WriteLine("Commands: run, maintenance, executions, recovery, status, diagnostics, config, capabilities, provision, credential, register, restart, update");
                 writer.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 writer.WriteLine("Lifecycle: run starts foreground execution; Ctrl+C/SIGTERM requests graceful shutdown.");
                 writer.WriteLine("Restart: sudo codex-worker restart [--json]; gracefully drains and verifies the new service instance.");
