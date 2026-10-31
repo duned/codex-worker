@@ -12,3 +12,5 @@ Start with the [operator guide](docs/operations.md) to choose standalone or Serv
 - [Execution maintenance](docs/execution-maintenance.md): drain, inspect and safely recover retained work.
 
 Contributors: [development](docs/development.md), [engineering instructions](AGENTS.md), [dashboard design](docs/dashboard-design-guide.md), [release packaging](docs/release-packaging.md), [changelog](CHANGELOG.md), and [documentation inventory](docs/documentation-inventory.md).
+
+See [Issue execution metadata](docs/issue-execution-metadata.md) for per-Issue engine, model and effort selection and legacy `Codex` sections.

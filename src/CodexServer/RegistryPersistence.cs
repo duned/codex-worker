@@ -72,7 +72,10 @@ public interface IRegistryStore
     Task<ProvisioningPlan?> TransitionProvisioningPlanAsync(string planId, ProvisioningStateTransition transition, CancellationToken cancellationToken = default);
 }
 
-public sealed record WorkReference(string Type, string Id, string? Url = null, string? Title = null);
+public sealed record WorkReference(string Type, string Id, string? Url = null, string? Title = null)
+{
+    public CodexProvisioning.IssueExecutionMetadata Selection { get; init; } = new();
+}
 public sealed record EnqueueExecutionRequest(string ProjectId, WorkReference WorkReference,
     [property: JsonIgnore] long? ExpectedProjectRevision = null, [property: JsonIgnore] bool AutomaticDiscovery = false,
     [property: JsonIgnore] DateTimeOffset? ExpectedProjectCreatedAtUtc = null,
@@ -158,6 +161,7 @@ public static class ExecutionRequestValidation
         if (request is null) return "Execution request is required.";
         if (!Printable(request.ProjectId, 80)) return "projectId must contain 1 to 80 printable characters.";
         if (request.WorkReference is null) return "workReference is required.";
+        if (CodexProvisioning.IssueExecutionMetadata.ValidationError(request.WorkReference.Selection) is { } selectionError) return selectionError;
         if (!CanonicalIssueType(request.WorkReference.Type)) return "workReference.type must identify a supported GitHub Issue (issue or github-issue).";
         if (!Printable(request.WorkReference.Id, 300) || !int.TryParse(request.WorkReference.Id.Trim(), System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var issueNumber) || issueNumber <= 0)
@@ -170,6 +174,7 @@ public static class ExecutionRequestValidation
 
     public static WorkReference Canonicalize(WorkReference reference, string repository)
     {
+        if (CodexProvisioning.IssueExecutionMetadata.ValidationError(reference.Selection) is { } error) throw new InvalidDataException(error);
         var identity = NormalizeIdentity(reference);
         var canonicalId = identity.Id;
         if (reference.Url is { } url)
@@ -178,9 +183,9 @@ public static class ExecutionRequestValidation
                 urlIssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) != canonicalId ||
                 !string.Equals(repository, $"{owner}/{name}", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("workReference.url must identify this project's GitHub repository and Issue.");
-            return new("github-issue", canonicalId, $"https://github.com/{repository}/issues/{canonicalId}", reference.Title);
+            return new("github-issue", canonicalId, $"https://github.com/{repository}/issues/{canonicalId}", reference.Title) { Selection = reference.Selection };
         }
-        return new("github-issue", canonicalId, Title: reference.Title);
+        return new("github-issue", canonicalId, Title: reference.Title) { Selection = reference.Selection };
     }
 
     public static WorkReference NormalizeIdentity(WorkReference reference)
@@ -1205,7 +1210,9 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
             }
             if (!projects.TryGetValue(queuedItem.ProjectId, out var candidateProject) || !candidateProject.Enabled)
             { noAssignmentReason = "project-disabled-or-missing"; continue; }
-            if (!WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject), workerCapabilities, heartbeat.CapabilityInventory).IsEligible)
+            if (CodexProvisioning.IssueExecutionMetadata.ValidationError(queuedItem.Work.Selection) is not null)
+            { noAssignmentReason = "execution-selection-invalid"; continue; }
+            if (!WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(candidateProject, queuedItem.Work.Selection.Engine), workerCapabilities, heartbeat.CapabilityInventory).IsEligible)
             { noAssignmentReason = "worker-incompatible"; continue; }
             WorkReference canonicalWork;
             try { canonicalWork = ExecutionRequestValidation.Canonicalize(queuedItem.Work, candidateProject.Repository); }
@@ -1692,14 +1699,14 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         if (!project.Enabled) return "project is disabled";
         if (execution.ManagedEligibilityState == "blocked") return "work is blocked by managed eligibility";
         if (execution.ManagedEligibilityState == "unavailable") return "managed eligibility is unavailable";
-        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities).IsEligible).ToArray();
+        var compatible = workers.Where(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), worker.Capabilities).IsEligible).ToArray();
         var eligible = compatible.Where(worker => worker.SchedulingPolicy == WorkerSchedulingPolicy.Enabled && worker.SchedulingBlocker is null).ToArray();
         if (eligible.Length == 0 && compatible.Any(worker => worker.SchedulingBlocker is not null))
             return "new work is paused by an unresolved Worker restart/update operation";
         if (eligible.Length == 0 && compatible.Length > 0) return "compatible Workers are disabled or draining";
         if (eligible.Length == 0) return "no compatible worker";
         var accepting = eligible.Where(worker => worker.Availability == "online" && worker.LifecycleState == "running" &&
-            WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
+            WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), worker.Capabilities, worker.CapabilityInventory).IsEligible).ToArray();
         if (accepting.Length > 0 && project.MaxParallelTasks is { } limit && projectActivity.GetValueOrDefault(project.Id) >= limit)
             return "project-capacity";
         if (accepting.Length == 0) return "compatible Workers are offline or not ready";
@@ -1721,10 +1728,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         IReadOnlyDictionary<string, CentralProject> projects, IReadOnlyList<WorkerRegistrationResponse> workers)
     {
         if (!projects.TryGetValue(execution.ProjectId, out var project)) return [];
+        if (CodexProvisioning.IssueExecutionMetadata.ValidationError(execution.WorkReference.Selection) is { } error) return [error];
         if (!project.Enabled) return [];
-        if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).IsEligible)) return [];
-        if (workers.Count == 0) return WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), []).MissingRequirements;
-        return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project), worker.Capabilities, worker.CapabilityInventory).MissingRequirements)
+        if (workers.Any(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), worker.Capabilities, worker.CapabilityInventory).IsEligible)) return [];
+        if (workers.Count == 0) return WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), []).MissingRequirements;
+        return workers.SelectMany(worker => WorkerEligibility.Evaluate(WorkerAuthenticationRequirements.ForProject(project, execution.WorkReference.Selection.Engine), worker.Capabilities, worker.CapabilityInventory).MissingRequirements)
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
     }
 

@@ -10,6 +10,34 @@ public sealed class AutomaticIssueDiscoveryTests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task CccSelectionPersistsAndRequiresMatchingProviderBeforeAssignment()
+    {
+        using var fixture = new Fixture();
+        await fixture.Store.InitializeAsync();
+        var project = await fixture.CreateProjectAsync();
+        fixture.Reads.Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low";
+        var queued = await fixture.GitHub.EnqueueIssueAsync(project.Id, new("issue", "1"));
+        var restarted = new SqliteRegistryStore(fixture.Database, timeProvider: fixture.Clock);
+        await restarted.InitializeAsync();
+        Assert.Equal(new IssueExecutionMetadata("ccc", "sonnet", "low"),
+            (await restarted.GetExecutionAsync(queued.Id))?.WorkReference.Selection);
+        var worker = Guid.NewGuid().ToString("N");
+        CodexServer.WorkerCapability[] capabilities = [new("tool", "git"), new("agent-provider", "codex"),
+            .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
+                new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope))];
+        await restarted.RegisterWorkerAsync(new(1, worker, "Worker", "1.0", "test", 1, capabilities));
+        await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
+        Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        capabilities = [.. capabilities, new("agent-provider", "ccc")];
+        await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        var assignment = Assert.IsType<WorkAssignment>((await restarted.RequestAssignmentAsync(request)).Assignment);
+        Assert.Equal(queued.WorkReference.Selection, assignment.Work.Selection);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Theory]
     [InlineData("Failed", false, true)]
     [InlineData("Blocked", false, true)]
@@ -591,6 +619,7 @@ public sealed class AutomaticIssueDiscoveryTests
 
     private sealed class Reads : IServerGitHubReadService
     {
+        public string Body { get; set; } = "";
         public DateTimeOffset? ReadyAppliedAt { get; set; }
         public int Pages { get; private set; }
         public List<string?> Cursors { get; } = [];
@@ -617,7 +646,7 @@ public sealed class AutomaticIssueDiscoveryTests
             if (BeforeGet is { } before) await before(number, cancellationToken);
             return Missing.Contains(number) ? null : Issue(project, number);
         }
-        private ManagedGitHubIssue Issue(CentralProject project, int number) => ManagedGitHubIssueEligibility.Evaluate(project, new(number, "Issue", "", "OPEN",
+        private ManagedGitHubIssue Issue(CentralProject project, int number) => ManagedGitHubIssueEligibility.Evaluate(project, new(number, "Issue", Body, "OPEN",
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, $"https://github.com/{project.Repository}/issues/{number}",
             Blocked.Contains(number) ? ["ready", "blocked"] : Unready.Contains(number) ? [] : ["ready"],
             OpenDependencies.Contains(number) ? [new(99, "Prerequisite", "OPEN", $"https://github.com/{project.Repository}/issues/99")] : [],

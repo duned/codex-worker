@@ -45,6 +45,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: metadataError));
             }
+            if (execution.CodexProfile is { Engine: not "codex" } selectedProfile)
+                return new IssueProcessingResult(IssueOutcomeKind.Blocked,
+                    new IssueExecutionReport(null, [], HumanInput: $"Execution engine '{selectedProfile.Engine}' is unavailable on this Worker."));
             if (context.IntegrationRecovery || context.InterruptedExecution)
                 return await RunIntegrationRecoveryAsync(context, executionCodex, ct);
             await _repositoryGate.WaitAsync(ct);

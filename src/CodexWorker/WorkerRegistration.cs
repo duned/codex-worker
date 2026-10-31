@@ -50,7 +50,10 @@ public sealed record ServerProjectRequirementContract(string Type, string Name, 
 public sealed record ServerProjectContract(string Id, string Name, string Repository, string DefaultBranch,
     string Description, IReadOnlyList<ServerProjectRequirementContract> Requirements, long Revision,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, bool Enabled = true, int? MaxParallelTasks = null, IReadOnlyList<string>? ValidationCommands = null);
-public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null);
+public sealed record ServerWorkReferenceContract(string Type, string Id, string? Url = null)
+{
+    public CodexProvisioning.IssueExecutionMetadata Selection { get; init; } = new();
+}
 public sealed record ServerExecutionLeaseContract(string ExecutionId, string WorkerId, long Generation,
     DateTimeOffset AcquiredAtUtc, DateTimeOffset ExpiresAtUtc, string State, int RenewalIntervalSeconds = 60);
 public sealed record WorkerAssignmentContract(string AssignmentId, string ServerExecutionId, ServerProjectContract Project,

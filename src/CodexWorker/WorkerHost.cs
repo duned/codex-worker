@@ -676,8 +676,13 @@ public sealed class WorkerHost
                             runtimeReadModel.Events.Publish("assignment.rejected", $"Assignment {assignment.AssignmentId} references a project outside the configured Worker project registry.");
                             throw new WorkerInfrastructureException($"Server assignment {assignment.AssignmentId} references a project that is not safely configured on this Worker; assignment remains owned by this Worker for inspection.");
                         }
+                        if (IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
+                        {
+                            await RejectIncompatibleAssignmentAsync(assignment, assignedProject.Configuration, history, selectionError, executionToken);
+                            continue;
+                        }
                         var assignmentEligibility = CapabilityEligibility.Evaluate(
-                            CapabilityEligibility.ForProject(assignment.Project.Requirements, assignment.Project.Repository), heartbeatCapabilities, await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken));
+                            CapabilityEligibility.ForProject(assignment.Project.Requirements, assignment.Project.Repository, assignment.Work.Selection.Engine), heartbeatCapabilities, await _registration.InventoryDiscovery.GetAsync(cancellationToken: executionToken));
                         if (!assignmentEligibility.IsEligible)
                         {
                             var reason = string.Join("; ", assignmentEligibility.MissingRequirements);

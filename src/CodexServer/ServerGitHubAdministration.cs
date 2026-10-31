@@ -25,6 +25,7 @@ public sealed record ManagedGitHubIssue(int Number, string Title, string Body, s
     DateTimeOffset? ReadyLabelAppliedAtUtc = null)
 {
     public IReadOnlyList<string> Assignees { get; init; } = [];
+    public CodexProvisioning.IssueExecutionMetadata? Selection { get; init; }
     public string? Author { get; init; }
     public string? Milestone { get; init; }
 }
@@ -128,7 +129,10 @@ internal static class ManagedGitHubIssueEligibility
             reasons.Add("Issue is blocked by open Issue(s): " + blockerSummary +
                 (remaining > 0 ? $" (+{remaining.ToString(System.Globalization.CultureInfo.InvariantCulture)} more)." : "."));
         }
-        return issue with { IsEligible = reasons.Count == 0, EligibilityReasons = reasons };
+        CodexProvisioning.IssueExecutionMetadata? selection = null;
+        try { selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body); }
+        catch (InvalidDataException ex) { reasons.Add(ex.Message); }
+        return issue with { IsEligible = reasons.Count == 0, EligibilityReasons = reasons, Selection = selection };
     }
 }
 
@@ -689,7 +693,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                 throw new GitHubReadUnavailableException(repository, "Discovery returned an invalid repository Issue identity.",
                     "invalid-response", ex);
             }
-            return new ManagedGitHubIssueCandidate(reference, evaluated.IsEligible ? "eligible" : "ineligible",
+            return new ManagedGitHubIssueCandidate(reference with { Selection = evaluated.Selection ?? new() }, evaluated.IsEligible ? "eligible" : "ineligible",
                 evaluated.EligibilityReasons);
         }).ToArray();
         var missing = (page.MissingNumbers ?? []).Select(number => new ManagedGitHubIssueCandidate(
@@ -959,7 +963,7 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
             ?? throw new GitHubIssueNotFoundException(project.Repository, issueNumber);
         if (!issue.IsEligible) throw new ManagedIssueIneligibleException(issue);
         var url = $"https://github.com/{project.Repository}/issues/{canonical.Id}";
-        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url, issue.Title), project.Revision, discoveredProject is not null, project.CreatedAtUtc, issue.ReadyLabelAppliedAtUtc), cancellationToken);
+        var created = await registry.EnqueueExecutionAsync(new(projectId, new WorkReference("github-issue", canonical.Id, url, issue.Title) { Selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body) }, project.Revision, discoveredProject is not null, project.CreatedAtUtc, issue.ReadyLabelAppliedAtUtc), cancellationToken);
         return await registry.UpdateManagedEligibilityAsync(created.Id,
             new("eligible", [], _clock.GetUtcNow()), cancellationToken) ?? created;
     }
@@ -1009,6 +1013,12 @@ public sealed class ServerGitHubAdministrationService : IServerGitHubAdministrat
                     update = EligibilityUpdate(issue, assignment.Project.Repository, issue.Number);
                 }
                 var recovery = (assignment.Metadata.ContainsKey("integrationRecoveryExecutionId") || assignment.Metadata.ContainsKey("codexRecoveryExecutionId"));
+                if (!recovery && issue?.IsEligible == true &&
+                    CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body).Engine != assignment.Work.Selection.Engine)
+                {
+                    issue = issue with { IsEligible = false, EligibilityReasons = ["Issue engine changed after queueing; refresh the execution request."] };
+                    update = EligibilityUpdate(issue, assignment.Project.Repository, issue.Number);
+                }
                 if (issue?.IsEligible == true || recovery && issue is not null &&
                     issue.State.Equals("open", StringComparison.OrdinalIgnoreCase) &&
                     (assignment.Project.IssueBlockedLabel is null || !issue.Labels.Contains(assignment.Project.IssueBlockedLabel, StringComparer.OrdinalIgnoreCase)) &&

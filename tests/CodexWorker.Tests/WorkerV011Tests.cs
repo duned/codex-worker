@@ -355,6 +355,19 @@ public sealed class WorkerV011Tests
     }
 
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
+    public async Task UnavailableCccEngineLeavesStandaloneIssueReadyWithoutStartingCodex()
+    {
+        using var h = new Harness();
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low" };
+        Assert.Null(await h.ProcessOneAsync());
+        Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Contains(h.OperationalMessages, message => message.Contains("engine ccc is unavailable", StringComparison.Ordinal));
+    }
+
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
     public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()

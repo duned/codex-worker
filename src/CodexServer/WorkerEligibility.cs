@@ -10,8 +10,8 @@ public static class WorkerAuthenticationRequirements
         new("authentication", "git-repository", Scope: repository)
     ];
 
-    public static IReadOnlyList<ProjectRequirement> ForProject(CentralProject project) =>
-        CapabilityEligibility.ForProject(project.Requirements, project.Repository)
+    public static IReadOnlyList<ProjectRequirement> ForProject(CentralProject project, string engine = "codex") =>
+        CapabilityEligibility.ForProject(project.Requirements, project.Repository, engine)
             .Select(requirement => new ProjectRequirement(requirement.Type, requirement.Name, requirement.Version, requirement.Scope)).ToArray();
 }
 

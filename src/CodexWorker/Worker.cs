@@ -85,6 +85,16 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             try { issue = await github.FindOldestReadyAsync(config.GitHub.ReadyLabel, excluded, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
             if (issue is null || !excluded.Add(issue.Number)) return null;
+            try
+            {
+                var selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body);
+                if (selection.Engine != "codex")
+                {
+                    _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · engine {selection.Engine} is unavailable on this Worker; leaving Issue ready.");
+                    continue;
+                }
+            }
+            catch (InvalidDataException) { /* Existing preparation reporting owns invalid metadata. */ }
             var execution = await ClaimIssueAsync(issue, null, null, null, ct);
             if (execution is not null) return execution;
         }
@@ -374,6 +384,15 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         }
         if (assignment.Metadata.ContainsKey("codexRecoveryExecutionId"))
             return await ClaimCodexRecoveryAsync(assignment, ct);
+        CodexProvisioning.IssueExecutionMetadata selection;
+        try { selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body); }
+        catch (InvalidDataException ex) { throw new IssuePreparationRejectedException(ex.Message); }
+        if (CodexProvisioning.IssueExecutionMetadata.ValidationError(assignment.Work.Selection) is { } selectionError)
+            throw new IssuePreparationRejectedException(selectionError);
+        if (selection.Engine != "codex")
+            throw new IssuePreparationRejectedException($"Execution engine '{selection.Engine}' is unavailable on this Worker.");
+        if (selection.Engine != assignment.Work.Selection.Engine)
+            throw new IssuePreparationRejectedException("Issue execution metadata changed after Server queueing; refresh the execution request before assigning it again.");
         return await ClaimIssueAsync(issue, assignment.ServerExecutionId, assignment.AssignmentId, lease.Generation, ct, assignment.Metadata.ContainsKey("freshRecoveryExecutionId"));
     }
 

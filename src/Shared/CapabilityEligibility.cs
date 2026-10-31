@@ -13,10 +13,10 @@ public interface ICapabilityDescriptor
 public static class CapabilityEligibility
 {
     public static IEnumerable<ICapabilityDescriptor> ForProject(IEnumerable<ICapabilityDescriptor>? requirements,
-        string repository) => (requirements ?? []).Concat([
+        string repository, string engine = "codex") => (requirements ?? []).Concat([
             new Descriptor("authentication", "github-api", null, repository),
             new Descriptor("authentication", "git-repository", null, repository),
-            new Descriptor("agent-provider", "codex", null, null)
+            new Descriptor("agent-provider", engine, null, null)
         ]);
 
     public static CapabilityEligibilityResult Evaluate(IEnumerable<ICapabilityDescriptor>? requirements,
