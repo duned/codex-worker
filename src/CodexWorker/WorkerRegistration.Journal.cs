@@ -48,18 +48,28 @@ public static class WorkerJournalReader
             // Only this process's systemd unit; never expose another service's journal.
             var cgroup = await File.ReadAllTextAsync("/proc/self/cgroup", ct);
             if (!cgroup.Split('/').Any(part => part.Trim() == "codex-worker.service")) return new("unsupported", []);
-            var output = await new ProcessRunner().RunAsync("journalctl", ["--unit=codex-worker.service", "--no-pager", "--quiet", "--output=short-iso-precise", "--lines=" + lines.ToString(System.Globalization.CultureInfo.InvariantCulture)],
+            var output = await new ProcessRunner().RunAsync("/usr/bin/sudo", ["-n", "/usr/bin/journalctl", "--unit=codex-worker.service", "--no-pager", "--quiet", "--output=short-iso-precise", "--lines=200"],
                 "/", TimeSpan.FromSeconds(5), ct, captureTail: true);
-            if (output.ExitCode != 0) return new("error", []);
-            var safeOutput = System.Text.RegularExpressions.Regex.Replace(output.StandardOutput,
-                @"-----BEGIN [^\r\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^\r\n]*PRIVATE KEY-----|$)", "[redacted private key]");
-            var entries = safeOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(lines)
-                .Select(line => SecretSanitizer.Sanitize(line, Math.Min(1000, 100_000 / lines))).ToArray();
-            return new("ready", entries);
+            return FormatResult(output, lines);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or ProcessTimeoutException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException or ProcessTimeoutException)
         {
-            return new("error", []);
+            return new("unavailable", []);
         }
     }
+
+    internal static WorkerJournalResult FormatResult(ProcessResult output, int lines)
+    {
+        if (lines is < 1 or > WorkerJournalProtocol.MaximumLines) throw new ArgumentOutOfRangeException(nameof(lines));
+        if (output.ExitCode != 0)
+            return new(output.StandardError.Contains("sudo:", StringComparison.OrdinalIgnoreCase) ||
+                output.StandardError.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+                    ? "denied" : "error", []);
+        var safeOutput = System.Text.RegularExpressions.Regex.Replace(output.StandardOutput,
+            @"-----BEGIN [^\r\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^\r\n]*PRIVATE KEY-----|$)", "[redacted private key]");
+        var entries = safeOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).TakeLast(lines)
+            .Select(line => SecretSanitizer.Sanitize(line, Math.Min(1000, 100_000 / lines))).ToArray();
+        return new("ready", entries);
+    }
+
 }

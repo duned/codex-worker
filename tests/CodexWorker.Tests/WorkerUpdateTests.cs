@@ -36,6 +36,111 @@ public sealed class WorkerUpdateTests
         return (store, worker);
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    public async Task ManagedServiceHandoffReconnectsAndRestoresPolicy(bool shutdownDuringDispatch, bool dispatchFailure, bool handoffTimeout)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock { Now = DateTimeOffset.UtcNow };
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
+        Task Heartbeat(string instance) => store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display,
+            "running", 0, 2, capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: instance));
+        await Heartbeat("original");
+        var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+        var settings = new WorkerServerSettings { Enabled = true, Url = "https://server.example",
+            IdentityFile = Path.Combine(temporary.Path, "worker-id") };
+        await File.WriteAllTextAsync(settings.IdentityFile, worker);
+        await WorkerAuthentication.LoadOrCreateTokenAsync(settings.IdentityFile, CancellationToken.None);
+        using var history = new ExecutionHistoryStore(Path.Combine(temporary.Path, "history.db"));
+        var runtime = new WorkerRuntimeReadModel(new(), [], history);
+        runtime.Lifecycle.SetReady();
+        using var handler = new UpdateStoreHandler(store, worker);
+        using var http = new HttpClient(handler);
+        var client = new WorkerRegistrationClient(http);
+        using var shutdown = new CancellationTokenSource();
+        var dispatches = 0;
+        async Task<ProcessResult> Dispatch(string executable, string[] arguments, TimeSpan timeout, CancellationToken ct)
+        {
+            Assert.Equal("/usr/bin/sudo", executable);
+            Assert.Equal(new[] { "-n", "/usr/bin/systemctl", "--no-block", "restart", "codex-worker.service" }, arguments);
+            Assert.True((await store.GetWorkerUpdateAsync(worker))?.InstallerVerified);
+            Assert.Equal("restarting", runtime.Lifecycle.Snapshot.State);
+            Assert.False(runtime.Registry.CancelWorkerDrain());
+            dispatches++;
+            if (shutdownDuringDispatch) { shutdown.Cancel(); ct.ThrowIfCancellationRequested(); }
+            return new(dispatchFailure ? 1 : 0, "", "");
+        }
+        var policy = new ProvisioningPolicy { Enabled = true, AllowedPrivilegedActions = [WorkerUpdateProtocol.RestartPolicyKey] };
+        if (shutdownDuringDispatch)
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.ExecuteWorkerUpdateAsync(settings, policy, runtime, true, Dispatch, shutdown.Token));
+        else
+            Assert.True(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, true, Dispatch, shutdown.Token));
+        if (handoffTimeout)
+        {
+            clock.Now = operation.DeadlineUtc.AddHours(1);
+            await store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display, "restarting", 0, 2,
+                capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+        }
+        if (dispatchFailure || handoffTimeout)
+        {
+            Assert.Equal("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
+            Assert.Equal(handoffTimeout ? "restarting" : "restart-failed", runtime.Lifecycle.Snapshot.State);
+            clock.Now += TimeSpan.FromSeconds(1);
+            await store.HeartbeatWorkerAsync(new(2, worker, ApplicationVersion.Display, "restart-failed", 0, 2,
+                capabilities, [], ConfigurationSynchronization: "synchronized", InstanceId: "original"));
+            await store.ReleaseWorkerRestartDrainAsync(worker, operation.OperationId);
+            Assert.False(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, true, Dispatch, CancellationToken.None));
+            Assert.Equal("not-ready", runtime.Lifecycle.Snapshot.State);
+            Assert.False(runtime.Lifecycle.Snapshot.DrainRequested);
+            Assert.Equal("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
+            Assert.Equal(1, dispatches);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true));
+            // Only a subsequent healthy observation permits a new restart operation.
+            runtime.Lifecycle.SetExecutionReadiness(true);
+            await Heartbeat("original");
+            var next = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
+            Assert.NotEqual(operation.OperationId, next.OperationId);
+            Assert.Equal("waiting-for-idle", next.State);
+            return;
+        }
+        Assert.NotEqual("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
+        // Polling the acknowledged operation cannot dispatch it a second time.
+        Assert.False(await client.ExecuteWorkerUpdateAsync(settings, policy, runtime, true, Dispatch, CancellationToken.None));
+        Assert.Equal(1, dispatches);
+        clock.Now += TimeSpan.FromSeconds(1);
+        await Heartbeat("replacement");
+        Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+        Assert.Equal(operation.OperationId, (await store.GetWorkerUpdateAsync(worker))?.OperationId);
+    }
+
+    private sealed class UpdateStoreHandler(SqliteRegistryStore store, string worker) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? "";
+            WorkerUpdateOperation? operation;
+            if (path.EndsWith("/request", StringComparison.Ordinal))
+                operation = await store.AdvanceWorkerUpdateAsync(worker, cancellationToken: cancellationToken);
+            else if (path.EndsWith("/start", StringComparison.Ordinal))
+            {
+                var content = Assert.IsAssignableFrom<HttpContent>(request.Content);
+                var preparation = await content.ReadFromJsonAsync<WorkerUpdatePreparation>(cancellationToken);
+                operation = await store.AdvanceWorkerUpdateAsync(worker, path.Split('/')[6], preparation?.Version, cancellationToken: cancellationToken);
+            }
+            else
+                operation = await store.AdvanceWorkerUpdateAsync(worker, path.Split('/')[6],
+                    fail: path.EndsWith("/fail", StringComparison.Ordinal), verified: path.EndsWith("/verified", StringComparison.Ordinal), cancellationToken: cancellationToken);
+            return operation is null ? new(HttpStatusCode.NoContent) : new(HttpStatusCode.OK) { Content = JsonContent.Create(operation) };
+        }
+    }
+
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Fact]
@@ -158,11 +263,13 @@ public sealed class WorkerUpdateTests
         Assert.False((await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
         if (restart)
         {
-            Assert.True(status.Recovery?.Eligible);
+            Assert.False(status.Recovery?.Eligible);
             Assert.False(status.Recovery?.RetryEligible);
-            Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
-            Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
-            // Preserve the original expectation as audit evidence; reconciliation dispatches nothing.
+            await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
+            Assert.Equal("failed", (await store.ReleaseWorkerRestartDrainAsync(worker, original.OperationId))?.State);
+            clock.Now += TimeSpan.FromSeconds(1);
+            await Heartbeat("1.1.0");
+            // Preserve the expected version and failed outcome as audit evidence.
             Assert.Equal("1.0.0", (await store.GetWorkerUpdateAsync(worker))?.ExpectedVersion);
         }
         else
@@ -186,7 +293,23 @@ public sealed class WorkerUpdateTests
             await Heartbeat("1.1.0");
             Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
         }
-        Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
+        if (restart)
+        {
+            // Polling delivers the release acknowledgement so the original process can
+            // clear its local restart fence without replaying the failed restart.
+            var released = Assert.IsType<WorkerUpdateOperation>(await store.AdvanceWorkerUpdateAsync(worker));
+            Assert.Equal(original.OperationId, released.OperationId);
+            Assert.Equal("failed", released.State);
+            Assert.NotNull(released.DrainReleasedAtUtc);
+            Assert.Equal(status.Diagnostic, released.Diagnostic);
+            var repeated = Assert.IsType<WorkerUpdateOperation>(await store.AdvanceWorkerUpdateAsync(worker));
+            Assert.Equal(released.OperationId, repeated.OperationId);
+            Assert.Equal(released.State, repeated.State);
+            Assert.Equal(released.DrainReleasedAtUtc, repeated.DrainReleasedAtUtc);
+            Assert.Equal(released.Diagnostic, repeated.Diagnostic);
+        }
+        else
+            Assert.Null(await store.AdvanceWorkerUpdateAsync(worker));
         Assert.Null((await store.GetWorkerAsync(worker))?.SchedulingBlocker);
         Assert.Equal(policy, (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
         Assert.Equal(policy == "Enabled", (await store.RequestAssignmentAsync(new(worker, true, 1, capacities))).HasWork);
@@ -365,6 +488,24 @@ public sealed class WorkerUpdateTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData("error", false)]
+    [InlineData("synchronized", true)]
+    public async Task RestartRejectsUnsynchronizedOrUnavailableExecutionCapabilities(string synchronization, bool unavailable)
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
+        await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2,
+            [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [],
+            ConfigurationSynchronization: synchronization, CapabilityInventory: unavailable ? [] : null, InstanceId: "original"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true));
+        Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
     public async Task RestartWaitsForIdleAndDifferentReadyInstanceWithoutVersionChange()
     {
@@ -372,8 +513,9 @@ public sealed class WorkerUpdateTests
         var clock = new Clock();
         var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
         WorkerCapability[] capabilities = [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)];
-        Task Heartbeat(string instance, int active = 0, string sync = "synchronized") => store.HeartbeatWorkerAsync(
-            new(2, worker, "1.0.0", "running", active, 2, capabilities, [], ConfigurationSynchronization: sync, InstanceId: instance));
+        Task Heartbeat(string instance, int active = 0, string sync = "synchronized", bool unavailable = false) => store.HeartbeatWorkerAsync(
+            new(2, worker, "1.0.0", "running", active, 2, capabilities, [], ConfigurationSynchronization: sync, InstanceId: instance,
+                CapabilityInventory: unavailable ? [] : null));
         await Heartbeat("original", 1);
         var id = Guid.NewGuid().ToString("N");
         var operation = await store.RequestWorkerUpdateAsync(worker, id, restart: true);
@@ -389,6 +531,9 @@ public sealed class WorkerUpdateTests
         Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
         await Heartbeat("replacement", sync: "error");
         Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
+        await Heartbeat("replacement", unavailable: true);
+        Assert.Equal("reconnecting", (await store.GetWorkerUpdateAsync(worker))?.State);
+        Assert.Equal("Draining", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
         await Heartbeat("replacement");
         Assert.Equal("succeeded", (await store.GetWorkerUpdateAsync(worker))?.State);
         Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
@@ -403,7 +548,7 @@ public sealed class WorkerUpdateTests
         var clock = new Clock();
         var (store, worker) = await Create(Path.Combine(temporary.Path, "registry.db"), clock);
         await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2,
-            [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [], InstanceId: "original"));
+            [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [], ConfigurationSynchronization: "synchronized", InstanceId: "original"));
         var operation = await store.RequestWorkerUpdateAsync(worker, Guid.NewGuid().ToString("N"), restart: true);
         clock.Now = operation.DeadlineUtc;
         Assert.Equal("failed", (await store.GetWorkerUpdateAsync(worker))?.State);
@@ -413,7 +558,8 @@ public sealed class WorkerUpdateTests
         await store.HeartbeatWorkerAsync(new(2, worker, "1.0.0", "running", 0, 2,
             [.. Capabilities, new("protocol", WorkerUpdateProtocol.RestartCapability)], [],
             ConfigurationSynchronization: "synchronized", InstanceId: "original"));
-        Assert.Equal("succeeded", (await store.ReconcileWorkerUpdateAsync(worker))?.State);
+        await Assert.ThrowsAsync<WorkerUpdateRecoveryException>(() => store.ReconcileWorkerUpdateAsync(worker));
+        Assert.Equal("failed", (await store.ReleaseWorkerRestartDrainAsync(worker, operation.OperationId))?.State);
         Assert.Equal("Enabled", (await store.GetWorkerAsync(worker))?.SchedulingPolicy);
     }
 

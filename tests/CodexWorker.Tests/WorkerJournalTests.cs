@@ -10,6 +10,23 @@ using Microsoft.Extensions.DependencyInjection;
 
 public sealed class WorkerJournalTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void ReaderReturnsBoundedRedactedTailAndExplicitPermissionFailure()
+    {
+        var result = WorkerJournalReader.FormatResult(new(0, "first\nsecond\ntoken=sensitive\n", ""), 2);
+        Assert.Equal("ready", result.State);
+        Assert.Equal(2, result.Lines.Count);
+        Assert.Equal("second", result.Lines[0]);
+        Assert.DoesNotContain("sensitive", result.Lines[1]);
+        Assert.Empty(WorkerJournalReader.FormatResult(new(0, "", ""), 100).Lines);
+        Assert.Equal("denied", WorkerJournalReader.FormatResult(new(1, "", "sudo: permission denied"), 100).State);
+        Assert.Equal("error", WorkerJournalReader.FormatResult(new(1, "", "service manager failed"), 100).State);
+        var bounded = WorkerJournalReader.FormatResult(new(0, new string('x', 2000), ""), 100);
+        Assert.True(WorkerJournalProtocol.Valid(bounded));
+    }
+
     private sealed class TemporaryDirectory : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"worker-journal-{Guid.NewGuid():N}");

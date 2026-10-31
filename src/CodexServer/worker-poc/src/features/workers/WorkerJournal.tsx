@@ -10,7 +10,7 @@ export function journalPath(workerId: string, refresh = false) {
 }
 export function journal(value: unknown): Journal {
   const item = value as Journal;
-  if (!item || !['pending', 'ready', 'unsupported', 'error', 'unavailable', 'busy'].includes(item.state) ||
+  if (!item || !['pending', 'ready', 'unsupported', 'denied', 'error', 'unavailable', 'busy'].includes(item.state) ||
     !Array.isArray(item.lines) || item.lines.length > 200 || item.lines.some(line => typeof line !== 'string' || line.length > 1000)) throw new Error('Invalid journal response.');
   return item;
 }
@@ -22,7 +22,7 @@ export function JournalContent({ data, error, timedOut = false }: { data?: Journ
     const message = data.state === 'unsupported' ? t('workers.journalUnsupported')
       : data.state === 'unavailable' ? t('workers.journalUnavailable')
         : data.state === 'busy' ? t('workers.journalBusy')
-          : data.state === 'error' ? t('workers.journalError') : t('workers.journalFailure');
+          : data.state === 'denied' ? t('workers.journalDenied') : data.state === 'error' ? t('workers.journalError') : t('workers.journalFailure');
     return <Notice error>{message}</Notice>;
   }
   if (!data.lines.length) return <p role="status">{t('workers.journalEmpty')}</p>;
@@ -52,7 +52,7 @@ function JournalRead({ workerId }: { workerId: string }) {
     if (!requestStarted || result.data?.state !== 'pending') return;
     const timer = setTimeout(() => setTimedOut(true), 80000);
     return () => clearTimeout(timer);
-  }, [requestStarted, result.data?.state, result.updatedAt]);
+  }, [requestStarted, result.data?.state]);
   useEffect(() => {
     if (!requestStarted || result.data?.state !== 'pending' || timedOut || refreshing) return;
     const timer = setTimeout(() => { void result.refetch(); }, 2000);

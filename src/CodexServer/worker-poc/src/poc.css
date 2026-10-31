@@ -205,7 +205,7 @@ body { margin: 0; background: var(--color-bg-primary); color: var(--color-text-p
 .poc-service-heading .text-sm { font-size: 11px; }
 .poc-service-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--color-border-secondary); padding-top: 10px; color: var(--color-text-tertiary); font-size: 10px; line-height: 15px; }
 .poc-service-tile .poc-service-heading .inline-flex { min-height: 20px; }
-.poc-worker-lower-grid { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 24px; margin-top: 24px; }
+.poc-worker-lower-grid { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 24px; margin-top: 24px; }
 .poc-worker-technical-column { display: grid; min-width: 0; align-content: start; gap: 16px; }
 .poc-technical-panel { min-width: 0; }
 .poc-technical-caption { color: var(--color-text-tertiary); font-size: 10px; }

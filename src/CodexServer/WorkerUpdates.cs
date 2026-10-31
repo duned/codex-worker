@@ -144,8 +144,9 @@ public sealed partial class SqliteRegistryStore
         if (operation is { State: "updating", StartedAtUtc: not null } && heartbeat is not null && seen > operation.StartedAtUtc &&
             (heartbeat.WorkerVersion == operation.ExpectedVersion || heartbeat.LifecycleState == WorkerLifecycleStates.Stopped))
             operation = operation with { State = "reconnecting" };
-        if (operation is { State: "updating" or "reconnecting", ExpectedVersion: not null, StartedAtUtc: not null, InstallerVerified: true } && (!operation.Restart || action == "reconcile" || !string.IsNullOrEmpty(heartbeat?.InstanceId) && heartbeat.InstanceId != operation.OriginalInstanceId) && fresh && seen > operation.StartedAtUtc &&
-            (heartbeat?.WorkerVersion == operation.ExpectedVersion || action == "reconcile" && operation.Restart) && heartbeat?.LifecycleState == WorkerLifecycleStates.Running &&
+        if (operation is { State: "updating" or "reconnecting", ExpectedVersion: not null, StartedAtUtc: not null, InstallerVerified: true } && (!operation.Restart || !string.IsNullOrEmpty(heartbeat?.InstanceId) && heartbeat.InstanceId != operation.OriginalInstanceId) && idle && seen > operation.StartedAtUtc &&
+            heartbeat?.WorkerVersion == operation.ExpectedVersion && heartbeat?.LifecycleState == WorkerLifecycleStates.Running &&
+            (heartbeat.CapabilityInventory is null || CapabilityCatalog.ExecutionReadiness(heartbeat.CapabilityInventory).Available) &&
             heartbeat.ConfigurationSynchronization == "synchronized" && heartbeat.ContractVersion is 1 or 2 &&
             (operation.RequiredCapabilities ?? []).All(required => heartbeat.Capabilities.Any(current =>
                  $"{current.Type}/{current.Name}/{current.Scope}" == required)))
@@ -159,11 +160,15 @@ public sealed partial class SqliteRegistryStore
                 command.Parameters.RemoveAt("$policy");
             }
         }
-        if ((action is "request" or "restart") && (operation is null || operation.State == "succeeded" && operation.OperationId != operationId))
+        if ((action is "request" or "restart") && (operation is null || (operation.State == "succeeded" || operation is { Restart: true, State: "failed", DrainReleasedAtUtc: not null }) && operation.OperationId != operationId))
         {
             if (!fresh || heartbeat is null || heartbeat.LifecycleState is not (WorkerLifecycleStates.Running or WorkerLifecycleStates.NotReady or WorkerLifecycleStates.Ready or WorkerLifecycleStates.Draining or WorkerLifecycleStates.DrainRequested or WorkerLifecycleStates.Drained) || !WorkerUpdateProtocol.ValidVersion(heartbeat.WorkerVersion) ||
                 !heartbeat.Capabilities.Any(c => c.Type == "protocol" && c.Name == (action == "restart" ? WorkerUpdateProtocol.RestartCapability : WorkerUpdateProtocol.Capability)))
                 throw new InvalidOperationException("worker-update-unavailable");
+            if (action == "restart" && (heartbeat.ConfigurationSynchronization != "synchronized" ||
+                heartbeat.LifecycleState != WorkerLifecycleStates.Running ||
+                heartbeat.CapabilityInventory is { } restartInventory && !CapabilityCatalog.ExecutionReadiness(restartInventory).Available))
+                throw new InvalidOperationException("worker-restart-unavailable");
             var originallyDraining = heartbeat.LifecycleState is WorkerLifecycleStates.Draining or WorkerLifecycleStates.DrainRequested or WorkerLifecycleStates.Drained;
             var prior = originallyDraining && policy == WorkerSchedulingPolicy.Enabled ? WorkerSchedulingPolicy.Draining : policy;
             operation = new(operationId ?? throw new InvalidDataException("operation-id-required"), workerId,
@@ -212,7 +217,7 @@ public sealed partial class SqliteRegistryStore
             await command.ExecuteNonQueryAsync(ct);
         }
         await transaction.CommitAsync(ct);
-        return action == "poll" && (operation?.State is not ("waiting-for-idle" or "updating" or "reconnecting") || !idle) ? null : operation;
+        return action == "poll" && operation is not { Restart: true, State: "failed", DrainReleasedAtUtc: not null } && (operation?.State is not ("waiting-for-idle" or "updating" or "reconnecting") || !idle) ? null : operation;
     }
     private static WorkerUpdateRecovery RecoveryReadiness(WorkerUpdateOperation? operation,
         WorkerHeartbeatRequest? heartbeat, DateTimeOffset seen, bool fresh, int assignments, int leases, DateTimeOffset now)
@@ -222,12 +227,14 @@ public sealed partial class SqliteRegistryStore
             new("failed-operation", operation?.State == "failed", "Operation has failed or timed out.", "Wait for the operation to finish or its deadline; inspect the service and journal."),
             new("fresh-heartbeat", fresh, "Worker heartbeat is fresh.", "Restore the Worker connection and wait for a new heartbeat."),
             new("running-lifecycle", heartbeat?.LifecycleState == WorkerLifecycleStates.Running, "Worker lifecycle is running.", "Inspect the Worker service and resolve its lifecycle state."),
+            new("execution-readiness", heartbeat is not null && (heartbeat.CapabilityInventory is null || CapabilityCatalog.ExecutionReadiness(heartbeat.CapabilityInventory).Available), "Execution capabilities are ready.", "Resolve execution capability checks before reconciling this operation."),
             new("configuration-synchronized", heartbeat?.ConfigurationSynchronization == "synchronized", "Managed configuration is synchronized.", "Resolve configuration errors and wait for synchronization."),
-            new("expected-version", heartbeat is not null && (operation?.Restart == true ? WorkerUpdateProtocol.ValidVersion(heartbeat.WorkerVersion) : heartbeat.WorkerVersion == (operation?.ExpectedVersion ?? operation?.OriginalVersion)),
-                operation?.Restart == true ? "Running version can be explicitly reconciled for this restart." : "Worker reports the expected version.",
+            new("restart-instance", operation?.Restart != true || !string.IsNullOrEmpty(heartbeat?.InstanceId) && heartbeat.InstanceId != operation.OriginalInstanceId, "A replacement Worker instance has reconnected.", "Use Release restart drain to retain the failed restart outcome when no replacement instance was verified."),
+            new("expected-version", heartbeat is not null && heartbeat.WorkerVersion == (operation?.ExpectedVersion ?? operation?.OriginalVersion),
+                "Worker reports the expected version.",
                 $"Expected {operation?.ExpectedVersion ?? "unavailable"}; original {operation?.OriginalVersion ?? "unavailable"}; reported {heartbeat?.WorkerVersion ?? "unavailable"}. " +
                 (operation?.Restart == true
-                    ? "Restore a supported stable Worker version, then refresh and explicitly reconcile the running version."
+                    ? "Use Release restart drain to retain the failed outcome if the expected restart version cannot be verified."
                     : "Use Retry managed update when available. Otherwise, after confirming the updater is quiescent, use the documented versioned Worker installer for the expected release, then refresh and reconcile.")),
             new("supported-protocol", heartbeat?.ContractVersion is 1 or 2, "Worker protocol is supported.", "Install a Worker release supporting the Server protocol, then refresh recovery checks."),
             new("no-active-assignments", assignments == 0, "No active Server assignments.", "Allow assigned work to finish or reconcile it through execution recovery."),

@@ -44,8 +44,9 @@ paused and the operation retains a diagnostic. Inspect `systemctl status codex-w
 and `journalctl -u codex-worker` on the node. After checking that service-manager
 operations are quiescent and the Worker is healthy, use the existing
 [explicit operation reconciliation](worker-dashboard-updates.md#recovery) endpoint;
-it acknowledges readiness without dispatching another restart. If restart itself
-failed, reconcile the healthy original instance after inspection before retrying.
+it acknowledges readiness without dispatching another restart. Reconciliation requires a replacement instance reporting the expected version;
+the original instance cannot prove a successful restart. Use drain release below
+to retain the failure and recover a failed dispatch.
 
 ### Abandon a failed restart's Server drain
 
@@ -65,9 +66,9 @@ released operation return its retained result. A different current operation rej
 the request. The failed state, diagnostic and release timestamp remain inspectable;
 late acknowledgements cannot change it to success. No completion effects are replayed.
 
-This is separate from reconciling a healthy Worker or recovering its service.
-The Worker observation is unchanged: an unavailable/draining lifecycle remains
-unavailable for assignment. Only a subsequent fresh running heartbeat and normal
+The Worker consumes this acknowledgement only for its own failed restart operation
+and releases its local maintenance fence into not-ready. The Server does not change
+the Worker observation or mark the restart successful. Only a subsequent fresh running heartbeat and normal
 execution readiness checks permit assignment. Other eligible Workers remain usable.
 
 ### Failure path corrected
@@ -83,3 +84,19 @@ The handler now checks authorization before mutating the local drain/lifecycle.
 An actual dispatch failure still retains the local fence for inspection. Without
 node diagnostics, this code defect does not establish which failure happened on a
 particular deployed node; the new Server-only release works safely for either case.
+
+### Managed handoff and recovery reliability
+
+An acknowledged systemd restart can cancel the old process while its service-manager
+command is returning. Requested shutdown now preserves the handoff instead of
+reporting restart failure. Success requires a fresh idle replacement instance, the
+expected version, synchronized configuration, execution readiness and retained
+capabilities before restoring the operation-owned scheduling policy. A failed
+dispatch stays failed after drain release; local admission opens only after the
+host rechecks readiness. A new restart may then be requested with a new operation ID.
+
+Journal reads use a fixed, installer-allowlisted privileged command scoped to
+`codex-worker.service`, fetching at most 200 lines and returning the latest 100 by
+default. Output is bounded and redacted; permission denial has a distinct dashboard
+message. Existing installations need the updated installer privilege policy for
+this journal access. No arbitrary journal unit or command is accepted.

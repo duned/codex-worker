@@ -171,6 +171,21 @@ public sealed class ProjectRuntimeRegistry
         }
     }
 
+    internal bool TryReleaseFailedRestart()
+    {
+        lock (_gate)
+        {
+            if (WorkerActive != 0 || Lifecycle.Snapshot.State is not ("restart-failed" or "restarting")) return false;
+            _maintenance = false;
+            // Admission stays closed until the host rechecks current execution readiness.
+            Lifecycle.RestoreMaintenanceDrain(new(ApplicationVersion.Display, "not-ready", false, 0,
+                null, "Execution readiness must be checked after restart recovery."), 0);
+            Lifecycle.SetExecutionReadiness(false, "Execution readiness must be checked after restart recovery.");
+            SignalChanged();
+            return true;
+        }
+    }
+
     internal bool TryPrepareRestart()
     {
         lock (_gate)

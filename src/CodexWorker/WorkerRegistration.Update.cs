@@ -6,6 +6,8 @@ using System.Net.Http.Json;
 
 public sealed partial class WorkerRegistrationClient
 {
+    private string? _managedRestartId;
+
     private static bool RestartSupported => OperatingSystem.IsLinux() &&
         string.Equals(Environment.ProcessPath, "/opt/codex-worker/CodexWorker", StringComparison.Ordinal);
     private static bool SelfUpdateSupported => OperatingSystem.IsLinux() &&
@@ -13,9 +15,15 @@ public sealed partial class WorkerRegistrationClient
         string.Equals(Environment.ProcessPath, "/opt/codex-worker/CodexWorker", StringComparison.Ordinal) &&
         File.Exists("/usr/local/libexec/codex-worker-self-update");
     internal async Task<bool> ExecuteWorkerUpdateAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
-        WorkerRuntimeReadModel runtime, CancellationToken ct)
+        WorkerRuntimeReadModel runtime, CancellationToken ct) =>
+        await ExecuteWorkerUpdateAsync(settings, policy, runtime, RestartSupported, RunUpdateControlAsync, ct);
+
+    // The service boundary is injected for deterministic handoff/shutdown regression coverage.
+    internal async Task<bool> ExecuteWorkerUpdateAsync(WorkerServerSettings settings, ProvisioningPolicy policy,
+        WorkerRuntimeReadModel runtime, bool restartSupported,
+        Func<string, string[], TimeSpan, CancellationToken, Task<ProcessResult>> runControl, CancellationToken ct)
     {
-        if (!SelfUpdateSupported && !RestartSupported) return false;
+        if (!SelfUpdateSupported && !restartSupported) return false;
         var worker = await LoadRegisteredIdentityAsync(settings, ct);
         using var request = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{worker}/update/request");
         using var response = await SendAsync(request, ct);
@@ -23,6 +31,17 @@ public sealed partial class WorkerRegistrationClient
         response.EnsureSuccessStatusCode();
         var operation = await response.Content.ReadFromJsonAsync<WorkerUpdateOperation>(cancellationToken: ct)
             ?? throw new InvalidDataException("Empty Worker update command.");
+        // Consume the existing explicit dashboard recovery acknowledgement only for the
+        // failed restart owned by this process. A released Server fence is not restart success.
+        if (operation.WorkerId == worker && operation is { Restart: true, State: "failed", DrainReleasedAtUtc: not null })
+        {
+            if (operation.OperationId == _managedRestartId)
+            {
+                runtime.State = WorkerLifecycleStates.NotReady;
+                if (runtime.Registry.TryReleaseFailedRestart()) _managedRestartId = null;
+            }
+            return false;
+        }
         if (operation.WorkerId != worker || !WorkerUpdateProtocol.ValidId(operation.OperationId) ||
             operation.State is not ("waiting-for-idle" or "updating" or "reconnecting") || operation.DeadlineUtc <= DateTimeOffset.UtcNow)
             throw new InvalidDataException("Invalid Worker update command.");
@@ -46,7 +65,11 @@ public sealed partial class WorkerRegistrationClient
         var localDrainStarted = false;
         async Task<bool> RecordFailureAsync()
         {
-            if (localDrainStarted && operation.Restart) runtime.Lifecycle.RecordRestartFailure("Inspect codex-worker.service status and journal before retrying.");
+            if (localDrainStarted && operation.Restart)
+            {
+                _managedRestartId = operation.OperationId;
+                runtime.Lifecycle.RecordRestartFailure("Inspect codex-worker.service status and journal before retrying.");
+            }
             else if (localDrainStarted) runtime.Lifecycle.RecordUpdateResult("Inspect service status and the codex-worker-self-update journal before retrying.", false);
             if (!ct.IsCancellationRequested)
             {
@@ -58,7 +81,7 @@ public sealed partial class WorkerRegistrationClient
         }
         try
         {
-            if (!(operation.Restart ? RestartSupported : SelfUpdateSupported) ||
+            if (!(operation.Restart ? restartSupported : SelfUpdateSupported) ||
                 !TryDrainForWorkerUpdate(runtime.Registry, policy, operation.Restart))
                 return await RecordFailureAsync();
             localDrainStarted = true;
@@ -82,6 +105,7 @@ public sealed partial class WorkerRegistrationClient
             if (operation.Restart)
             {
                 if (!runtime.Registry.TryPrepareRestart()) throw new InvalidOperationException("Worker restart drain reservation is unavailable.");
+                _managedRestartId = operation.OperationId;
             }
             else runtime.Lifecycle.BeginUpdate();
             if (operation.Restart)
@@ -92,12 +116,18 @@ public sealed partial class WorkerRegistrationClient
                 using var acknowledgement = await SendAsync(verified, ct);
                 acknowledgement.EnsureSuccessStatusCode();
             }
-            var launched = await RunUpdateControlAsync("/usr/bin/sudo", operation.Restart ? ["-n", "/usr/bin/systemctl", "--no-block", "restart", "codex-worker.service"] : ["-n", "/usr/local/libexec/codex-worker-self-update"],
+            var launched = await runControl("/usr/bin/sudo", operation.Restart ? ["-n", "/usr/bin/systemctl", "--no-block", "restart", "codex-worker.service"] : ["-n", "/usr/local/libexec/codex-worker-self-update"],
                 TimeSpan.FromSeconds(30), ct);
             if (launched.ExitCode != 0) throw new InvalidOperationException(operation.Restart ? "Service-manager restart request failed." : "Update helper failed.");
             runtime.Events.Publish(operation.Restart ? "worker.restarting" : "worker.updating",
                 operation.Restart ? "Worker restart requested; waiting for a new ready instance." : "Worker self-update started; waiting for restart and readiness.");
             return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // systemd stops this process as part of an acknowledged restart. Preserve the
+            // handoff for Server verification rather than reporting shutdown as failure.
+            throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception or OperationCanceledException or ProcessTimeoutException)
         {

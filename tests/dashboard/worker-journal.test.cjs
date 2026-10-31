@@ -13,6 +13,7 @@ test('journal loading, empty, unavailable and error states are readable', () => 
   assert.match(render({}), /Loading recent/);
   assert.match(render({ data: { state: 'ready', lines: [] } }), /No journal entries/);
   assert.match(render({ data: { state: 'unsupported', lines: [] } }), /systemd/);
+  assert.match(render({ data: journal({ state: 'denied', lines: [] }) }), /privilege policy/);
   assert.match(render({ data: { state: 'unavailable', lines: [] } }), /unavailable/);
   assert.match(render({ error: 'Retrieval failed' }), /Retrieval failed/);
   assert.match(render({ timedOut: true }), /did not respond/);

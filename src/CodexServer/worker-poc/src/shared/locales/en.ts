@@ -66,6 +66,7 @@ export const en = {
   "workers.journalUnsupported": "Journal is supported only for the packaged Linux systemd Worker service.",
   "workers.journalUnavailable": "Worker is unavailable.",
   "workers.journalBusy": "Journal retrieval is busy. Try again.",
+  "workers.journalDenied": "Journal access was denied. Update the installed Worker service privilege policy using the supported Worker installer, then retry.",
   "workers.journalError": "Could not read the Worker journal. Check service journal permissions.",
   "workers.journalFailure": "Journal retrieval failed.",
   "workers.journalEmpty": "No journal entries.",

@@ -67,6 +67,7 @@ export const es = {
   "workers.journalUnsupported": "El registro solo está disponible para el servicio Worker systemd empaquetado en Linux.",
   "workers.journalUnavailable": "El Worker no está disponible.",
   "workers.journalBusy": "La lectura del registro está ocupada. Inténtalo de nuevo.",
+  "workers.journalDenied": "Acceso al registro denegado. Actualiza la política de privilegios con el instalador del Worker y vuelve a intentarlo.",
   "workers.journalError": "No se pudo leer el registro del Worker. Comprueba los permisos del registro del servicio.",
   "workers.journalFailure": "Falló la lectura del registro.",
   "workers.journalEmpty": "No hay entradas en el registro.",
