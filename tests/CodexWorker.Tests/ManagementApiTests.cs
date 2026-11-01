@@ -11,6 +11,32 @@ namespace CodexWorker.Tests;
 
 public sealed class ManagementApiTests
 {
+    [Fact]
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    public async Task UninspectedRecoveryIsQueuedAndManagedHistoryIsExcluded()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var history = new ExecutionHistoryStore(Path.Combine(directory, "history.db"));
+            var id = Guid.NewGuid();
+            var source = new ExecutionHistoryEntry(id, "sample", "owner/repo", 432, "Interrupted task", "feature/432", "main",
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "Cancelled", null, null, "failed or interrupted", 1, [],
+                null, null, null, "Worker shutdown", RecoveryState: "uncertain");
+            await history.CreateAsync(source);
+            await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), ServerExecutionId = "managed", OwnershipGeneration = 1 });
+            var model = new WorkerRuntimeReadModel(new GlobalWorkerConfiguration(), [], history);
+            var page = await model.StandaloneRecoveryDiagnosticsAsync(432, null, null, 10, 0, CancellationToken.None);
+            var queued = Assert.Single(page.Items);
+            Assert.Equal("queued-for-review", queued.ReasonCode);
+            Assert.Equal("queued", queued.CheckStatus);
+            Assert.Null(queued.LastInspectedAtUtc);
+            Assert.Null(queued.NextEligibleAtUtc);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]

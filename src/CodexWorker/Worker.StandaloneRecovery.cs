@@ -2,34 +2,39 @@ namespace CodexWorker;
 
 public sealed partial class Worker
 {
-    private const int MaxStandaloneRecoveryChecksPerStart = 3;
+    private const int MaxStandaloneRecoveryChecksPerMinute = 3;
     private static readonly HashSet<string> ExpectedStandaloneBlockers = new(StringComparer.Ordinal)
     {
         "issue-execution-active", "another-attempt-or-recovery-active", "newer-or-completed-attempt-exists",
-        "process-inspection-unavailable", "process-scope-changed", "workspace-process-active",
+        "process-inspection-unavailable", "process-scope-missing", "process-scope-unreadable", "relevant-process-unreadable", "process-scope-changed", "workspace-process-active",
         "workspace-owner-history-inconsistent", "issue-no-longer-eligible", "remote-integration-ambiguous",
         "issue-no-longer-open", "uncommitted-work-cannot-be-safely-retired", "retry-requires-ready-label",
         "integration-or-ownership-metadata-unproven", "preparation-workspace-ownership-unproven",
         "authoritative-base-unavailable", "preparation-resources-unproven", "retirement-receipt-invalid",
-        "recovery-inspection-budget-exhausted",
+        "recovery-inspection-budget-exhausted", "retirement-already-started", "execution-infrastructure-failure",
+        "original-issue-intent-changed", "execution-profile-unproven", "recovery-configuration-changed", "implementation-checkpoint-unproven",
         "owned-workspace-missing", "workspace-head-invalid", "worktree-repository-mismatch",
         "authoritative-remote-unavailable", "original-base-not-on-authoritative-remote", "workspace-history-diverged",
         "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable",
         "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete"
     };
-    private readonly Dictionary<Guid, (DateTimeOffset Next, int Attempts, string? Diagnostic)> _standaloneChecks = [];
-    private readonly HashSet<Guid> _standaloneInspectedThisStart = [];
-    private int _standaloneRecoveryChecksThisStart;
+    private readonly Dictionary<Guid, (DateTimeOffset Next, string? Diagnostic)> _standaloneChecks = [];
+    private DateTimeOffset _standaloneBudgetReset;
+    private int _standaloneRecoveryChecks;
     private bool _standaloneBlockerSummaryEmitted;
 
-    private bool OwnsStandaloneHistory(ExecutionHistoryEntry entry) => serverSettings?.Enabled != true &&
+    private static bool OwnsStandaloneHistory(ExecutionHistoryEntry entry) =>
         entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null &&
         entry.RecoveryState is not ("operator-acknowledged" or "managed-completion-quarantined");
 
-    internal bool HandlesStandaloneRecovery(ExecutionHistoryEntry entry) => OwnsStandaloneHistory(entry) &&
-        (IsStandaloneInterruption(entry) || entry.CompletionJson is not null && !ExecutionCompletion.IsSettled(entry));
+    internal bool HandlesStandaloneRecovery(ExecutionHistoryEntry entry) => serverSettings?.Enabled != true && IsStandaloneRecoveryHistory(entry);
 
-    internal bool IsStandaloneInterruption(ExecutionHistoryEntry entry) => OwnsStandaloneHistory(entry) &&
+    internal static bool IsStandaloneRecoveryHistory(ExecutionHistoryEntry entry) => OwnsStandaloneHistory(entry) &&
+        (IsStandaloneInterruptionHistory(entry) || entry.CompletionJson is not null && !ExecutionCompletion.IsSettled(entry));
+
+    internal bool IsStandaloneInterruption(ExecutionHistoryEntry entry) => serverSettings?.Enabled != true && IsStandaloneInterruptionHistory(entry);
+
+    private static bool IsStandaloneInterruptionHistory(ExecutionHistoryEntry entry) => OwnsStandaloneHistory(entry) &&
         entry.CompletionJson is null && entry.State is not ("Completed" or "Failed" or "Blocked" or "Superseded" or "IntegrationConflict") &&
         entry.RecoveryState is not ("standalone-retired" or "operator-acknowledged") &&
         (entry.RecoveryState is "standalone-continuing" or "standalone-retiring" ||
@@ -40,37 +45,26 @@ public sealed partial class Worker
     private async Task<Task<IssueProcessingResult?>?> ClaimStandaloneInterruptionAsync(CancellationToken ct)
     {
         if (history is null || serverSettings?.Enabled == true) return null;
+        var now = _clock.GetUtcNow();
+        if (now >= _standaloneBudgetReset)
+        {
+            _standaloneRecoveryChecks = 0;
+            _standaloneBudgetReset = now.AddMinutes(1);
+        }
+        if (_standaloneRecoveryChecks >= MaxStandaloneRecoveryChecksPerMinute) return null;
         var entries = await history.ReadAllAsync(ct);
         foreach (var source in entries.Where(entry => entry.Project == config.Project.Name &&
                      entry.Repository == config.Project.Repository && HandlesStandaloneRecovery(entry))
-                 .OrderBy(RecoveryInspectionPriority).ThenBy(RecoveryDiagnosticAge)
-                 .ThenBy(entry => entry.StartedAtUtc).ThenBy(entry => entry.ExecutionId))
+                 .OrderBy(RecoveryDiagnosticAge)
+                 .ThenByDescending(entry => entry.StartedAtUtc).ThenBy(entry => entry.ExecutionId))
         {
-            if (_standaloneRecoveryChecksThisStart >= MaxStandaloneRecoveryChecksPerStart)
-            {
-                if (!_standaloneInspectedThisStart.Contains(source.ExecutionId))
-                    await ReportStandaloneBlockerAsync(source, "recovery-inspection-budget-exhausted", ct,
-                        "The startup recovery inspection budget was exhausted before this retained execution could be checked. It remains preserved; restart after earlier candidates are reconciled or inspect this execution.");
-                continue;
-            }
-            if (_activeIssues.ContainsKey(source.IssueNumber))
-            {
-                await ReportStandaloneBlockerAsync(source, "issue-execution-active", ct);
-                continue;
-            }
-            // A bounded read-only campaign per runtime. Restarts re-read authoritative evidence;
-            // no failed inspection authorizes cleanup, replay, or a generic implementation retry.
+            if (_standaloneRecoveryChecks >= MaxStandaloneRecoveryChecksPerMinute) break;
+            if (RecoveryNextEligibility(source) > now) continue;
+            // Bound read-only recovery independently of normal execution capacity.
             var check = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
-            if (check.Attempts >= 3)
-            {
-                await ReportStandaloneBlockerAsync(source, "recovery-check-attempt-limit", ct,
-                    "The bounded read-only recovery checks for this execution were exhausted during this Worker start. Its evidence remains preserved for a later start or manual inspection.");
-                continue;
-            }
-            if (check.Next > _clock.GetUtcNow()) continue;
-            _standaloneRecoveryChecksThisStart++;
-            _standaloneInspectedThisStart.Add(source.ExecutionId);
-            _standaloneChecks[source.ExecutionId] = (_clock.GetUtcNow().AddMinutes(1), check.Attempts + 1, check.Diagnostic);
+            if (check.Next > now) continue;
+            _standaloneRecoveryChecks++;
+            _standaloneChecks[source.ExecutionId] = (now.AddHours(1), check.Diagnostic);
             if (!_activeIssues.TryAdd(source.IssueNumber, 0))
             {
                 await ReportStandaloneBlockerAsync(source, "issue-execution-active", ct);
@@ -89,6 +83,18 @@ public sealed partial class Worker
                 if (related.Any(other => other.AttemptNumber >= source.AttemptNumber || other.StartedAtUtc >= source.StartedAtUtc || other.State == "Completed"))
                 {
                     await ReportStandaloneBlockerAsync(source, "newer-or-completed-attempt-exists", ct);
+                    continue;
+                }
+                // Remote eligibility is a continuation filter, never deletion or
+                // integration proof. Closed/done histories retain all local evidence.
+                var remote = await github.ReadIssueStateAsync(source.IssueNumber, ct);
+                bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
+                if (source.CompletionJson is null && (!remote.IsOpen ||
+                        !Has(config.GitHub.ReadyLabel) && !Has(config.GitHub.WorkingLabel) ||
+                        Has(config.GitHub.DoneLabel) || Has(config.GitHub.BlockedLabel) || Has(config.GitHub.FailedLabel)) ||
+                    source.CompletionJson is not null && !remote.IsOpen && Has(config.GitHub.DoneLabel))
+                {
+                    await ReportStandaloneBlockerAsync(source, "issue-no-longer-eligible", ct);
                     continue;
                 }
                 if (source.CompletionJson is not null)
@@ -114,14 +120,6 @@ public sealed partial class Worker
                 await _repositoryGate.WaitAsync(ct);
                 try
                 {
-                    var remote = await github.ReadIssueStateAsync(source.IssueNumber, ct);
-                    bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
-                    if (!remote.IsOpen || !Has(config.GitHub.ReadyLabel) && !Has(config.GitHub.WorkingLabel) ||
-                        Has(config.GitHub.DoneLabel) || Has(config.GitHub.BlockedLabel) || Has(config.GitHub.FailedLabel))
-                    {
-                        await ReportStandaloneBlockerAsync(source, "issue-no-longer-eligible", ct);
-                        continue;
-                    }
                     var inspection = await git.InspectInterruptedExecutionAsync(source, ct);
                     if (inspection.Blocker is not null || !inspection.NotIntegrated)
                     {
@@ -144,16 +142,19 @@ public sealed partial class Worker
                                 : $"Legacy recovery proof failed: {legacyReview}. Preserve the worktree; automatic resume and retirement are blocked.");
                         continue;
                     }
-                    var canContinue = source.RecoveryState != "standalone-retiring" && source.State != "InfrastructureFailure" &&
-                        source.OriginalIssueBody == issue.Body && source.IssueTitle == issue.Title &&
-                        source.EffectiveEffort is ("low" or "medium" or "high" or "xhigh") &&
-                        (source.EffectiveModel is null || System.Text.RegularExpressions.Regex.IsMatch(source.EffectiveModel,
-                            "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)) &&
-                        (inspection.NoWorkspace || source.CodexRecovery is { ResumeCount: >= 0 } snapshot &&
-                            snapshot.ConfigurationFingerprint == CodexInterruptionRecovery.Fingerprint(config) &&
-                            (snapshot.ImplementationSucceeded == true || snapshot.ImplementationSucceeded is null &&
-                                source.ValidationOutcome == "passed"));
-                    if (canContinue)
+                    var continuationBlocker = source.RecoveryState == "standalone-retiring" ? "retirement-already-started" :
+                        source.State == "InfrastructureFailure" ? "execution-infrastructure-failure" :
+                        source.OriginalIssueBody != issue.Body || source.IssueTitle != issue.Title ? "original-issue-intent-changed" :
+                        source.EffectiveEffort is not ("low" or "medium" or "high" or "xhigh") ||
+                        source.EffectiveModel is not null && !System.Text.RegularExpressions.Regex.IsMatch(source.EffectiveModel,
+                            "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+                            ? "execution-profile-unproven" :
+                        !inspection.NoWorkspace && source.CodexRecovery?.ConfigurationFingerprint != CodexInterruptionRecovery.Fingerprint(config)
+                            ? "recovery-configuration-changed" :
+                        !inspection.NoWorkspace && !(source.CodexRecovery is { ResumeCount: >= 0 } snapshot &&
+                            (snapshot.ImplementationSucceeded == true || snapshot.ImplementationSucceeded is null && source.ValidationOutcome == "passed"))
+                            ? "implementation-checkpoint-unproven" : null;
+                    if (continuationBlocker is null)
                     {
                         var legacyValidation = CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config);
                         var continuation = source with
@@ -168,6 +169,11 @@ public sealed partial class Worker
                         };
                         var execution = WorkerExecution.Continue(continuation, config, issue);
                         if (!await history.TryTransitionStandaloneAsync(continuation, "standalone-continuing", inspection, ct)) continue;
+                        var resumedDiagnostic = new StandaloneRecoveryDiagnostic(source.ExecutionId, source.IssueNumber,
+                            "preserved-work-continuation", "Ownership, Issue and workspace checks authorized continuation through normal validation.",
+                            "resumed", _clock.GetUtcNow());
+                        await history.SaveStandaloneRecoveryDiagnosticAsync(source.ExecutionId,
+                            System.Text.Json.JsonSerializer.Serialize(resumedDiagnostic), ct);
                         // Keep the same execution identity. The runner rechecks ownership and
                         // validates the preserved source through the normal integration pipeline.
                         await github.ReplaceLabelAsync(issue.Number, config.GitHub.ReadyLabel, config.GitHub.WorkingLabel, ct);
@@ -180,7 +186,7 @@ public sealed partial class Worker
                     }
                     if (!Has(config.GitHub.ReadyLabel) || inspection.HasChanges)
                     {
-                        await ReportStandaloneBlockerAsync(source, inspection.HasChanges ? "uncommitted-work-cannot-be-safely-retired" : "retry-requires-ready-label", ct);
+                        await ReportStandaloneBlockerAsync(source, continuationBlocker ?? (inspection.HasChanges ? "uncommitted-work-cannot-be-safely-retired" : "retry-requires-ready-label"), ct);
                         continue;
                     }
                     // Persist intent before cleanup so interruption between removal and the
@@ -230,24 +236,14 @@ public sealed partial class Worker
         return null;
     }
 
-    private static int RecoveryInspectionPriority(ExecutionHistoryEntry entry)
-    {
-        if (entry.StandaloneRecoveryDiagnosticJson is null) return 1;
-        try
-        {
-            var diagnostic = System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson);
-            return diagnostic?.ReasonCode == "recovery-inspection-budget-exhausted" ? 0 : 2;
-        }
-        catch (System.Text.Json.JsonException) { return 1; }
-    }
-
     private static DateTimeOffset RecoveryDiagnosticAge(ExecutionHistoryEntry entry)
     {
         if (entry.StandaloneRecoveryDiagnosticJson is null) return DateTimeOffset.MinValue;
         try
         {
             var diagnostic = System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson);
-            return diagnostic?.CheckedAtUtc ?? DateTimeOffset.MinValue;
+            return diagnostic?.ReasonCode == "recovery-inspection-budget-exhausted"
+                ? DateTimeOffset.MinValue : diagnostic?.CheckedAtUtc ?? DateTimeOffset.MinValue;
         }
         catch (System.Text.Json.JsonException) { return DateTimeOffset.MinValue; }
     }
@@ -258,6 +254,15 @@ public sealed partial class Worker
         var reasonCode = knownCode ? reason : "recovery-check-failed";
         explanation ??= reasonCode switch
         {
+            "original-issue-intent-changed" => "Current Issue title/body differs from the original execution intent.",
+            "execution-profile-unproven" => "The retained execution model/effort profile is missing or invalid.",
+            "recovery-configuration-changed" => "Current configuration does not match the retained workspace fingerprint.",
+            "implementation-checkpoint-unproven" => "History does not prove implementation completed with a valid continuation checkpoint.",
+            "execution-infrastructure-failure" => "The original execution records an infrastructure failure; standalone validation continuation is not authorized.",
+            "process-scope-unreadable" => "A live process has unreadable cgroup evidence; the Worker cannot prove it is outside the owned execution scope.",
+            "process-scope-missing" => "No historical Linux process scope or joined-child shutdown proof is available. Preserve the workspace.",
+            "relevant-process-unreadable" => "A potentially owned live process has an unreadable workspace link. Preserve the workspace and inspect service process permissions.",
+            "process-scope-changed" => "The Worker cgroup differs from the recorded execution scope and no joined-child shutdown proof exists.",
             "process-inspection-unavailable" => "The Worker could not safely inspect processes associated with the retained workspace.",
             "issue-no-longer-eligible" => "The Issue is no longer eligible for automatic recovery.",
             _ when !knownCode => reason,
@@ -266,11 +271,11 @@ public sealed partial class Worker
         explanation = FailureDiagnosticRedactor.Redact(explanation, config.Environment.Variables.Values.ToArray());
         if (explanation.Length > 500) explanation = explanation[..500];
         var previous = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
-        if (previous.Diagnostic == reasonCode || reasonCode == "recovery-inspection-budget-exhausted" &&
-            HasStandaloneDiagnostic(source, reasonCode)) return;
+        if (previous.Next <= _clock.GetUtcNow()) previous.Next = _clock.GetUtcNow().AddHours(1);
+
         _standaloneChecks[source.ExecutionId] = previous with { Diagnostic = reasonCode };
         var diagnostic = new StandaloneRecoveryDiagnostic(source.ExecutionId, source.IssueNumber, reasonCode, explanation,
-            "blocked", _clock.GetUtcNow());
+            "blocked", _clock.GetUtcNow(), previous.Next);
         var historyStore = history ?? throw new InvalidOperationException("Standalone recovery history is unavailable.");
         await historyStore.SaveStandaloneRecoveryDiagnosticAsync(source.ExecutionId, System.Text.Json.JsonSerializer.Serialize(diagnostic), ct);
         if (reasonCode == "recovery-check-failed" || !ExpectedStandaloneBlockers.Contains(reasonCode))
@@ -281,16 +286,20 @@ public sealed partial class Worker
         }
     }
 
-    private static bool HasStandaloneDiagnostic(ExecutionHistoryEntry source, string reasonCode)
+    private static DateTimeOffset RecoveryNextEligibility(ExecutionHistoryEntry source)
     {
-        if (source.StandaloneRecoveryDiagnosticJson is null) return false;
+        if (source.StandaloneRecoveryDiagnosticJson is null) return DateTimeOffset.MinValue;
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(source.StandaloneRecoveryDiagnosticJson)?.ReasonCode == reasonCode;
+            return System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(source.StandaloneRecoveryDiagnosticJson)
+                ?.NextEligibleAtUtc ?? DateTimeOffset.MinValue;
         }
-        catch (System.Text.Json.JsonException) { return false; }
+        catch (System.Text.Json.JsonException) { return DateTimeOffset.MinValue; }
     }
 }
 
 public sealed record StandaloneRecoveryDiagnostic(Guid ExecutionId, int IssueNumber, string ReasonCode,
-    string Explanation, string CheckStatus, DateTimeOffset CheckedAtUtc);
+    string Explanation, string CheckStatus, DateTimeOffset CheckedAtUtc, DateTimeOffset? NextEligibleAtUtc = null)
+{
+    public DateTimeOffset? LastInspectedAtUtc => CheckStatus == "queued" ? null : CheckedAtUtc;
+}

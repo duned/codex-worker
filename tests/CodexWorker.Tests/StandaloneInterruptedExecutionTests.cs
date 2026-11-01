@@ -196,7 +196,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     [InlineData("missing-ownership", "integration-or-ownership-metadata-unproven")]
     [InlineData("changed-head", "workspace-history-diverged")]
     [InlineData("process-scope-changed", "process-scope-changed")]
-    [InlineData("uncompleted-implementation", "retry-requires-ready-label")]
+    [InlineData("uncompleted-implementation", "implementation-checkpoint-unproven")]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     public async Task AmbiguousOrIneligibleInterruptionRetainsEvidence(string scenario, string blocker)
@@ -337,7 +337,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     [Fact]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    public async Task ReadOnlyReconciliationIsBoundedAndRepeatedStartupDoesNotDuplicateAttempts()
+    public async Task ReadOnlyReconciliationIsBoundedAndContinuousPollingDrainsBacklogWithoutRestart()
     {
         if (!OperatingSystem.IsLinux()) return;
         using var fixture = await seed.CreateAsync();
@@ -346,7 +346,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         using var git = fixture.CreateRepository(config.Git);
         await git.InitializeAsync(CancellationToken.None);
         var preserved = await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true);
-        for (var index = 1; index < 21; index++)
+        for (var index = 1; index < 150; index++)
         {
             var executionId = Guid.NewGuid();
             var recovery = preserved.CodexRecovery is { } snapshot
@@ -368,29 +368,23 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var output = new WorkerConsole(startupOutput, interactive: false, errorWriter: startupOutput);
         var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history,
             output: output, timeProvider: clock);
-        for (var check = 0; check < 5; check++)
+        for (var check = 0; check < 50; check++)
         {
             Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
             clock.Now += TimeSpan.FromMinutes(1);
         }
-        Assert.Equal(3, github.StateReads);
+        Assert.Equal(150, github.StateReads);
         Assert.Single(startupOutput.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
         Assert.Contains("Standalone recovery checks blocked", startupOutput.ToString());
         Assert.Contains("issue-no-longer-eligible (", startupOutput.ToString());
         Assert.Contains("codex-worker recovery blocked", startupOutput.ToString());
+        // Durable cooldown prevents a restart from immediately repeating these reads.
         var restarted = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
         Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
-        Assert.Equal(6, github.StateReads);
-        for (var restart = 0; restart < 5; restart++)
-        {
-            var next = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
-            Assert.Null(await next.ProcessOneAsync(CancellationToken.None));
-            clock.Now += TimeSpan.FromMinutes(1);
-        }
-        Assert.Equal(21, github.StateReads);
+        Assert.Equal(150, github.StateReads);
         var retained = await history.ReadAllAsync();
-        Assert.Equal(21, retained.Count);
-        Assert.Equal(21, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
+        Assert.Equal(150, retained.Count);
+        Assert.Equal(150, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
         Assert.All(retained, entry =>
         {
             var diagnosticJson = Assert.IsType<string>(entry.StandaloneRecoveryDiagnosticJson);
@@ -400,6 +394,101 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         });
         Assert.Equal(0, codex.Calls);
         Assert.Empty(github.Mutations);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ClosedHistoricalBlockersCannotStarveOpenWorkingTarget()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        config.Validation.MaxFixAttempts = 3;
+        var incidentIssue = fixture.Issue with { Number = 432 };
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var target = await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true,
+            unprovenProcesses: true, preCheckpointPostRepair: true, targetIssue: incidentIssue);
+        var historical = new[]
+        {
+            (286, Guid.Parse("02e0e69c-2794-43fe-88af-9345322c2a77")),
+            (291, Guid.Parse("c657f671-7473-4ef2-adc3-0f161f1619dd")),
+            (292, Guid.Parse("9a2ad54d-9dbd-4573-acb6-e0996e0068f2"))
+        };
+        for (var index = 0; index < 149; index++)
+        {
+            var id = index < 3 ? historical[index].Item2 : Guid.NewGuid();
+            var number = index < 3 ? historical[index].Item1 : 1000 + index;
+            var diagnostic = new StandaloneRecoveryDiagnostic(id, number,
+                index < 3 ? "process-inspection-unavailable" : "recovery-inspection-budget-exhausted",
+                "Historical diagnostic", "blocked", DateTimeOffset.MinValue);
+            await history.CreateAsync(target with
+            {
+                ExecutionId = id, IssueNumber = number,
+                StartedAtUtc = target.StartedAtUtc.AddDays(-1).AddSeconds(index),
+                CodexRecovery = target.CodexRecovery is { } snapshot ? snapshot with { WorkspaceExecutionId = id } : null,
+                StandaloneRecoveryDiagnosticJson = JsonSerializer.Serialize(diagnostic)
+            });
+        }
+        var github = new GitHub(incidentIssue)
+        {
+            Labels = ["working"],
+            IssueState = number => number == target.IssueNumber
+                ? new(true, [config.GitHub.WorkingLabel]) : new(false, [config.GitHub.DoneLabel])
+        };
+        using var telegram = new TelegramNotifier(false);
+        var clock = new Clock();
+        var codex = new Codex(_ => Task.CompletedTask);
+        var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
+        for (var tick = 0; tick < 50; tick++)
+        {
+            Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+            if (tick == 0)
+            {
+                var inspected = await history.ReadExecutionAsync(target.ExecutionId, CancellationToken.None);
+                Assert.Contains("process-scope-missing", inspected?.StandaloneRecoveryDiagnosticJson ?? "");
+                var reads = github.StateReads;
+                Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+                Assert.Equal(reads, github.StateReads);
+            }
+            clock.Now += TimeSpan.FromMinutes(1);
+        }
+        var retained = await history.ReadExecutionAsync(target.ExecutionId, CancellationToken.None);
+        Assert.NotNull(retained);
+        var proof = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(Assert.IsType<string>(retained.StandaloneRecoveryDiagnosticJson));
+        Assert.Equal("process-scope-missing", proof?.ReasonCode);
+        Assert.True(Directory.Exists(git.RecoveryWorkspacePath(target)));
+        Assert.Equal(150, github.StateReads);
+        Assert.Equal(0, codex.Calls);
+        Assert.Empty(github.Mutations);
+        foreach (var (_, id) in historical)
+        {
+            var closed = await history.ReadExecutionAsync(id, CancellationToken.None);
+            Assert.Contains("issue-no-longer-eligible", closed?.StandaloneRecoveryDiagnosticJson ?? "");
+        }
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ManagedHistoryWithStaleGenerationCannotEnterStandaloneContinuation()
+    {
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var source = await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true);
+        var managed = source with { ServerExecutionId = "server-execution", AssignmentId = "expired-assignment", OwnershipGeneration = 1 };
+        Assert.False(Worker.IsStandaloneRecoveryHistory(managed));
+        var refusal = await git.InspectInterruptedExecutionAsync(managed, CancellationToken.None);
+        Assert.Equal("integration-or-ownership-metadata-unproven", refusal.Blocker);
+        Assert.True(Directory.Exists(git.RecoveryWorkspacePath(source)));
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => git.InspectExecutionProcessesAsync(managed, cancellation.Token));
     }
 
     [Fact]
@@ -606,12 +695,17 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
             }
             finally { child.Kill(); await child.WaitForExitAsync(); }
         }
+        var processBlocked = Assert.Single(await history.ReadAllAsync());
+        var processDiagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(
+            Assert.IsType<string>(processBlocked.StandaloneRecoveryDiagnosticJson));
+        Assert.NotNull(processDiagnostic);
+        Assert.Equal("workspace-process-active", processDiagnostic.ReasonCode);
         clock.Now += TimeSpan.FromMinutes(1);
-        for (var check = 0; check < 4; check++)
-        {
-            Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
-            clock.Now += TimeSpan.FromMinutes(1);
-        }
+        Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
+        Assert.Equal(processBlocked.StandaloneRecoveryDiagnosticJson,
+            Assert.Single(await history.ReadAllAsync()).StandaloneRecoveryDiagnosticJson);
+        clock.Now = Assert.IsType<DateTimeOffset>(processDiagnostic.NextEligibleAtUtc);
+        Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
         Assert.Contains(diagnostics, message => message.Contains("missing the exact validated integration commit", StringComparison.Ordinal));
         Assert.Single(await history.ReadAllAsync());
         Assert.True(Directory.Exists(git.RecoveryWorkspacePath(pending)));
@@ -620,8 +714,17 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         File.Delete(hook);
         await fixture.Git("push", "origin", "main"); // Explicit operator retry of only the original push.
         github.Labels.Remove("ready");
-        var confirmed = new Worker(config, github, git, codex, new Validation(), telegram, history: history);
+        var pushBlocked = Assert.Single(await history.ReadAllAsync());
+        var pushDiagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(
+            Assert.IsType<string>(pushBlocked.StandaloneRecoveryDiagnosticJson));
+        Assert.NotNull(pushDiagnostic);
+        Assert.Equal("recovery-check-failed", pushDiagnostic.ReasonCode);
+        var confirmed = new Worker(config, github, git, codex, new Validation(), telegram, history: history,
+            timeProvider: clock);
         await confirmed.PrepareForHostAsync(CancellationToken.None);
+        Assert.Null(await confirmed.ProcessOneAsync(CancellationToken.None));
+        Assert.Empty(github.Comments);
+        clock.Now = Assert.IsType<DateTimeOffset>(pushDiagnostic.NextEligibleAtUtc);
         Assert.Null(await confirmed.ProcessOneAsync(CancellationToken.None));
         Assert.Equal("Completed", Assert.Single(await history.ReadAllAsync()).State);
         Assert.Single(github.Comments);
@@ -639,9 +742,10 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
 
     private static async Task<ExecutionHistoryEntry> PreserveAsync(GitWorktreeTests.RepositoryFixture fixture, GitRepository git,
         WorkerConfiguration config, ExecutionHistoryStore history, Guid id, bool originalIntent, bool missingBase = false, bool unprovenProcesses = false, bool uncompletedImplementation = false,
-        bool preCheckpointPostRepair = false)
+        bool preCheckpointPostRepair = false, GitHubIssue? targetIssue = null)
     {
-        await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var issue = targetIssue ?? fixture.Issue;
+        await git.StartIssueAsync(id, issue, CancellationToken.None);
         var starting = await fixture.Git("rev-parse", "main");
         var path = git.ExecutionDirectory;
         await File.WriteAllTextAsync(Path.Combine(path, "preserved.txt"), "useful original implementation");
@@ -650,14 +754,14 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
             await fixture.GitAt(path, "add", "preserved.txt");
             await fixture.GitAt(path, "commit", "-m", "original implementation before interrupted validation");
         }
-        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
-            GitRepository.FeatureBranchName(config.Git, fixture.Issue), "main", DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow,
+        var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", issue.Number, issue.Title,
+            GitRepository.FeatureBranchName(config.Git, issue), "main", DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow,
             "Cancelled", 1, "Implementation succeeded", preCheckpointPostRepair ? "failed or interrupted" : "passed",
             preCheckpointPostRepair ? 1 : 0,
             preCheckpointPostRepair ? [new ValidationRepairRecord("authoritative-check", 1, config.Validation.MaxFixAttempts, "Completed repair.", false)] : [],
             null, null, null, "Execution interrupted by Worker shutdown",
             RecoveryState: "uncertain", RecoveryBaseCommit: missingBase ? null : starting, EffectiveEffort: config.Codex.ReasoningEffort,
-            OriginalIssueBody: originalIntent ? fixture.Issue.Body : null,
+            OriginalIssueBody: originalIntent ? issue.Body : null,
             CodexRecovery: originalIntent && !preCheckpointPostRepair ? new(id, 1, 0, CodexInterruptionRecovery.Fingerprint(config)) : null);
         if (uncompletedImplementation)
             entry = entry with { CodexRecovery = entry.CodexRecovery is { } snapshot
@@ -680,6 +784,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         internal bool LoseCommentResponse { get; set; }
         internal bool LoseLabelResponse { get; set; }
         internal Exception? StateReadFailure { get; set; }
+        internal Func<int, GitHubIssueState>? IssueState { get; set; }
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, CancellationToken cancellationToken) =>
             Task.FromResult<GitHubIssue?>(Open && Labels.Contains(label) ? issue with { Labels = Labels.ToArray() } : null);
         public Task<GitHubIssue?> FindOldestReadyAsync(string label, IReadOnlySet<int> excludedIssueNumbers, CancellationToken cancellationToken) =>
@@ -690,7 +795,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         public Task<GitHubIssueState> ReadIssueStateAsync(int issueNumber, CancellationToken ct)
         {
             if (StateReadFailure is { } failure) throw failure;
-            StateReads++; return Task.FromResult(new GitHubIssueState(Open, Labels.ToArray()));
+            StateReads++; return Task.FromResult(IssueState?.Invoke(issueNumber) ?? new GitHubIssueState(Open, Labels.ToArray()));
         }
         public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken, IReadOnlyList<string>? secretValues = null) => Task.FromResult("");
         public Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct)

@@ -27,7 +27,7 @@ public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, stri
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
     Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null,
     string? FailureReason = null, string? ReportingFailure = null, string? FeatureBranch = null,
-    string? BaseBranch = null, string? CompletedBranch = null, string? CommitSha = null, string? IntegrationBranch = null, string Engine = "codex");
+    string? BaseBranch = null, string? CompletedBranch = null, string? CommitSha = null, string? IntegrationBranch = null, string Engine = "codex", StandaloneRecoveryDiagnostic? StandaloneRecovery = null);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -233,13 +233,9 @@ public sealed class WorkerRuntimeReadModel
             reasonCode is { Length: > 120 } || reasonCode?.Any(character => !(char.IsAsciiLetterOrDigit(character) || character == '-')) == true)
             throw new ArgumentException("Invalid standalone recovery diagnostic filters or page bounds.");
         var entries = await _history.ReadAllAsync(ct);
-        var diagnostics = entries.Where(entry => entry.StandaloneRecoveryDiagnosticJson is not null &&
+        var diagnostics = entries.Where(entry => (entry.StandaloneRecoveryDiagnosticJson is not null || Worker.IsStandaloneRecoveryHistory(entry)) &&
                 entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null)
-            .Select(entry =>
-            {
-                try { return System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson!); }
-                catch (System.Text.Json.JsonException) { return null; }
-            })
+            .Select(StandaloneDiagnostic)
             .Where(diagnostic => diagnostic is not null && (issueNumber is null || diagnostic.IssueNumber == issueNumber) &&
                 (executionId is null || diagnostic.ExecutionId == executionId) &&
                 (reasonCode is null || string.Equals(diagnostic.ReasonCode, reasonCode, StringComparison.Ordinal)))
@@ -248,6 +244,24 @@ public sealed class WorkerRuntimeReadModel
     }
 
     public sealed record StandaloneRecoveryDiagnosticsPage(IReadOnlyList<StandaloneRecoveryDiagnostic> Items, bool HasMore, int Total);
+
+    private static StandaloneRecoveryDiagnostic? StandaloneDiagnostic(ExecutionHistoryEntry entry)
+    {
+        if (entry.ServerExecutionId is not null || entry.AssignmentId is not null || entry.OwnershipGeneration is not null) return null;
+        try
+        {
+            var saved = entry.StandaloneRecoveryDiagnosticJson is { } json
+                ? System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(json) : null;
+            if (entry.RecoveryState == "standalone-continuing")
+                return new(entry.ExecutionId, entry.IssueNumber, "preserved-work-continuation", "Recovery checks authorized preserved-work continuation.",
+                    "resumed", saved?.CheckedAtUtc ?? entry.StartedAtUtc);
+            if ((saved is null || saved.ReasonCode == "recovery-inspection-budget-exhausted") && Worker.IsStandaloneRecoveryHistory(entry))
+                return new(entry.ExecutionId, entry.IssueNumber, "queued-for-review",
+                    "Awaiting bounded recovery inspection; no safety proof has been established.", "queued", DateTimeOffset.MinValue);
+            return saved;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
 
     private ExecutionRuntimeInfo ProjectExecution(ExecutionHistoryEntry e)
     {
@@ -272,7 +286,7 @@ public sealed class WorkerRuntimeReadModel
                 ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc,
             e.EffectiveModel, e.EffectiveEffort,
             e.State is "InfrastructureFailure" or "Cancelled" ? Diagnostic(e.FailureReason) : null,
-            Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch, e.Engine);
+            Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch, e.Engine, StandaloneDiagnostic(e));
     }
 
     public async Task<ExecutionCleanupInspection?> InspectExecutionCleanupAsync(Guid executionId, CancellationToken ct)
