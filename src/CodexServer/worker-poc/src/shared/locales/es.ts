@@ -1063,6 +1063,7 @@ export const es = {
   "workers.capabilityObservations": "Observaciones de capacidades:",
   "workers.details": "Detalles",
   "workers.viewCapabilityDetailsFor": "Ver detalles de {capability}",
+  "workers.capabilityDetailsDescription": "Revise las observaciones de capacidad, la política local del nodo, las acciones disponibles y el historial reciente de operaciones.",
   "workers.nodeProvisioningState": "Aprovisionamiento del nodo",
   "workers.workerProvisioningState": "Aprovisionamiento informado por el Worker",
   "workers.workerInformation": "Información del Worker",

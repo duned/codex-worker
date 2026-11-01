@@ -23,7 +23,9 @@ const ariaComponents=frontendRequire('react-aria-components');
 const openStateComponents={...ariaComponents,
  DialogTrigger:({children})=>createElement('div',{'data-dialog-trigger':true},children),
  Popover:({children})=>createElement('div',{'data-popover':true},children),
- ModalOverlay:({children,isOpen,className})=>isOpen?createElement('div',{className},children):null,
+ // Match the old Popover mock: render capability panel contents in static
+ // inspection renders, even though static markup cannot activate its trigger.
+ ModalOverlay:({children,isOpen,className,'data-dialog-layer':layer})=>isOpen||layer==='panel'?createElement('div',{className,'data-dialog-layer':layer},children):null,
  Modal:({children,className})=>createElement('div',{className},children),
  Dialog:({children,'aria-describedby':describedBy})=>createElement('div',{role:'dialog','aria-describedby':describedBy},children),
  Heading:({children})=>createElement('h2',null,children)
@@ -54,10 +56,10 @@ test('readiness stays in the operational header and there is no standalone readi
  assert.match(render({observations:[{...worker,lastHeartbeatAtUtc:undefined}]}),/aria-label="Last heartbeat: Lost, heartbeat unavailable"/);
  assert.doesNotMatch(render({}),/Readiness checks|poc-readiness-panel/);
 });
-test('capability popups contain matching details and the preparation workflow remains available',()=>{
+test('capability drawers contain matching details and the preparation workflow remains available',()=>{
  const html=renderOpen({preparation:createElement('div',null,'Prepare this project')});
  assert.match(html,/aria-label="View details for Codex CLI"/);
- assert.match(html,/data-popover="true"[\s\S]*?Codex CLI[\s\S]*?Available typed actions/);
+ assert.match(html,/data-dialog-layer="panel"[\s\S]*?Codex CLI[\s\S]*?Available typed actions/);
  assert.match(html,/Node provisioning[\s\S]*?ready/);
  assert.match(html,/Worker information[\s\S]*?Prepare this project/);
  assert.doesNotMatch(html,/Capability details|Readiness checks/);
@@ -94,7 +96,7 @@ test('The execution rail keeps cumulative checks and renders durations only for 
  assert.equal((integrating.match(/class="poc-stage-duration"/g)||[]).length,5);
  assert.ok(integrating.includes('Duration unavailable'));
 });
-test('Capability detail popups retain each reported service version and authentication field',()=>{
+test('Capability detail drawers retain each reported service version and authentication field',()=>{
  const service=(id,displayName,detectedVersion)=>({definition:{id,displayName,requiresAuthentication:true,requiresConfiguration:true},state:{installation:'Installed',health:'Healthy',authentication:'Satisfied',configuration:'Satisfied',detectedVersion},availableActions:[]});
  const services=[service('git','Git','2.43.0'),service('github-cli','GitHub CLI','2.65.0'),service('codex-cli','Codex CLI','0.157.0'),service('dotnet-sdk','.NET SDK','10.0')];
  const html=renderOpen({nodes:[{...node,capabilities:services}],diagnostics:{...props.diagnostics,projects:[{projectId:'project-a',projectName:'Sample project',isEligible:true,observationStatus:'worker-reported-current-revision'},{projectId:'project-b',projectName:'Other project',isEligible:false,observationStatus:'worker-reported-current-revision'}]}});
@@ -152,7 +154,7 @@ test('Current execution empty state reflects reported activity without reserving
  assert.ok(idle.includes('No current execution is reported in the latest 50 requests.'));
  assert.ok(!idle.includes('Worker reports active work'));
 });
-test('Capability popup retains operation status without exposing raw diagnostic details or mutation controls in read-only mode',()=>{
+test('Capability drawer retains operation status without exposing raw diagnostic details or mutation controls in read-only mode',()=>{
  const request={nodeId:'worker-a',capabilityId:'codex-cli',action:'CheckAuthentication'};
  const commands=[{id:'pending',request,status:'Pending',createdAtUtc:'2026-01-01',diagnostic:'Pending'},{id:'failed',request,status:'Failed',createdAtUtc:'2025-12-31',diagnostic:'Denied',failureDetail:{description:'raw private detail'}}];
  const currentCapability={...capability,state:{...capability.state,operation:{state:'Failed',action:'checkauthentication',diagnosticCode:'authentication-required'}}};

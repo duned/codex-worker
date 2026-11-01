@@ -13,27 +13,33 @@ interface DialogProps {
   variant?: 'default' | 'enqueue' | 'side-panel';
   projectName?: string;
   headerActions?: ReactNode;
+  layer?: 'standard' | 'panel' | 'confirmation';
 }
 /** React Aria owns focus containment/restoration, Escape and outside dismissal. */
-export function FormDialog({ isOpen, title, description, onClose, children, pending = false, variant = 'default', projectName, headerActions }: DialogProps) {
+export function FormDialog({ isOpen, title, description, onClose, children, pending = false, variant = 'default', projectName, headerActions, layer = 'standard' }: DialogProps) {
   useLanguage();
   const descriptionId = useId();
   const isEnqueue = variant === 'enqueue';
   const isSidePanel = variant === 'side-panel';
-  return <ModalOverlay isOpen={isOpen} onOpenChange={open => { if (!open && !pending) onClose(); }}
+  return <ModalOverlay isOpen={isOpen} data-dialog-layer={layer} onOpenChange={open => { if (!open && !pending) onClose(); }}
     isDismissable={!pending} isKeyboardDismissDisabled={pending}
-    className={isEnqueue ? 'enqueue-dialog-overlay' : isSidePanel ? 'fixed inset-0 z-50 flex justify-end bg-overlay/70' : 'fixed inset-0 z-50 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
-    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : isSidePanel ? 'flex h-dvh w-full flex-col overflow-hidden bg-primary shadow-xl ring-1 ring-secondary lg:w-[60vw] lg:max-w-5xl' : 'max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
+    className={isEnqueue ? 'enqueue-dialog-overlay' : isSidePanel ? 'dashboard-modal-overlay fixed inset-0 flex justify-end bg-overlay/70' : 'dashboard-modal-overlay fixed inset-0 flex items-center justify-center bg-overlay/70 p-4 backdrop-blur-sm'}>
+    <Modal className={isEnqueue ? 'enqueue-dialog-modal' : isSidePanel ? 'dashboard-side-panel flex min-w-0 w-full flex-col overflow-hidden bg-primary shadow-xl ring-1 ring-secondary lg:w-[60vw] lg:max-w-5xl' : 'dashboard-centered-dialog max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-xl bg-primary p-6 shadow-xl ring-1 ring-secondary'}>
       <Dialog aria-describedby={descriptionId} className={isEnqueue ? 'enqueue-dialog' : isSidePanel ? 'flex h-full min-h-0 flex-col outline-none' : 'flex flex-col gap-4 outline-none'}>
         {isEnqueue && <Button color="tertiary" className="enqueue-dialog-close" aria-label={t('shared.closeDialog')} isDisabled={pending} onPress={onClose}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" /></svg>
         </Button>}
-        {isSidePanel && <div className="flex shrink-0 flex-col gap-4 border-b border-secondary px-5 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-8 sm:py-6">
+        {isSidePanel && <div className={`flex shrink-0 gap-4 border-b border-secondary px-5 py-4 sm:px-8 sm:py-6 ${headerActions ? 'flex-col sm:flex-row sm:items-start sm:justify-between' : 'items-start justify-between'}`}>
           <div className="min-w-0">
             <Heading slot="title" className="text-lg font-semibold text-primary">{localizeText(title)}</Heading>
             <p id={descriptionId} className="mt-1 text-sm text-secondary">{localizeText(description)}</p>
           </div>
-          {headerActions}
+          <div className="flex shrink-0 items-start gap-2">
+            {headerActions}
+            {!headerActions && <Button color="tertiary" aria-label={t('shared.closeDialog')} isDisabled={pending} onPress={onClose}>
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" width="16" height="16"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" /></svg>
+            </Button>}
+          </div>
         </div>}
         {!isSidePanel && <div className={isEnqueue ? 'enqueue-dialog-copy' : 'contents'}>
           <Heading slot="title" className={isEnqueue ? 'enqueue-dialog-title' : 'text-lg font-semibold text-primary'}>{localizeText(title)}</Heading>
@@ -53,7 +59,7 @@ interface ActionDialogProps extends Omit<DialogProps, 'children' | 'pending'> {
   children?: ReactNode;
 }
 /** Local in-flight guard only; authoritative checks and uncertain fences belong to runtime.mutate. */
-export function ActionDialog({ actionLabel, destructive = false, disabled = false, onSubmit, children, ...props }: ActionDialogProps) {
+export function ActionDialog({ actionLabel, destructive = false, disabled = false, onSubmit, children, layer = 'confirmation', ...props }: ActionDialogProps) {
   useLanguage();
   const inFlight = useRef(false);
   const [pending, setPending] = useState(false);
@@ -67,7 +73,7 @@ export function ActionDialog({ actionLabel, destructive = false, disabled = fals
     catch { setFailed(true); }
     finally { inFlight.current = false; setPending(false); }
   }
-  return <FormDialog {...props} pending={pending}>
+  return <FormDialog {...props} layer={layer} pending={pending}>
     <form onSubmit={event => { void submit(event); }} className="flex flex-col gap-4">
       <fieldset disabled={pending || failed} className="contents">{children}</fieldset>
       {failed && <p role="alert" className="text-sm text-error-primary">{t("shared.resultUnavailableCloseThisDialogAndReviewAuthoritativeStateBeforeAnotherAction")}</p>}

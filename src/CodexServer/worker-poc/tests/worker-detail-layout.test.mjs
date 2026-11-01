@@ -25,6 +25,8 @@ const { WorkerDetail } = module.exports;
 const openModule = { exports: {} };
 const react = require('react');
 let openActionsPanel = false;
+let openCapabilityIndex = null;
+let falseStateCalls = 0;
 const openReact = {
   ...react,
   useState(initialValue) {
@@ -32,17 +34,21 @@ const openReact = {
       openActionsPanel = false;
       return [true, () => {}];
     }
+    if (openCapabilityIndex !== null && initialValue === false) {
+      falseStateCalls++;
+      if (falseStateCalls === openCapabilityIndex + 2) return [true, () => {}];
+    }
     return react.useState(initialValue);
   }
 };
 const ariaComponents = require('react-aria-components');
 const openStateComponents = {
   ...ariaComponents,
-  DialogTrigger: ({ children }) => createElement('div', { 'data-dialog-trigger': true }, children),
-  Popover: ({ children }) => createElement('div', { 'data-popover': true }, children),
-  ModalOverlay: ({ children, isOpen, className }) => isOpen ? createElement('div', { className }, children) : null,
+  ModalOverlay: ({ children, isOpen, className, onOpenChange, isDismissable, isKeyboardDismissDisabled, ...props }) => isOpen ? createElement('div', {
+    ...props, className, 'data-dismissable': isDismissable, 'data-keyboard-dismiss-disabled': isKeyboardDismissDisabled
+  }, children) : null,
   Modal: ({ children, className }) => createElement('div', { className }, children),
-  Dialog: ({ children, 'aria-describedby': describedBy }) => createElement('div', { role: 'dialog', 'aria-describedby': describedBy }, children),
+  Dialog: ({ children, 'aria-describedby': describedBy }) => createElement('div', { role: 'dialog', 'aria-modal': 'true', 'aria-describedby': describedBy }, children),
   Heading: ({ children }) => createElement('h2', null, children)
 };
 vm.runInNewContext(outputFiles[0].text, {
@@ -107,8 +113,18 @@ function renderOpenActions(overrides = {}) {
     openActionsPanel = false;
   }
 }
-function renderCapabilityPopups(overrides = {}) {
+function renderWorkerDetail(overrides = {}) {
   return renderToStaticMarkup(createElement(MemoryRouter, null, createElement(OpenWorkerDetail, props(overrides))));
+}
+function renderOpenCapability(index, overrides = {}) {
+  openCapabilityIndex = index;
+  falseStateCalls = 0;
+  try {
+    return renderWorkerDetail(overrides);
+  } finally {
+    openCapabilityIndex = null;
+    falseStateCalls = 0;
+  }
 }
 
 test('operational cards follow the approved order and keep known slot counts', () => {
@@ -206,21 +222,30 @@ test('capabilities replace readiness checks in the lower grid and remaining deta
   assert.match(css, /\.poc-worker-lower-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-worker-status-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
-  assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /\.poc-capabilities\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
 
-test('capability details are contextual popups and node provisioning status stays with the capability area', () => {
+test('capability details open a dismissible side drawer with capability-specific content', () => {
   const git = { definition: { id: 'git', displayName: 'Git', requiresAuthentication: false, requiresConfiguration: false },
     state: { installation: 'Installed', health: 'Healthy', detectedVersion: '2.45', detectedAtUtc: '2026-10-29T11:00:00Z', diagnosticCode: 'git-check-ok' }, availableActions: ['refresh'] };
   const codex = { definition: { id: 'codex-cli', displayName: 'Codex CLI', requiresAuthentication: true, requiresConfiguration: false },
     state: { installation: 'Installed', health: 'Healthy', authentication: 'Satisfied', detectedVersion: '0.99', detectedAtUtc: '2026-10-29T11:00:00Z', diagnosticCode: 'codex-check-ok' }, availableActions: ['checkauthentication'] };
-  const html = renderCapabilityPopups({ node: { ...node, provisioningReadiness: 'ready', capabilities: [git, codex] } });
+  const testNode = { ...node, provisioningReadiness: 'ready', capabilities: [git, codex] };
+  const html = renderWorkerDetail({ node: testNode });
   assert.match(html, /aria-label="View details for Git"/);
   assert.match(html, /aria-label="View details for Codex CLI"/);
-  assert.match(html, /data-popover="true"[\s\S]*?<h2>Git<\/h2>[\s\S]*?git-check-ok/);
-  assert.match(html, /data-popover="true"[\s\S]*?<h2>Codex CLI<\/h2>[\s\S]*?codex-check-ok/);
+  const gitDrawer = renderOpenCapability(0, { node: testNode });
+  assert.match(gitDrawer, /aria-label="View details for Git"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="true"/);
+  assert.match(gitDrawer, /data-dialog-layer="panel"[^>]*data-dismissable="true" data-keyboard-dismiss-disabled="false"[\s\S]*?role="dialog" aria-modal="true"[\s\S]*?<h2>Git<\/h2>[\s\S]*?git-check-ok/);
+  assert.match(gitDrawer, /dashboard-side-panel[\s\S]*?overflow-y-auto/);
+  const codexDrawer = renderOpenCapability(2, { node: testNode });
+  assert.match(codexDrawer, /role="dialog" aria-modal="true"[\s\S]*?<h2>Codex CLI<\/h2>[\s\S]*?codex-check-ok/);
+  assert.doesNotMatch(gitDrawer, /data-popover/);
+  assert.match(gitDrawer, /aria-label="Close dialog"/);
   assert.match(html, /Node provisioning[\s\S]*?Provisioning readiness:[\s\S]*?Worker-reported provisioning[\s\S]*?ready/);
   assert.doesNotMatch(html, /Readiness checks|Capability details/);
 });
@@ -248,7 +273,8 @@ test('More actions reuses the Edit worker side-panel behavior and responsive she
   assert.match(source, /onClose=\{\(\) => onOpenChange\(false\)\}/);
   assert.match(editor, /pending=\{busy\} variant="side-panel"/);
   assert.match(dialogs, /isDismissable=\{!pending\} isKeyboardDismissDisabled=\{pending\}/);
-  assert.match(dialogs, /fixed inset-0 z-50 flex justify-end bg-overlay\/70/);
+  assert.match(dialogs, /dashboard-modal-overlay fixed inset-0 flex justify-end bg-overlay\/70/);
+  assert.match(dialogs, /dashboard-side-panel flex min-w-0 w-full flex-col overflow-hidden/);
   assert.match(dialogs, /lg:w-\[60vw\] lg:max-w-5xl/);
   assert.match(dialogs, /React Aria owns focus containment\/restoration, Escape and outside dismissal/);
 });

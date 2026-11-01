@@ -1050,6 +1050,7 @@ export const en = {
   "workers.capabilityObservations": "Capability observations:",
   "workers.details": "Details",
   "workers.viewCapabilityDetailsFor": "View details for {capability}",
+  "workers.capabilityDetailsDescription": "Review capability observations, node-local policy, available actions and recent operation history.",
   "workers.nodeProvisioningState": "Node provisioning",
   "workers.workerProvisioningState": "Worker-reported provisioning",
   "workers.workerInformation": "Worker information",

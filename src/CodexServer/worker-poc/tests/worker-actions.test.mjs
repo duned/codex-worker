@@ -103,7 +103,8 @@ test('Worker controls use the shared side panel and lower information keeps its 
 
   const css = await read(styles);
   assert.match(css, /\.poc-worker-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
-  assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.poc-service-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 1023px\)[\s\S]*?\.poc-worker-lower-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 460px\)[\s\S]*?\.poc-service-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
@@ -116,7 +117,15 @@ test('More actions uses the same focus-managed side panel and responsive dimensi
   assert.match(view, /<FormDialog isOpen=\{isOpen\}[\s\S]*?variant="side-panel"/);
   assert.match(editor, /pending=\{busy\} variant="side-panel"/);
   assert.match(dialog, /isDismissable=\{!pending\} isKeyboardDismissDisabled=\{pending\}/);
-  assert.match(dialog, /fixed inset-0 z-50 flex justify-end bg-overlay\/70/);
+  assert.match(dialog, /dashboard-modal-overlay fixed inset-0 flex justify-end bg-overlay\/70/);
+  assert.match(dialog, /dashboard-side-panel flex min-w-0 w-full flex-col overflow-hidden/);
+  assert.match(dialog, /data-dialog-layer=\{layer\}/);
+  assert.match(dialog, /layer = 'confirmation'/);
+  const css = await read(new URL('../src/poc.css', import.meta.url));
+  assert.match(css, /\.dashboard-modal-overlay\s*\{\s*z-index:\s*110/);
+  assert.match(css, /\.dashboard-modal-overlay\[data-dialog-layer="confirmation"\]\s*\{\s*z-index:\s*120/);
+  assert.match(css, /\.dashboard-side-panel\s*\{\s*height:\s*100vh;\s*height:\s*100dvh;\s*max-height:\s*100vh;\s*max-height:\s*100dvh/);
+  assert.match(css, /\.dashboard-centered-dialog\s*\{\s*max-height:\s*calc\(100vh - 2rem\);\s*max-height:\s*calc\(100dvh - 2rem\)/);
   assert.match(dialog, /lg:w-\[60vw\] lg:max-w-5xl/);
   assert.match(dialog, /React Aria owns focus containment\/restoration, Escape and outside dismissal/);
   assert.match(view, /aria-label=\{t\('shared\.closeDialog'\)\}/);

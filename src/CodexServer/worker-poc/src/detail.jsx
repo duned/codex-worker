@@ -7,7 +7,6 @@ import { StatusBadge, AdvancedDisclosure, Notice } from './shared/Presentation';
 import { Button } from './untitled/components/base/buttons/button';
 import { TableCard } from './untitled/components/application/table/table';
 import { ChevronDown } from '@untitledui/icons';
-import { Dialog, DialogTrigger, Heading, Popover } from 'react-aria-components';
 import { FormDialog } from './shared/Dialogs';
 import { duration, issueLink, statusColor, isActiveExecutionState, terminalStates, timestamp, workerExecutions, currentWorkerExecutionReadiness, workerDetailStatuses, workerHeartbeatAge, workerManagedSettingsState, workerSlotSummary } from './model.js';
 import { executionStages, executionTimeline } from './features/workers/execution-timeline.mjs';
@@ -352,19 +351,19 @@ function capabilityStatus(capability, id) {
   return t('shared.unknown');
 }
 
-function CapabilityDetailsPopup({ tile, capability, provisioning }) {
+function CapabilityDetailsDrawer({ tile, capability, provisioning }) {
   useLanguage();
+  const [isOpen, setIsOpen] = useState(false);
   const name = capability ? localizeText(capability.definition.displayName) : localizeText(tile.name);
-  return <DialogTrigger>
-    <Button color="secondary" size="sm" aria-label={t('workers.viewCapabilityDetailsFor', { capability: name })}>{t('workers.details')}</Button>
-    <Popover placement="bottom start" className="z-50 max-w-[min(42rem,calc(100vw-2rem))] rounded-xl border border-secondary bg-primary p-4 shadow-lg">
-      <Dialog className="max-h-[min(80vh,42rem)] overflow-y-auto outline-none">
-        <Heading slot="title" className="mb-3 text-sm font-semibold text-primary">{name}</Heading>
+  return <>
+    <Button color="secondary" size="sm" aria-label={t('workers.viewCapabilityDetailsFor', { capability: name })} aria-haspopup="dialog" aria-expanded={isOpen} onPress={() => setIsOpen(true)}>{t('workers.details')}</Button>
+    <FormDialog isOpen={isOpen} title={name} description={t('workers.capabilityDetailsDescription')} onClose={() => setIsOpen(false)} variant="side-panel" layer="panel">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
         {capability ? provisioning ? provisioning(capability.definition.id) : <CapabilityCard capability={capability} />
           : <p className="text-sm text-tertiary">{t('workers.capabilityObservationsUnavailable')}</p>}
-      </Dialog>
-    </Popover>
-  </DialogTrigger>;
+      </div>
+    </FormDialog>
+  </>;
 }
 
 function CapabilityTile({ tile, capability, provisioning }) {
@@ -379,7 +378,7 @@ function CapabilityTile({ tile, capability, provisioning }) {
       <ServiceMark type={tile.type} />
       <div className="poc-service-heading"><h3>{name}</h3><Status value={status} tone={tone} /></div>
     </div>
-    <div className="poc-service-actions"><span>{lastReported}</span><CapabilityDetailsPopup tile={tile} capability={capability} provisioning={provisioning} /></div>
+    <div className="poc-service-actions"><span>{lastReported}</span><CapabilityDetailsDrawer tile={tile} capability={capability} provisioning={provisioning} /></div>
   </article>;
 }
 
