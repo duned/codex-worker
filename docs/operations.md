@@ -99,3 +99,5 @@ sequence and verifies the new lease. This reproduces queued work with spare capa
 it does not establish that the historical incident involved a repository edit.
 
 Use bounded request/execution IDs to correlate journals. Keep tokens, environment contents and raw process output out of incident reports. Detailed safe diagnostics are in [Worker administration](worker-local-administration.md), [Server administration](server-local-administration.md) and [HTTPS recovery](remote-https-deployment.md#upgrade-recovery-and-bounded-rejection-diagnostics). Optional features: [Telegram](worker-telegram-settings.md), [guided enrollment](worker-onboarding.md), [dashboard Worker updates](worker-dashboard-updates.md), and [standalone planning CLI](work-execution-toolbox.md).
+
+For optional Claude Code setup alongside Codex, see the [dual-engine operator runbook](dual-engine-operations.md).

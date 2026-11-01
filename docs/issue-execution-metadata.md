@@ -11,8 +11,8 @@ effort: low
 
 Only `engine`, `model`, and `effort` are accepted. Engine names are `codex` and
 `ccc` (case insensitive). Missing engine means `codex`. Missing Codex model and
-effort use project settings; missing CCC model delegates to its CLI and missing
-CCC effort means `medium`. Codex project defaults never supply CCC settings.
+effort use project settings. Missing CCC model is recorded as CLI-selected (the
+current adapter supplies `sonnet`); missing CCC effort means `medium`. Codex project defaults never supply CCC settings.
 
 Codex retains its existing model-ID contract (1–128 letters, digits, dots,
 underscores or hyphens, starting with a letter or digit), including configured
@@ -41,11 +41,10 @@ Codex. Worker assignment checks use that selection and reject an Issue whose
 engine changed after queueing. The Issue read API exposes parsed selection for
 administration clients alongside eligibility errors.
 
-The default Worker composition currently advertises and executes only Codex. Standalone CCC
-Issues remain ready with an unavailable-engine diagnostic; managed CCC requests
-wait for a Worker advertising the CCC provider. A defensive execution check
-prevents unavailable selections from falling back to the Codex executor. Installing the
-Claude CLI alone does not establish CCC execution readiness.
+The default Worker composition registers Codex and the optional CCC adapter.
+Managed Workers advertise CCC only after a successful readiness observation;
+installing Claude alone does not establish readiness. Unavailable selections
+never fall back to Codex. See the [operator runbook](dual-engine-operations.md).
 
 Metadata selects execution settings only. It cannot authorize credentials,
 permissions, paths, provisioning, or executable commands. Existing lease,

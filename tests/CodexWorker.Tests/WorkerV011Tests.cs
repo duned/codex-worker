@@ -6,23 +6,62 @@ namespace CodexWorker.Tests;
 public sealed class WorkerV011Tests
 {
     [Theory]
+    [InlineData(false, "auth-error")]
+    [InlineData(false, "denied")]
+    [InlineData(false, "malformed")]
+    [InlineData(true, "auth-error")]
+    [InlineData(true, "denied")]
+    [InlineData(true, "malformed")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ClaudeCliFailurePreservesWorkspaceAndNeverFallsBack(bool managed, string mode)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli(mode);
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, engine: cli.CreateEngine());
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc" };
+        async Task RunAsync()
+        {
+            if (!managed) { await h.ProcessOneAsync(); return; }
+            var now = DateTimeOffset.UtcNow;
+            var assignment = new WorkerAssignmentContract("assignment", "server-execution",
+                new ServerProjectContract("project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+                new ServerWorkReferenceContract("github-issue", "17") { Selection = new("ccc") },
+                "worker-id", new Dictionary<string, string>(),
+                new ServerExecutionLeaseContract("server-execution", "worker-id", 1, now, now.AddMinutes(5), "Active"));
+            var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
+            Assert.NotNull(execution);
+            await execution;
+        }
+        var failure = await Assert.ThrowsAsync<WorkerInfrastructureException>(RunAsync);
+        Assert.DoesNotContain("private-cli-diagnostic", failure.ToString());
+        Assert.Equal(1, cli.Invocations);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(0, h.Validation.Calls);
+        Assert.Equal(0, h.Git.Integrations);
+        Assert.Equal(0, h.Git.Cleanups);
+        Assert.True(File.Exists(Path.Combine(h.Git.ExecutionDirectory, "implemented.txt")));
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("ccc", entry.Engine);
+        Assert.Equal("InfrastructureFailure", entry.State);
+        Assert.DoesNotContain("private-cli-diagnostic", System.Text.Json.JsonSerializer.Serialize(entry));
+        Assert.DoesNotContain("private-cli-diagnostic", h.Output.ToString());
+        Assert.All(h.GitHub.Comments, comment => Assert.DoesNotContain("private-cli-diagnostic", comment));
+        Assert.DoesNotContain("working->failed", h.GitHub.Labels);
+    }
+
+    [Theory]
     [InlineData(false, IssueOutcomeKind.Succeeded, 2)]
     [InlineData(true, IssueOutcomeKind.Failed, 3)]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     public async Task ClaudeProcessUsesAuthoritativeValidationAndBoundedRepairs(bool exhausted, IssueOutcomeKind expected, int invocations)
     {
-        var calls = 0;
-        var engine = new ClaudeImplementationEngine((args, _, input, _, _, _) =>
-        {
-            if (args[0] == "--version") return Task.FromResult(new ProcessResult(0, "2.1.259 (Claude Code)", ""));
-            if (args[0] == "--help") return Task.FromResult(new ProcessResult(0,
-                "--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence", ""));
-            calls++;
-            Assert.Contains("test instructions", input);
-            return Task.FromResult(new ProcessResult(0,
-                """{"type":"result","is_error":false,"structured_output":{"status":"success","summary":"implemented","testsOrValidationPerformed":[],"needsHumanInput":false,"question":null,"blockerType":null}}""", ""));
-        }, new CodexSettings());
+        if (!OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli();
+        var engine = cli.CreateEngine();
         using var h = new Harness(engine: engine);
         h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low" };
         h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
@@ -33,7 +72,7 @@ public sealed class WorkerV011Tests
         }
         else h.Validation.Results.Enqueue(ValidationResult.Success);
         Assert.Equal(expected, (await h.ProcessOneAsync())?.Kind);
-        Assert.Equal(invocations, calls);
+        Assert.Equal(invocations, cli.Invocations);
         Assert.Equal(invocations, h.Validation.Calls);
         Assert.Empty(h.Codex.Issues);
         Assert.Empty(h.Codex.RepairAttempts);
@@ -1122,16 +1161,21 @@ public sealed class WorkerV011Tests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
-    [Fact]
-    public async Task AssignmentCancellationBeforeIntegrationStopsAtTheSharedRepositoryBoundary()
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("ccc")]
+    public async Task AssignmentCancellationBeforeIntegrationStopsAtTheSharedRepositoryBoundary(string engine)
     {
-        using var h = new Harness();
+        if (engine == "ccc" && !OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli();
+        using var h = new Harness(engine: cli.CreateEngine());
+        h.GitHub.Issue = h.GitHub.Issue with { Body = $"## Worker\nengine: {engine}" };
         h.Validation.CancelOnCall = 1;
         h.Validation.OnRun = h.Cancellation.Cancel;
         var now = DateTimeOffset.UtcNow;
         var assignment = new WorkerAssignmentContract("assignment-fence", "server-fence",
             new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
-            new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+            new ServerWorkReferenceContract("github-issue", "17") { Selection = new(engine) }, "worker-id", new Dictionary<string, string>(),
             new ServerExecutionLeaseContract("server-fence", "worker-id", 4, now, now.AddMinutes(5), "Active"));
 
         var execution = await h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token);
@@ -1142,9 +1186,13 @@ public sealed class WorkerV011Tests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState()
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("ccc")]
+    public async Task QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState(string engine)
     {
+        if (engine == "ccc" && !OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli();
         using var directory = new TempHistoryDatabase();
         var store = new SqliteRegistryStore(Path.Combine(Path.GetDirectoryName(directory.Path)!, "server.db"));
         await store.InitializeAsync();
@@ -1153,23 +1201,27 @@ public sealed class WorkerV011Tests
         CodexServer.WorkerCapability[] capabilities = [new("tool", "git"),
             .. WorkerAuthenticationRequirements.ForRepository(project.Repository).Select(requirement =>
                 new CodexServer.WorkerCapability(requirement.Type, requirement.Name, Scope: requirement.Scope)),
-            new("agent-provider", "codex")];
+            new("agent-provider", engine)];
         await store.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "test worker", "test", "test", 1, capabilities));
         await store.HeartbeatWorkerAsync(new WorkerHeartbeatRequest(1, workerId, "test", "running", 0, 1, capabilities, []));
         var queued = await store.EnqueueExecutionAsync(new EnqueueExecutionRequest(project.Id,
-            new WorkReference("github-issue", "17")));
+            new WorkReference("github-issue", "17") { Selection = new(engine, engine == "ccc" ? "sonnet" : null, "low") }));
         var assignmentResponse = await store.RequestAssignmentAsync(new WorkerAssignmentRequest(workerId, true, 1,
             new Dictionary<string, int> { [project.Id] = 1 }));
         var assignment = Assert.IsType<WorkAssignment>(assignmentResponse.Assignment);
 
         using var history = new ExecutionHistoryStore(Path.Combine(Path.GetDirectoryName(directory.Path)!, "worker.db"));
-        using var h = new Harness(history: history);
+        using var h = new Harness(history: history, engine: cli.CreateEngine());
+        h.GitHub.Issue = h.GitHub.Issue with { Body = $"## Worker\nengine: {engine}\neffort: low" };
+        h.Validation.Results.Enqueue(Failure("check", 1, "repair required"));
+        h.Codex.Repairs.Enqueue(Success("repaired"));
+        h.Validation.Results.Enqueue(ValidationResult.Success);
         var workerAssignment = new WorkerAssignmentContract(assignment.AssignmentId, assignment.ServerExecutionId,
             new ServerProjectContract(project.Id, project.Name, project.Repository, project.DefaultBranch,
                 project.Description, project.Requirements.Select(requirement => new ServerProjectRequirementContract(
                     requirement.Type, requirement.Name, requirement.Version)).ToArray(), project.Revision,
                 project.CreatedAtUtc, project.UpdatedAtUtc),
-            new ServerWorkReferenceContract(assignment.Work.Type, assignment.Work.Id, assignment.Work.Url), workerId,
+            new ServerWorkReferenceContract(assignment.Work.Type, assignment.Work.Id, assignment.Work.Url) { Selection = assignment.Work.Selection }, workerId,
             assignment.Metadata, new ServerExecutionLeaseContract(assignment.Lease!.ExecutionId, assignment.Lease.WorkerId,
                 assignment.Lease.Generation, assignment.Lease.AcquiredAtUtc, assignment.Lease.ExpiresAtUtc, assignment.Lease.State));
 
@@ -1180,6 +1232,11 @@ public sealed class WorkerV011Tests
         Assert.Equal(queued.Id, workerEntry.ServerExecutionId);
         Assert.Equal(assignment.AssignmentId, workerEntry.AssignmentId);
         Assert.Equal("Completed", workerEntry.State);
+        Assert.Equal(engine, workerEntry.Engine);
+        Assert.Equal(2, h.Validation.Calls);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal(engine == "ccc" ? 2 : 0, cli.Invocations);
+        if (engine == "ccc") Assert.Empty(h.Codex.Issues);
 
         var reported = await store.ReportExecutionAsync(queued.Id, new WorkerExecutionReport(workerId,
             assignment.AssignmentId, workerEntry.ExecutionId.ToString(), "Completed", StartedAtUtc: workerEntry.StartedAtUtc,
@@ -2166,13 +2223,15 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RestartReconcilesCleanClaimButPreservesUncertainWorkspace(bool unsafeWorkspace)
+    [InlineData(false, "codex")]
+    [InlineData(true, "codex")]
+    [InlineData(false, "ccc")]
+    [InlineData(true, "ccc")]
+    public async Task RestartReconcilesCleanClaimButPreservesUncertainWorkspace(bool unsafeWorkspace, string engine)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
-        var source = PreservedConflict();
+        var source = PreservedConflict() with { Engine = engine };
         await history.CreateAsync(source);
         var attempt = source with { ExecutionId = Guid.NewGuid(), State = "Integrating", CompletedAtUtc = null,
             RecoveryState = null, RetryOfExecutionId = source.ExecutionId, AttemptNumber = 2 };
@@ -2181,6 +2240,7 @@ public sealed class WorkerV011Tests
         restarted.Git.RecoveryRejection = unsafeWorkspace ? "unfinished Git operation" : null;
         await restarted.Worker.ReconcileIntegrationRecoveryAsync(CancellationToken.None);
         var rows = await history.ReadAllAsync();
+        Assert.All(rows, entry => Assert.Equal(engine, entry.Engine));
         Assert.Equal("current-main", rows.Single(entry => entry.ExecutionId == source.ExecutionId).IntegrationRecoveryAttemptBase);
         if (unsafeWorkspace)
         {
@@ -2863,6 +2923,7 @@ public sealed class WorkerV011Tests
         public Harness(bool interactive = false, bool telegramEnabled = false, ExecutionHistoryStore? history = null, bool gracefulShutdown = false, TimeProvider? timeProvider = null, IImplementationEngine? engine = null)
         {
             Directory.CreateDirectory(_directory);
+            Git.ExecutionDirectory = Path.Combine(_directory, "worktree");
             var instructions = Path.Combine(_directory, "AGENTS.md");
             File.WriteAllText(instructions, "test instructions");
             var config = new WorkerConfiguration
@@ -3068,7 +3129,7 @@ public sealed class WorkerV011Tests
                 throw new WorkerInfrastructureException("Cleanup interrupted");
             return Task.CompletedTask;
         }
-        public string ExecutionDirectory { get; } = Path.Combine(Path.GetTempPath(), "execution-worktree");
+        public string ExecutionDirectory { get; set; } = Path.Combine(Path.GetTempPath(), "execution-worktree");
         public int Started { get; private set; }
         public int Cleanups { get; private set; }
         public int Integrations { get; private set; }

@@ -73,7 +73,7 @@ server:
         assert status["configuration"]["validity"] == "valid"
         assert status["configuration"]["projectCount"] == 0
         assert status["operation"]["readiness"] == "not-ready"
-        assert "codex-cli-unavailable" in status["diagnostics"]
+        assert "codex-cli:tool-missing" in status["diagnostics"]
         assert run(command, as_json=False)
     for args in (("config", "show"), ("config", "validate"),
                  ("capabilities", "list"), ("capabilities", "refresh"),
@@ -83,7 +83,7 @@ server:
     assert not identity.parent.exists(), "Observations must not create node identity state"
     inventory = run("capabilities", "refresh")
     assert {item["id"] for item in inventory["capabilities"]} == {
-        "git", "github-cli", "codex-cli", "dotnet-sdk", "dotnet-runtime", "docker"}
+        "git", "github-cli", "codex-cli", "claude-cli", "dotnet-sdk", "dotnet-runtime", "docker"}
     assert all(item["installation"] == "Missing" for item in inventory["capabilities"])
 
     # An invalid identity must not prevent recovery inventory or get overwritten.
@@ -97,8 +97,8 @@ server:
     before = config.read_bytes()
     assert not run("config", "set", "worker.maxParallelTasks", "99", code=2)["succeeded"]
     assert config.read_bytes() == before
-    for provider in ("github-cli", "dotnet-sdk", "dotnet-runtime", "codex-cli", "docker"):
-        for operation in ("install", "upgrade", "uninstall"):
+    for provider in ("github-cli", "dotnet-sdk", "dotnet-runtime", "codex-cli", "claude-cli", "docker"):
+        for operation in (("install", "upgrade") if provider == "claude-cli" else ("install", "upgrade", "uninstall")):
             result = run("provision", operation, provider, "--allow-elevation", code=2)
             assert result["diagnostic"] == "Denied"
     assert run("credential", "login", "codex-cli", code=2)["report"]["diagnostic"] == "Denied"
@@ -108,7 +108,14 @@ server:
         reject = False
         requests = 0
 
+        def do_PUT(self):
+            self.do_POST()
+
         def do_POST(self):
+            if self.path.endswith("/credential-access/request"):
+                self.send_response(204)
+                self.end_headers()
+                return
             if self.headers.get("Transfer-Encoding") == "chunked":
                 chunks = []
                 while True:
@@ -122,11 +129,14 @@ server:
             else:
                 payload = self.rfile.read(int(self.headers["Content-Length"]))
             body = json.loads(payload)
-            assert self.path == "/api/v1/workers/register"
+            assert self.path in ("/api/v1/workers/register", f"/api/v1/workers/{body['workerId']}")
             assert body["workerId"] == identity.read_text().strip()
             Enrollment.requests += 1
             self.send_response(403 if Enrollment.reject else 200)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
+            if not Enrollment.reject:
+                self.wfile.write(json.dumps({"contractVersion": 1, "workerId": body["workerId"]}).encode())
 
         def log_message(self, *_args):
             pass
@@ -139,10 +149,12 @@ server:
             result = run("register", "--token-stdin", stdin="isolated-bootstrap-fixture\n")
             assert result["status"] == "registered" and result["executionReadiness"] == "not-checked"
             retained = {path: path.read_bytes() for path in identity.parent.iterdir()}
+            accepted_requests = Enrollment.requests
+            assert accepted_requests == 2, "Enrollment must verify the retained credential"
             Enrollment.reject = True
             run("register", "--token-stdin", stdin="isolated-bootstrap-fixture\n", code=2)
             assert all(path.read_bytes() == contents for path, contents in retained.items())
-            assert Enrollment.requests == 2
+            assert Enrollment.requests == accepted_requests + 1
             assert run("status")["registration"]["serverAcceptance"] == "unverified"
         finally:
             server.shutdown()

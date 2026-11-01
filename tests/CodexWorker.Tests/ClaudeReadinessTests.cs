@@ -2,6 +2,24 @@ namespace CodexWorker.Tests;
 
 public sealed class ClaudeReadinessTests
 {
+    [Theory]
+    [InlineData("success", "ready")]
+    [InlineData("auth-error", "unauthenticated")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task NativeProcessFixtureChecksAuthenticationBeforeLiveReadiness(string mode, string expected)
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli(mode);
+        var readiness = new ClaudeReadiness((_, arguments, cwd, timeout, ct) =>
+            cli.RunAsync(arguments.ToArray(), cwd, "", new Dictionary<string, string?>(),
+                timeout ?? TimeSpan.FromSeconds(5), ct));
+        await readiness.RefreshAsync(CancellationToken.None);
+        Assert.Equal(expected, readiness.Observation.Scope);
+        Assert.NotNull(readiness.Observation.CheckedAtUtc);
+        Assert.Equal(0, cli.Invocations);
+    }
+
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
     [Trait("ValidationProfile", "FastCandidate")]

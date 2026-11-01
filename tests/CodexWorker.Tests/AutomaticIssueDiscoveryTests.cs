@@ -30,7 +30,17 @@ public sealed class AutomaticIssueDiscoveryTests
         await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
         var request = new WorkerAssignmentRequest(worker, true, 1, new Dictionary<string, int> { [project.Id] = 1 });
         Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        // A diagnostic observation without an executable provider cannot authorize assignment.
+        foreach (var state in new[] { "absent", "unauthenticated", "service-unavailable", "ready" })
+        {
+            await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1,
+                [.. capabilities, new("agent-readiness", "ccc", Scope: state)], []));
+            Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
+        }
         capabilities = [.. capabilities, new("agent-provider", "ccc")];
+        await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
+        fixture.Clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.False((await restarted.RequestAssignmentAsync(request)).HasWork);
         await restarted.HeartbeatWorkerAsync(new(1, worker, "1.0", "running", 0, 1, capabilities, []));
         var assignment = Assert.IsType<WorkAssignment>((await restarted.RequestAssignmentAsync(request)).Assignment);
         Assert.Equal(queued.WorkReference.Selection, assignment.Work.Selection);

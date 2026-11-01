@@ -7,6 +7,31 @@ public sealed class ClaudeImplementationEngineTests
     private const string Help = "--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence";
 
     [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task CancellationDuringNativeInvocationPreservesEditedFiles()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var cli = new FakeClaudeCli("wait");
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try
+        {
+            var instructions = Path.Combine(directory, "AGENTS.md");
+            await File.WriteAllTextAsync(instructions, "Project policy", cancellation.Token);
+            var execution = cli.CreateEngine().RunAsync(new ImplementationRequest(directory, instructions,
+                new GitHubIssue(42, "Task", "Implement", DateTimeOffset.UnixEpoch)), cancellation.Token);
+            try { await cli.Started.Task.WaitAsync(cancellation.Token); }
+            finally { cancellation.Cancel(); }
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+            Assert.True(File.Exists(Path.Combine(directory, "implemented.txt")));
+            Assert.Equal(1, cli.Invocations);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     public async Task RunsFileOnlyInAssignedWorktreeAndRepairsWithSameEngine()

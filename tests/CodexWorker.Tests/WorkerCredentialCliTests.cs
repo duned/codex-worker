@@ -162,6 +162,17 @@ public sealed class WorkerCredentialCliTests
 
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task ClaudeLoginIsRejectedWithoutLaunchingCredentialProvider()
+    {
+        var service = new NodeCredentialAdministration(Discovery(false), (_, _, _) =>
+            throw new InvalidOperationException("Unsupported login must not launch."));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.ExecuteAsync(
+            new(NodeId, "claude-cli", ProvisioningCommandAction.Login)));
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
     [Theory]
     [InlineData("check", "github-cli", ProvisioningCommandAction.CheckAuthentication)]
     [InlineData("logout", "codex-cli", ProvisioningCommandAction.Logout)]
