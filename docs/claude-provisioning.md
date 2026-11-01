@@ -2,7 +2,7 @@
 
 `claude-cli` is an optional capability in the existing node inventory and provisioning
 command API. Management can request Detect, Install, Update (also repair by reinstall),
-and CheckAuthentication. Command authorization, operation IDs, deadlines, cancellation,
+CheckAuthentication, and Login. Command authorization, operation IDs, deadlines, cancellation,
 history and inventory refresh use the same protocol as other managed tools.
 
 The Linux provider downloads Anthropic's fixed HTTPS native installer from
@@ -22,7 +22,8 @@ User-owned `ANTHROPIC_API_KEY` and supported provider environment/settings remai
 node-local, under that service identity. Do not place keys in project YAML or command
 requests. Existing Server credential metadata/assignment/delivery authorization remains
 the boundary for centrally managed secrets; these provisioning commands neither accept
-secret payloads nor import login sessions. Subscription login brokering is not exposed.
+secret payloads nor import login sessions. Managed Login launches the original native
+CLI; subscription login brokering and remote browser-code submission are not exposed.
 Authentication status uses the default JSON from `claude auth status`, as documented in
 [the official CLI reference](https://code.claude.com/docs/en/cli-reference).
 Exit 0 with `loggedIn: true` means Authentication Satisfied; exit 1 with
@@ -40,10 +41,61 @@ failure does not block global Codex execution readiness. Inventory is refreshed 
 operations, including bounded refresh following interrupted installers; offline/stale
 Workers retain the existing management restrictions.
 
+## Managed native Login
+
+An authorized operator can submit the existing typed provisioning request with
+`CapabilityId: claude-cli` and `Action: Login` for an online Worker. The capability
+catalog advertises `login`; no dashboard UI is added. Node-local `enabled`,
+`allowCredentials`, and `allowNonPrivileged` must all permit it; denied action
+`authentication:claude-cli:login` takes precedence. Login never invokes sudo.
+The managed operation uses the existing ID, deadline (5–600 seconds), audit,
+at-most-once dispatch, capability concurrency lock and inventory refresh lifecycle.
+An expired or interrupted operation is not replayed on reconnect.
+
+The unmodified Linux v2.1.309 binary was checked in an empty temporary HOME during
+implementation. With redirected stdin/stdout (no PTY required), `auth login` prints
+an HTTPS `claude.com/cai/oauth/authorize` URL, including `code`, `state`,
+`code_challenge`, and redirect parameters, followed by `Paste code here`.
+This is a browser-returned code flow, **not a pre-issued device code**.
+See the [official remote login instructions](https://code.claude.com/docs/en/troubleshoot-install)
+and [vendor terms](https://code.claude.com/docs/en/legal-and-compliance).
+
+The managed implementation deliberately uses the manual fallback. After observing
+that bounded, allowlisted native challenge, it reports typed transient
+`ClaudeLogin` metadata with provider `anthropic`, state
+`manual-vendor-cli-completion-required`, and the fixed vendor documentation URL.
+The enclosing operation supplies the node, operation ID and deadline. It then
+terminates and joins its native CLI, rechecks `claude auth status`, refreshes
+inventory, and returns Failed/ProcessFailed with failure code
+`ManualVendorCliCompletionRequired`. This means local completion is necessary,
+not that browser-only completion succeeded. Even an already authenticated account
+does not turn this fallback into a successful Login operation. If the native CLI
+finishes without requesting paste-code input, success still requires an observed
+trusted challenge, native exit zero and a valid authenticated `auth status` result.
+
+To finish, open a secure terminal **as the Worker service user**, with that user's
+configured HOME, and run `~/.local/bin/claude auth login`. Open the URL printed in
+that terminal, follow the browser instructions, and paste any returned code into
+that **same local CLI**. The stopped managed CLI's challenge cannot be reused.
+Never paste the URL or browser code into Server/dashboard/API requests, Issues or
+logs. Then request managed `CheckAuthentication` and refresh capabilities. CCC
+availability still requires its separate live headless readiness observation.
+
+There is no management code-input endpoint, custom OAuth exchange, token capture,
+or credential export. Complete authorization URLs and raw stdout/stderr remain
+node-local transient buffers; none enters progress, database, history or backups.
+Only the fixed documentation URL leaves the node. Transient progress disappears
+on deadline, terminal completion or Server restart; the durable failure carries
+only fixed manual-completion instructions. Wrong HOME (compared with the effective
+Linux service account's passwd entry), configuration-directory overrides, missing
+CLI, absent/malformed challenge, output overflow, process failure, timeout and
+cancellation fail closed. Custom service HOME overrides require local manual
+completion rather than guessing which account owns credentials.
+
 ## VM2 operational verification
 
-This change was developed without access to VM2 or its installed 2.1.309 binary;
-that version's live behavior still requires node-local verification. Do not use an
+The official 2.1.309 binary's unauthenticated challenge was verified in isolation;
+VM2 service identity, authentication and readiness still require node-local verification. Do not use an
 administrator's interactive HOME as evidence of Worker authentication.
 
 1. Inspect the Worker's service unit locally to confirm its configured User and

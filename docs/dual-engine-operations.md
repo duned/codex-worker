@@ -149,3 +149,25 @@ credentials and spending authorization. They are not automated prerequisites:
    explicitly; verify secrets are absent from retained diagnostics.
 5. Record outcomes and retained execution IDs for parent final integration.
    Never describe fake-based results as a successful real-node campaign.
+
+## Managed Claude native sign-in
+
+The typed `claude-cli Login` action uses the original vendor binary under the
+Worker service identity and the existing provisioning authorization, deadline and
+at-most-once lifecycle. Enable node-local provisioning, credentials and
+non-privileged operations; explicit denied actions still take precedence.
+
+On the verified 2.1.309 flow, the vendor asks for a browser-returned code in CLI
+stdin. Managed Login therefore reports `manual-vendor-cli-completion-required`
+(`ManualVendorCliCompletionRequired` failure detail), stops its CLI and directs
+the operator to run `~/.local/bin/claude auth login` in a secure terminal as the
+Worker service user with its configured HOME. Complete browser and paste-code
+steps in that same terminal. No browser-code or OAuth URL handoff to management
+is provided. Browser-only completion is not claimed. The managed operation
+refreshes inventory but does not certify CCC readiness.
+
+After local completion, request `CheckAuthentication` and refresh inventory.
+Authentication, installation and live `agent-provider: ccc` readiness remain
+separate observations; scheduling still needs fresh managed observations and
+lease ownership. See [Claude provisioning](claude-provisioning.md#managed-native-login)
+for sanitized progress, service HOME checks and restart/reconnect behavior.

@@ -195,6 +195,8 @@ public sealed class ServerProvisioningCommandCli(IServerConfigurationAdministrat
             _output.WriteLine($"Device login: {login.VerificationUri}");
             _output.WriteLine($"One-time code: {login.UserCode}");
         }
+        if (command.ClaudeLogin is { } claude)
+            _output.WriteLine($"{claude.Provider}: {claude.State}. Instructions: {claude.InstructionsUri}");
         if (command.CompletedAtUtc is { } completed) _output.WriteLine($"Completed: {completed:O}");
         if (command.FailureDetail is { } failure)
         {

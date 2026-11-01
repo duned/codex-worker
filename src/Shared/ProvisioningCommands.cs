@@ -11,7 +11,7 @@ public enum ProvisioningCommandStatus { Pending, Running, Succeeded, Failed, Can
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningDiagnostic>))]
 public enum ProvisioningDiagnostic { Queued, Executing, Completed, Unsupported, Denied, ProcessFailed, Cancelled, TimedOut, Interrupted }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningFailureCode>))]
-public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired }
+public enum ProvisioningFailureCode { ElevationDenied, ExecutableNotFound, ProcessExited, VerificationFailed, ProcessStartFailed, CapabilityDetectionFailed, TimedOut, PackageUnavailable, RepositoryAccessFailed, DockerDaemonAccessRequired, SystemPrefixPermissionDenied, ProviderConfigurationFailed, RegistryUnavailable, CachePreparationFailed, DockerDaemonUnavailable, DockerServiceRestartRequired, ManualVendorCliCompletionRequired }
 [JsonConverter(typeof(JsonStringEnumConverter<ProvisioningProviderStep>))]
 public enum ProvisioningProviderStep { Unknown, AptIndexRefresh, AptRuntimeInstall, AptPackageInstall, AptPackageRemoval, NpmPackageInstall, NpmPackageRemoval, ExecutablePermissions, DockerDaemonConfiguration, ClaudePackageInstall }
 
@@ -28,6 +28,7 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         ProvisioningFailureCode.ProviderConfigurationFailed => "npm configuration is invalid. Repair or reinstall the product provisioning helper.",
         ProvisioningFailureCode.RegistryUnavailable => "npm could not reach the official registry. Check node DNS, network and registry availability.",
         ProvisioningFailureCode.CachePreparationFailed => "The root-owned product npm cache could not be prepared. Check its ownership, links and filesystem availability.",
+        ProvisioningFailureCode.ManualVendorCliCompletionRequired => "manual-vendor-cli-completion-required: Open a secure terminal as the Worker service user with its configured HOME. Run ~/.local/bin/claude auth login and follow the vendor browser and Paste code here instructions in that same terminal. Do not send the URL or returned code to management. Then request CheckAuthentication; CCC requires a separate live readiness observation.",
         ProvisioningFailureCode.ExecutableNotFound => "A required provisioning executable was not found.",
         ProvisioningFailureCode.ProcessExited => $"A provisioning process exited unsuccessfully{(ProcessExitCode is { } code ? $" (exit code {code})" : "")}.",
         ProvisioningFailureCode.VerificationFailed => "The provisioning process completed but capability verification failed.",
@@ -78,11 +79,13 @@ public sealed record ProvisioningCommandRequest(string NodeId, string Capability
 public sealed record ProvisioningCommand(string Id, ProvisioningCommandRequest Request, DateTimeOffset CreatedAtUtc,
     ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic, DateTimeOffset? StartedAtUtc = null,
     DateTimeOffset? DeadlineUtc = null, DateTimeOffset? CompletedAtUtc = null, SshPublicIdentity? PublicIdentity = null,
-    CodexLoginInstructions? LoginInstructions = null, ProvisioningFailureDetail? FailureDetail = null);
+    CodexLoginInstructions? LoginInstructions = null, ProvisioningFailureDetail? FailureDetail = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClaudeLoginProgress? ClaudeLogin = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ProvisioningCommandReport(ProvisioningCommandStatus Status, ProvisioningDiagnostic Diagnostic,
     SshPublicIdentity? PublicIdentity = null, CodexLoginInstructions? LoginInstructions = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ProvisioningFailureDetail? FailureDetail = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ProvisioningFailureDetail? FailureDetail = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ClaudeLoginProgress? ClaudeLogin = null);
 
 public static class ProvisioningCommandProtocol
 {
@@ -97,7 +100,7 @@ public static class ProvisioningCommandProtocol
     public static bool Supported(ProvisioningCommandRequest request) => request.Action switch
     {
         ProvisioningCommandAction.Detect => true,
-        ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli",
+        ProvisioningCommandAction.Login => request.CapabilityId is "codex-cli" or "github-cli" or "claude-cli",
         ProvisioningCommandAction.Install or ProvisioningCommandAction.Update or ProvisioningCommandAction.Uninstall => ToolProvisioningProviders.AptPackage(request.CapabilityId) is not null || request.CapabilityId == "codex-cli" ||
             request.CapabilityId == "claude-cli" && request.Action != ProvisioningCommandAction.Uninstall,
         ProvisioningCommandAction.CheckAuthentication => request.CapabilityId is "github-cli" or "codex-cli" or "claude-cli",
@@ -113,7 +116,9 @@ public static class ProvisioningCommandProtocol
     public static bool Terminal(ProvisioningCommandStatus status) => status is ProvisioningCommandStatus.Succeeded or
         ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.Cancelled or ProvisioningCommandStatus.TimedOut;
 
-    public static bool ValidReport(ProvisioningCommandReport? report) => report is not null && (report.FailureDetail is null ||
+    public static bool ValidReport(ProvisioningCommandReport? report) => report is not null &&
+        (report.ClaudeLogin is null || report.Status == ProvisioningCommandStatus.Running &&
+            report.LoginInstructions is null && ClaudeNativeLogin.Valid(report.ClaudeLogin)) && (report.FailureDetail is null ||
         report.Status is ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut && report.FailureDetail.IsValid &&
         ((report.Status == ProvisioningCommandStatus.TimedOut) == (report.FailureDetail.Code == ProvisioningFailureCode.TimedOut))) && (report.PublicIdentity is null ||
         report.Status == ProvisioningCommandStatus.Succeeded && NodeGitHubSetup.ValidIdentity(report.PublicIdentity)) && (report.LoginInstructions is null ||
@@ -140,6 +145,7 @@ public sealed partial class NodeProvisioningCommandExecutor
     private readonly NodeGitHubSetup _githubSetup;
     private readonly TimeProvider _timeProvider;
     private readonly Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>> _login;
+    private readonly Func<Func<ClaudeLoginProgress, CancellationToken, Task>, CancellationToken, Task<int>> _claudeLogin;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();
 
     public NodeProvisioningCommandExecutor(NodeCapabilityDiscovery discovery,
@@ -147,7 +153,8 @@ public sealed partial class NodeProvisioningCommandExecutor
         Func<bool>? supportsApt = null, Func<bool>? isRoot = null, Func<bool>? npmAvailable = null, NodeGitHubSetup? githubSetup = null,
         Func<Func<CodexLoginInstructions, CancellationToken, Task>, CancellationToken, Task<int>>? login = null,
         Func<string, IReadOnlyList<string>, CancellationToken, Task<ProvisioningProcessResult>>? processRunner = null,
-        TimeProvider? timeProvider = null, bool requireManagedGitHubAuthentication = false)
+        TimeProvider? timeProvider = null, bool requireManagedGitHubAuthentication = false,
+        Func<Func<ClaudeLoginProgress, CancellationToken, Task>, CancellationToken, Task<int>>? claudeLogin = null)
     {
         _discovery = discovery;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -162,6 +169,7 @@ public sealed partial class NodeProvisioningCommandExecutor
         // a service-account transition). Only effective UID zero can bypass sudo.
         _isRoot = isRoot ?? (() => OperatingSystem.IsLinux() && NativeMethods.GetEffectiveUserId() == 0);
         _login = login ?? CodexDeviceLogin.RunAsync;
+        _claudeLogin = claudeLogin ?? ClaudeNativeLogin.RunAsync;
         _npmAvailable = npmAvailable ?? (() => File.Exists("/usr/bin/node") && File.Exists("/usr/bin/npm"));
     }
 
@@ -187,8 +195,16 @@ public sealed partial class NodeProvisioningCommandExecutor
         var refreshed = false;
         try
         {
-            await gate.WaitAsync(timeout.Token);
-            acquired = true;
+            if (command.Request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login })
+            {
+                acquired = await gate.WaitAsync(TimeSpan.Zero, timeout.Token);
+                if (!acquired) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Denied);
+            }
+            else
+            {
+                await gate.WaitAsync(timeout.Token);
+                acquired = true;
+            }
             var request = command.Request;
             if (request.Action == ProvisioningCommandAction.Detect)
             {
@@ -212,6 +228,23 @@ public sealed partial class NodeProvisioningCommandExecutor
             if (request.Action == ProvisioningCommandAction.Login)
             {
                 if (reportProgress is null) return new(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.Unsupported);
+                if (request.CapabilityId == "claude-cli")
+                {
+                    var exit = await _claudeLogin(async (progress, token) =>
+                    {
+                        if (!ClaudeNativeLogin.Valid(progress)) throw new InvalidOperationException("Invalid Claude login progress.");
+                        await reportProgress(new(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing,
+                            ClaudeLogin: progress), token);
+                    }, timeout.Token);
+                    // Native login owns credentials. A browser challenge is not proof of authentication.
+                    var status = await _run(ClaudeServiceEnvironment.Executable, ["auth", "status"], timeout.Token);
+                    if (exit == ClaudeNativeLogin.ManualCompletionExitCode)
+                        return Failed(ProvisioningFailureCode.ManualVendorCliCompletionRequired);
+                    if (exit != 0) return Failed(ProvisioningFailureCode.ProcessExited, exit);
+                    return ClaudeAuthenticationStatus.TryRead(status.ExitCode, status.StandardOutput, out var authenticated) && authenticated
+                        ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
+                        : Failed(ProvisioningFailureCode.VerificationFailed);
+                }
                 var code = await _login(async (instructions, token) =>
                 {
                     if (!CodexDeviceLogin.Valid(instructions)) throw new InvalidOperationException("Invalid login instructions.");

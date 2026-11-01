@@ -93,7 +93,7 @@ public sealed class ClaudeProvisioningTests
         Assert.True(WorkerProvisioning.Permitted(request, policy));
         policy.DeniedActions.Add("tool:claude-cli:install");
         Assert.False(WorkerProvisioning.Permitted(request, policy));
-        Assert.False(ProvisioningCommandProtocol.Supported(request with { Action = ProvisioningCommandAction.Login }));
+        Assert.True(ProvisioningCommandProtocol.Supported(request with { Action = ProvisioningCommandAction.Login }));
         Assert.False(ProvisioningCommandProtocol.Supported(request with { Action = ProvisioningCommandAction.Uninstall }));
         Assert.True(ProvisioningCommandProtocol.Supported(request with { Action = ProvisioningCommandAction.CheckAuthentication }));
     }

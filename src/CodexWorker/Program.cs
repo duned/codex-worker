@@ -198,6 +198,8 @@ public static class Program
                 {
                     if (command.Json)
                         Console.Error.WriteLine(System.Text.Json.JsonSerializer.Serialize(progress));
+                    else if (progress.ClaudeLogin is { } claude)
+                        Console.WriteLine($"{claude.State}. Instructions: {claude.InstructionsUri}");
                     else if (progress.LoginInstructions is { } instructions)
                         Console.WriteLine($"Open {instructions.VerificationUri} and enter code {instructions.UserCode}.");
                     return Task.CompletedTask;

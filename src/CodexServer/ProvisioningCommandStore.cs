@@ -8,6 +8,7 @@ using System.Text.Json;
 public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? timeProvider = null)
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CodexLoginInstructions> _loginInstructions = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, ClaudeLoginProgress> _claudeLogin = new();
     private DateTimeOffset UtcNow => (timeProvider ?? TimeProvider.System).GetUtcNow();
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken token)
@@ -102,13 +103,21 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
 
     private ProvisioningCommand WithActiveLoginInstructions(ProvisioningCommand operation)
     {
+        operation = operation with { ClaudeLogin = null };
         if (operation.Status == ProvisioningCommandStatus.Running && operation.DeadlineUtc > UtcNow)
         {
+            if (_claudeLogin.TryGetValue(operation.Id, out var claude))
+                operation = operation with { ClaudeLogin = claude };
             if (_loginInstructions.TryGetValue(operation.Id, out var instructions))
                 return operation with { LoginInstructions = instructions };
             if (operation.Request is { CapabilityId: "github-cli", Action: ProvisioningCommandAction.Login } &&
                 operation.LoginInstructions is { VerificationUri: "https://github.com/login/device" } persisted &&
                 CodexDeviceLogin.Valid(persisted)) return operation;
+        }
+        if (operation.Status != ProvisioningCommandStatus.Running || operation.DeadlineUtc <= UtcNow)
+        {
+            _claudeLogin.TryRemove(operation.Id, out _);
+            operation = operation with { ClaudeLogin = null };
         }
         _loginInstructions.TryRemove(operation.Id, out _);
         return operation with { LoginInstructions = null };
@@ -173,6 +182,16 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
         if (report.Status == ProvisioningCommandStatus.Succeeded && report.PublicIdentity is null &&
             operation.Request.Action is ProvisioningCommandAction.GenerateSshKey or ProvisioningCommandAction.InspectSshKey)
             throw new InvalidDataException("Public identity is required for this action.");
+        if (report.FailureDetail?.Code == ProvisioningFailureCode.ManualVendorCliCompletionRequired &&
+            operation.Request is not { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login })
+            throw new InvalidDataException("Manual Claude completion does not belong to this operation.");
+        if (operation.Request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login } &&
+            operation.Status == ProvisioningCommandStatus.Running && report.Status == ProvisioningCommandStatus.Succeeded &&
+            operation.DeadlineUtc <= UtcNow)
+            throw new InvalidDataException("Native login deadline has expired.");
+        if (report.ClaudeLogin is not null && (operation.Request is not
+            { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login } || operation.DeadlineUtc <= UtcNow))
+            throw new InvalidDataException("Claude progress does not belong to an active native login.");
         if (report.LoginInstructions is not null && (operation.Request.Action != ProvisioningCommandAction.Login ||
             operation.Request.CapabilityId is not ("codex-cli" or "github-cli") || operation.DeadlineUtc <= UtcNow ||
             report.LoginInstructions.VerificationUri == "https://auth.openai.com/codex/device" && operation.Request.CapabilityId != "codex-cli" ||
@@ -186,10 +205,12 @@ public sealed class ProvisioningCommandStore(string databasePath, TimeProvider? 
             throw new InvalidOperationException("Operation is already terminal.");
         }
         if (operation.Status != ProvisioningCommandStatus.Running) throw new InvalidOperationException("Operation has not been dispatched.");
+        if (report.ClaudeLogin is { } claude) _claudeLogin[id] = claude;
+        if (ProvisioningCommandProtocol.Terminal(report.Status)) _claudeLogin.TryRemove(id, out _);
         if (report.LoginInstructions is { } instructions) _loginInstructions[id] = instructions;
         if (ProvisioningCommandProtocol.Terminal(report.Status)) _loginInstructions.TryRemove(id, out _);
         return operation with { Status = report.Status, Diagnostic = report.Diagnostic,
-            PublicIdentity = report.PublicIdentity, FailureDetail = report.FailureDetail,
+            PublicIdentity = report.PublicIdentity, FailureDetail = report.FailureDetail, ClaudeLogin = null,
             // The local administration CLI runs in another process. Persist only the validated
             // GitHub user challenge, never CLI output or credentials; terminal reports erase it.
             LoginInstructions = report.Status == ProvisioningCommandStatus.Running && operation.Request.CapabilityId == "github-cli"

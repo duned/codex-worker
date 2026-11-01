@@ -163,12 +163,17 @@ public sealed class WorkerCredentialCliTests
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
     [Fact]
-    public async Task ClaudeLoginIsRejectedWithoutLaunchingCredentialProvider()
+    public async Task ClaudeLoginUsesTypedCredentialProviderAndReportsManualCompletion()
     {
-        var service = new NodeCredentialAdministration(Discovery(false), (_, _, _) =>
-            throw new InvalidOperationException("Unsupported login must not launch."));
-        await Assert.ThrowsAsync<ArgumentException>(() => service.ExecuteAsync(
-            new(NodeId, "claude-cli", ProvisioningCommandAction.Login)));
+        var request = new ProvisioningCommandRequest(NodeId, "claude-cli", ProvisioningCommandAction.Login);
+        var service = new NodeCredentialAdministration(Discovery(false), (received, _, _) =>
+        {
+            Assert.Equal(request, received);
+            return Task.FromResult(new ProvisioningCommandReport(ProvisioningCommandStatus.Failed,
+                ProvisioningDiagnostic.ProcessFailed, FailureDetail: new(ProvisioningFailureCode.ManualVendorCliCompletionRequired)));
+        });
+        var result = await service.ExecuteAsync(request);
+        Assert.Equal(ProvisioningFailureCode.ManualVendorCliCompletionRequired, result.Report.FailureDetail?.Code);
     }
 
     [Trait("TestType", "Component")]

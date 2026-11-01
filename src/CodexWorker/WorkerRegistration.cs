@@ -644,9 +644,10 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
         async Task ReportAsync(ProvisioningCommandReport report, CancellationToken token)
         {
             using var message = CreateAuthorizedRequest(HttpMethod.Post, settings, $"api/v1/workers/{workerId}/provisioning/commands/{command.Id}/report");
-            // Failure detail is retained by the local Server executor. Keep Worker reports
-            // on the established wire contract for mixed-version Server installations.
-            message.Content = JsonContent.Create(report with { FailureDetail = null });
+            // Preserve existing providers' mixed-version wire contract. Claude native Login
+            // needs its typed manual-completion result on both sides of the managed boundary.
+            message.Content = JsonContent.Create(command.Request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.Login }
+                ? report : report with { FailureDetail = null });
             using var acknowledgement = await SendAsync(message, token);
             acknowledgement.EnsureSuccessStatusCode();
         }
