@@ -11,6 +11,12 @@ public sealed partial class GitRepository
     {
         var result = await InspectCleanupAsync(entry, history, ct);
         if (result.Decision != "safe") return result;
+        if (entry.RecoveryState == "standalone-success-reconciled" && result.ReasonCode != "already-clean")
+        {
+            var blocker = await InspectExecutionProcessesAsync(entry, ct);
+            if (blocker is not null)
+                return new(entry.ExecutionId, "review", blocker, "Task reconciled; process ownership prevents resource cleanup.");
+        }
         if (entry.State is "InfrastructureFailure" or "Cancelled")
             return result with { Decision = "review", ReasonCode = "uncertain-execution", Message = "Interrupted or infrastructure-failed execution requires reconciliation; preserve its resources." };
         if (result.ReasonCode == "already-clean") return result;
@@ -127,7 +133,7 @@ public sealed partial class GitRepository
         if (!acknowledged && entry.RecoveryState == "operator-acknowledged")
             return Result("review", "operator-acknowledged", "Operator acknowledgment retains resources; use protected acknowledged cleanup inspection.");
         if (!(acknowledged && entry.RecoveryState == "operator-acknowledged") && entry.RecoveryState is not (null or "recoverable" or "integration-conflict" or "cleanup-pending" or "missing" or
-            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled" or "standalone-retired"))
+            "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "operator-cleaned" or "completion-reconciled" or "standalone-success-reconciled" or "standalone-retired"))
             return Result("review", "unknown-recovery-state", "Recovery metadata is unknown or requires reconciliation.");
         try
         {
@@ -135,7 +141,7 @@ public sealed partial class GitRepository
             if (ownership.Error is { } error) return Result("review", error.Code, error.Message);
             if (!ownership.DirectoryExists && !ownership.BranchExists)
             {
-                if (acknowledged && entry.RecoveryState == "operator-acknowledged" || ExecutionCompletion.IsSettled(entry) || entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
+                if (acknowledged && entry.RecoveryState == "operator-acknowledged" || entry.RecoveryState == "standalone-success-reconciled" || ExecutionCompletion.IsSettled(entry) || entry.RecoveryState is null or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or
                     "superseded" or "integration-recovered" or "codex-recovered" or "codex-recovery-finished" or "cleanup-pending" or "operator-cleaned")
                     return Result("safe", "already-clean", "No managed workspace, Git registration or feature branch remains.");
                 return Result("review", "missing-recovery-resources", "History still requires recovery resources that no longer exist.");

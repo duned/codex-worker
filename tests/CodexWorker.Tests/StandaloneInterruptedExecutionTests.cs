@@ -9,6 +9,107 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     : IClassFixture<GitWorktreeTests.RepositorySeed>
 {
     [Theory]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "valid")]
+    [InlineData("c657f671-7473-4ef2-adc3-0f161f1619dd", 291, "valid")]
+    [InlineData("9a2ad54d-9dbd-4573-acb6-e0996e0068f2", 292, "valid")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "missing-provenance")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "wrong-execution")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "unreachable")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "reopened")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "wrong-label")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "wrong-repository")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "managed")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "different-attempt")]
+    [InlineData("02e0e69c-2794-43fe-88af-9345322c2a77", 286, "verified-successor")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ClosedIssueWithDurableSameExecutionProofResolvesWithoutReplayingEffects(string executionId, int issueNumber, string proof)
+    {
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        var id = Guid.Parse(executionId);
+        var commit = (await fixture.Git("rev-parse", "origin/main")).Trim();
+        var issue = fixture.Issue with { Number = issueNumber };
+        var integration = new GitIntegrationResult(true, "integrated", commit, "main",
+            ResourceExecutionId: id, ResourceAttemptNumber: 1);
+        var report = new IssueExecutionReport("validated", [], Integration: integration, ExecutionId: id);
+        var completion = new ExecutionCompletion(report, ExecutionCompletion.IssueIntent(issue), ExecutionCompletion.Policy(config));
+        var source = new ExecutionHistoryEntry(id, config.Project.Name, config.Project.Repository,
+            issueNumber, issue.Title, GitRepository.FeatureBranchName(config.Git, issue), "main",
+            DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow, "Cancelled", 1, "validated", "passed",
+            0, [], commit, "main", null, "original uncertain diagnostic", RecoveryState: "uncertain",
+            CompletionJson: JsonSerializer.Serialize(completion));
+        source = proof switch
+        {
+            "missing-provenance" => source with { CompletionJson = null },
+            "wrong-execution" => source with { CompletionJson = JsonSerializer.Serialize(completion with
+                { Report = report with { ExecutionId = Guid.NewGuid() } }) },
+            "unreachable" => source with { CommitSha = new string('f', 40), CompletionJson = JsonSerializer.Serialize(completion with
+                { Report = report with { Integration = integration with { CommitSha = new string('f', 40) } } }) },
+            "wrong-repository" => source with { Repository = "other/repository" },
+            "managed" => source with { AssignmentId = "original-assignment" },
+            _ => source
+        };
+        await history.CreateAsync(source);
+        if (proof == "different-attempt")
+            await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2,
+                State = "Completed", CompletionJson = null });
+        if (proof == "verified-successor")
+        {
+            var successorId = Guid.NewGuid();
+            await history.CreateAsync(source with { ExecutionId = successorId, AttemptNumber = 2,
+                State = "Completed", CompletionJson = JsonSerializer.Serialize(completion with
+                {
+                    Report = report with { ExecutionId = successorId, AttemptNumber = 2,
+                        Integration = integration with { ResourceExecutionId = successorId, ResourceAttemptNumber = 2 } }
+                }) });
+        }
+        var github = new GitHub(issue);
+        using var telegram = new TelegramNotifier(false);
+        using var git = fixture.CreateRepository(config.Git);
+        var codex = new Codex(_ => throw new InvalidOperationException("Must not execute"));
+        var worker = new Worker(config, github, git, codex, new Validation(), telegram, history: history);
+        var remote = new GitHubIssueState(proof == "reopened", proof == "wrong-label" ? [] : [config.GitHub.DoneLabel]);
+        github.IssueState = _ => remote;
+        await worker.ReconcileTerminalStandaloneAsync(source, await history.ReadAllAsync(), remote, CancellationToken.None);
+        var saved = Assert.IsType<ExecutionHistoryEntry>(await history.ReadExecutionAsync(id));
+        if (proof == "verified-successor")
+        {
+            Assert.Equal(source.State, saved.State);
+            Assert.Equal("operator-acknowledged", saved.RecoveryState);
+            Assert.False(worker.HandlesStandaloneRecovery(saved));
+            Assert.Contains("original outcome Cancelled retained", await history.ReadAcknowledgementAsync(id));
+            Assert.Empty(github.Comments);
+            Assert.Equal(0, codex.Calls);
+            return;
+        }
+        if (proof != "valid")
+        {
+            Assert.Equal(source.State, saved.State);
+            Assert.Equal(source.RecoveryState, saved.RecoveryState);
+            Assert.Null(await history.ReadAcknowledgementAsync(id));
+            Assert.Empty(github.Comments);
+            Assert.Equal(0, codex.Calls);
+            return;
+        }
+        Assert.Equal("Completed", saved.State);
+        Assert.True(ExecutionCompletion.IsSettled(saved), saved.StandaloneRecoveryDiagnosticJson);
+        Assert.True(ExecutionCompletion.Read(saved).CleanupCompleted);
+        Assert.Null(saved.StandaloneRecoveryDiagnosticJson);
+        Assert.False(worker.HandlesStandaloneRecovery(saved));
+        Assert.False(WorkerHost.NeedsCompletionReconciliation(saved));
+        Assert.Equal(source.FailureReason, saved.FailureReason);
+        var audit = await history.ReadAcknowledgementAsync(id);
+        Assert.Contains(commit, audit);
+        await worker.ReconcileTerminalStandaloneAsync(saved, await history.ReadAllAsync(), remote, CancellationToken.None);
+        Assert.Equal(audit, await history.ReadAcknowledgementAsync(id));
+        Assert.Empty(github.Comments);
+        Assert.Equal(0, github.CloseCalls);
+        Assert.Equal(0, codex.Calls);
+    }
+
+    [Theory]
     [InlineData(1)]
     [InlineData(2)]
     [Trait("TestType", "Integration")]
@@ -370,10 +471,14 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
             output: output, timeProvider: clock);
         for (var check = 0; check < 50; check++)
         {
+            var before = github.StateReads;
             Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+            // Eligibility reads and fresh reads for at most three admitted inspections.
+            Assert.InRange(github.StateReads - before, 0, 23);
             clock.Now += TimeSpan.FromMinutes(1);
         }
-        Assert.Equal(150, github.StateReads);
+        Assert.InRange(github.StateReads, 150, 1150);
+        var stateReads = github.StateReads;
         Assert.Single(startupOutput.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
         Assert.Contains("Standalone recovery checks blocked", startupOutput.ToString());
         Assert.Contains("issue-no-longer-eligible (", startupOutput.ToString());
@@ -381,7 +486,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         // Durable cooldown prevents a restart from immediately repeating these reads.
         var restarted = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
         Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
-        Assert.Equal(150, github.StateReads);
+        Assert.Equal(stateReads, github.StateReads);
         var retained = await history.ReadAllAsync();
         Assert.Equal(150, retained.Count);
         Assert.Equal(150, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
@@ -466,7 +571,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         foreach (var (_, id) in historical)
         {
             var closed = await history.ReadExecutionAsync(id, CancellationToken.None);
-            Assert.Contains("issue-no-longer-eligible", closed?.StandaloneRecoveryDiagnosticJson ?? "");
+            Assert.Contains("legacy-completion-provenance-missing", closed?.StandaloneRecoveryDiagnosticJson ?? "");
         }
     }
 

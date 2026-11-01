@@ -87,6 +87,10 @@ public interface IGitRepository : IDisposable
     }
     Task<GitRecoveryInfo?> PreserveIntegrationConflictAsync(CancellationToken ct) => Task.FromResult<GitRecoveryInfo?>(null);
     Task CleanupRecoveryWorkspaceAsync(ExecutionHistoryEntry recovery, CancellationToken ct) => Task.CompletedTask;
+    Task<ExecutionCleanupInspection> CleanupStaleExecutionAsync(ExecutionHistoryEntry entry,
+        IReadOnlyList<ExecutionHistoryEntry> history, CancellationToken ct) =>
+        Task.FromResult(new ExecutionCleanupInspection(entry.ExecutionId, "review", "cleanup-unsupported",
+            "This Git repository cannot verify stale execution cleanup; preserve resources."));
     Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
         Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct);
     Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,

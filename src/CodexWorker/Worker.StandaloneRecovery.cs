@@ -16,16 +16,22 @@ public sealed partial class Worker
         "owned-workspace-missing", "workspace-head-invalid", "worktree-repository-mismatch",
         "authoritative-remote-unavailable", "original-base-not-on-authoritative-remote", "workspace-history-diverged",
         "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable",
-        "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete"
+        "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete",
+        "completed-issue-conflicting-labels", "different-or-active-attempt", "legacy-completion-provenance-missing",
+        "completion-provenance-incompatible", "completion-commit-not-on-remote", "completed-issue-proof-incomplete",
+        "completed-issue-state-changed"
     };
     private readonly Dictionary<Guid, (DateTimeOffset Next, string? Diagnostic)> _standaloneChecks = [];
+    private readonly Dictionary<int, (DateTimeOffset Next, GitHubIssueState State)> _standaloneIssueStates = [];
+    private int _standaloneIssueChecks;
+    private int _standaloneCompletionChecks;
     private DateTimeOffset _standaloneBudgetReset;
     private int _standaloneRecoveryChecks;
     private bool _standaloneBlockerSummaryEmitted;
 
     private static bool OwnsStandaloneHistory(ExecutionHistoryEntry entry) =>
         entry.ServerExecutionId is null && entry.AssignmentId is null && entry.OwnershipGeneration is null &&
-        entry.RecoveryState is not ("operator-acknowledged" or "managed-completion-quarantined");
+        entry.RecoveryState is not ("operator-acknowledged" or "standalone-success-reconciled" or "managed-completion-quarantined");
 
     internal bool HandlesStandaloneRecovery(ExecutionHistoryEntry entry) => serverSettings?.Enabled != true && IsStandaloneRecoveryHistory(entry);
 
@@ -49,20 +55,52 @@ public sealed partial class Worker
         if (now >= _standaloneBudgetReset)
         {
             _standaloneRecoveryChecks = 0;
+            _standaloneIssueChecks = 0;
+            _standaloneCompletionChecks = 0;
             _standaloneBudgetReset = now.AddMinutes(1);
         }
-        if (_standaloneRecoveryChecks >= MaxStandaloneRecoveryChecksPerMinute) return null;
+
         var entries = await history.ReadAllAsync(ct);
         foreach (var source in entries.Where(entry => entry.Project == config.Project.Name &&
                      entry.Repository == config.Project.Repository && HandlesStandaloneRecovery(entry))
                  .OrderBy(RecoveryDiagnosticAge)
                  .ThenByDescending(entry => entry.StartedAtUtc).ThenBy(entry => entry.ExecutionId))
         {
-            if (_standaloneRecoveryChecks >= MaxStandaloneRecoveryChecksPerMinute) break;
             if (RecoveryNextEligibility(source) > now) continue;
             // Bound read-only recovery independently of normal execution capacity.
             var check = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
             if (check.Next > now) continue;
+            // Issue eligibility has its own bounded cache. Terminal Issues never spend
+            // the scarce process/worktree inspection budget, even when proof is incomplete.
+            var cachedIssue = _standaloneIssueStates.GetValueOrDefault(source.IssueNumber);
+            GitHubIssueState remote;
+            if (cachedIssue.Next > now) remote = cachedIssue.State;
+            else
+            {
+                if (_standaloneIssueChecks >= 20) continue;
+                _standaloneIssueChecks++;
+                try { remote = await github.ReadIssueStateAsync(source.IssueNumber, ct); }
+                catch (WorkerInfrastructureException ex) when (!ct.IsCancellationRequested)
+                {
+                    await ReportStandaloneBlockerAsync(source, "issue-status-unavailable", ct,
+                        FailureDiagnosticRedactor.Redact(ex.Message, config.Environment.Variables.Values.ToArray()));
+                    continue;
+                }
+                _standaloneIssueStates[source.IssueNumber] = (now.AddMinutes(5), remote);
+            }
+            if (!remote.IsOpen && remote.Labels.Contains(config.GitHub.DoneLabel, StringComparer.OrdinalIgnoreCase))
+            {
+                if (source.CompletionJson is not null)
+                {
+                    if (_standaloneCompletionChecks >= MaxStandaloneRecoveryChecksPerMinute) continue;
+                    _standaloneCompletionChecks++;
+                }
+                if (!_activeIssues.TryAdd(source.IssueNumber, 0)) continue;
+                try { await ReconcileTerminalStandaloneAsync(source, entries, remote, ct); }
+                finally { _activeIssues.TryRemove(source.IssueNumber, out _); }
+                continue;
+            }
+            if (_standaloneRecoveryChecks >= MaxStandaloneRecoveryChecksPerMinute) continue;
             _standaloneRecoveryChecks++;
             _standaloneChecks[source.ExecutionId] = (now.AddHours(1), check.Diagnostic);
             if (!_activeIssues.TryAdd(source.IssueNumber, 0))
@@ -87,7 +125,10 @@ public sealed partial class Worker
                 }
                 // Remote eligibility is a continuation filter, never deletion or
                 // integration proof. Closed/done histories retain all local evidence.
-                var remote = await github.ReadIssueStateAsync(source.IssueNumber, ct);
+                // A cached read can exclude work, but cannot authorize continuation
+                // or retirement after the inspection slot becomes available.
+                if (cachedIssue.Next > now)
+                    remote = await github.ReadIssueStateAsync(source.IssueNumber, ct);
                 bool Has(string label) => remote.Labels.Contains(label, StringComparer.OrdinalIgnoreCase);
                 if (source.CompletionJson is null && (!remote.IsOpen ||
                         !Has(config.GitHub.ReadyLabel) && !Has(config.GitHub.WorkingLabel) ||

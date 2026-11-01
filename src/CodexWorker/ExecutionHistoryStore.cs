@@ -340,7 +340,8 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         command.CommandText = """
             UPDATE executions SET completion_json=$completion,
                 commit_sha=$sha, integration_branch=$branch,
-                recovery_state=CASE WHEN $finished THEN 'completion-reconciled' ELSE recovery_state END,
+                recovery_state=CASE WHEN $finished AND recovery_state IS NOT 'standalone-success-reconciled' THEN 'completion-reconciled' ELSE recovery_state END,
+                standalone_recovery_diagnostic_json=CASE WHEN $finished THEN NULL ELSE standalone_recovery_diagnostic_json END,
                 state=CASE WHEN $finished THEN 'Completed' ELSE state END,
                 completed_at_utc=CASE WHEN $finished THEN COALESCE(completed_at_utc,$now) ELSE completed_at_utc END
             WHERE execution_id=$id

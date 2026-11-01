@@ -399,3 +399,11 @@ abrupt restart; a durable graceful-shutdown record also proves the previous chil
 sessions were joined. Accessible processes working in the workspace always block
 reuse. Unreadable process state without sufficient ownership/teardown proof fails
 closed, as does an unsupported platform.
+
+Closed/done standalone Issues are now filtered before the interrupted-workspace
+inspection budget. See [closed Issue reconciliation](execution-record-administration.md#closed-issues-and-standalone-success-reconciliation)
+for supported durable proof, immutable audit and legacy refusals. A successful
+task can have protected cleanup pending: `standalone-success-reconciled` is no
+longer executable recovery, while existing maintenance inspection still requires
+fresh process, worktree and Git ownership proof. Archive still requires safe,
+resource-free inspection and the existing retention interval.

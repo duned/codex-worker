@@ -102,7 +102,10 @@ public sealed class ExecutionCleanupService(ExecutionHistoryStore history, Proje
                     if (request.Apply && request.Action == "cleanup" && inspection.Decision == "safe" && !acknowledged && !ExecutionCompletion.IsSettled(entry))
                     {
                         // Git succeeded. Finish this single durable write even if the HTTP client disconnects.
-                        await history.UpdateRecoveryAsync(id, "operator-cleaned", CancellationToken.None);
+                        if (entry.RecoveryState == "standalone-success-reconciled")
+                            await history.SaveCompletionAsync(id, ExecutionCompletion.Read(entry) with
+                                { CleanupCompleted = true, Finished = true }, true, CancellationToken.None);
+                        else await history.UpdateRecoveryAsync(id, "operator-cleaned", CancellationToken.None);
                         registry.Publish("execution.operator-cleaned", $"Operator cleaned execution {id}.", entry.Project);
                     }
                     results.Add(new(inspection, inspection.Decision != "safe" ? "refused" : !request.Apply || request.Action == "inspect" ? "dry-run" :

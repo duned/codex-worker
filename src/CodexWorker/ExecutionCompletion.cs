@@ -34,7 +34,7 @@ internal sealed record ExecutionCompletion(IssueExecutionReport Report, string I
     internal static bool IsSettled(ExecutionHistoryEntry entry)
     {
         if (entry.State != "Completed" || entry.CompletedAtUtc is null || entry.ValidationOutcome != "passed" ||
-            entry.RecoveryState != "completion-reconciled" || entry.ReportingFailure is not null) return false;
+            entry.RecoveryState is not ("completion-reconciled" or "standalone-success-reconciled") || entry.ReportingFailure is not null) return false;
         try { return Read(entry).Finished; }
         catch (WorkerInfrastructureException) { return false; }
     }

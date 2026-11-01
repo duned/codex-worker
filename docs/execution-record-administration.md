@@ -139,3 +139,43 @@ the existing unavailable-title display retained when neither exists. Expired sna
 and snapshots invalidated after mutations retain their display titles, but must be
 refreshed by the normal read provider before use as current Issue state. This display
 projection does not authorize eligibility, labels, enqueueing or completion.
+
+## Closed Issues and standalone success reconciliation
+
+A closed Issue carrying the configured done label is excluded from standalone
+execution recovery before process/worktree inspection. This does not prove that
+any particular attempt succeeded. Eligibility status is cached for five minutes,
+with at most 20 uncached Issue checks per minute per project; a correction always
+reads fresh authoritative Issue state again. These checks do not consume the
+three-per-minute interrupted-workspace inspection allowance. Durable completion
+proof campaigns have a separate three-per-minute allowance.
+
+Automatic success reconciliation supports retained execution-bound completion
+payloads, including historical Cancelled/uncertain records. It requires passed
+validation, the exact full recorded integration SHA on the freshly fetched
+configured origin base, matching repository/base/policy and resource execution
+identity, no unresolved reporting mutation or recovery claim, and no competing
+or newer attempt. A remotely editable success marker (even one containing an
+exact execution ID) is never a substitute for durable Worker provenance. Legacy
+commit-only or comment-only histories cannot be upgraded to success automatically;
+missing facts are never reconstructed from a comment. Inspect such records using
+`executions show`, then use the bounded, checkout-fenced `executions acknowledge`
+dry-run/confirmation flow where its independently checked legacy proof permits.
+Acknowledgment preserves the original outcome rather than inventing success.
+A different successful attempt likewise cannot correct an earlier attempt's result.
+When a unique later standalone attempt has independently verified durable success
+and fresh remote proof, only the earlier terminal attempt's queue disposition is
+acknowledged as superseded, with the original outcome and all resources retained.
+
+The success correction and immutable acknowledgment audit commit atomically. The
+audit retains the original outcome/recovery state and exact verified commit and
+identity. No Issue comments, labels, closure or notifications are replayed. A
+`standalone-success-reconciled` record is successful and excluded from pending
+execution recovery even if resource cleanup is still protected. Its separate
+cleanup diagnostic explains unreadable processes, dirty worktrees, changed refs,
+missing registration or other ownership ambiguity. No such resources are removed
+without fresh process and existing Git ownership/integration checks. Use existing
+maintenance inspection/cleanup to review deferred resources. Once resource-free,
+the normal 30-day archive policy applies; history, lineage, anti-duplicate receipts
+and proof remain retained, never physically purged. Managed histories require the
+original Server's fresh protocol authorization and are not reinterpreted here.

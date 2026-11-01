@@ -1126,7 +1126,7 @@ public sealed class WorkerHost
     }
 
     internal static bool NeedsCompletionReconciliation(ExecutionHistoryEntry entry) =>
-        entry.RecoveryState is not ("operator-acknowledged" or "managed-completion-quarantined") &&
+        entry.RecoveryState is not ("operator-acknowledged" or "standalone-success-reconciled" or "managed-completion-quarantined") &&
         (entry.RecoveryState == GitHubOperationException.ReconciliationRequiredState || entry.CompletionJson is not null ||
          entry.ValidationOutcome == "passed" && entry.RecoveryState is "uncertain" or "github-reconciled");
 

@@ -30,6 +30,8 @@ public static class ExecutionMaintenanceClassifier
             return authority == "managed" && entry.ReportingFailure is not null
                 ? Assessment("reconciliation-required", "managed-report-unconfirmed", "The Server report is unconfirmed; reconcile Server authority and reporting.")
                 : Assessment("reconciliation-required", "github-report-unconfirmed", "GitHub mutation or reporting is unconfirmed; verify remote state and delivery.");
+        if (entry.RecoveryState == "standalone-success-reconciled" && !ExecutionCompletion.IsSettled(entry))
+            return Assessment("terminal-clean", "completed-task-cleanup-pending", "Task success was independently reconciled. Inspect protected cleanup separately; audit and original diagnostics are retained.");
         if (entry.CompletionJson is not null && !ExecutionCompletion.IsSettled(entry))
             return Assessment("reconciliation-required", "completion-pending", "A durable completion remains pending; reconcile completion and reporting before cleanup.");
         if (entry.IntegrationRecoveryClaim is not null)
@@ -45,7 +47,7 @@ public static class ExecutionMaintenanceClassifier
             return Assessment("retained-review", "recovery-transfer-unverified", "A later attempt consumed recovery; this receipt alone does not prove source resources are clean. Inspect attempt lineage and resources.");
         if (recovery == "github-reconciled")
             return Assessment("retained-review", "github-resource-proof-missing", "Issue eligibility was reconciled; completion delivery and local resource safety are not established by that receipt.");
-        if (recovery is not (null or "operator-cleaned" or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "completion-reconciled"))
+        if (recovery is not (null or "operator-cleaned" or "expired-cleaned" or "resumed-cleaned" or "discarded" or "cleaned-no-changes" or "completion-reconciled" or "standalone-success-reconciled"))
             return Assessment("retained-review", recovery switch
             {
                 "preparation-failed" => "preparation-resource-proof-missing",
