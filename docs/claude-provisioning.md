@@ -45,7 +45,10 @@ Workers retain the existing management restrictions.
 
 An authorized operator can submit the existing typed provisioning request with
 `CapabilityId: claude-cli` and `Action: Login` for an online Worker. The capability
-catalog advertises `login`; no dashboard UI is added. Node-local `enabled`,
+catalog advertises `login`. In the dashboard, open the Worker's node provisioning
+panel and select **Sign in to Claude**. The dialog explains the required local
+terminal completion and links to vendor guidance; it does not accept browser codes.
+Node-local `enabled`,
 `allowCredentials`, and `allowNonPrivileged` must all permit it; denied action
 `authentication:claude-cli:login` takes precedence. Login never invokes sudo.
 The managed operation uses the existing ID, deadline (5–600 seconds), audit,
@@ -94,6 +97,12 @@ completion rather than guessing which account owns credentials.
 
 ## VM2 operational verification
 
+This is an optional operator-run acceptance procedure, not an automated test or
+evidence that VM2 has passed. Obtain operator approval for service changes and
+separate consent for external provider usage before the readiness/execution steps.
+Use the account's supported authentication method and applicable
+[Anthropic authentication guidance](https://code.claude.com/docs/en/authentication).
+
 The official 2.1.309 binary's unauthenticated challenge was verified in isolation;
 VM2 service identity, authentication and readiness still require node-local verification. Do not use an
 administrator's interactive HOME as evidence of Worker authentication.
@@ -117,3 +126,36 @@ administrator's interactive HOME as evidence of Worker authentication.
    VerificationFailed indicates invalid/inconsistent structured status or inventory;
    it must not be worked around by marking authentication satisfied. Denied requires
    reviewing node-local provisioning policy; remote requests cannot override it.
+5. In the protected dashboard, open the online Worker's provisioning panel. Detect
+   the installation (or install with local policy permission), then select **Sign in
+   to Claude**. Confirm the manual-completion guidance remains available after the
+   command finishes. Refreshing alone must not claim login success.
+6. Open a secure terminal as the Worker service user and start a **new**
+   `~/.local/bin/claude auth login`. Follow its provider browser flow and return any
+   vendor-required code to that same terminal. The dashboard operation's stopped
+   session cannot receive it. Never record the URL, code, account details or tokens.
+7. Request **CheckAuthentication** and refresh inventory. Require a completed
+   command and a fresh Authentication Satisfied observation. With explicit consent
+   for provider usage, observe the Worker's separate live CCC readiness check;
+   require a fresh ready observation and `agent-provider: ccc` before queueing work.
+   Authentication alone is insufficient; investigate unavailable readiness rather
+   than editing capabilities or bypassing assignment/lease checks.
+8. Separately obtain consent to queue a disposable real Issue in an approved
+   managed project with `## Worker` followed by `engine: ccc`. Confirm assignment,
+   isolated worktree execution, configured validation and terminal Server history.
+   Use a harmless file-only task and the project's normal integration policy.
+   Record only operation/execution IDs, sanitized states, version and timestamps.
+   Stop on uncertain state and use existing recovery; do not automatically retry
+   provider operations. No real Issue or paid call belongs in automated validation.
+
+## Deterministic integration coverage
+
+`ClaudeProvisioningTests` covers structured authenticated/unauthenticated/error
+classification. `ClaudeNativeLoginTests` covers native challenge handling, local
+policy, cancellation/deadlines, transient progress, Server restart and late reports
+without durable challenge retention. Dashboard contract coverage is in
+`node-provisioning-claude-login.test.mjs`. `WorkerV011Tests` includes
+`QueuedServerWorkRunsThroughWorkerPipelineAndReportsTerminalState` with `ccc`:
+a fake native provider runs Server queue/assignment, Worker execution and validation
+repair, and terminal reporting without external usage. These tests complement the
+optional live procedure; they do not establish VM2 authentication or readiness.

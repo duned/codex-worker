@@ -269,6 +269,37 @@ public sealed class ClaudeNativeLoginTests
         Assert.Equal(ProvisioningCommandStatus.Succeeded, (await store.ReportAsync(command.Id, "server", success))?.Status);
     }
 
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task CancellationWhilePublishingChallengeJoinsOriginalNativeSession()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var directory = new TemporaryDirectory();
+        var script = Path.Combine(directory.Path, "claude");
+        var pidFile = Path.Combine(directory.Path, "pid");
+        await File.WriteAllTextAsync(script,
+            "#!/bin/sh\nprintf '%s' \"$$\" > pid\nprintf '%s\\n' '" + Challenge + "' 'Paste code here'\nread code\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var published = false;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ClaudeNativeLogin.RunProcessAsync(
+            new ProcessStartInfo(script)
+            {
+                UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true, WorkingDirectory = directory.Path
+            }, (_, token) =>
+            {
+                published = true;
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            }, cancellation.Token));
+        Assert.True(published);
+        var pid = int.Parse(await File.ReadAllTextAsync(pidFile), System.Globalization.CultureInfo.InvariantCulture);
+        Assert.Throws<ArgumentException>(() => Process.GetProcessById(pid));
+    }
+
     private sealed class LoginClock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
