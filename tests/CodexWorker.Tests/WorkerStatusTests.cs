@@ -384,6 +384,31 @@ public sealed class WorkerStatusTests
         });
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task MissingClaudeIsOptionalAndDoesNotBlockCodexStatus()
+    {
+        using var fixture = new StatusFixture();
+        fixture.WriteGlobal("projects:\n  directory: ./projects\n  ownership: standalone\nserver:\n  enabled: false\n");
+        Directory.CreateDirectory(fixture.ProjectsPath);
+        fixture.WriteValidProject();
+        var inventory = new NodeCapabilityDiscovery((executable, _, _) =>
+            executable.Contains("claude", StringComparison.Ordinal)
+                ? throw new FileNotFoundException("private-diagnostic")
+                : Task.FromResult((0, "10.0.100")));
+        var status = await WorkerStatusReporter.CreateAsync(fixture.ConfigurationPath, DiscoveryWith(), inventoryDiscovery: inventory);
+        var claude = Assert.Single(status.Capabilities, capability => capability.Name == "claude-cli");
+        Assert.True(claude.Optional);
+        Assert.Equal(InstallationState.Missing, claude.Installation);
+        Assert.Equal("unverified", claude.ExecutionReadiness);
+        Assert.Equal("local-prerequisites-present", status.Operation.Readiness);
+        Assert.DoesNotContain(status.Diagnostics, diagnostic => diagnostic.StartsWith("claude-cli:", StringComparison.Ordinal));
+        using var writer = new StringWriter();
+        WorkerStatusReporter.Write(status, true, writer);
+        Assert.DoesNotContain("private-diagnostic", writer.ToString());
+    }
+
     private static NodeCapabilityDiscovery InventoryDiscovery(bool gitIdentityConfigured = true,
         bool dockerAccessible = true, bool missingTools = false, bool codexMissing = false, bool authenticated = true,
         List<string>? commands = null) =>

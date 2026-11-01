@@ -553,7 +553,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
                 AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.EffectiveModel,
-                EffectiveEffort = execution.CodexProfile?.Effort, QuotaAtEnd = execution.QuotaAtEnd };
+                Engine = execution.CodexProfile?.Engine ?? "codex", EffectiveEffort = execution.CodexProfile?.Effort, QuotaAtEnd = execution.QuotaAtEnd };
             var terminalState = result.Kind switch
             {
                 IssueOutcomeKind.Succeeded => ExecutionState.Completed,
@@ -1097,7 +1097,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         if (report.Integration is not null) details.Add(report.Integration.Summary);
         var integrationRepairs = report.ValidationRepairs.Count(repair => repair.IntegrationRepair);
         if (integrationRepairs > 0) details.Add($"Integration repair succeeded after {integrationRepairs} attempt(s).");
-        if (!string.IsNullOrWhiteSpace(report.ImplementationSummary)) details.Add($"Codex summary: {report.ImplementationSummary}");
+        if (!string.IsNullOrWhiteSpace(report.ImplementationSummary)) details.Add($"{(report.Engine == "ccc" ? "CCC" : "Codex")} summary: {report.ImplementationSummary}");
         return string.Join("\n\n", details);
     }
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..(length - 20)] + " … [truncated]";

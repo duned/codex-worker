@@ -19,7 +19,7 @@ test('Execution detail keeps rendering when a server-derived translation key has
 
 test('Execution detail shows localized unavailable text for absent optional stage and summary fields', () => {
   const detail = read('features/executions/ExecutionsPage.tsx');
-  assert.match(detail, /item\.currentStage \? localizeText\(item\.currentStage\) : t\('executions\.notReported'\)/);
+  assert.match(detail, /item\.currentStage \? executionStageLabel\(item\) : t\('executions\.notReported'\)/);
   assert.match(detail, /item\.completionSummary \|\| t\('executions\.noCompletionSummaryReported'\)/);
 });
 

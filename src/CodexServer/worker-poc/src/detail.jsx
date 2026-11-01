@@ -38,9 +38,9 @@ function Status({ value, tone, active = false }) {
   return <StatusBadge compact tone={tone ?? statusTone(value)} withDot active={active}>{value ?? t('shared.unknown')}</StatusBadge>;
 }
 
-function stageLabel(stage) {
+function stageLabel(stage, engine = 'codex') {
   const key = executionTimeline(stage).find(item => item.state === 'current')?.id;
-  return key ? localizeText(executionStages.find(item => item.id === key).label) : localizeText(stage);
+  return key ? key === 'codex' && engine === 'ccc' ? 'CCC' : localizeText(executionStages.find(item => item.id === key).label) : localizeText(stage);
 }
 
 function relativeAge(value, now) {
@@ -222,7 +222,7 @@ function WorkReference({ item, project, showTitle = false }) {
 
 function ExecutionTimeline({ item, now }) {
   useLanguage();
-  const stages = executionTimeline(item.currentStage, item.stageStartedAtUtc, now);
+  const stages = executionTimeline(item.currentStage, item.stageStartedAtUtc, now, item.workReference?.selection?.engine);
   return <div className="poc-execution-timeline">
     <ol className="poc-stage-list" aria-label={t('workers.executionStages')}>
       {stages.map(stage => {
@@ -262,7 +262,7 @@ function CurrentExecution({ item, projects, now, showStatus }) {
   }, [active]);
   const displayNow = Math.max(liveNow, now);
   const project = projects?.find(value => value.id === item.projectId);
-  const stage = item.currentStage ? stageLabel(item.currentStage) : localizeText(item.state);
+  const stage = item.currentStage ? stageLabel(item.currentStage, item.workReference?.selection?.engine) : localizeText(item.state);
   return <article className="poc-current-execution">
     {showStatus && <div className="poc-current-execution-heading"><span>{t('workers.execution')}</span><Status value={stage} tone={isActiveExecutionState(item.state) ? 'info' : item.currentStage ? 'warning' : statusTone(item.state)} active={isActiveExecutionState(item.state)} /></div>}
     <dl className="poc-execution-fields">
@@ -286,7 +286,7 @@ function CurrentExecution({ item, projects, now, showStatus }) {
 
 function CurrentExecutions({ items, projects, now, worker, unavailable }) {
   useLanguage();
-  const currentStage = items.length === 1 ? items[0].currentStage ? stageLabel(items[0].currentStage) : localizeText(items[0].state) : null;
+  const currentStage = items.length === 1 ? items[0].currentStage ? stageLabel(items[0].currentStage, items[0].workReference?.selection?.engine) : localizeText(items[0].state) : null;
   const hasReportedWork = worker.activeAssignments > 0 || worker.activeExecutions > 0;
   const idleReported = worker.activeAssignments === 0 && worker.activeExecutions === 0;
   const trailing = unavailable ? <Status value={t('workers.statusUnavailable')} />
@@ -343,6 +343,7 @@ function capabilityStatus(capability, id) {
   const healthy = state.health?.toLowerCase() === 'healthy';
   const authenticated = !definition.requiresAuthentication || state.authentication?.toLowerCase() === 'satisfied';
   const configured = !definition.requiresConfiguration || state.configuration?.toLowerCase() === 'satisfied';
+  if (id === 'claude-cli' && installed) return localizeText('Installed');
   if (installed && healthy && authenticated && configured) return id === 'dotnet-sdk' ? t('workers.available') : t('workers.ready');
   if (!installed) return state.installation || t('shared.unknown');
   if (!healthy) return state.health || t('shared.unknown');
@@ -370,7 +371,7 @@ function CapabilityTile({ tile, capability, provisioning }) {
   useLanguage();
   const name = capability ? localizeText(capability.definition.displayName) : localizeText(tile.name);
   const status = capabilityStatus(capability, tile.id);
-  const tone = status === t('workers.ready') || status === t('workers.available') ? 'success' : statusTone(status);
+  const tone = tile.id === 'claude-cli' && capability?.state.installation?.toLowerCase() === 'missing' ? 'gray' : status === t('workers.ready') || status === t('workers.available') ? 'success' : statusTone(status);
   const lastReported = capability?.state.detectedAtUtc
     ? `${t('workers.lastReported')} ${timestamp(capability.state.detectedAtUtc)}` : t('workers.notChecked');
   return <article className="poc-service-tile" aria-label={`${name}: ${localizeText(status)}`}>
@@ -382,8 +383,9 @@ function CapabilityTile({ tile, capability, provisioning }) {
   </article>;
 }
 
-function CapabilitiesPanel({ node, diagnostics, provisioning }) {
+function CapabilitiesPanel({ node, diagnostics, provisioning, worker }) {
   useLanguage();
+  const claude = worker?.capabilities?.find(item => item.type === 'agent-readiness' && item.name === 'ccc');
   const capabilityById = new Map((node?.capabilities ?? []).map(capability => [capability.definition.id, capability]));
   const extraTiles = (node?.capabilities ?? []).filter(capability => !serviceTiles.some(tile => tile.id === capability.definition.id))
     .map(capability => ({ id: capability.definition.id, type: 'generic', name: capability.definition.displayName }));
@@ -398,6 +400,7 @@ function CapabilitiesPanel({ node, diagnostics, provisioning }) {
         <div><span>{t('shared.provisioningReadiness')}</span><Status value={readiness} /></div>
         <div><span>{t('workers.workerProvisioningState')}</span><Status value={state} /></div>
       </div>
+      <p className="poc-stage-history-note">{t('workers.cccReadiness', { state: t(`workers.cccState.${worker?.availability === 'online' ? claude?.scope ?? 'unknown' : 'unknown'}`), checked: claude?.checkedAtUtc ? new Date(claude.checkedAtUtc).toLocaleString() : t('workers.notReported') })}</p>
       <div className="poc-service-grid">{capabilities.map(tile => <CapabilityTile key={tile.id} tile={tile} capability={capabilityById.get(tile.id)} provisioning={provisioning} />)}</div>
     </> : <p className="poc-empty-panel">{t('shared.capabilityObservationsUnavailableRefreshProvisioningState')}</p>}
   </TableCard.Root>;
@@ -551,7 +554,7 @@ export function WorkerDetail({ id, observations, loading, diagnostics = null, no
         <div className="poc-worker-technical-column">
           <WorkerResources worker={worker} node={node} now={now} />
         </div>
-        <CapabilitiesPanel node={node} diagnostics={diagnostics} provisioning={provisioning} />
+        <CapabilitiesPanel worker={worker} node={node} diagnostics={diagnostics} provisioning={provisioning} />
       </div>
       <WorkerInformationPanel worker={worker} diagnostics={diagnostics} administration={administration} readOnly={readOnly} preparation={preparation} journal={journal} advanced={advanced} />
     </>}

@@ -1,5 +1,15 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "executions.engine": "Motor de ejecución",
+  "workers.cccReadiness": "CCC (opcional) · preparación comunicada para ejecutar: {state} · última comprobación: {checked}",
+  "workers.cccState.unknown": "Sin verificar",
+  "workers.cccState.absent": "No instalado",
+  "workers.cccState.installed": "Instalado; preparación sin verificar",
+  "workers.cccState.incompatible": "Versión de CLI o permisos no compatibles",
+  "workers.cccState.unauthenticated": "Autenticación necesaria",
+  "workers.cccState.service-unavailable": "Autenticado; servicio no disponible",
+  "workers.cccState.ready": "Autenticado y preparado",
+
   "workers.recoveryRestartMismatch": "La conciliación acepta explícitamente la versión actual de este reinicio fallido cuando se cumplen todas las comprobaciones. No reinicia ni actualiza el servicio.",
   "workers.recoveryOperationType": "Tipo de operación",
   "workers.recoveryRestart": "Reinicio",

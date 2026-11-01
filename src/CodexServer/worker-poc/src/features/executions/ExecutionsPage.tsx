@@ -1,4 +1,4 @@
-import { t, useLanguage, statusLabel, localizeText, type TranslationKey } from '../../shared/i18n';
+import { t, useLanguage, statusLabel, type TranslationKey } from '../../shared/i18n';
 import { GuidDisplay } from '../../shared/GuidDisplay';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
@@ -14,7 +14,7 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
 import { TableCard } from '../../untitled/components/application/table/table';
 import { timestamp, statusColor, isActiveExecutionState } from '../../model';
-import { archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceReason, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, canReconcile, validEvidence, type Execution } from './model';
+import { executionStageLabel, executionEngineLabel, archiveApplyAllowed, attentionAssessment, execution, executionList, maintenanceCommand, maintenanceCommands, maintenanceDetail, maintenanceInventoryScope, maintenanceReason, maintenanceScope, cancellationResult, reconciliationResult, query, offset, timeSince, states, canReconcile, validEvidence, type Execution } from './model';
 import { IssueTitle } from '../projects/IssueTitle';
 import { ExecutionMaintenancePage } from './ExecutionMaintenancePage';
 import { ExecutionTable, stateTone } from './ExecutionTable';
@@ -148,7 +148,7 @@ function ExecutionDetail({ id, search }: { id: string; search: string }) {
         <h1 tabIndex={-1} className="text-display-sm font-semibold text-primary">{t('executions.execution')} · {id}</h1>
         <p className="mt-2 flex flex-wrap items-center gap-x-2 text-sm text-tertiary"><Link to={`/projects/${encodeURIComponent(item.projectId)}`} className="hover:text-brand-secondary">{project?.name ?? item.projectId}</Link><span aria-hidden="true">·</span><IssueTitle projectId={item.projectId} repository={project?.repository} workReference={item.workReference} /></p>
       </div>
-      <div className="flex flex-wrap items-center justify-end gap-2"><ExecutionStatus item={item} /><StatusBadge tone="purple">{item.currentStage ? localizeText(item.currentStage) : t('executions.notReported')}</StatusBadge><span className="inline-flex" title={cancelDisabledReason}><Button color="secondary" isDisabled={item.state !== 'Queued' || pending || locked} aria-describedby={cancelDisabledReason ? 'execution-cancel-disabled-reason' : undefined} onPress={() => select('cancel')}>{t('executions.cancelExecution')}</Button>{cancelDisabledReason && <span id="execution-cancel-disabled-reason" className="sr-only">{cancelDisabledReason}</span>}</span></div>
+      <div className="flex flex-wrap items-center justify-end gap-2"><ExecutionStatus item={item} /><StatusBadge tone="purple">{item.currentStage ? executionStageLabel(item) : t('executions.notReported')}</StatusBadge><span className="inline-flex" title={cancelDisabledReason}><Button color="secondary" isDisabled={item.state !== 'Queued' || pending || locked} aria-describedby={cancelDisabledReason ? 'execution-cancel-disabled-reason' : undefined} onPress={() => select('cancel')}>{t('executions.cancelExecution')}</Button>{cancelDisabledReason && <span id="execution-cancel-disabled-reason" className="sr-only">{cancelDisabledReason}</span>}</span></div>
     </header> : <PageHeading title={t('executions.execution')} resourceId={id} breadcrumbs={[{ label: t('executions.executions'), href: `/executions${search}` }, { label: t('executions.execution') }]} />}
     <div className="space-y-4">
       {message && <Notice>{message}</Notice>}{retryId && <Link className="text-sm text-brand-secondary" to={`/executions/${encodeURIComponent(retryId)}${search}`}>{t("executions.viewQueuedRecoveryAttempt")}</Link>}{locked && <Notice>{t("executions.operationPendingOrUncertainActionsAreLockedUntilExplicitAuthoritativeRefreshSucceeds")}</Notice>}
@@ -159,12 +159,13 @@ function ExecutionDetail({ id, search }: { id: string; search: string }) {
               <h2 id="execution-current-state" className="flex items-center gap-3 text-lg font-semibold text-primary"><span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ${stateDot(item.state)}`} />{item.state === 'Running' ? t('executions.executionInProgress') : t('executions.executionStateReported', { state: statusLabel(item.state) })}</h2>
               <p className="mt-2 break-words text-sm text-secondary">{t('executions.assignedTo', { worker: assignedWorker?.displayName ?? item.assignedWorkerId ?? t('executions.workerUnassigned') })}{' · '}{t('executions.startedAt', { time: item.startedAtUtc ? timestamp(item.startedAtUtc) : t('executions.notReported') })}</p>
             </div>
-            <div className="min-w-44 text-left sm:text-right"><p className="text-xs text-tertiary">{t('shared.currentStage')}</p><p className="mt-1 font-semibold text-primary">{item.currentStage ? localizeText(item.currentStage) : t('executions.notReported')}</p></div>
+            <div className="min-w-44 text-left sm:text-right"><p className="text-xs text-tertiary">{t('shared.currentStage')}</p><p className="mt-1 font-semibold text-primary">{item.currentStage ? executionStageLabel(item) : t('executions.notReported')}</p></div>
           </section>
         </TableCard.Root>
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.72fr)_minmax(22rem,1fr)]">
           <TableCard.Root><section aria-labelledby="execution-summary" className="p-5 sm:p-6"><h2 id="execution-summary" className="mb-2 text-lg font-semibold text-primary">{t('executions.executionSummary')}</h2><div className="divide-y divide-secondary">
+            <ExecutionDetailRow label={t('executions.engine')}>{executionEngineLabel(item)}</ExecutionDetailRow>
             <ExecutionDetailRow label={t('executions.project')}><Link to={`/projects/${encodeURIComponent(item.projectId)}`} className="hover:text-brand-secondary">{project?.name ?? item.projectId}</Link></ExecutionDetailRow>
             <ExecutionDetailRow label={t('executions.workItem')}><IssueTitle projectId={item.projectId} repository={project?.repository} workReference={item.workReference} /></ExecutionDetailRow>
             <ExecutionDetailRow label={t('workers.worker')}>{item.assignedWorkerId ? <Link to={`/workers/${encodeURIComponent(item.assignedWorkerId)}`} className="hover:text-brand-secondary">{assignedWorker?.displayName ?? item.assignedWorkerId}</Link> : t('executions.workerUnassigned')}</ExecutionDetailRow>

@@ -32,7 +32,7 @@ public sealed record WorkerStatusCapability(string Type, string Name, string Sta
     InstallationState? Installation = null, RequirementState? Authentication = null, RequirementState? Configuration = null,
     LocalConfigurationDependencyKind? ConfigurationDependency = null,
     IReadOnlyList<AuthenticationDependencyKind>? AuthenticationDependencies = null,
-    IReadOnlyList<string>? BlockingReasons = null);
+    IReadOnlyList<string>? BlockingReasons = null, bool Optional = false, DateTimeOffset? CheckedAtUtc = null, string? ExecutionReadiness = null);
 
 public static class WorkerStatusReporter
 {
@@ -63,7 +63,7 @@ public static class WorkerStatusReporter
         var capabilities = found.Select(capability => new WorkerStatusCapability(capability.Type, capability.Name,
                 "available", capability.Version, null)).ToList();
         var foundNames = found.Select(capability => capability.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in new[] { "dotnet", "node", "git", "github-cli", "docker", "postgresql", "codex-cli" })
+        foreach (var name in new[] { "dotnet", "node", "git", "github-cli", "docker", "postgresql", "codex-cli", "claude-cli" })
             if (!foundNames.Contains(name))
                 capabilities.Add(new WorkerStatusCapability(name is "dotnet" or "node" ? "runtime" : "tool", name,
                     "missing", null, "tool-missing"));
@@ -79,12 +79,13 @@ public static class WorkerStatusReporter
                 evaluated.Available ? "available" : "blocked";
             capabilities[index] = new("tool", definition.Id, summary, state.DetectedVersion, state.DiagnosticCode,
                 state.Installation, state.Authentication, state.Configuration, definition.ConfigurationDependency,
-                definition.AuthenticationDependencies, evaluated.BlockingReasons);
+                definition.AuthenticationDependencies, evaluated.BlockingReasons, !definition.RequiredForExecution, state.DetectedAtUtc,
+                definition.Id == "claude-cli" ? "unverified" : null);
         }
         var provisioning = configuration?.Worker.Provisioning;
         var diagnostics = new List<string>();
         if (diagnostic is not null) diagnostics.Add(diagnostic);
-        foreach (var capability in capabilities.Where(capability => capability.BlockingReasons is not null))
+        foreach (var capability in capabilities.Where(capability => capability.BlockingReasons is not null && capability.Name != "claude-cli"))
         {
             foreach (var reason in capability.BlockingReasons ?? [])
             {
@@ -212,6 +213,13 @@ public static class WorkerStatusReporter
         foreach (var capability in status.Capabilities)
         {
             var details = new List<string>();
+            if (capability.Optional) details.Add("optional");
+            if (capability.ExecutionReadiness is { } executionReadiness) details.Add($"execution readiness: {executionReadiness}");
+            if (capability.CheckedAtUtc is { } checkedAt) details.Add($"checked {checkedAt:O}");
+            if (capability.Name == "claude-cli" && capability.Authentication == RequirementState.Satisfied)
+                details.Add("authenticated");
+            if (capability.Name == "claude-cli" && capability.DiagnosticCode is { } reason)
+                details.Add($"diagnostic: {reason}");
             if (capability.Installation is { } installation) details.Add(installation.ToString().ToLowerInvariant());
             if (capability.ConfigurationDependency is { } dependency && capability.Configuration != RequirementState.Satisfied)
                 details.Add($"configuration required ({dependency})");

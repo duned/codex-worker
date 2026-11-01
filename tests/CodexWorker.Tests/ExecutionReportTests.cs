@@ -4,6 +4,19 @@ public sealed class ExecutionReportTests
 {
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("codex", "Codex")]
+    [InlineData("ccc", "CCC")]
+    public void ReportUsesSelectedEngine(string engine, string label)
+    {
+        var report = new IssueExecutionReport("Done", [], EffectiveModel: "model", EffectiveEffort: "high", Engine: engine);
+        var markdown = report.ToMarkdown(IssueOutcomeKind.Succeeded);
+        Assert.Contains($"{label} model:", markdown);
+        if (engine == "ccc") Assert.DoesNotContain("Codex model:", markdown);
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public void GithubCommentReportTitleUsesSecondLevelHeading()
     {

@@ -21,7 +21,7 @@ public sealed record WorkerRegistrationContract(
     IReadOnlyList<CapabilityState>? CapabilityInventory = null);
 
 /// <summary>A runtime, tool, or service currently available to this worker.</summary>
-public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
+public sealed record WorkerCapabilityContract(string Type, string Name, string? Version = null, string? Scope = null, DateTimeOffset? CheckedAtUtc = null) : CodexProvisioning.ICapabilityDescriptor;
 
 public static class WorkerAuthenticationCapabilities
 {

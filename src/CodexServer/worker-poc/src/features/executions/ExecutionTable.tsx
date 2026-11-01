@@ -7,7 +7,7 @@ import { StatusBadge } from '../../shared/Presentation';
 import type { ExecutionSummary, ProjectSummary, WorkerObservation } from '../../shared/api/contracts';
 import { Button } from '../../untitled/components/base/buttons/button';
 import { timestamp, statusColor } from '../../model';
-import { presentation } from './model';
+import { executionStageLabel, executionEngineLabel, presentation } from './model';
 import { IssueTitle } from '../projects/IssueTitle';
 
 type ExecutionTableItem = ExecutionSummary & { failureClassification?: string };
@@ -16,7 +16,8 @@ function StateCell({ item }: { item: ExecutionTableItem }) {
   useLanguage();
   const state = presentation(item);
   const notes = [
-    item.currentStage ? { label: t('executions.reportedStage'), value: localizeText(item.currentStage) } : undefined,
+    { label: t('executions.engine'), value: executionEngineLabel(item) },
+    item.currentStage ? { label: t('executions.reportedStage'), value: executionStageLabel(item) } : undefined,
     item.pendingReason ? { label: t('executions.pendingReason'), value: localizeText(item.pendingReason) } : undefined,
     item.completionSummary ? { label: t('executions.completionSummary'), value: localizeText(item.completionSummary) } : undefined,
     item.recoveryReason ? { label: t('executions.recoveryReason'), value: localizeText(item.recoveryReason) } : undefined,

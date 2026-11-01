@@ -71,7 +71,7 @@ public sealed class TelegramNotifier : IDisposable
         var retry = execution.AttemptNumber <= 1 ? "" : $"\nIntento {execution.AttemptNumber} · {mode} · ejecución actual {ExecutionFormatting.Display(execution.ExecutionId)}" +
             (execution.RetryOfExecutionId is { } id ? $"\nejecución anterior {ExecutionFormatting.Display(id)}" : "");
         var profile = execution.CodexProfile is { } settings
-            ? $"\nCodex · {settings.EffectiveModel ?? "unknown (CLI model unavailable)"} · {settings.Effort}" : "";
+            ? $"\n{(settings.Engine == "ccc" ? "CCC" : "Codex")} · {settings.EffectiveModel ?? "unknown (CLI model unavailable)"} · {settings.Effort}" : "";
         return SendTaskAsync(project, repository, issue, "▶",
             recovered ? "TAREA RECUPERADA" : execution.AttemptNumber <= 1 ? "TAREA INICIADA" : action,
             $"Ejecución {ExecutionFormatting.Display(execution.ExecutionId)}{retry}{profile}", ct);
@@ -100,11 +100,11 @@ public sealed class TelegramNotifier : IDisposable
             lines.Add("");
             lines.Add(quotaSummary.Groups[1].Value);
         }
-        var codexSummary = Regex.Match(summary, @"(?:^|\n\n)Codex summary:\s*(.*)$", RegexOptions.Singleline);
-        if (codexSummary.Success && !string.IsNullOrWhiteSpace(codexSummary.Groups[1].Value))
+        var codexSummary = Regex.Match(summary, @"(?:^|\n\n)(Codex|CCC) summary:\s*(.*)$", RegexOptions.Singleline);
+        if (codexSummary.Success && !string.IsNullOrWhiteSpace(codexSummary.Groups[2].Value))
         {
             lines.Add("");
-            lines.Add($"Resumen de Codex:\n{codexSummary.Groups[1].Value.Trim()}");
+            lines.Add($"Resumen de {codexSummary.Groups[1].Value}:\n{codexSummary.Groups[2].Value.Trim()}");
         }
         return SendAsync(HtmlMessage(lines), ct, html: true);
     }

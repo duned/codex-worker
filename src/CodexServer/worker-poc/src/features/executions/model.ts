@@ -1,4 +1,4 @@
-import { t, statusLabel, type TranslationKey } from '../../shared/i18n';
+import { t, statusLabel, localizeText, type TranslationKey } from '../../shared/i18n';
 import { isActiveExecutionState } from '../../shared/status-model.mjs';
 import type { ExecutionMaintenanceCommand, ExecutionMaintenanceDetail, ExecutionMaintenanceObservation, ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
 import { executions, record } from '../../shared/api/validation';
@@ -260,9 +260,16 @@ export function presentation(item: Execution): { text: string; tone: 'gray' | 's
   if (item.state === 'Failed') return { text: t("executions.executionFailed"), tone: 'error', active: false };
   if (item.state === 'Completed') return { text: t("executions.completed"), tone: 'success', active: false };
   const active = isActiveExecutionState(item.state);
-  return { text: item.currentStage ? `${statusLabel(item.state)} · ${statusLabel(item.currentStage)}` : statusLabel(item.state), tone: active ? 'info' : item.state === 'Assigned' ? 'warning' : 'gray', active };
+  return { text: item.currentStage ? `${statusLabel(item.state)} · ${executionStageLabel(item)}` : statusLabel(item.state), tone: active ? 'info' : item.state === 'Assigned' ? 'warning' : 'gray', active };
 }
 export function validEvidence(disposition: string, evidence: string, commit: string) {
   return !!evidence.trim() && evidence.length <= 1000 && !/[\u0000-\u001f\u007f-\u009f]/.test(evidence) &&
     (disposition === 'NotIntegrated' || disposition === 'Integrated' && /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(commit));
+}
+
+export const executionEngineLabel = (item: ExecutionSummary): string => item.workReference?.selection?.engine === 'ccc' ? 'CCC' : 'Codex';
+export function executionStageLabel(item: ExecutionSummary): string {
+  if (!item.currentStage) return t('executions.notReported');
+  return ['codex', 'implementing'].includes(item.currentStage.toLowerCase())
+    ? executionEngineLabel(item) : localizeText(item.currentStage);
 }

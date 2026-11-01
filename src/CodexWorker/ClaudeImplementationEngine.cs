@@ -53,13 +53,10 @@ public sealed class ClaudeImplementationEngine : IImplementationEngine
                     !((string)entry.Key).Equals("CLAUDE_CODE_OAUTH_TOKEN", StringComparison.OrdinalIgnoreCase))
                     environment[(string)entry.Key] = null;
             var version = await _run(["--version"], request.ProjectDirectory, null, environment, TimeSpan.FromSeconds(5), ct);
-            if (version.ExitCode != 0 || !Version.TryParse(WorkerCapabilityDiscovery.ParseVersion(version.StandardOutput), out var installed) ||
-                installed < new Version(2, 1, 259))
+            if (version.ExitCode != 0 || !ClaudeCliCompatibility.SupportsVersion(WorkerCapabilityDiscovery.ParseVersion(version.StandardOutput)))
                 throw new WorkerInfrastructureException("CCC requires Claude Code 2.1.259 or later with restricted unattended execution support.");
             var help = await _run(["--help"], request.ProjectDirectory, null, environment, TimeSpan.FromSeconds(5), ct);
-            string[] required = ["--restricted", "--safe-mode", "--permission-prompts", "--permission-mode", "--json-schema",
-                "--effort", "--model", "--tools", "--allowedTools", "--strict-mcp-config", "--no-session-persistence"];
-            if (help.ExitCode != 0 || required.Any(flag => !help.StandardOutput.Contains(flag, StringComparison.Ordinal)))
+            if (!ClaudeCliCompatibility.SupportsRestrictedExecution(help))
                 throw new WorkerInfrastructureException("CCC installed CLI does not confirm required headless security/output capabilities.");
             if (request.Model is not (null or "sonnet" or "opus" or "haiku") || request.Effort is not (null or "low" or "medium" or "high"))
                 throw new WorkerInfrastructureException("CCC model or effort is unsupported.");

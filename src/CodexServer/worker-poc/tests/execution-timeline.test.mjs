@@ -128,3 +128,14 @@ test('timeline provides visible state text, completed checkmarks, a restrained a
   assert.match(english, /"status\.reporting": "Reporting"/);
   assert.match(spanish, /"status\.reporting": "Informando"/);
 });
+
+test('CCC changes only the implementation label and preserves timing and progression', () => {
+  const times = { claimed: '2026-01-01T00:00:00Z', preparing: '2026-01-01T00:00:01Z', codex: '2026-01-01T00:00:02Z' };
+  const now = Date.parse('2026-01-01T00:00:05Z');
+  const codex = executionTimeline('Codex', times, now);
+  const ccc = executionTimeline('Codex', times, now, 'ccc');
+  assert.equal(ccc[2].label, 'CCC');
+  assert.equal(ccc[2].duration, '3s');
+  assert.deepEqual(ccc.map(stage => ({ ...stage, label: '' })), codex.map(stage => ({ ...stage, label: '' })));
+  assert.equal(executionTimeline('Codex')[2].label, 'Codex');
+});

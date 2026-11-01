@@ -1,6 +1,6 @@
 // Narrow projections of existing Server read contracts. Unused fields are deliberately omitted.
 export interface WorkerObservation {
-  authenticationCredentialStatus?: string; capabilities?: { type: string; name: string; scope?: string; version?: string }[]; workerVersion?: string;
+  authenticationCredentialStatus?: string; capabilities?: { type: string; name: string; scope?: string; version?: string; checkedAtUtc?: string }[]; workerVersion?: string;
   workerId: string; displayName?: string; availability: string; lifecycleState?: string;
   capacity?: number; maximumCapacity?: number; activeExecutions?: number; availableCapacity?: number;
   activeAssignments?: number; schedulingPolicy?: string; schedulingBlocker?: string; lastHeartbeatAtUtc?: string;

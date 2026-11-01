@@ -51,6 +51,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     new IssueExecutionReport(null, [], HumanInput: metadataError));
             }
             var identity = execution.CodexProfile?.Engine ?? "codex";
+            var engineLabel = identity == "ccc" ? "CCC" : "Codex";
             if (context.RetryOf is { } source && source.Engine != identity)
                 return new IssueProcessingResult(IssueOutcomeKind.Blocked,
                     new IssueExecutionReport(null, [], HumanInput: "The preserved execution engine differs from the selected engine."));
@@ -102,7 +103,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 RecoveryBaseCommit = workspaceSnapshot?.BaseCommit, RecoveryStatus = workspaceSnapshot?.StatusSummary
             }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
-            var outcome = await output.RunProgressAsync(TaskLabel(issue, "Codex working", execution), () =>
+            var outcome = await output.RunProgressAsync(TaskLabel(issue, $"{engineLabel} working", execution), () =>
                 CodexCapacityRetry.RunAsync(() => engine.RunAsync(Request(context), ct), async token =>
                 {
                     var clock = timeProvider ?? TimeProvider.System;
@@ -119,7 +120,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             if (execution.CodexRecovery is { } completedRecovery)
                 execution.CodexRecovery = completedRecovery with { RetryAfterUtc = null };
             if (outcome.Status == "failed")
-                output.FailureReason(execution.ExecutionId, "Codex reported incomplete task", outcome.Summary,
+                output.FailureReason(execution.ExecutionId, $"{engineLabel} reported incomplete task", outcome.Summary,
                     config.Environment.Variables.Values.ToArray());
             await git.VerifyCodexStateAsync(ct);
             var implementationSummary = outcome.Summary;
@@ -132,7 +133,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 new IssueExecutionReport(implementationSummary, repairs, HumanInput: outcome.Question), ct);
             if (outcome.Status == "failed") return await CleanupOutcomeAsync(context, IssueOutcomeKind.Failed,
                 new IssueExecutionReport(implementationSummary, repairs, Failure: outcome.Summary,
-                    FailureCategory: "Codex reported incomplete task"), ct);
+                    FailureCategory: $"{engineLabel} reported incomplete task"), ct);
 
             var repairAttempts = repairs.Where(repair => !repair.IntegrationRepair).Select(repair => repair.Attempt).DefaultIfEmpty(0).Max();
             while (true)
@@ -180,7 +181,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 if (outcome.Status is "blocked" or "failed")
                 {
                     if (outcome.Status == "failed")
-                        output.FailureReason(execution.ExecutionId, "Codex repair reported incomplete task", outcome.Summary,
+                        output.FailureReason(execution.ExecutionId, $"{engineLabel} repair reported incomplete task", outcome.Summary,
                             config.Environment.Variables.Values.ToArray());
                     repairs[^1] = new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
                         outcome.Summary, false, failureSummary);
@@ -189,7 +190,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                         new IssueExecutionReport(implementationSummary, repairs,
                             HumanInput: outcome.Status == "blocked" ? outcome.Question : null,
                             Failure: outcome.Status == "failed" ? outcome.Summary : null,
-                            FailureCategory: outcome.Status == "failed" ? "Codex repair reported incomplete task" : null), ct);
+                            FailureCategory: outcome.Status == "failed" ? $"{engineLabel} repair reported incomplete task" : null), ct);
                 }
                 repairs[^1] = new ValidationRepairRecord(failure.Command, repairAttempts, config.Validation.MaxFixAttempts,
                     outcome.Summary, false, failureSummary);
@@ -303,7 +304,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             var report = new IssueExecutionReport(summary, repairs, Integration: integration, ExecutionId: execution.ExecutionId,
                 Duration: DateTimeOffset.UtcNow - execution.StartedAtUtc, AttemptNumber: execution.AttemptNumber,
                 RetryOfExecutionId: execution.RetryOfExecutionId, Resumed: execution.Resumed,
-                EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort);
+                EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort, Engine: execution.CodexProfile?.Engine ?? "codex");
             report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray());
             await SaveHistoryAsync(CreateEntry(execution, report, null, null) with { ValidationOutcome = "passed" }, token);
             await history.SaveCompletionAsync(execution.ExecutionId,

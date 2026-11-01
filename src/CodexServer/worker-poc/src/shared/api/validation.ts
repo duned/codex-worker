@@ -23,7 +23,7 @@ function validateWorker(value: unknown) {
     if (typeof telegram.enabled !== 'boolean' || typeof telegram.tokenConfigured !== 'boolean' || 'botToken' in telegram || 'token' in telegram) throw new Error('Invalid Telegram settings.');
     optional(telegram, ['chatId', 'credentialId']);
   }
-  if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version']); }); }
+  if (item.capabilities != null) { if (!Array.isArray(item.capabilities)) throw new Error('Invalid Worker capabilities.'); item.capabilities.forEach(value => { optional(fields(value, ['type', 'name']), ['scope', 'version', 'checkedAtUtc']); }); }
   if (item.hostResources != null) {
     const resources = fields(item.hostResources, ['measuredAtUtc']);
     optional(resources, [], [], ['logicalCpuCount', 'totalMemoryBytes', 'usedMemoryBytes', 'diskTotalBytes', 'diskAvailableBytes', 'cpuUsagePercent', 'memoryUsagePercent', 'sampleSeconds']);

@@ -168,7 +168,7 @@ public sealed class WorkerConsole(TextWriter? writer = null, bool? interactive =
     public void CodexProfile(WorkerExecution execution)
     {
         if (execution.CodexProfile is { } profile)
-            WriteLine($"Codex · model {profile.EffectiveModel ?? "unknown (CLI model unavailable)"} · effort {profile.Effort}", ConsoleColor.DarkGray, "↳");
+            WriteLine($"{(profile.Engine == "ccc" ? "CCC" : "Codex")} · model {profile.EffectiveModel ?? "unknown (CLI model unavailable)"} · effort {profile.Effort}", ConsoleColor.DarkGray, "↳");
     }
 
     public void IssueCompleted(GitHubIssue issue, TimeSpan elapsed) =>

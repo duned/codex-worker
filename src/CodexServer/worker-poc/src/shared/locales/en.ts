@@ -1,4 +1,14 @@
 export const en = {
+  "executions.engine": "Execution engine",
+  "workers.cccReadiness": "CCC (optional) · reported execution readiness: {state} · last check: {checked}",
+  "workers.cccState.unknown": "Unverified",
+  "workers.cccState.absent": "Not installed",
+  "workers.cccState.installed": "Installed; readiness unverified",
+  "workers.cccState.incompatible": "Unsupported CLI version or permission boundary",
+  "workers.cccState.unauthenticated": "Authentication required",
+  "workers.cccState.service-unavailable": "Authenticated; service unavailable",
+  "workers.cccState.ready": "Authenticated and ready",
+
   "workers.recoveryRestartMismatch": "Reconciliation explicitly accepts the reported running version for this failed restart after all checks pass. It does not restart or update the service.",
   "workers.recoveryOperationType": "Operation type",
   "workers.recoveryRestart": "Restart",

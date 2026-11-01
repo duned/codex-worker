@@ -475,7 +475,7 @@ public sealed record WorkerCredentialAccessStatus(string Status, DateTimeOffset?
 
 /// <summary>A runtime, tool, or service currently available to a worker.</summary>
 [JsonConverter(typeof(WorkerCapabilityJsonConverter))]
-public sealed record WorkerCapability(string Type, string Name, string? Version = null, string? Scope = null) : CodexProvisioning.ICapabilityDescriptor;
+public sealed record WorkerCapability(string Type, string Name, string? Version = null, string? Scope = null, DateTimeOffset? CheckedAtUtc = null) : CodexProvisioning.ICapabilityDescriptor;
 
 /// <summary>Reads legacy string capabilities and the extensible structured capability contract.</summary>
 public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapability>
@@ -493,6 +493,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
         string? name = null;
         string? version = null;
         string? scope = null;
+        DateTimeOffset? checkedAtUtc = null;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
         {
@@ -506,6 +507,9 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
                 case "version" when reader.TokenType is JsonTokenType.String or JsonTokenType.Null:
                     version = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
                     break;
+                case "checkedAtUtc" when reader.TokenType == JsonTokenType.Null: break;
+                case "checkedAtUtc" when reader.TokenType == JsonTokenType.String && reader.TryGetDateTimeOffset(out var timestamp):
+                    checkedAtUtc = timestamp; break;
                 case "scope" when reader.TokenType is JsonTokenType.String or JsonTokenType.Null:
                     scope = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
                     break;
@@ -514,7 +518,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
         }
         if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(name))
             throw new JsonException("A capability requires string type and name fields.");
-        return new WorkerCapability(type, name, version, scope);
+        return new WorkerCapability(type, name, version, scope, checkedAtUtc);
     }
 
     public override void Write(Utf8JsonWriter writer, WorkerCapability value, JsonSerializerOptions options)
@@ -524,6 +528,7 @@ public sealed class WorkerCapabilityJsonConverter : JsonConverter<WorkerCapabili
         writer.WriteString("name", value.Name);
         if (value.Version is not null) writer.WriteString("version", value.Version);
         if (value.Scope is not null) writer.WriteString("scope", value.Scope);
+        if (value.CheckedAtUtc is { } timestamp) writer.WriteString("checkedAtUtc", timestamp);
         writer.WriteEndObject();
     }
 }

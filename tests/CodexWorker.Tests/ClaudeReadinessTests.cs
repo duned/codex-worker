@@ -7,8 +7,8 @@ public sealed class ClaudeReadinessTests
     [Trait("ValidationProfile", "FastCandidate")]
     [Theory]
     [InlineData(false, false, "unauthenticated", 2)]
-    [InlineData(true, false, "service-unavailable", 3)]
-    [InlineData(true, true, "ready", 3)]
+    [InlineData(true, false, "service-unavailable", 4)]
+    [InlineData(true, true, "ready", 4)]
     public async Task ReadinessRequiresAuthenticatedLiveResponse(bool authenticated, bool serviceReady, string expected, int calls)
     {
         var count = 0;
@@ -19,7 +19,8 @@ public sealed class ClaudeReadinessTests
             var args = arguments.ToArray();
             var result = args[0] switch
             {
-                "--version" => new ProcessResult(0, "2.1.0", ""),
+                "--version" => new ProcessResult(0, "2.1.259", ""),
+                "--help" => new ProcessResult(0, "--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence", ""),
                 "auth" => new ProcessResult(0, authenticated ? "{\"loggedIn\":true}" : "{\"loggedIn\":false}", ""),
                 _ => new ProcessResult(serviceReady ? 0 : 1, "{\"type\":\"result\",\"is_error\":false,\"result\":\"OK\"}", "secret")
             };
@@ -27,6 +28,9 @@ public sealed class ClaudeReadinessTests
         });
         await readiness.RefreshAsync(CancellationToken.None);
         Assert.Equal(expected, readiness.Observation.Scope);
+        Assert.Equal("2.1.259", readiness.Observation.Version);
+        Assert.NotNull(readiness.Observation.CheckedAtUtc);
+        Assert.DoesNotContain("secret", System.Text.Json.JsonSerializer.Serialize(readiness.Observation));
         Assert.Equal(calls, count);
         Assert.Equal("agent-readiness", readiness.Observation.Type);
         // Reading the cached observation does not execute more CLI commands.
@@ -62,6 +66,30 @@ public sealed class ClaudeReadinessTests
             [new WorkerCapabilityContract("agent-readiness", "ccc", Scope: "ready")]);
         Assert.False(result.IsEligible);
         Assert.Contains("engine execution unsupported", Assert.Single(result.MissingRequirements));
+    }
+
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("2.1.0", 1)]
+    [InlineData("2.1.259", 3)]
+    public async Task UnsupportedPermissionBoundaryIsNotReady(string version, int expectedCalls)
+    {
+        var calls = 0;
+        var readiness = new ClaudeReadiness((_, arguments, _, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(arguments.First() switch
+            {
+                "--version" => new ProcessResult(0, version, ""),
+                "auth" => new ProcessResult(0, "{\"loggedIn\":true}", ""),
+                _ => new ProcessResult(0, "private-output-without-required-flags", "")
+            });
+        });
+        await readiness.RefreshAsync(CancellationToken.None);
+        Assert.Equal("incompatible", readiness.Observation.Scope);
+        Assert.Equal(expectedCalls, calls);
+        Assert.DoesNotContain("private-output", System.Text.Json.JsonSerializer.Serialize(readiness.Observation));
     }
 
     [Trait("TestType", "Component")]

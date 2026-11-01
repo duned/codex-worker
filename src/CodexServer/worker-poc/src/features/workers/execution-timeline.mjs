@@ -29,7 +29,7 @@ function stageTimestamp(stageStartedAtUtc, stageId) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-export function executionTimeline(currentStage, stageStartedAtUtc = {}, now = Date.now()) {
+export function executionTimeline(currentStage, stageStartedAtUtc = {}, now = Date.now(), engine = 'codex') {
   const normalized = String(currentStage ?? '').trim().toLowerCase();
   const currentId = stageAliases.get(normalized);
   const currentIndex = executionStages.findIndex(stage => stage.id === currentId);
@@ -46,6 +46,6 @@ export function executionTimeline(currentStage, stageStartedAtUtc = {}, now = Da
     const duration = state === 'completed' || state === 'current'
       ? startsAt === null ? null : formatStageDuration(startsAt, endsAt)
       : null;
-    return { ...stage, state, connectorComplete, duration };
+    return { ...stage, label: stage.id === 'codex' && engine === 'ccc' ? 'CCC' : stage.label, state, connectorComplete, duration };
   });
 }
