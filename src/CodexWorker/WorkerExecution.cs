@@ -8,7 +8,7 @@ public sealed class WorkerExecution
         {
             [ExecutionState.Created] = [ExecutionState.Claimed, ExecutionState.Cancelled, ExecutionState.InfrastructureFailure],
             [ExecutionState.Claimed] = [ExecutionState.Preparing, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
-            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
+            [ExecutionState.Preparing] = [ExecutionState.Implementing, ExecutionState.Validating, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Implementing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Validating] = [ExecutionState.Repairing, ExecutionState.Integrating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],
             [ExecutionState.Repairing] = [ExecutionState.Validating, ExecutionState.Reporting, ExecutionState.InfrastructureFailure, ExecutionState.Cancelled],

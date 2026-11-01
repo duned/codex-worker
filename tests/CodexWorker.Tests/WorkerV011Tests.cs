@@ -2326,6 +2326,59 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
+    public async Task ManagedPreservedCodexAssignmentResumesInterruptedPostRepairValidation()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var sourceId = Guid.NewGuid();
+        var sourceServerId = "original-server-execution";
+        var now = DateTimeOffset.UtcNow;
+        var source = PreservedConflict() with
+        {
+            ExecutionId = sourceId,
+            State = "Cancelled",
+            CompletedAtUtc = now,
+            RecoveryState = "codex-interrupted",
+            ValidationOutcome = "pending: validation",
+            RepairCount = 1,
+            Repairs = [new("authoritative-check", 1, 3, "Repair succeeded", false, "failed check")],
+            ServerExecutionId = sourceServerId,
+            OriginalIssueBody = h.GitHub.Issue.Body,
+            CodexRecovery = new(sourceId, 1, 0, CodexInterruptionRecovery.Fingerprint(h.Worker.Configuration),
+                "session-id", ImplementationSucceeded: true)
+        };
+        await history.CreateAsync(source);
+        var assignment = new WorkerAssignmentContract("recovery-assignment", "recovery-server-execution",
+            new("project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+            new("github-issue", source.IssueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)), "worker",
+            new Dictionary<string, string>
+            {
+                ["codexRecoveryExecutionId"] = sourceId.ToString(),
+                ["originalServerExecutionId"] = sourceServerId
+            },
+            new("recovery-server-execution", "worker", 4, now, now.AddMinutes(5), "Active"));
+
+        var task = await h.Worker.ClaimAssignedAsync(assignment, CancellationToken.None);
+
+        Assert.NotNull(task);
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await task)?.Kind);
+        Assert.Equal(1, h.Git.CodexResumes);
+        Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal(1, h.Validation.Calls); // The interrupted validation is rerun before integration.
+        Assert.Empty(h.Codex.Issues); // Implementation and the consumed repair are not rerun.
+        var attempt = Assert.Single(await history.ReadAllAsync(), entry => entry.ExecutionId != sourceId);
+        Assert.Equal(2, attempt.AttemptNumber);
+        Assert.Equal(1, attempt.RepairCount);
+        Assert.Equal(1, attempt.CodexRecovery?.ResumeCount);
+        Assert.Equal("recovery-server-execution", attempt.ServerExecutionId);
+        Assert.Equal("recovery-assignment", attempt.AssignmentId);
+        Assert.Equal(4, attempt.OwnershipGeneration);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Fact]
     public async Task ConflictFromNormalImplementationRetryRecoversItsOwnWorkspaceRatherThanEarlierFailedWork()
     {
         using var database = new TempHistoryDatabase();

@@ -41,7 +41,7 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var interrupted = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("Cancelled", interrupted.State);
         Assert.Equal("uncertain", interrupted.RecoveryState);
-        Assert.Equal(interruptAt == 2 ? "pending: validation after rebase" : null, interrupted.ValidationOutcome);
+        Assert.Equal(interruptAt == 2 ? "pending: validation after rebase" : "pending: validation", interrupted.ValidationOutcome);
         Assert.Null(interrupted.CommitSha);
         Assert.Null(interrupted.IntegrationBranch);
         Assert.Null(interrupted.CompletionJson);
@@ -61,13 +61,73 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         Assert.Equal("Completed", completed.State);
         Assert.Contains("Worker shutdown", completed.FailureReason);
         Assert.Equal(1, codex.Calls);
-        Assert.Equal(1, nextValidation.Calls);
+        Assert.Equal(interruptAt == 1 ? 2 : 1, nextValidation.Calls);
         Assert.Single(github.Comments);
         Assert.Equal(1, github.CloseCalls);
         Assert.False(Directory.Exists(restartedGit.RecoveryWorkspacePath(completed)));
         await restarted.ResumeCompletionAsync(completed, CancellationToken.None);
         Assert.Single(github.Comments);
         Assert.Equal(1, github.CloseCalls);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Slow")]
+    public async Task ShutdownAfterRepairResumesValidationOnPreservedAttempt()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        config.Validation.MaxFixAttempts = 3;
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        var github = new GitHub(fixture.Issue);
+        using var telegram = new TelegramNotifier(false);
+        using var shutdown = new CancellationTokenSource();
+        var codex = new RepairingCodex(async path =>
+        {
+            await File.WriteAllTextAsync(Path.Combine(path, "implementation.txt"), "implemented once");
+            await fixture.AdvanceBaseAsync();
+        }, async (path, _, _) => await File.WriteAllTextAsync(Path.Combine(path, "repair.txt"), "repair preserved"));
+        var firstValidation = new SequenceValidation(call => call == 1
+            ? Task.FromResult(new ValidationResult(new ValidationFailure(1, "authoritative-check", 1, "", "failed check", false)))
+            : CancelValidation(shutdown));
+        using (var originalGit = fixture.CreateRepository(config.Git))
+        {
+            var worker = new Worker(config, github, originalGit, codex, firstValidation, telegram, history: history, shutdownToken: shutdown.Token);
+            await worker.PrepareForHostAsync(CancellationToken.None);
+            await Assert.ThrowsAsync<WorkerShutdownException>(() => worker.ProcessOneAsync(shutdown.Token));
+        }
+
+        var interrupted = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal("Cancelled", interrupted.State);
+        Assert.Equal("pending: validation", interrupted.ValidationOutcome);
+        Assert.Equal(1, interrupted.RepairCount);
+        Assert.True(interrupted.CodexRecovery?.ImplementationSucceeded);
+        Assert.Equal(1, codex.Implementations);
+        Assert.Equal(1, codex.Repairs);
+
+        using var restartedGit = fixture.CreateRepository(config.Git);
+        var restartedValidation = new SequenceValidation(_ => Task.FromResult(ValidationResult.Success));
+        var restarted = new Worker(config, github, restartedGit, codex, restartedValidation, telegram, history: history);
+        await restarted.PrepareForHostAsync(CancellationToken.None);
+        var result = await restarted.ProcessOneAsync(CancellationToken.None);
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        var completed = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(interrupted.ExecutionId, completed.ExecutionId);
+        Assert.Equal("Completed", completed.State);
+        Assert.Equal(1, completed.RepairCount);
+        Assert.Equal(1, codex.Implementations);
+        Assert.Equal(1, codex.Repairs);
+        Assert.Equal(2, restartedValidation.Calls); // Resume the interrupted validation, then validate after rebase.
+        Assert.Single(github.Comments);
+        Assert.Equal(1, github.CloseCalls);
+    }
+
+    private static Task<ValidationResult> CancelValidation(CancellationTokenSource shutdown)
+    {
+        shutdown.Cancel();
+        return Task.FromCanceled<ValidationResult>(shutdown.Token);
     }
 
     [Theory]
@@ -607,6 +667,33 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         }
         public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
             throw new InvalidOperationException("Unexpected repair.");
+    }
+
+    private sealed class RepairingCodex(Func<string, Task> implement,
+        Func<string, ValidationFailure, int, Task> repair) : ICodexExecutor
+    {
+        internal int Implementations { get; private set; }
+        internal int Repairs { get; private set; }
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct)
+        {
+            Implementations++;
+            await implement(projectDirectory);
+            return new("success", "Implementation succeeded", [], false, null);
+        }
+        public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct)
+        {
+            Repairs++;
+            await repair(projectDirectory, failure, attempt);
+            return new("success", "Repair succeeded", [], false, null);
+        }
+    }
+
+    private sealed class SequenceValidation(Func<int, Task<ValidationResult>> run) : IValidationRunner
+    {
+        internal int Calls { get; private set; }
+        public Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct) => run(++Calls);
     }
 
     private sealed class Validation(Func<Task<ValidationResult>>? interrupt = null, int interruptAt = 0) : IValidationRunner

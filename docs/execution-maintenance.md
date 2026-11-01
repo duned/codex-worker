@@ -368,6 +368,14 @@ continues under its existing ID through normal workspace preparation, including 
 the claim already replaced ready with working. Managed history and assignments do
 not grant standalone recovery authority.
 
+The Worker records `pending: validation` before authoritative validation and keeps
+that checkpoint after a successful repair. If shutdown interrupts that step, the
+standalone continuation reruns validation on the same verified worktree with the
+original repair count, then uses the usual rebase validation and integration. The
+managed preserved-Codex assignment follows the same runner path only after obtaining
+fresh Server authorization and a current lease; the Server remains authoritative for
+assignment and completion.
+
 If continuation cannot be authorized, an open Issue with the configured ready label
 explicitly requests a fresh attempt. Retirement requires verified non-integration,
 no active process or newer attempt, and a clean owned worktree. The Worker durably

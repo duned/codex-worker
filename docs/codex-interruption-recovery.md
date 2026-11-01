@@ -18,7 +18,7 @@ Recovery is considered before new standalone Issues and runs within existing glo
 
 The CLI's local help must establish support for explicit session resume with the Worker's existing schema, JSON events and approval/sandbox contract. The Worker never uses `--last`. When that contract or session is unavailable, it starts a new invocation on the same verified worktree, explicitly instructing Codex to inspect existing changes and continue the original Issue. It does not copy partial changes into a new implementation workspace or remove the source workspace. A resume error other than an explicit missing-session response remains a failure, not an automatic fallback loop.
 
-Completion follows ordinary authoritative validation, repair, rebase/revalidation and integration. Advancing the configured base while waiting does not overwrite newer work. Git history mutation, unfinished Git operations, missing registration, branch/HEAD mismatches or incomplete metadata stop automatic recovery safely.
+Completion follows ordinary authoritative validation, repair, rebase/revalidation and integration. The history validation checkpoint is written before each authoritative validation and after a successful repair. If shutdown interrupts validation after implementation or repair completed, both standalone and managed continuation rerun that validation on the verified preserved worktree, retain the consumed repair count, then perform the normal rebase validation and integration. They do not rerun implementation for that checkpoint. Managed continuation uses the fresh Server recovery assignment and lease before touching the worktree and rechecks authority before integration. Advancing the configured base while waiting does not overwrite newer work. Git history mutation, unfinished Git operations, missing registration, branch/HEAD mismatches or incomplete metadata stop automatic recovery safely.
 
 Managed recovery is offered through the existing preserved-work assignment protocol with kind `Codex`. The Server verifies the original node/execution identity, outcome and competing reservations, then supplies a fresh assignment/lease. If a pre-integration lease expired and its retry is still queued, the returning owner may attach verified work to that queued retry. It cannot take back an assigned/completed execution. Expired preserved continuations wait for their original node; cached configuration and an expired lease confer no execution authority.
 
@@ -33,3 +33,16 @@ The isolated `session_meta` v1 compatibility reader examines only bounded first 
 Legacy executions lack a historical configuration fingerprint. Reconstruction verifies the persisted effective profile against original Issue metadata and current defaults, then pins the current continuation configuration as a new baseline; it does not claim to have recovered historical validation or environment settings. Current Worker validation remains mandatory. Once pinned, later configuration changes require inspection as for ordinary interruptions. Reconstruction is published once with an atomic history update that rejects competing/newer executions. The normal durable recovery claim, resume budget, readiness backoff and managed lease checks then apply, including after restart. Failed reconstruction changes neither history nor worktree resources. No incident Issue or execution ID is special-cased.
 
 Real legacy evidence analysis is read-only. Actual resume, validation and integration are deployment validation against the owning Worker's durable history and worktrees, outside an implementation task.
+
+## Incident #432 operator inspection
+
+Keep the incident worktree intact until its owning Worker has deployed this recovery behavior and reconciled the execution from its own durable history. Do not reset, clean, relabel, or manually run validation in that worktree. First capture a read-only snapshot of the Worker and Issue state:
+
+```sh
+./cw status
+./cw executions show --issue 432
+./cw recovery blocked --issue 432
+./cw log -n 300
+```
+
+Compare the execution ID, attempt, project/repository, engine/model, validation checkpoint, repair count, recovery state, registered branch/base, and diagnostic with the service journal and Server execution detail when managed. Confirm GitHub still has the original Issue open and inspect its labels without changing them. For managed mode, confirm Server's current assignment/lease and generation for the original execution; local history or a cached assignment is not authority. If the Worker reports a concrete blocker, Server is unavailable, or any identity/base/worktree proof differs, preserve all evidence and escalate to the Worker/Server operator for reconciliation. Only the normal owner-controlled recovery flow may resume or retire the worktree.
