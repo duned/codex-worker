@@ -37,8 +37,12 @@ internal sealed class ClaudeReadiness(
                             return;
                         }
                         state = "service-unavailable";
-                        // Print mode disables interactive login/permission flows. No tools or repository context are needed.
-                        var response = await RunAsync(["--print", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence", "Reply with OK."], TimeSpan.FromSeconds(60), token);
+                        // Exercise the executor's unattended boundary and default model, without tools or repository context.
+                        var response = await RunAsync(["--print", "--restricted", "--safe-mode", "--permission-mode", "dontAsk",
+                            "--permission-prompts", "none", "--model", "sonnet", "--effort", "high",
+                            "--settings", "{\"disableAllHooks\":true}", "--output-format", "json", "--tools", "",
+                            "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence",
+                            "Reply with OK."], TimeSpan.FromSeconds(60), token);
                         if (response.ExitCode == 0)
                         {
                             using var result = JsonDocument.Parse(response.StandardOutput);

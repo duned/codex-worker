@@ -207,7 +207,8 @@ public sealed class WorkerHost
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
             foreach (var (path, config) in configuredProjects)
             {
-                var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct);
+                var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct,
+                    engine => Volatile.Read(ref heartbeatCapabilities).Any(capability => capability.Type == "agent-provider" && capability.Name == engine));
                 runtimeReadModel.CompletedBranchMaintenance.Register(config, project.Git, project.RepositoryGate);
                 runtimes.Add(project);
                 allRuntimes.Add(project);
@@ -531,7 +532,8 @@ public sealed class WorkerHost
                             replacement.Add(existing);
                         else
                         {
-                            var project = CreateRuntime(path, configuration, telegram, history, repositoryGates, ct);
+                            var project = CreateRuntime(path, configuration, telegram, history, repositoryGates, ct,
+                                engine => Volatile.Read(ref heartbeatCapabilities).Any(capability => capability.Type == "agent-provider" && capability.Name == engine));
                             runtimeReadModel.CompletedBranchMaintenance.Register(configuration, project.Git, project.RepositoryGate);
                             replacement.Add(project);
                             allRuntimes.Add(project);
@@ -1239,7 +1241,8 @@ public sealed class WorkerHost
     }
 
     private ProjectRuntime CreateRuntime(string path, WorkerConfiguration config, TelegramNotifier telegram,
-        ExecutionHistoryStore history, System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken)
+        ExecutionHistoryStore history, System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> repositoryGates, CancellationToken shutdownToken,
+        Func<string, bool> engineReady)
     {
         var github = new GitHubClient(_runner, config.Project.Repository, config.Worker.GitHubTimeoutSeconds,
             requireManagedAuthentication: _global.Server.Enabled && _global.Projects.Ownership == "managed");
@@ -1250,7 +1253,7 @@ public sealed class WorkerHost
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _executionOperationalLog, shutdownToken,
-                registrationClient: _registration, timeProvider: _timeProvider), codex, github, repositoryGate);
+                registrationClient: _registration, timeProvider: _timeProvider, engineReady: engineReady), codex, github, repositoryGate);
     }
 
     private void PauseProjectForGitHubFailure(WorkerRuntimeReadModel runtime, string projectName,

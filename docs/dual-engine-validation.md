@@ -58,3 +58,24 @@ Those real-node, real-credential checks were not run as part of this change.
   passed. No live Claude/Codex/GitHub campaign was executed.
 
 These are Codex self-validation results, not the Worker's authoritative checks.
+
+### Parent integration follow-up (2026-11-01)
+
+The CCC headless readiness request now exercises restricted/safe mode, disables
+permission prompts and hooks, and explicitly selects the executor's default
+Sonnet model and high effort. It still has no tools, MCP servers or persisted
+session. `ClaudeReadinessTests.ReadinessRequiresAuthenticatedLiveResponse`
+checks these arguments as well as authentication, successful service response,
+and rejection without leaking diagnostics.
+
+Standalone queue claiming now also consults the host's current provider
+advertisements instead of treating a registered adapter as execution readiness.
+`WorkerV011Tests.InstalledButUnreadyCccLeavesIssueReadyWhileCodexCanRun` covers
+leaving an unready CCC Issue untouched and subsequently executing a Codex Issue.
+Managed assignment retains its existing capability/lease checks.
+
+In this checkout, `dotnet build tests/CodexWorker.Tests/CodexWorker.Tests.csproj -m:1`
+could not restore packages: NuGet returned `NU1301` because the sandbox denied
+access to `api.nuget.org:443`. Compilation and test execution therefore remain
+unverified for this follow-up. The results above describe the earlier child-work
+validation; they are not a new run. No live provider/node campaign was run.

@@ -35,6 +35,17 @@ public sealed class ClaudeReadinessTests
             Assert.NotNull(timeout);
             count++;
             var args = arguments.ToArray();
+            if (args[0] == "--print")
+            {
+                Assert.Contains("--restricted", args);
+                Assert.Contains("--safe-mode", args);
+                Assert.Equal("dontAsk", args[Array.IndexOf(args, "--permission-mode") + 1]);
+                Assert.Equal("none", args[Array.IndexOf(args, "--permission-prompts") + 1]);
+                Assert.Equal("sonnet", args[Array.IndexOf(args, "--model") + 1]);
+                Assert.Equal("high", args[Array.IndexOf(args, "--effort") + 1]);
+                Assert.Equal("{\"disableAllHooks\":true}", args[Array.IndexOf(args, "--settings") + 1]);
+                Assert.Equal("", args[Array.IndexOf(args, "--tools") + 1]);
+            }
             var result = args[0] switch
             {
                 "--version" => new ProcessResult(0, "2.1.259", ""),

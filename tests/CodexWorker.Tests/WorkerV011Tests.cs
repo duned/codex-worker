@@ -472,6 +472,25 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Fact]
+    public async Task InstalledButUnreadyCccLeavesIssueReadyWhileCodexCanRun()
+    {
+        using var h = new Harness();
+        h.GitHub.CancelWhenEmpty = false;
+        var worker = new Worker(h.Worker.Configuration, h.GitHub, h.Git, h.Codex, h.Validation, h.Telegram,
+            engineReady: engine => engine == "codex");
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: ccc\nmodel: sonnet\neffort: low" };
+        Assert.Null(await worker.ProcessOneAsync(CancellationToken.None));
+        Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.GitHub.Labels);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Implement task" };
+        h.GitHub.ReadyIssueCount = 2;
+        Assert.NotNull(await worker.ProcessOneAsync(CancellationToken.None));
+        Assert.Equal(1, h.Git.Started);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
     public async Task SchedulerClaimMessagesCanBeCapturedWithoutUsingProcessConsole()
     {
         using var h = new Harness();

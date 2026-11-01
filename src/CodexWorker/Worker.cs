@@ -12,7 +12,8 @@ public sealed record IssueProcessingResult(IssueOutcomeKind Kind, IssueExecution
 public sealed partial class Worker(WorkerConfiguration config, IGitHubClient github, IGitRepository git, ICodexExecutor codex,
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
     SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
-    WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null, ImplementationEngineSelector? engines = null)
+    WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null, ImplementationEngineSelector? engines = null,
+    Func<string, bool>? engineReady = null)
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly WorkerRegistrationClient _registration = registrationClient ?? new WorkerRegistrationClient();
@@ -88,7 +89,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             try
             {
                 var selection = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body);
-                if (!(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(selection.Engine))
+                if (!(engines ?? new ImplementationEngineSelector(settings: config.Codex)).IsAvailable(selection.Engine) ||
+                    engineReady?.Invoke(selection.Engine) == false)
                 {
                     _operationalLog($"Scheduler · {config.Project.Name} · Issue #{issue.Number} · engine {selection.Engine} is unavailable on this Worker; leaving Issue ready.");
                     continue;
