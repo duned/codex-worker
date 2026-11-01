@@ -303,6 +303,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         var reconstructed = Assert.Single(await history.ReadAllAsync());
         Assert.Equal("codex-interrupted", reconstructed.RecoveryState);
         Assert.Equal(session.ToString(), reconstructed.CodexRecovery?.SessionId);
+        Assert.Null(reconstructed.CodexRecovery?.ImplementationSucceeded);
+        Assert.Null(reconstructed.ValidationOutcome);
         Assert.Equal(info.BaseCommit, reconstructed.RecoveryBaseCommit);
         Assert.Equal(0, reconstructed.CodexRecovery?.ResumeCount);
         Assert.Equal(source.CompletedAtUtc, reconstructed.CompletedAtUtc);

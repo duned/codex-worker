@@ -139,8 +139,33 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     _output.Warning($"Codex recovery requires inspection · execution {source.ExecutionId} · {FailureDiagnosticRedactor.Redact(rejection, config.Environment.Variables.Values.ToArray())}");
                     continue;
                 }
-                if (!await github.IsIssueOpenAsync(source.IssueNumber, ct)) continue;
-                var issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc);
+                GitHubIssue? issue;
+                if (source.ValidationOutcome == "legacy: pending validation")
+                {
+                    try { issue = await github.GetIssueAsync(source.IssueNumber, ct); }
+                    catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested)
+                    {
+                        await history.RecordLegacyReviewAsync(source.ExecutionId,
+                            "fresh Issue details are unavailable; legacy continuation cannot verify the original title and intent",
+                            _clock.GetUtcNow(), ct);
+                        continue;
+                    }
+                    if (issue is null || issue.Title != source.IssueTitle || issue.Body != originalBody)
+                    {
+                        await history.RecordLegacyReviewAsync(source.ExecutionId,
+                            "original Issue is closed, unavailable, or its title/body changed", _clock.GetUtcNow(), ct);
+                        continue;
+                    }
+                }
+                else issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc);
+                if (!await github.IsIssueOpenAsync(source.IssueNumber, ct))
+                {
+                    if (source.ValidationOutcome == "legacy: pending validation")
+                        await history.RecordLegacyReviewAsync(source.ExecutionId,
+                            "original Issue is closed; legacy continuation requires an open Issue with unchanged intent",
+                            _clock.GetUtcNow(), ct);
+                    continue;
+                }
                 var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: source.ExecutionId,
                     attemptNumber: source.AttemptNumber + 1, resumed: true, featureBranchOverride: source.FeatureBranch,
                     codexSettings: config.Codex, settingsSource: source, serverExecutionId: assignment?.ServerExecutionId,

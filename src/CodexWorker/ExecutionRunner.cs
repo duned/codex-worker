@@ -22,7 +22,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         context.Execution.CodexProfile?.EffectiveModel, context.Execution.CodexProfile?.Effort);
 
     private static bool IsInterruptedValidation(ExecutionContext context) => context.RetryOf is { } source &&
-        source.ValidationOutcome == "pending: validation" && source.CodexRecovery?.ImplementationSucceeded == true;
+        (source.ValidationOutcome is "pending: validation" or "legacy: pending validation") &&
+        source.CodexRecovery?.ImplementationSucceeded == true;
 
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)

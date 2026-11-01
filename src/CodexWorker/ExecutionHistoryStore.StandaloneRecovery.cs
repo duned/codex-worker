@@ -25,6 +25,7 @@ public sealed partial class ExecutionHistoryStore
                 completed_at_utc=CASE WHEN $recovery='standalone-continuing' THEN NULL
                                      ELSE COALESCE(completed_at_utc,$now) END,
                 recovery_status=$status,
+                validation_outcome=COALESCE($validation,validation_outcome),
                 codex_recovery_json=CASE WHEN $recovery='standalone-continuing'
                     THEN COALESCE($codex,codex_recovery_json) ELSE codex_recovery_json END
             WHERE execution_id=$id AND state=$state AND recovery_state IS $previous
@@ -45,6 +46,8 @@ public sealed partial class ExecutionHistoryStore
         command.Parameters.AddWithValue("$recovery", recovery);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$status", JsonSerializer.Serialize(inspection));
+        command.Parameters.AddWithValue("$validation", source.ValidationOutcome is "legacy: pending validation"
+            ? source.ValidationOutcome : DBNull.Value);
         command.Parameters.AddWithValue("$codex", source.CodexRecovery is null ? DBNull.Value : JsonSerializer.Serialize(source.CodexRecovery));
         return await command.ExecuteNonQueryAsync(ct) == 1;
     }

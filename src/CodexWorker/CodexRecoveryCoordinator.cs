@@ -92,8 +92,9 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
     private async Task<(ExecutionHistoryEntry? Entry, string? Reason)> ReconstructAsync(ExecutionHistoryEntry source,
         IReadOnlyList<ExecutionHistoryEntry> entries, CancellationToken ct)
     {
+        var legacyValidation = IsLegacyPostRepairValidation(source, config);
         if (source.CommitSha is not null || source.IntegrationBranch is not null || source.CompletedBranch is not null ||
-            source.ValidationOutcome is not null || source.ImplementationSummary is not null)
+            source.ValidationOutcome is not null && !legacyValidation || source.ImplementationSummary is not null && !legacyValidation)
             return (null, "execution progressed beyond an uncompleted Codex invocation; inspect its lifecycle state");
         if (source.OriginalIssueBody is null) return (null, "original Issue intent is missing from execution history");
         if (source.EffectiveEffort is null) return (null, "effective execution profile is missing from execution history");
@@ -105,7 +106,12 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
             return (null, "current configuration conflicts with persisted effective execution profile");
         LegacyWorkspaceEvidence? workspace;
         await repositoryGate.WaitAsync(ct);
-        try { workspace = await git.InspectLegacyCodexWorkspaceAsync(source, ct); }
+        try
+        {
+            var processBlocker = await git.InspectExecutionProcessesAsync(source, ct);
+            if (processBlocker is not null) return (null, processBlocker);
+            workspace = await git.InspectLegacyCodexWorkspaceAsync(source, ct);
+        }
         catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested) { return (null, "execution/worktree identity or branch/base metadata conflicts with preserved execution"); }
         finally { repositoryGate.Release(); }
         if (workspace is null) return (null, "preserved worktree missing or ownership cannot be verified");
@@ -117,8 +123,10 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         var candidate = source with
         {
             RecoveryBaseCommit = workspace.Head, RecoveryState = "codex-interrupted",
+            ValidationOutcome = legacyValidation ? "legacy: pending validation" : source.ValidationOutcome,
             CodexRecovery = new(source.ExecutionId, source.AttemptNumber, 0,
-                CodexInterruptionRecovery.Fingerprint(config), match.SessionId, clock.GetUtcNow().AddMinutes(5))
+                CodexInterruptionRecovery.Fingerprint(config), match.SessionId, clock.GetUtcNow().AddMinutes(5),
+                ImplementationSucceeded: legacyValidation ? true : null)
         };
         var rejection = ValidateMetadata(candidate, entries, config);
         if (rejection is not null) return (null, rejection);
@@ -127,5 +135,31 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested) { rejection = "preserved workspace verification failed"; }
         finally { repositoryGate.Release(); }
         return rejection is null ? (candidate, null) : (null, "preserved workspace verification failed");
+    }
+
+    internal static bool IsLegacyPostRepairValidation(ExecutionHistoryEntry source, WorkerConfiguration config)
+    {
+        if (source.State != "Cancelled" || source.RecoveryState != "uncertain" || source.CompletedAtUtc is null ||
+            source.ImplementationSummary is null || source.ValidationOutcome is null ||
+            source.ValidationOutcome.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
+            !source.ValidationOutcome.Contains("validation", StringComparison.OrdinalIgnoreCase) ||
+            source.ValidationOutcome.StartsWith("pending: repair", StringComparison.OrdinalIgnoreCase) ||
+            source.RepairCount < 1 || source.RepairCount > config.Validation.MaxFixAttempts ||
+            source.Repairs.Count != source.RepairCount)
+            return false;
+
+        var ordered = source.Repairs.OrderBy(repair => repair.Attempt).ToArray();
+        if (ordered.Where((repair, index) => repair.IntegrationRepair || repair.Attempt != index + 1 ||
+                repair.MaximumAttempts != config.Validation.MaxFixAttempts).Any())
+            return false;
+
+        // A completed repair record plus Cancelled (rather than Failed/Blocked) and no
+        // post-repair validation result is the legacy evidence that shutdown interrupted
+        // the following validation. A placeholder record means shutdown interrupted the
+        // repair invocation itself and is deliberately not eligible.
+        var last = ordered[^1];
+        return !string.IsNullOrWhiteSpace(last.RepairSummary) &&
+            !last.RepairSummary.StartsWith("Repair invocation interrupted", StringComparison.Ordinal) &&
+            !last.PassedAfterRepair && last.ValidationAfterRepair is null;
     }
 }

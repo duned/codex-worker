@@ -166,6 +166,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         await using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE executions SET codex_recovery_json=$codexRecovery, recovery_base_commit=$recoveryBase,
+                validation_outcome=COALESCE($validation,validation_outcome),
                 recovery_state='codex-interrupted'
             WHERE execution_id=$id AND codex_recovery_json IS NULL AND recovery_state='uncertain'
                 AND state IN ('InfrastructureFailure','Cancelled') AND completed_at_utc IS NOT NULL
@@ -175,7 +176,15 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                     AND (other.completed_at_utc IS NULL OR other.attempt_number>executions.attempt_number OR other.state='Completed'))
             """;
         Bind(command, reconstructed);
-        try { return await command.ExecuteNonQueryAsync(ct) == 1; }
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(ct) != 1) return false;
+            await using var review = connection.CreateCommand();
+            review.CommandText = "DELETE FROM execution_legacy_reviews WHERE execution_id=$id";
+            review.Parameters.AddWithValue("$id", reconstructed.ExecutionId.ToString());
+            await review.ExecuteNonQueryAsync(ct);
+            return true;
+        }
         catch (SqliteException ex) { throw PersistenceFailure("reconstruct Codex recovery", ex); }
     }
 

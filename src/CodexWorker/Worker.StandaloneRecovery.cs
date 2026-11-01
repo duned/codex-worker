@@ -11,6 +11,7 @@ public sealed partial class Worker
         "issue-no-longer-open", "uncommitted-work-cannot-be-safely-retired", "retry-requires-ready-label",
         "integration-or-ownership-metadata-unproven", "preparation-workspace-ownership-unproven",
         "authoritative-base-unavailable", "preparation-resources-unproven", "retirement-receipt-invalid",
+        "recovery-inspection-budget-exhausted",
         "owned-workspace-missing", "workspace-head-invalid", "worktree-repository-mismatch",
         "authoritative-remote-unavailable", "original-base-not-on-authoritative-remote", "workspace-history-diverged",
         "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable"
@@ -41,7 +42,13 @@ public sealed partial class Worker
         foreach (var source in entries.Where(entry => entry.Project == config.Project.Name &&
                      entry.Repository == config.Project.Repository && HandlesStandaloneRecovery(entry)))
         {
-            if (_standaloneRecoveryChecksThisStart >= MaxStandaloneRecoveryChecksPerStart) break;
+            if (_standaloneRecoveryChecksThisStart >= MaxStandaloneRecoveryChecksPerStart)
+            {
+                if (CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config))
+                    await ReportStandaloneBlockerAsync(source, "recovery-inspection-budget-exhausted", ct,
+                        "The startup recovery inspection budget was exhausted before this retained post-repair validation could be checked. It remains preserved; restart after earlier candidates are reconciled or inspect this execution.");
+                continue;
+            }
             if (_activeIssues.ContainsKey(source.IssueNumber)) continue;
             // A bounded read-only campaign per runtime. Restarts re-read authoritative evidence;
             // no failed inspection authorizes cleanup, replay, or a generic implementation retry.
@@ -120,11 +127,22 @@ public sealed partial class Worker
                         (inspection.NoWorkspace || source.CodexRecovery is { ResumeCount: >= 0 } snapshot &&
                             snapshot.ConfigurationFingerprint == CodexInterruptionRecovery.Fingerprint(config) &&
                             (snapshot.ImplementationSucceeded == true || snapshot.ImplementationSucceeded is null &&
-                                source.ValidationOutcome == "passed"));
+                                source.ValidationOutcome == "passed" ||
+                             CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config)) ||
+                         source.CodexRecovery is null && CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config));
                     if (canContinue)
                     {
-                        var continuation = source with { CodexRecovery = source.CodexRecovery is { } saved
-                            ? saved with { ProcessScope = await InterruptedWorkspaceProcesses.ReadScopeAsync(ct) } : null };
+                        var legacyValidation = CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config);
+                        var continuation = source with
+                        {
+                            ValidationOutcome = legacyValidation ? "legacy: pending validation" : source.ValidationOutcome,
+                            CodexRecovery = source.CodexRecovery is { } saved
+                                ? saved with { ProcessScope = await InterruptedWorkspaceProcesses.ReadScopeAsync(ct),
+                                    ImplementationSucceeded = legacyValidation ? true : saved.ImplementationSucceeded }
+                                : legacyValidation ? new(source.ExecutionId, source.AttemptNumber, 0,
+                                    CodexInterruptionRecovery.Fingerprint(config),
+                                    ProcessScope: await InterruptedWorkspaceProcesses.ReadScopeAsync(ct), ImplementationSucceeded: true) : null
+                        };
                         var execution = WorkerExecution.Continue(continuation, config, issue);
                         if (!await history.TryTransitionStandaloneAsync(continuation, "standalone-continuing", inspection, ct)) continue;
                         // Keep the same execution identity. The runner rechecks ownership and
