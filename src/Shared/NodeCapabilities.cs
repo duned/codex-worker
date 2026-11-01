@@ -228,7 +228,13 @@ public sealed class NodeCapabilityDiscovery
                         {
                             var probe = AuthenticationDependencyProbes.Get(dependency);
                             var auth = await _run(probe.Executable, probe.Arguments, cancellationToken);
-                            authenticated &= auth.ExitCode == 0;
+                            if (dependency == AuthenticationDependencyKind.ClaudeCliAuthentication)
+                            {
+                                if (!ClaudeAuthenticationStatus.TryRead(auth.ExitCode, auth.Output, out var claudeAuthenticated))
+                                    throw new InvalidOperationException("Claude authentication observation is invalid.");
+                                authenticated &= claudeAuthenticated;
+                            }
+                            else authenticated &= auth.ExitCode == 0;
                         }
                         state = state with { Authentication = authenticated ? RequirementState.Satisfied : RequirementState.Required,
                             DiagnosticCode = authenticated ? state.DiagnosticCode : "authentication-required" };

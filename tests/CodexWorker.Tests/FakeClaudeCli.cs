@@ -16,7 +16,7 @@ internal sealed class FakeClaudeCli : IDisposable
             case "$1" in
               --version) printf '%s\n' '2.1.259 (Claude Code)'; exit 0 ;;
               --help) printf '%s\n' '--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence'; exit 0 ;;
-              auth) if [ "$FAKE_CLAUDE_MODE" = auth-error ]; then exit 1; fi; printf '%s\n' '{"loggedIn":true}'; exit 0 ;;
+              auth) if [ "$FAKE_CLAUDE_MODE" = logged-out ]; then printf '%s\n' '{"loggedIn":false,"authMethod":"none"}'; exit 1; fi; if [ "$FAKE_CLAUDE_MODE" = auth-error ]; then exit 1; fi; printf '%s\n' '{"loggedIn":true}'; exit 0 ;;
               --print) printf '%s\n' '{"type":"result","is_error":false,"result":"OK"}'; exit 0 ;;
             esac
             prompt=$(/bin/cat)

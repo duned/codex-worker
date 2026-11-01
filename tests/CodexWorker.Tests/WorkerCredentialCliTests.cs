@@ -294,6 +294,9 @@ public sealed class WorkerCredentialCliTests
             "--list-runtimes" => (0, "Microsoft.NETCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.NETCore.App]\n" +
                 "Microsoft.AspNetCore.App 10.0.0 [/usr/share/dotnet/shared/Microsoft.AspNetCore.App]"),
             "info" => dockerDaemonAvailable ? (0, "27.0.0") : (1, PrivateOutput),
+            "auth" when tool == ClaudeServiceEnvironment.Executable => authenticated
+                ? (0, "{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}")
+                : (1, "{\"loggedIn\":false,\"authMethod\":\"none\"}"),
             _ => (effectiveArguments.Contains("status") && !authenticated ? 1 : 0,
                 effectiveArguments.Contains("--version") ? "1.0.0" : PrivateOutput)
         });

@@ -130,11 +130,12 @@ public sealed class NodeCapabilityTests
     public async Task ExplicitRefreshRedetectsMachineFactsWhileOrdinaryReadsAreCached()
     {
         var installed = false;
-        var discovery = new NodeCapabilityDiscovery((_, arguments, _) => installed
+        var discovery = new NodeCapabilityDiscovery((tool, arguments, _) => installed
             ? Task.FromResult((0, arguments[0] switch
             {
                 "--list-sdks" => "10.0.100 [/sdk]",
                 "--list-runtimes" => "Microsoft.NETCore.App 10.0.1 [/runtime]\nMicrosoft.AspNetCore.App 10.0.1 [/runtime]",
+                "auth" when tool == ClaudeServiceEnvironment.Executable => "{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}",
                 _ => "2.0"
             })) : Task.FromException<(int, string)>(new FileNotFoundException()));
         var before = await discovery.GetAsync();

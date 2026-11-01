@@ -68,8 +68,8 @@ public sealed record ProvisioningFailureDetail(ProvisioningFailureCode Code, int
         });
 }
 
-/// <summary>Bounded process result. StandardError is transient and used only to classify known failures.</summary>
-public sealed record ProvisioningProcessResult(int ExitCode, string StandardError = "");
+/// <summary>Bounded process result. Output is transient, never reported, and used only for structured probes or failure classification.</summary>
+public sealed record ProvisioningProcessResult(int ExitCode, string StandardError = "", string StandardOutput = "");
 
 // No free-form arguments, shell text, credentials, paths or package names cross this boundary.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -318,8 +318,19 @@ public sealed partial class NodeProvisioningCommandExecutor
             var verificationResult = await _run(executable, arguments, timeout.Token);
             if (verificationResult.ExitCode == 0 && command.Request.Action == ProvisioningCommandAction.CheckConfiguration && command.Request.CapabilityId == "git")
                 verificationResult = await _run("git", ["config", "--get", "user.email"], timeout.Token);
-            await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
+            var observations = await _discovery.GetAsync(refresh: true, cancellationToken: timeout.Token);
             refreshed = true;
+            if (request is { CapabilityId: "claude-cli", Action: ProvisioningCommandAction.CheckAuthentication })
+            {
+                if (!ClaudeAuthenticationStatus.TryRead(verificationResult.ExitCode, verificationResult.StandardOutput, out var authenticated))
+                    return Failed(ProvisioningFailureCode.VerificationFailed);
+                var observation = observations.SingleOrDefault(state => state.Id == "claude-cli");
+                return observation is { Installation: InstallationState.Installed, Health: CapabilityHealth.Healthy } &&
+                    observation.DetectedAtUtc >= (command.StartedAtUtc ?? command.CreatedAtUtc) && observation.DetectedAtUtc >= command.CreatedAtUtc &&
+                    observation.Authentication == (authenticated ? RequirementState.Satisfied : RequirementState.Required)
+                    ? new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)
+                    : Failed(ProvisioningFailureCode.VerificationFailed);
+            }
             if (verificationResult.ExitCode == 0)
                 return new(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed);
             var failureCode = request.Action == ProvisioningCommandAction.CheckConfiguration && request.CapabilityId == "docker"
@@ -412,12 +423,12 @@ public sealed partial class NodeProvisioningCommandExecutor
         process.Start();
         process.StandardInput.Close();
         using var drainCancellation = new CancellationTokenSource();
-        var output = DrainAsync(process.StandardOutput, drainCancellation.Token);
+        var output = ReadBoundedAsync(process.StandardOutput, executable == ClaudeServiceEnvironment.Executable && arguments.Count > 0 && arguments[0] == "auth" ? 16385 : 0, drainCancellation.Token);
         var error = ReadBoundedAsync(process.StandardError, 4096, drainCancellation.Token);
         try
         {
             await process.WaitForExitAsync(token);
-            return new ProvisioningProcessResult(process.ExitCode, await error);
+            return new ProvisioningProcessResult(process.ExitCode, await error, await output);
         }
         finally
         {
@@ -440,12 +451,6 @@ public sealed partial class NodeProvisioningCommandExecutor
             if (remaining > 0) captured.Append(buffer, 0, Math.Min(count, remaining));
         }
         return captured.ToString();
-    }
-
-    private static async Task DrainAsync(StreamReader reader, CancellationToken token)
-    {
-        var buffer = new char[1024];
-        while (await reader.ReadAsync(buffer.AsMemory(), token) != 0) { }
     }
 
     private static partial class NativeMethods

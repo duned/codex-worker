@@ -5,6 +5,7 @@ public sealed class ClaudeReadinessTests
     [Theory]
     [InlineData("success", "ready")]
     [InlineData("auth-error", "unauthenticated")]
+    [InlineData("logged-out", "unauthenticated")]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     public async Task NativeProcessFixtureChecksAuthenticationBeforeLiveReadiness(string mode, string expected)
@@ -50,7 +51,7 @@ public sealed class ClaudeReadinessTests
             {
                 "--version" => new ProcessResult(0, "2.1.259", ""),
                 "--help" => new ProcessResult(0, "--restricted --safe-mode --permission-prompts --permission-mode --json-schema --effort --model --tools --allowedTools --strict-mcp-config --no-session-persistence", ""),
-                "auth" => new ProcessResult(0, authenticated ? "{\"loggedIn\":true}" : "{\"loggedIn\":false}", ""),
+                "auth" => new ProcessResult(authenticated ? 0 : 1, authenticated ? "{\"loggedIn\":true}" : "{\"loggedIn\":false}", ""),
                 _ => new ProcessResult(serviceReady ? 0 : 1, "{\"type\":\"result\",\"is_error\":false,\"result\":\"OK\"}", "secret")
             };
             return Task.FromResult(result);

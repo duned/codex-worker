@@ -22,35 +22,31 @@ internal sealed class ClaudeReadiness(
                 state = "incompatible";
             else
             {
-                var authentication = await RunAsync(["auth", "status", "--json"], TimeSpan.FromSeconds(5), token);
+                var authentication = await RunAsync(["auth", "status"], TimeSpan.FromSeconds(5), token);
                 state = "unauthenticated";
-                if (authentication.ExitCode == 0)
+                if (ClaudeAuthenticationStatus.TryRead(authentication.ExitCode, authentication.StandardOutput, out var authenticated) && authenticated)
                 {
-                    using var auth = JsonDocument.Parse(authentication.StandardOutput);
-                    if (auth.RootElement.TryGetProperty("loggedIn", out var loggedIn) && loggedIn.ValueKind == JsonValueKind.True)
+                    state = "incompatible";
+                    var help = await RunAsync(["--help"], TimeSpan.FromSeconds(5), token);
+                    if (!ClaudeCliCompatibility.SupportsRestrictedExecution(help))
                     {
-                        state = "incompatible";
-                        var help = await RunAsync(["--help"], TimeSpan.FromSeconds(5), token);
-                        if (!ClaudeCliCompatibility.SupportsRestrictedExecution(help))
-                        {
-                            Observation = new("agent-readiness", "ccc", Version: detectedVersion, Scope: "incompatible", CheckedAtUtc: DateTimeOffset.UtcNow);
-                            return;
-                        }
-                        state = "service-unavailable";
-                        // Exercise the executor's unattended boundary and default model, without tools or repository context.
-                        var response = await RunAsync(["--print", "--restricted", "--safe-mode", "--permission-mode", "dontAsk",
-                            "--permission-prompts", "none", "--model", "sonnet", "--effort", "high",
-                            "--settings", "{\"disableAllHooks\":true}", "--output-format", "json", "--tools", "",
-                            "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence",
-                            "Reply with OK."], TimeSpan.FromSeconds(60), token);
-                        if (response.ExitCode == 0)
-                        {
-                            using var result = JsonDocument.Parse(response.StandardOutput);
-                            if (result.RootElement.TryGetProperty("type", out var type) && type.GetString() == "result" &&
-                                result.RootElement.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.False &&
-                                result.RootElement.TryGetProperty("result", out var content) && content.ValueKind == JsonValueKind.String &&
-                                !string.IsNullOrWhiteSpace(content.GetString())) state = "ready";
-                        }
+                        Observation = new("agent-readiness", "ccc", Version: detectedVersion, Scope: "incompatible", CheckedAtUtc: DateTimeOffset.UtcNow);
+                        return;
+                    }
+                    state = "service-unavailable";
+                    // Exercise the executor's unattended boundary and default model, without tools or repository context.
+                    var response = await RunAsync(["--print", "--restricted", "--safe-mode", "--permission-mode", "dontAsk",
+                        "--permission-prompts", "none", "--model", "sonnet", "--effort", "high",
+                        "--settings", "{\"disableAllHooks\":true}", "--output-format", "json", "--tools", "",
+                        "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence",
+                        "Reply with OK."], TimeSpan.FromSeconds(60), token);
+                    if (response.ExitCode == 0)
+                    {
+                        using var result = JsonDocument.Parse(response.StandardOutput);
+                        if (result.RootElement.TryGetProperty("type", out var type) && type.GetString() == "result" &&
+                            result.RootElement.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.False &&
+                            result.RootElement.TryGetProperty("result", out var content) && content.ValueKind == JsonValueKind.String &&
+                            !string.IsNullOrWhiteSpace(content.GetString())) state = "ready";
                     }
                 }
             }
