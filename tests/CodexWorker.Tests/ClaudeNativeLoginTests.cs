@@ -166,7 +166,46 @@ public sealed class ClaudeNativeLoginTests
             FailureDetail: new(ProvisioningFailureCode.ManualVendorCliCompletionRequired)));
         Assert.Null((await store.GetAsync(created.Id))?.ClaudeLogin);
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReportAsync(created.Id, node, progress));
+        var check = await store.CreateAsync(request with { Action = ProvisioningCommandAction.CheckAuthentication });
+        Assert.Equal(check.Id, (await store.ClaimAsync(node))?.Id);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CreateAsync(request));
+        Assert.NotNull(await store.CreateAsync(new(node, "git", ProvisioningCommandAction.Detect)));
     }
+    [Fact]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public void TerminalLoginRestoresActionsFromAnOlderRunningObservation()
+    {
+        var definition = Assert.Single(CapabilityCatalog.Definitions, item => item.Id == "claude-cli");
+        var state = CapabilityCatalog.Unknown(definition) with
+        {
+            Health = CapabilityHealth.Error,
+            DiagnosticCode = "probe-failed",
+            Operation = new(CapabilityOperationState.Running, "login")
+        };
+        var node = new ProvisionableNode("server", "server", "Server", "connected", "not-ready", "busy",
+            false, [CapabilityCatalog.Describe(definition, state, true)]);
+        var command = new ProvisioningCommand("login", new("server", "claude-cli", ProvisioningCommandAction.Login),
+            DateTimeOffset.UtcNow, ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed,
+            FailureDetail: new(ProvisioningFailureCode.ManualVendorCliCompletionRequired));
+        var projected = NodeProvisioning.WithCommands(node, [command]);
+        Assert.Equal("ready", projected.ProvisioningReadiness);
+        var capability = Assert.Single(projected.Capabilities);
+        Assert.Equal(CapabilityHealth.Error, capability.State.Health);
+        Assert.Equal(CapabilityOperationState.Failed, capability.State.Operation.State);
+        Assert.Contains("checkauthentication", capability.AvailableActions);
+        Assert.Contains("refresh", capability.AvailableActions);
+        Assert.Contains("login", capability.AvailableActions);
+        Assert.Empty(Assert.Single(NodeProvisioning.WithCommands(node with { Connectivity = "disconnected" },
+            [command]).Capabilities).AvailableActions);
+        foreach (var status in new[] { ProvisioningCommandStatus.Pending, ProvisioningCommandStatus.Running })
+        {
+            var active = NodeProvisioning.WithCommands(node, [command with { Status = status, FailureDetail = null }]);
+            Assert.Equal("busy", active.ProvisioningReadiness);
+            Assert.Empty(Assert.Single(active.Capabilities).AvailableActions);
+        }
+    }
+
     [Fact]
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]

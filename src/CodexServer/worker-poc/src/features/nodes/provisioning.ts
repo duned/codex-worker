@@ -18,7 +18,7 @@ export const commandExpired = (command: NodeCommandSummary, now: number) => comm
 export function provisioningReason(node: NodeSummary | undefined, commands: NodeCommandSummary[] | undefined, capabilityId: string, action: string) {
   if (!node || !commands) return t("nodes.currentCapabilityOrOperationEvidenceUnavailable");
   if (!['online', 'connected', 'draining'].includes(node.connectivity)) return t("nodes.nodeIsDisconnectedRefreshCurrentObservations");
-  if (node.provisioningReadiness === 'busy' || commands.some(commandActive)) return t("nodes.reconcilePendingOperationsBeforeAnotherAction");
+  if (commands.some(command => command.request.nodeId === node.id && command.request.capabilityId === capabilityId && commandActive(command))) return t("nodes.reconcilePendingOperationsBeforeAnotherAction");
   if (!Object.hasOwn(nodeActions, action) || !node.capabilities.find(item => item.definition.id === capabilityId)?.availableActions.includes(action)) return t("nodes.thisTypedActionIsNoLongerAdvertisedByTheNode");
   return '';
 }

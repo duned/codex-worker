@@ -398,7 +398,7 @@ export const en = {
   "nodes.claudeManualCompletionRequired": "Manual service-account sign-in required",
   "nodes.confirmClaudeSignInDescription": "Start the advertised managed Claude Login action. The browser challenge and returned code stay on the node; complete the vendor flow in a secure terminal as the Worker service user, then refresh authentication observations.",
   "nodes.claudeManualSignInTitle": "Complete Claude sign-in on the node",
-  "nodes.claudeManualSignInInstructions": "The native CLI requires the browser-returned code in the original terminal. The dashboard cannot receive that code or complete browser authentication. In a secure terminal using the Worker service account and configured HOME, run ~/.local/bin/claude auth login and follow the vendor prompts. Then refresh or check authentication; success is shown only from refreshed node observations.",
+  "nodes.claudeManualSignInInstructions": "The native CLI requires the browser-returned code in the original terminal. Vendor guidance does not clearly authorize relaying authorization codes through management, so the dashboard does not accept codes or expose the secret-bearing login URL. In a secure terminal using the Worker service account and configured HOME, run ~/.local/bin/claude auth login and follow the vendor prompts. Then request CheckAuthentication and refresh observations; CCC readiness requires a separate live check; success is shown only from refreshed node observations.",
   "nodes.claudeVendorInstructions": "Claude Code sign-in guidance",
   "nodes.copyInstructionsLink": "Copy link",
   "nodes.claudeInstructionsCopied": "Vendor instructions link copied.",

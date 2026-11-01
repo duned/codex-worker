@@ -95,6 +95,38 @@ CLI, absent/malformed challenge, output overflow, process failure, timeout and
 cancellation fail closed. Custom service HOME overrides require local manual
 completion rather than guessing which account owns credentials.
 
+## Terminal operations and action availability
+
+A Failed Login with `ManualVendorCliCompletionRequired` is terminal. Its retained
+instructions do not hold an operation lock. CheckAuthentication, re-detect and retry
+remain available according to the advertised actions and node-local policy, even
+when Claude health is Error. A terminal command supersedes an older running
+capability observation when projecting action availability. Pending or Running
+commands (including expired operations awaiting reconciliation) still block another
+command for that same node capability. Other advertised capabilities remain usable;
+the aggregate node `busy` summary is not a node-wide action lock. An uncertain
+HTTP submission retains the dashboard's existing reconciliation fence: use
+**Refresh authoritative operation state** before retrying; refresh never resubmits.
+
+The Server store already releases its capability lock on terminal reports. The
+dashboard previously applied a broader node-wide gate for any active command or
+aggregate busy state. A terminal Claude failure alone in an otherwise ready node
+was not sufficient to trigger that gate; unrelated active history or an uncertain
+request must also be checked when diagnosing the recorded VM2 report.
+
+The vendor authentication and troubleshooting guidance reviewed for this change
+supports pasting a browser-returned code into the original CLI terminal. It does
+not clearly authorize collecting or relaying that authorization code through a
+third-party management UI. The legal/compliance page requires an unmodified binary
+and each user's own authentication. We therefore retain the secure terminal
+fallback rather than infer permission for a code relay. This is a conservative
+product boundary, not a claim that the vendor explicitly prohibits every relay.
+References: [authentication](https://code.claude.com/docs/en/authentication),
+[troubleshooting](https://code.claude.com/docs/en/troubleshoot-install), and
+[legal/compliance](https://code.claude.com/docs/en/legal-and-compliance).
+No installed Claude binary was available in this development checkout; the recorded
+2.1.309 inspection above and deterministic fake-process tests inform the fallback.
+
 ## VM2 operational verification
 
 This is an optional operator-run acceptance procedure, not an automated test or

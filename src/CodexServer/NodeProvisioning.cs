@@ -53,20 +53,18 @@ public static class NodeProvisioning
             if (latestPlan is not null && latestPlan.CreatedAtUtc > latest.CreatedAtUtc) return capability;
             var busy = !ProvisioningCommandProtocol.Terminal(latest.Status);
             var failed = latest.Status is ProvisioningCommandStatus.Failed or ProvisioningCommandStatus.TimedOut;
-            return capability with
-            {
-                State = capability.State with { Operation = new(busy ? CapabilityOperationState.Running : failed
+            var state = capability.State with { Operation = new(busy ? CapabilityOperationState.Running : failed
                         ? CapabilityOperationState.Failed : CapabilityOperationState.Idle,
-                    latest.Request.Action.ToString().ToLowerInvariant(), failed ? latest.Diagnostic.ToString().ToLowerInvariant() : null) },
-                AvailableActions = busy ? [] : capability.AvailableActions
-            };
+                    latest.Request.Action.ToString().ToLowerInvariant(), failed ? latest.Diagnostic.ToString().ToLowerInvariant() : null) };
+            return CapabilityCatalog.Describe(capability.Definition, state,
+                node.Connectivity is "online" or "connected" or "draining");
         }).ToArray();
         return node with { Capabilities = capabilities,
             ExecutionReadiness = node.Kind == "worker" &&
                 !CapabilityCatalog.ExecutionReadiness(capabilities.Select(item => item.State).ToArray()).Available
                 ? "not-ready" : node.ExecutionReadiness,
             ProvisioningReadiness = capabilities.Any(item => item.State.Operation.State == CapabilityOperationState.Running)
-                ? "busy" : node.ProvisioningReadiness };
+                ? "busy" : node.ProvisioningReadiness == "busy" ? "ready" : node.ProvisioningReadiness };
     }
 
     private static bool Matches(ProvisioningAction action, string id) =>
