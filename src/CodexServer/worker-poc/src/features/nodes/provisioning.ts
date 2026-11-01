@@ -25,3 +25,4 @@ export function provisioningReason(node: NodeSummary | undefined, commands: Node
 export function deviceLoginUrl(uri: string) {
   return ['https://github.com/login/device', 'https://auth.openai.com/codex/device'].includes(uri) ? uri : undefined;
 }
+export const claudeLoginInstructionsUrl = 'https://code.claude.com/docs/en/troubleshoot-install';

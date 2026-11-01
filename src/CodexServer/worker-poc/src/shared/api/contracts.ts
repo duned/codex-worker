@@ -70,8 +70,9 @@ export interface NodeCommandSummary {
   id: string; createdAtUtc: string; status: string; diagnostic?: string;
   startedAtUtc?: string; deadlineUtc?: string; completedAtUtc?: string;
   publicIdentity?: { publicKey: string; fingerprint: string };
-  failureDetail?: { description: string };
+  failureDetail?: { code?: string; description: string };
   loginInstructions?: { verificationUri: string; userCode: string };
+  claudeLogin?: { provider: string; state: string; instructionsUri: string; requiresBrowserAction: boolean; requiresLocalCliCodeInput: boolean };
   request: { nodeId: string; capabilityId: string; action: string };
 }
 

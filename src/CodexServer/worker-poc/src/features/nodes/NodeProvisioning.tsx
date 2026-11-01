@@ -12,8 +12,24 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { Input } from '../../shared/Input';
 import { Checkbox } from '../../untitled/components/base/checkbox/checkbox';
 import { CapabilityCard } from '../../detail.jsx';
-import { commandActive, commandExpired, deviceLoginUrl, nodeActions, provisioningReason } from './provisioning';
+import { claudeLoginInstructionsUrl, commandActive, commandExpired, deviceLoginUrl, nodeActions, provisioningReason } from './provisioning';
 type Selection = { capabilityId: string; action: string } | { command: NodeCommandSummary; action: 'cancel' | 'reconcile' };
+function ClaudeLoginHandoff() {
+  const [message, setMessage] = useState('');
+  async function copy() {
+    try { await navigator.clipboard.writeText(claudeLoginInstructionsUrl); setMessage(t('nodes.claudeInstructionsCopied')); }
+    catch { setMessage(t('nodes.claudeInstructionsCopyUnavailable')); }
+  }
+  return <div className="rounded-lg border border-secondary bg-primary p-3" aria-live="polite">
+    <p className="font-semibold">{t('nodes.claudeManualSignInTitle')}</p>
+    <p>{t('nodes.claudeManualSignInInstructions')}</p>
+    <div className="flex flex-wrap items-center gap-3">
+      <ExternalLink href={claudeLoginInstructionsUrl}>{t('nodes.claudeVendorInstructions')}</ExternalLink>
+      <Button color="tertiary" size="sm" onPress={() => { void copy(); }}>{t('nodes.copyInstructionsLink')}</Button>
+    </div>
+    <p role="status" className="sr-only">{message}</p>
+  </div>;
+}
 /** Node-scoped operations and capability views are shared with Settings. */
 export function NodeProvisioning({ nodeId, repository = '', capabilityId, readOnly = false }: { nodeId: string; repository?: string; capabilityId?: string; readOnly?: boolean }) {
   useLanguage();
@@ -89,29 +105,35 @@ export function NodeProvisioning({ nodeId, repository = '', capabilityId, readOn
     if (readOnly) return history;
     const actions = capability.availableActions.filter(action => Object.hasOwn(nodeActions, action));
     return <div className="mt-4 space-y-3">
-      {matching.filter(commandActive).map(item => {
+      {matching.filter(item => commandActive(item) || (item.request.nodeId === nodeId && item.request.capabilityId === 'claude-cli' && item.request.action === 'Login' && item.status === 'Failed' && item.failureDetail?.code === 'ManualVendorCliCompletionRequired')).map(item => {
         const expired = commandExpired(item, Date.now()), loginUrl = item.loginInstructions && deviceLoginUrl(item.loginInstructions.verificationUri);
-        return <div key={item.id} className="space-y-2"><p>{localizeText(item.request.action)}: {localizeText(item.status)}{expired && t('nodes.deadlineExpired')}</p>
+        const claudeLogin = item.request.nodeId === nodeId && item.request.capabilityId === 'claude-cli' && item.request.action === 'Login';
+        const manualCompletion = claudeLogin && item.status === 'Failed' && item.failureDetail?.code === 'ManualVendorCliCompletionRequired';
+        return <div key={item.id} className="space-y-2"><p>{localizeText(item.request.action)}: {manualCompletion ? t('nodes.claudeManualCompletionRequired') : localizeText(item.status)}{expired && t('nodes.deadlineExpired')}</p>
           {!locked && item.status === 'Running' && !expired && Date.parse(item.deadlineUtc ?? '') > Date.now() && loginUrl && <p>{t("nodes.onlyApproveTheLoginYouStartedOnThisNodeOpen")}{' '}<ExternalLink href={loginUrl}>{t("nodes.deviceLogin")}</ExternalLink>{' '}{t("nodes.andEnter")}{' '}<strong>{item.loginInstructions?.userCode}</strong>{t("nodes.expires")}{' '}{timestamp(item.deadlineUtc)}.</p>}
+          {claudeLogin && item.status === 'Running' && !expired && item.claudeLogin?.provider === 'anthropic' && item.claudeLogin.state === 'manual-vendor-cli-completion-required' && <ClaudeLoginHandoff />}
+          {manualCompletion && <ClaudeLoginHandoff />}
+          {claudeLogin && item.status === 'Failed' && item.failureDetail?.code !== 'ManualVendorCliCompletionRequired' && item.failureDetail && <p role="alert">{item.failureDetail.description}</p>}
           {(item.status === 'Pending' || expired) && <Button color="secondary" isDisabled={pending || locked || !commands.data || !node} onPress={() => choose({ command: item, action: expired ? 'reconcile' : 'cancel' })}>{expired ? t("nodes.reconcileAfterNodeQuiescence") : t("nodes.cancelQueuedOperation")}</Button>}
         </div>;
       })}
       <p>{t("nodes.nodeLocalPermissionIsRequired")}</p>
       <AdvancedDisclosure title={t("nodes.localPreparationAndAuthorization")}><p>{t("nodes.serverPermissionCannotOverrideLocalPolicyAuthenticationMustUseTheNodeService")}</p></AdvancedDisclosure>
-      <div className="flex flex-wrap gap-2">{actions.map(action => <Button key={action} color="secondary" size="sm" isDisabled={pending || locked || !!provisioningReason(node, commands.data, capability.definition.id, action)} onPress={() => choose({ capabilityId: capability.definition.id, action })}>{localizeText(nodeActions[action].label)}</Button>)}</div>
+      <div className="flex flex-wrap gap-2">{actions.map(action => <Button key={action} color="secondary" size="sm" isDisabled={pending || locked || !!provisioningReason(node, commands.data, capability.definition.id, action)} onPress={() => choose({ capabilityId: capability.definition.id, action })}>{action === 'login' && capability.definition.id === 'claude-cli' ? t('nodes.signInToClaude') : localizeText(nodeActions[action].label)}</Button>)}</div>
       {!actions.length && <p>{t("nodes.noSupportedRemoteActionsAvailablePrepareThisToolInTheNodeService")}</p>}
       {history}
     </div>;
   }
   const spec = selected && 'capabilityId' in selected ? nodeActions[selected.action] : undefined;
+  const selectedClaudeLogin = selected && 'capabilityId' in selected && selected.capabilityId === 'claude-cli' && selected.action === 'login';
   return <section aria-label={t("nodes.nodeProvisioning")} className="space-y-4">
     {(nodes.error || commands.error) && <Notice error>{t("nodes.capabilityOrOperationStateUnavailableRefreshBeforeAnotherAction")}</Notice>}
     {message && <Notice>{message}</Notice>}
     <Button color="secondary" isDisabled={pending} onPress={() => { void refresh(); }}>{t("nodes.refreshAuthoritativeOperationState")}</Button>
     {node ? visibleCapabilities.length ? <div className="poc-capabilities">{visibleCapabilities.map(capability => <CapabilityCard key={capability.definition.id} capability={capability} commands={commands.error ? null : commands.data ?? []}>{controls(capability)}</CapabilityCard>)}</div> : <Notice>{capabilityId ? t('workers.capabilityObservationsUnavailable') : t("nodes.noCapabilitiesReported")}</Notice> : <Notice>{t("nodes.capabilityObservationsUnavailable")}</Notice>}
     <ActionDialog key={selected ? JSON.stringify(selected) : 'closed'} isOpen={!!selected} onClose={() => { setSelected(undefined); setElevation(false); setQuiescent(false); }}
-      title={spec?.label ?? (selected?.action === 'cancel' ? t("nodes.cancelQueuedOperation") : t("nodes.reconcileAfterNodeQuiescence"))} actionLabel={t("nodes.confirm")} destructive={!!spec?.destructive || selected?.action === 'reconcile'} disabled={pending || locked || (!!spec?.elevation && !elevation) || (selected?.action === 'reconcile' && !quiescent)} onSubmit={submit}
-      description={selected?.action === 'reconcile' ? t("nodes.releaseTheRetainedOperationLockOnlyAfterIndependentlyVerifyingTheNodeIs") : selected?.action === 'cancel' ? t("nodes.cancelThisQueuedCommandRunningMutationsAreNotCancelled") : t("nodes.runOnlyThisAdvertisedTypedActionNodeLocalPermissionAndServiceAccount")}>
+      title={selectedClaudeLogin ? t('nodes.signInToClaude') : spec?.label ?? (selected?.action === 'cancel' ? t("nodes.cancelQueuedOperation") : t("nodes.reconcileAfterNodeQuiescence"))} actionLabel={t("nodes.confirm")} destructive={!!spec?.destructive || selected?.action === 'reconcile'} disabled={pending || locked || (!!spec?.elevation && !elevation) || (selected?.action === 'reconcile' && !quiescent)} onSubmit={submit}
+      description={selected?.action === 'reconcile' ? t("nodes.releaseTheRetainedOperationLockOnlyAfterIndependentlyVerifyingTheNodeIs") : selected?.action === 'cancel' ? t("nodes.cancelThisQueuedCommandRunningMutationsAreNotCancelled") : selectedClaudeLogin ? t('nodes.confirmClaudeSignInDescription') : t("nodes.runOnlyThisAdvertisedTypedActionNodeLocalPermissionAndServiceAccount")}>
       {spec?.elevation && <Checkbox label={t("nodes.authorizeElevationForThisAction")} isSelected={elevation} onChange={setElevation} />}
       {selected?.action === 'reconcile' && <Checkbox label={t("nodes.iVerifiedTheNodeIsQuiescentAndTheMutationHasStopped")} isSelected={quiescent} onChange={setQuiescent} />}
       {selected?.action === 'verifyrepositoryaccess' && <Input label={t("nodes.gitHubRepositoryOwnerRepository")} value={targetRepository} onChange={setRepository} isRequired hint={t("nodes.readVerificationDoesNotProvePushPermissionAndNeverPerformsATest")} />}

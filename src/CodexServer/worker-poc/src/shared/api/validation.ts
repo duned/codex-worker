@@ -120,13 +120,24 @@ export const worker: Validator<import('./contracts').WorkerAdministration> = val
 export const command: Validator<import('./contracts').NodeCommandSummary> = value => {
   const item = fields(value, ['id', 'createdAtUtc', 'status']);
   const request = fields(item.request, ['nodeId', 'capabilityId', 'action']);
-  optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc']);
+  optional(item, ['diagnostic', 'startedAtUtc', 'deadlineUtc', 'completedAtUtc', 'claudeLogin']);
   if (item.loginInstructions != null) fields(item.loginInstructions, ['verificationUri', 'userCode']);
   let failureDetail;
   if (item.failureDetail != null) {
-    const failure = fields(item.failureDetail, ['description']);
+    const failure = fields(item.failureDetail, ['description'], ['code']);
     if (String(failure.description).length > 2048) throw Error('Invalid failure detail.');
-    failureDetail = { description: String(failure.description) };
+    failureDetail = { code: typeof failure.code === 'string' ? failure.code : undefined, description: String(failure.description) };
+  }
+  let claudeLogin;
+  if (item.claudeLogin != null) {
+    const progress = fields(item.claudeLogin, ['provider', 'state', 'instructionsUri', 'requiresBrowserAction', 'requiresLocalCliCodeInput']);
+    if (progress.provider !== 'anthropic' || progress.state !== 'manual-vendor-cli-completion-required' ||
+        progress.instructionsUri !== 'https://code.claude.com/docs/en/troubleshoot-install' ||
+        progress.requiresBrowserAction !== true || progress.requiresLocalCliCodeInput !== true ||
+        request.nodeId === 'server' || request.capabilityId !== 'claude-cli' || request.action !== 'Login' || item.status !== 'Running')
+      throw Error('Invalid Claude login progress.');
+    claudeLogin = { provider: 'anthropic', state: 'manual-vendor-cli-completion-required',
+      instructionsUri: 'https://code.claude.com/docs/en/troubleshoot-install', requiresBrowserAction: true, requiresLocalCliCodeInput: true };
   }
   let publicIdentity;
   if (item.publicIdentity != null) {
@@ -139,7 +150,7 @@ export const command: Validator<import('./contracts').NodeCommandSummary> = valu
     diagnostic: typeof item.diagnostic === 'string' ? item.diagnostic : undefined,
     startedAtUtc: typeof item.startedAtUtc === 'string' ? item.startedAtUtc : undefined,
     deadlineUtc: typeof item.deadlineUtc === 'string' ? item.deadlineUtc : undefined,
-    completedAtUtc: typeof item.completedAtUtc === 'string' ? item.completedAtUtc : undefined, publicIdentity, failureDetail };
+    completedAtUtc: typeof item.completedAtUtc === 'string' ? item.completedAtUtc : undefined, publicIdentity, failureDetail, claudeLogin };
 };
 export const commands: Validator<import('./contracts').NodeCommandSummary[]> = value => {
   if (!Array.isArray(value) || value.length > 10000) throw Error('Invalid commands.');
