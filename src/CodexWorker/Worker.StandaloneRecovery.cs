@@ -14,9 +14,11 @@ public sealed partial class Worker
         "recovery-inspection-budget-exhausted",
         "owned-workspace-missing", "workspace-head-invalid", "worktree-repository-mismatch",
         "authoritative-remote-unavailable", "original-base-not-on-authoritative-remote", "workspace-history-diverged",
-        "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable"
+        "integration-present-without-validated-provenance", "workspace-work-already-on-remote", "workspace-inspection-unavailable",
+        "recovery-check-attempt-limit", "legacy-recovery-proof-incomplete"
     };
     private readonly Dictionary<Guid, (DateTimeOffset Next, int Attempts, string? Diagnostic)> _standaloneChecks = [];
+    private readonly HashSet<Guid> _standaloneInspectedThisStart = [];
     private int _standaloneRecoveryChecksThisStart;
     private bool _standaloneBlockerSummaryEmitted;
 
@@ -40,21 +42,34 @@ public sealed partial class Worker
         if (history is null || serverSettings?.Enabled == true) return null;
         var entries = await history.ReadAllAsync(ct);
         foreach (var source in entries.Where(entry => entry.Project == config.Project.Name &&
-                     entry.Repository == config.Project.Repository && HandlesStandaloneRecovery(entry)))
+                     entry.Repository == config.Project.Repository && HandlesStandaloneRecovery(entry))
+                 .OrderBy(RecoveryInspectionPriority).ThenBy(RecoveryDiagnosticAge)
+                 .ThenBy(entry => entry.StartedAtUtc).ThenBy(entry => entry.ExecutionId))
         {
             if (_standaloneRecoveryChecksThisStart >= MaxStandaloneRecoveryChecksPerStart)
             {
-                if (CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config))
+                if (!_standaloneInspectedThisStart.Contains(source.ExecutionId))
                     await ReportStandaloneBlockerAsync(source, "recovery-inspection-budget-exhausted", ct,
-                        "The startup recovery inspection budget was exhausted before this retained post-repair validation could be checked. It remains preserved; restart after earlier candidates are reconciled or inspect this execution.");
+                        "The startup recovery inspection budget was exhausted before this retained execution could be checked. It remains preserved; restart after earlier candidates are reconciled or inspect this execution.");
                 continue;
             }
-            if (_activeIssues.ContainsKey(source.IssueNumber)) continue;
+            if (_activeIssues.ContainsKey(source.IssueNumber))
+            {
+                await ReportStandaloneBlockerAsync(source, "issue-execution-active", ct);
+                continue;
+            }
             // A bounded read-only campaign per runtime. Restarts re-read authoritative evidence;
             // no failed inspection authorizes cleanup, replay, or a generic implementation retry.
             var check = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
-            if (check.Attempts >= 3 || check.Next > _clock.GetUtcNow()) continue;
+            if (check.Attempts >= 3)
+            {
+                await ReportStandaloneBlockerAsync(source, "recovery-check-attempt-limit", ct,
+                    "The bounded read-only recovery checks for this execution were exhausted during this Worker start. Its evidence remains preserved for a later start or manual inspection.");
+                continue;
+            }
+            if (check.Next > _clock.GetUtcNow()) continue;
             _standaloneRecoveryChecksThisStart++;
+            _standaloneInspectedThisStart.Add(source.ExecutionId);
             _standaloneChecks[source.ExecutionId] = (_clock.GetUtcNow().AddMinutes(1), check.Attempts + 1, check.Diagnostic);
             if (!_activeIssues.TryAdd(source.IssueNumber, 0))
             {
@@ -119,6 +134,16 @@ public sealed partial class Worker
                         await ReportStandaloneBlockerAsync(source, "issue-no-longer-open", ct);
                         continue;
                     }
+                    if (source.CodexRecovery is null && source.State == "Cancelled" &&
+                        source.RecoveryState == "uncertain" && source.RepairCount > 0)
+                    {
+                        var legacyReview = await history.ReadLegacyReviewAsync(source.ExecutionId, ct);
+                        await ReportStandaloneBlockerAsync(source, "legacy-recovery-proof-incomplete", ct,
+                            legacyReview is null
+                                ? "This retained post-repair history has not passed legacy process, workspace, session, Issue-intent, and execution-profile reconstruction. Preserve it for review; automatic resume and retirement are blocked."
+                                : $"Legacy recovery proof failed: {legacyReview}. Preserve the worktree; automatic resume and retirement are blocked.");
+                        continue;
+                    }
                     var canContinue = source.RecoveryState != "standalone-retiring" && source.State != "InfrastructureFailure" &&
                         source.OriginalIssueBody == issue.Body && source.IssueTitle == issue.Title &&
                         source.EffectiveEffort is ("low" or "medium" or "high" or "xhigh") &&
@@ -127,9 +152,7 @@ public sealed partial class Worker
                         (inspection.NoWorkspace || source.CodexRecovery is { ResumeCount: >= 0 } snapshot &&
                             snapshot.ConfigurationFingerprint == CodexInterruptionRecovery.Fingerprint(config) &&
                             (snapshot.ImplementationSucceeded == true || snapshot.ImplementationSucceeded is null &&
-                                source.ValidationOutcome == "passed" ||
-                             CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config)) ||
-                         source.CodexRecovery is null && CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config));
+                                source.ValidationOutcome == "passed"));
                     if (canContinue)
                     {
                         var legacyValidation = CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config);
@@ -207,6 +230,28 @@ public sealed partial class Worker
         return null;
     }
 
+    private static int RecoveryInspectionPriority(ExecutionHistoryEntry entry)
+    {
+        if (entry.StandaloneRecoveryDiagnosticJson is null) return 1;
+        try
+        {
+            var diagnostic = System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson);
+            return diagnostic?.ReasonCode == "recovery-inspection-budget-exhausted" ? 0 : 2;
+        }
+        catch (System.Text.Json.JsonException) { return 1; }
+    }
+
+    private static DateTimeOffset RecoveryDiagnosticAge(ExecutionHistoryEntry entry)
+    {
+        if (entry.StandaloneRecoveryDiagnosticJson is null) return DateTimeOffset.MinValue;
+        try
+        {
+            var diagnostic = System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(entry.StandaloneRecoveryDiagnosticJson);
+            return diagnostic?.CheckedAtUtc ?? DateTimeOffset.MinValue;
+        }
+        catch (System.Text.Json.JsonException) { return DateTimeOffset.MinValue; }
+    }
+
     private async Task ReportStandaloneBlockerAsync(ExecutionHistoryEntry source, string reason, CancellationToken ct, string? explanation = null)
     {
         var knownCode = reason.Length <= 120 && reason.Length > 0 && reason.All(character => char.IsAsciiLetterOrDigit(character) || character == '-');
@@ -221,7 +266,8 @@ public sealed partial class Worker
         explanation = FailureDiagnosticRedactor.Redact(explanation, config.Environment.Variables.Values.ToArray());
         if (explanation.Length > 500) explanation = explanation[..500];
         var previous = _standaloneChecks.GetValueOrDefault(source.ExecutionId);
-        if (previous.Diagnostic == reasonCode) return;
+        if (previous.Diagnostic == reasonCode || reasonCode == "recovery-inspection-budget-exhausted" &&
+            HasStandaloneDiagnostic(source, reasonCode)) return;
         _standaloneChecks[source.ExecutionId] = previous with { Diagnostic = reasonCode };
         var diagnostic = new StandaloneRecoveryDiagnostic(source.ExecutionId, source.IssueNumber, reasonCode, explanation,
             "blocked", _clock.GetUtcNow());
@@ -233,6 +279,16 @@ public sealed partial class Worker
             _output.Warning(message);
             _operationalLog(message);
         }
+    }
+
+    private static bool HasStandaloneDiagnostic(ExecutionHistoryEntry source, string reasonCode)
+    {
+        if (source.StandaloneRecoveryDiagnosticJson is null) return false;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(source.StandaloneRecoveryDiagnosticJson)?.ReasonCode == reasonCode;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 }
 

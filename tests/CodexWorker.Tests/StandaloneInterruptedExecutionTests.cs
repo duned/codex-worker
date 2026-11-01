@@ -381,13 +381,75 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
         var restarted = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
         Assert.Null(await restarted.ProcessOneAsync(CancellationToken.None));
         Assert.Equal(6, github.StateReads);
+        for (var restart = 0; restart < 5; restart++)
+        {
+            var next = new Worker(config, github, git, codex, new Validation(), telegram, history: history, timeProvider: clock);
+            Assert.Null(await next.ProcessOneAsync(CancellationToken.None));
+            clock.Now += TimeSpan.FromMinutes(1);
+        }
+        Assert.Equal(21, github.StateReads);
         var retained = await history.ReadAllAsync();
         Assert.Equal(21, retained.Count);
-        Assert.Equal(3, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
-        Assert.All(retained.Where(entry => entry.StandaloneRecoveryDiagnosticJson is not null), entry =>
-            Assert.Contains("issue-no-longer-eligible", entry.StandaloneRecoveryDiagnosticJson));
+        Assert.Equal(21, retained.Count(entry => entry.StandaloneRecoveryDiagnosticJson is not null));
+        Assert.All(retained, entry =>
+        {
+            var diagnosticJson = Assert.IsType<string>(entry.StandaloneRecoveryDiagnosticJson);
+            var diagnostic = JsonSerializer.Deserialize<StandaloneRecoveryDiagnostic>(diagnosticJson);
+            Assert.NotNull(diagnostic);
+            Assert.True(diagnostic.ReasonCode is "issue-no-longer-eligible" or "recovery-inspection-budget-exhausted");
+        });
         Assert.Equal(0, codex.Calls);
         Assert.Empty(github.Mutations);
+    }
+
+    [Fact]
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    public async Task LegacyPostRepairClassifierRecognizesExactPreCheckpointOutcomeWithCompleteRepairEvidence()
+    {
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        config.Validation.MaxFixAttempts = 3;
+        var source = new ExecutionHistoryEntry(Guid.NewGuid(), config.Project.Name, config.Project.Repository, fixture.Issue.Number,
+            fixture.Issue.Title, "feature/legacy-validation", config.Git.BaseBranch, DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow, "Cancelled", null, "Implemented the requested change.", "failed or interrupted", 1,
+            [new ValidationRepairRecord("check", 1, 3, "Completed repair.", false)], null, null, null, null,
+            RecoveryState: "uncertain", OriginalIssueBody: fixture.Issue.Body, EffectiveEffort: "medium");
+
+        Assert.Equal("failed or interrupted", source.ValidationOutcome);
+        Assert.True(CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source, config));
+        Assert.False(CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source with { Repairs = [] }, config));
+        Assert.False(CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source with { ValidationOutcome = "failed or interrupted (untrusted)" }, config));
+        Assert.False(CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source with { CommitSha = "abc123" }, config));
+        Assert.False(CodexRecoveryCoordinator.IsLegacyPostRepairValidation(source with { IntegrationRecoveryClaim = Guid.NewGuid() }, config));
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task PreCheckpointLegacyHistoryWithoutProcessProofGetsQueryableReviewBlocker()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var fixture = await seed.CreateAsync();
+        var config = Config(fixture);
+        config.Validation.MaxFixAttempts = 3;
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture._root, "history.db"));
+        using var git = fixture.CreateRepository(config.Git);
+        await git.InitializeAsync(CancellationToken.None);
+        var legacy = await PreserveAsync(fixture, git, config, history, Guid.NewGuid(), originalIntent: true,
+            preCheckpointPostRepair: true);
+        using var telegram = new TelegramNotifier(false);
+        var worker = new Worker(config, new GitHub(fixture.Issue), git, new Codex(_ => Task.CompletedTask),
+            new Validation(), telegram, history: history);
+
+        await worker.PrepareForHostAsync(CancellationToken.None);
+
+        var review = await history.ReadLegacyReviewAsync(legacy.ExecutionId, CancellationToken.None);
+        Assert.NotNull(review);
+        Assert.True(review.Contains("process", StringComparison.OrdinalIgnoreCase) ||
+            review.Contains("session", StringComparison.OrdinalIgnoreCase), review);
+        Assert.Equal("failed or interrupted", Assert.Single(await history.ReadAllAsync()).ValidationOutcome);
+        Assert.True(Directory.Exists(git.RecoveryWorkspacePath(legacy)));
     }
 
     [Fact]
@@ -576,20 +638,27 @@ public sealed class StandaloneInterruptedExecutionTests(GitWorktreeTests.Reposit
     };
 
     private static async Task<ExecutionHistoryEntry> PreserveAsync(GitWorktreeTests.RepositoryFixture fixture, GitRepository git,
-        WorkerConfiguration config, ExecutionHistoryStore history, Guid id, bool originalIntent, bool missingBase = false, bool unprovenProcesses = false, bool uncompletedImplementation = false)
+        WorkerConfiguration config, ExecutionHistoryStore history, Guid id, bool originalIntent, bool missingBase = false, bool unprovenProcesses = false, bool uncompletedImplementation = false,
+        bool preCheckpointPostRepair = false)
     {
         await git.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
         var starting = await fixture.Git("rev-parse", "main");
         var path = git.ExecutionDirectory;
         await File.WriteAllTextAsync(Path.Combine(path, "preserved.txt"), "useful original implementation");
-        await fixture.GitAt(path, "add", "preserved.txt");
-        await fixture.GitAt(path, "commit", "-m", "original implementation before interrupted validation");
+        if (!preCheckpointPostRepair)
+        {
+            await fixture.GitAt(path, "add", "preserved.txt");
+            await fixture.GitAt(path, "commit", "-m", "original implementation before interrupted validation");
+        }
         var entry = new ExecutionHistoryEntry(id, "sample", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
             GitRepository.FeatureBranchName(config.Git, fixture.Issue), "main", DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow,
-            "Cancelled", 1, "Implementation succeeded", "passed", 0, [], null, null, null, "Execution interrupted by Worker shutdown",
+            "Cancelled", 1, "Implementation succeeded", preCheckpointPostRepair ? "failed or interrupted" : "passed",
+            preCheckpointPostRepair ? 1 : 0,
+            preCheckpointPostRepair ? [new ValidationRepairRecord("authoritative-check", 1, config.Validation.MaxFixAttempts, "Completed repair.", false)] : [],
+            null, null, null, "Execution interrupted by Worker shutdown",
             RecoveryState: "uncertain", RecoveryBaseCommit: missingBase ? null : starting, EffectiveEffort: config.Codex.ReasoningEffort,
             OriginalIssueBody: originalIntent ? fixture.Issue.Body : null,
-            CodexRecovery: originalIntent ? new(id, 1, 0, CodexInterruptionRecovery.Fingerprint(config)) : null);
+            CodexRecovery: originalIntent && !preCheckpointPostRepair ? new(id, 1, 0, CodexInterruptionRecovery.Fingerprint(config)) : null);
         if (uncompletedImplementation)
             entry = entry with { CodexRecovery = entry.CodexRecovery is { } snapshot
                 ? snapshot with { ImplementationSucceeded = false } : null };

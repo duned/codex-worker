@@ -275,7 +275,8 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         await git.InitializeAsync(CancellationToken.None);
         var source = LegacyCodexSessionTests.Source() with
         {
-            IssueNumber = fixture.Issue.Number, IssueTitle = fixture.Issue.Title, OriginalIssueBody = fixture.Issue.Body
+            IssueNumber = fixture.Issue.Number, IssueTitle = fixture.Issue.Title, OriginalIssueBody = fixture.Issue.Body,
+            State = "Cancelled", FailureReason = "Execution interrupted by Worker shutdown"
         };
         await git.StartIssueAsync(source.ExecutionId, fixture.Issue, CancellationToken.None);
         var workspace = git.ExecutionDirectory;

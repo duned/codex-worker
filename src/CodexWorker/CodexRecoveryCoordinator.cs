@@ -108,11 +108,16 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         await repositoryGate.WaitAsync(ct);
         try
         {
+            workspace = await git.InspectLegacyCodexWorkspaceAsync(source, ct);
+            if (workspace is null) return (null, "preserved worktree missing or ownership cannot be verified");
             var processBlocker = await git.InspectExecutionProcessesAsync(source, ct);
             if (processBlocker is not null) return (null, processBlocker);
-            workspace = await git.InspectLegacyCodexWorkspaceAsync(source, ct);
         }
-        catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested) { return (null, "execution/worktree identity or branch/base metadata conflicts with preserved execution"); }
+        catch (WorkerInfrastructureException ex) when (!ct.IsCancellationRequested)
+        {
+            var diagnostic = FailureDiagnosticRedactor.Redact(ex.Message, config.Environment.Variables.Values.ToArray());
+            return (null, diagnostic.Length <= 500 ? diagnostic : diagnostic[..500]);
+        }
         finally { repositoryGate.Release(); }
         if (workspace is null) return (null, "preserved worktree missing or ownership cannot be verified");
         var match = await (sessions ?? new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home)).FindAsync(source, workspace, ct);
@@ -139,11 +144,14 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
 
     internal static bool IsLegacyPostRepairValidation(ExecutionHistoryEntry source, WorkerConfiguration config)
     {
+        var outcome = source.ValidationOutcome;
+        var supportedOutcome = outcome == "failed or interrupted" ||
+            outcome?.StartsWith("failed: validation", StringComparison.OrdinalIgnoreCase) == true ||
+            outcome?.StartsWith("pending: validation", StringComparison.OrdinalIgnoreCase) == true;
         if (source.State != "Cancelled" || source.RecoveryState != "uncertain" || source.CompletedAtUtc is null ||
-            source.ImplementationSummary is null || source.ValidationOutcome is null ||
-            source.ValidationOutcome.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
-            !source.ValidationOutcome.Contains("validation", StringComparison.OrdinalIgnoreCase) ||
-            source.ValidationOutcome.StartsWith("pending: repair", StringComparison.OrdinalIgnoreCase) ||
+            source.CommitSha is not null || source.IntegrationBranch is not null || source.CompletedBranch is not null ||
+            source.IntegrationRecoveryClaim is not null || source.CompletionJson is not null ||
+            string.IsNullOrWhiteSpace(source.ImplementationSummary) || !supportedOutcome ||
             source.RepairCount < 1 || source.RepairCount > config.Validation.MaxFixAttempts ||
             source.Repairs.Count != source.RepairCount)
             return false;
@@ -151,6 +159,10 @@ internal sealed class CodexRecoveryCoordinator(WorkerConfiguration config, IGitR
         var ordered = source.Repairs.OrderBy(repair => repair.Attempt).ToArray();
         if (ordered.Where((repair, index) => repair.IntegrationRepair || repair.Attempt != index + 1 ||
                 repair.MaximumAttempts != config.Validation.MaxFixAttempts).Any())
+            return false;
+
+        if (ordered.Take(ordered.Length - 1).Any(repair => repair.PassedAfterRepair || repair.ValidationAfterRepair is null ||
+                string.IsNullOrWhiteSpace(repair.RepairSummary)))
             return false;
 
         // A completed repair record plus Cancelled (rather than Failed/Blocked) and no
