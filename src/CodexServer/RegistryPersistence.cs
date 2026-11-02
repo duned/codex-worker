@@ -2222,13 +2222,14 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
 
     public async Task<CentralProject?> UpdateProjectAsync(string projectId, CentralProjectDefinition definition, long expectedRevision, CancellationToken cancellationToken = default)
     {
+        if (expectedRevision < 1) throw new InvalidDataException("expectedRevision must be positive.");
         var validationError = CentralProjectValidation.Error(definition);
         if (validationError is not null) throw new InvalidDataException(validationError);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var write = connection.CreateCommand();
-        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.validationCommands', json($validationCommands), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        write.CommandText = "UPDATE projects SET display_name = $name, configuration_json = json_set(configuration_json, '$.name', $name, '$.repository', $repository, '$.defaultBranch', $branch, '$.description', $description, '$.requirements', json($requirements), '$.issueReadyLabel', $readyLabel, '$.issueBlockedLabel', $blockedLabel, '$.automaticDiscovery', json($discovery), '$.maxParallelTasks', $parallelism, '$.validationCommands', json($validationCommands), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision RETURNING project_id, configuration_json, created_at_utc;";
         write.Parameters.AddWithValue("$name", definition.Name.Trim());
         write.Parameters.AddWithValue("$repository", definition.Repository.Trim());
         write.Parameters.AddWithValue("$branch", definition.DefaultBranch.Trim());
@@ -2245,10 +2246,11 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         write.Parameters.AddWithValue("$expectedRevision", expectedRevision);
         try
         {
-            if (await write.ExecuteNonQueryAsync(cancellationToken) == 1)
+            await using var reader = await write.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
             {
                 ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "project", "definition-updated", projectId);
-                return await GetProjectAsync(projectId, cancellationToken);
+                return ToProject(reader.GetString(0), reader.GetString(1), reader.GetString(2));
             }
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { throw new InvalidOperationException("A project with this name or repository already exists.", ex); }
@@ -2265,16 +2267,19 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await connection.OpenAsync(cancellationToken);
         var now = _timeProvider.GetUtcNow();
         await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE projects SET configuration_json = json_set(configuration_json, '$.enabled', json(CASE WHEN $enabled THEN 'true' ELSE 'false' END), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision;";
+        command.CommandText = "UPDATE projects SET configuration_json = json_set(configuration_json, '$.enabled', json(CASE WHEN $enabled THEN 'true' ELSE 'false' END), '$.revision', $nextRevision, '$.updatedAtUtc', $updated) WHERE project_id = $id AND CAST(json_extract(configuration_json, '$.revision') AS INTEGER) = $expectedRevision RETURNING project_id, configuration_json, created_at_utc;";
         command.Parameters.AddWithValue("$enabled", enabled ? 1 : 0);
         command.Parameters.AddWithValue("$nextRevision", expectedRevision + 1);
         command.Parameters.AddWithValue("$updated", now.ToString("O"));
         command.Parameters.AddWithValue("$id", projectId);
         command.Parameters.AddWithValue("$expectedRevision", expectedRevision);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) == 1)
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "project", enabled ? "enabled" : "disabled", projectId);
-            return await GetProjectAsync(projectId, cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                ServerOperationalDiagnostics.Write(_logger, LogLevel.Information, "project", enabled ? "enabled" : "disabled", projectId);
+                return ToProject(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+            }
         }
         var current = await GetProjectAsync(projectId, cancellationToken);
         if (current is not null) throw new ProjectRevisionConflictException(current.Revision);

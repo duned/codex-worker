@@ -25,6 +25,74 @@ public sealed class McpOAuthTests
 
     [Fact]
     [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task BackupRemovesOAuthAuthorityAndRejectsArchivesThatRetainIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "backup-oauth-test-management");
+        try
+        {
+            var database = Path.Combine(directory.Path, "server.db");
+            var archivePath = Path.Combine(directory.Path, "backup.zip");
+            var restoredDatabase = Path.Combine(directory.Path, "restored.db");
+            await new SqliteRegistryStore(database).InitializeAsync();
+            await new CodexProvisioning.SqliteCredentialStore(database).InitializeAsync();
+            var clock = new Clock();
+            var configuration = new ServerConfiguration { AdministrationOrigin = Origin };
+            var store = new McpOAuthStore(database, configuration, clock);
+            await store.InitializeAsync();
+            var code = Assert.IsType<string>(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default));
+            var tokens = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(code, Client, Origin + "/mcp",
+                false, Redirect, Verifier, default));
+            var pendingCode = Assert.IsType<string>(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default));
+            Assert.True(await store.AuthorizedAsync(tokens.access_token, default));
+
+            await new ServerBackup(database).ExportAsync(archivePath);
+            await new ServerBackup(restoredDatabase).RestoreOfflineAsync(archivePath);
+            var restoredRegistry = new SqliteRegistryStore(restoredDatabase);
+            var retainedProject = await restoredRegistry.CreateProjectAsync(new("Retained", "team/retained", "main", "Restore target"));
+            var restored = new McpOAuthStore(restoredDatabase, configuration, clock);
+            Assert.Empty(await restored.ListAsync(default));
+            Assert.False(await restored.AuthorizedAsync(tokens.access_token, default));
+            Assert.Null(await restored.ExchangeAsync(tokens.refresh_token, Client, Origin + "/mcp", true, null, null, default));
+            Assert.Null(await restored.ExchangeAsync(pendingCode, Client, Origin + "/mcp", false, Redirect, Verifier, default));
+            Assert.True(await store.AuthorizedAsync(tokens.access_token, default));
+            Assert.Equal(2, (await store.ListAsync(default)).Count);
+
+            // Replace the archive database with a valid, unsanitized snapshot. Validate
+            // each OAuth table independently; old archives may lack either optional table.
+            foreach (var retainedTable in new[] { "mcp_oauth_grants", "mcp_oauth_credentials" })
+            {
+                var unsafeDatabase = Path.Combine(directory.Path, retainedTable + ".db");
+                await using (var source = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
+                await using (var destination = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = unsafeDatabase }.ToString()))
+                {
+                    await source.OpenAsync();
+                    await destination.OpenAsync();
+                    source.BackupDatabase(destination);
+                    await using var command = destination.CreateCommand();
+                    command.CommandText = retainedTable == "mcp_oauth_grants"
+                        ? "DELETE FROM mcp_oauth_credentials" : "DELETE FROM mcp_oauth_grants";
+                    await command.ExecuteNonQueryAsync();
+                }
+                using (var archive = System.IO.Compression.ZipFile.Open(archivePath, System.IO.Compression.ZipArchiveMode.Update))
+                {
+                    Assert.IsType<System.IO.Compression.ZipArchiveEntry>(archive.GetEntry("state.sqlite")).Delete();
+                    System.IO.Compression.ZipFileExtensions.CreateEntryFromFile(archive, unsafeDatabase, "state.sqlite");
+                }
+                var error = await Assert.ThrowsAsync<InvalidDataException>(() => new ServerBackup().ValidateAsync(archivePath));
+                Assert.Equal("Backup contains MCP OAuth authorization material.", error.Message);
+                await Assert.ThrowsAsync<InvalidDataException>(() => new ServerBackup(restoredDatabase).RestoreOfflineAsync(archivePath));
+                Assert.Empty(await restored.ListAsync(default));
+                Assert.Equal("Restore target", (await restoredRegistry.GetProjectAsync(retainedProject.Id))?.Description);
+            }
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     public async Task ServerHostOAuthSessionDiscoversToolsEnforcesScopesRefreshesAndRevokes()
     {

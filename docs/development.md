@@ -2,6 +2,8 @@
 
 Requires the .NET 10 SDK. From the repository root run `dotnet restore CodexWorker.sln`, `dotnet build CodexWorker.sln`, and `dotnet test CodexWorker.sln`. Dashboard build instructions are in [React architecture](server-dashboard-react.md); product releases use [release packaging](release-packaging.md).
 
+The [Server functionality audit](server-functionality-audit-370.8.1.md) records the control-plane capability inventory, workflow traces, bounded fixes and follow-ups from Issue 453.
+
 The [test-suite audit](test-suite-audit-28.2.md) records the reduction baseline, retained safety coverage and timing method. The [documentation inventory](documentation-inventory.md) records the combined review and local validation limitations.
 
 The [validation runtime profile](test-runtime-profile-28.3.md) separates restore/build/discovery/execution costs and documents `TestType`, measured `Duration`, and the independent `ValidationProfile=FastCandidate` xUnit filters. Use its exact-count helper for focused runs so an empty filter cannot appear green. The repository-owned [risk-based validation policy](risk-based-validation.md) documents how to configure focused Worker Validation and force a full/release run. Existing configured commands remain authoritative until project YAML is updated.

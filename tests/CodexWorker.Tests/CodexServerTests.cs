@@ -2319,6 +2319,76 @@ public sealed class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CentralProjectMutationReturnsItsOwnRevisionWhenTheStoredRowAdvances(bool lifecycle)
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "project-update-result.db");
+        var store = new SqliteRegistryStore(database);
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Result", "team/result", "main", "Original", []);
+        var project = await store.CreateProjectAsync(definition);
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            // Deterministically advance the row after the update's result is captured,
+            // exercising the same response hazard as a subsequent concurrent writer.
+            command.CommandText = """
+                CREATE TRIGGER advance_project AFTER UPDATE ON projects
+                WHEN json_extract(NEW.configuration_json, '$.revision') = 2
+                BEGIN
+                    UPDATE projects SET configuration_json = json_set(configuration_json,
+                        '$.revision', 3, '$.description', 'Later edit', '$.enabled', json('true'))
+                    WHERE project_id = NEW.project_id;
+                END;
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var result = Assert.IsType<CentralProject>(lifecycle
+            ? await store.UpdateProjectLifecycleAsync(project.Id, false, 1)
+            : await store.UpdateProjectAsync(project.Id, definition with { Description = "My edit" }, 1));
+        Assert.Equal(2, result.Revision);
+        Assert.Equal(lifecycle ? "Original" : "My edit", result.Description);
+        Assert.Equal(!lifecycle, result.Enabled);
+        var persisted = Assert.IsType<CentralProject>(await store.GetProjectAsync(project.Id));
+        Assert.Equal(3, persisted.Revision);
+        Assert.Equal("Later edit", persisted.Description);
+        Assert.True(persisted.Enabled);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task CentralProjectMutationsRejectNonpositiveRevisionsWithoutChangingState(long revision)
+    {
+        using var temporary = new TemporaryDirectory();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "project-revisions.db"));
+        await store.InitializeAsync();
+        var definition = new CentralProjectDefinition("Revision", "team/revision", "main", "Original", []);
+        var project = await store.CreateProjectAsync(definition);
+
+        foreach (var id in new[] { project.Id, "missing" })
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => store.UpdateProjectAsync(id,
+                definition with { Description = "Rejected" }, revision));
+            await Assert.ThrowsAsync<InvalidDataException>(() => store.UpdateProjectLifecycleAsync(id, false, revision));
+            await Assert.ThrowsAsync<InvalidDataException>(() => store.RemoveProjectAsync(id, revision));
+        }
+
+        var persisted = Assert.IsType<CentralProject>(await store.GetProjectAsync(project.Id));
+        Assert.Equal(project.Revision, persisted.Revision);
+        Assert.Equal("Original", persisted.Description);
+        Assert.True(persisted.Enabled);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CentralProjectLifecyclePersistsAndSharesOptimisticRevisionWithDefinitionUpdates()
     {

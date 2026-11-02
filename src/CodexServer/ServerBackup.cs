@@ -128,7 +128,9 @@ public sealed class ServerBackup(string? databasePath = null)
             ("worker_auth_tokens", new[] { "worker_id", "token_hash", "created_at_utc", "revoked_at_utc" },
                 "UPDATE worker_auth_tokens SET token_hash=zeroblob(length(token_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));"),
             ("provisioning_commands", new[] { "body" }, "UPDATE provisioning_commands SET body=json_remove(body, '$.LoginInstructions', '$.ClaudeLogin');"),
-            ("worker_bootstrap_tokens", new[] { "token_hash", "expires_at_utc", "consumed_at_utc" }, "DELETE FROM worker_bootstrap_tokens;")
+            ("worker_bootstrap_tokens", new[] { "token_hash", "expires_at_utc", "consumed_at_utc" }, "DELETE FROM worker_bootstrap_tokens;"),
+            ("mcp_oauth_credentials", new[] { "hash", "grant_id", "kind", "expires", "used" }, "DELETE FROM mcp_oauth_credentials;"),
+            ("mcp_oauth_grants", new[] { "id", "body", "expires" }, "DELETE FROM mcp_oauth_grants;")
         })
         {
             if (!await TableExistsAsync(connection, table, cancellationToken)) continue;
@@ -182,6 +184,16 @@ public sealed class ServerBackup(string? databasePath = null)
         command.CommandText = "SELECT COUNT(*) FROM worker_bootstrap_tokens;";
         if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
             throw new InvalidDataException("Backup contains reusable Worker bootstrap authorizations.");
+
+        // OAuth tables are optional in older archives, but persisted consent and token
+        // verifiers must never resurrect access after restore under the same authority.
+        foreach (var table in new[] { "mcp_oauth_credentials", "mcp_oauth_grants" })
+        {
+            if (!await TableExistsAsync(connection, table, cancellationToken)) continue;
+            command.CommandText = $"SELECT COUNT(*) FROM {table};";
+            if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
+                throw new InvalidDataException("Backup contains MCP OAuth authorization material.");
+        }
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='provisioning_commands';";
         if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 1)
