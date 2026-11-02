@@ -339,9 +339,10 @@ public sealed class ProjectRuntimeRegistry
     private static ProjectLifecycleInfo Info(string name, Entry entry) => new(name, entry.State, entry.Active,
         entry.State == ProjectLifecycleState.Draining && entry.Active == 0, entry.UnavailableReason);
 
-    private static bool SameExecutionIdentity(WorkerConfiguration a, WorkerConfiguration b) =>
+    internal static bool SameExecutionIdentity(WorkerConfiguration a, WorkerConfiguration b) =>
         string.Equals(a.Project.Repository, b.Project.Repository, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(Path.GetFullPath(a.Project.Directory), Path.GetFullPath(b.Project.Directory), StringComparison.OrdinalIgnoreCase);
+        string.Equals(Path.GetFullPath(a.Project.Directory), Path.GetFullPath(b.Project.Directory),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private void SignalChanged()
     {

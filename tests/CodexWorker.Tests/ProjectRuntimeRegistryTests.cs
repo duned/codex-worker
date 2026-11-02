@@ -245,6 +245,33 @@ public sealed class ProjectRuntimeRegistryTests
         registry.Release("alpha");
     }
 
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void ActiveCheckoutIdentityUsesPlatformPathComparison()
+    {
+        var original = Config("alpha");
+        original.Project.Directory = Path.Combine(Path.GetTempPath(), "checkout");
+        var replacement = Config("alpha");
+        replacement.Project.Directory = Path.Combine(Path.GetTempPath(), "CHECKOUT");
+        var registry = new ProjectRuntimeRegistry([("alpha.yml", original)]);
+        Assert.True(registry.TryReserve("alpha"));
+
+        if (OperatingSystem.IsWindows())
+        {
+            registry.ReplaceConfiguration([("alpha.yml", replacement)], validateExecutionResources: false);
+            Assert.Same(replacement, registry.Snapshot().Single().Configuration);
+        }
+        else
+        {
+            Assert.Throws<ProjectConfigurationConflictException>(() =>
+                registry.ReplaceConfiguration([("alpha.yml", replacement)], validateExecutionResources: false));
+            Assert.Same(original, registry.Snapshot().Single().Configuration);
+        }
+        registry.Release("alpha");
+        Assert.Equal(0, registry.WorkerActiveExecutionCount);
+    }
+
     private static WorkerConfiguration Config(string name, string repository = "owner/repo") => new()
     {
         Project = new ProjectSettings { Name = name, Repository = repository, Directory = Path.GetTempPath() },

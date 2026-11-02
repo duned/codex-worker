@@ -50,7 +50,8 @@ public sealed class LocalYamlProjectConfigurationProvider(string directory) : IP
     {
         ct.ThrowIfCancellationRequested();
         var full = Path.GetFullPath(path);
-        if (!string.Equals(Path.GetDirectoryName(full), _directory, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(Path.GetDirectoryName(full), _directory,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             throw new InvalidDataException("Project configuration is outside the configured projects directory.");
         File.Delete(full);
         return Task.CompletedTask;
@@ -157,8 +158,7 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             var candidatePath = oldPath ?? Path.Combine(Path.GetFullPath(configurationDirectory), "candidate.yml");
             ProjectConfigurationDiscovery.ValidateCandidate(candidatePath, configuration, projects, oldPath);
             if (active && existing.Configuration is { } previous &&
-                (!string.Equals(previous.Project.Repository, configuration.Project.Repository, StringComparison.OrdinalIgnoreCase) ||
-                 !string.Equals(Path.GetFullPath(previous.Project.Directory), Path.GetFullPath(configuration.Project.Directory), StringComparison.OrdinalIgnoreCase)))
+                !ProjectRuntimeRegistry.SameExecutionIdentity(previous, configuration))
                 throw new ProjectConfigurationConflictException($"Project '{existingName}' has an active execution and cannot change repository or checkout.");
             var path = await provider.WriteAsync(configuration, ct);
             if (oldPath is not null && !string.Equals(oldPath, path, StringComparison.OrdinalIgnoreCase)) await provider.RemoveAsync(oldPath, ct);
