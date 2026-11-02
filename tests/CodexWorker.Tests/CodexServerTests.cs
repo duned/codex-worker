@@ -2315,6 +2315,12 @@ public sealed class CodexServerTests
         Assert.Contains(persisted.Description, new[] { "Updated A", "Updated B" });
         Assert.True(await restarted.RemoveProjectAsync(created.Id, 2));
         Assert.Empty(await restarted.GetProjectsAsync());
+
+        var minimal = new CentralProjectDefinition("Minimal", "team/minimal", "main", "", null);
+        Assert.Null(CentralProjectValidation.Error(minimal));
+        var withoutRequirements = await restarted.CreateProjectAsync(minimal);
+        Assert.Empty(withoutRequirements.Requirements);
+        Assert.Empty(Assert.IsType<CentralProject>(await restarted.GetProjectAsync(withoutRequirements.Id)).Requirements);
     }
 
     [Trait("TestType", "Integration")]
@@ -2727,21 +2733,6 @@ public sealed class CodexServerTests
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", priorManagement); }
-    }
-
-    [Trait("TestType", "Integration")]
-    [Trait("Duration", "Fast")]
-    [Fact]
-    public async Task CentralProjectsWithoutRequirementsRemainValidAndPersistAsAnEmptyList()
-    {
-        using var temporary = new TemporaryDirectory();
-        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "empty-requirements.db"));
-        await store.InitializeAsync();
-        var definition = new CentralProjectDefinition("Minimal", "team/minimal", "main", "", null);
-        Assert.Null(CentralProjectValidation.Error(definition));
-        var created = await store.CreateProjectAsync(definition);
-        Assert.Empty(created.Requirements);
-        Assert.Empty((await store.GetProjectAsync(created.Id))!.Requirements);
     }
 
     [Trait("TestType", "Component")]

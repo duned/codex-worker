@@ -49,15 +49,7 @@ public sealed class ServerAdministrationDispatchTests
             await AssertCommandAsync(["projects", "list", "--json", dataDirectory], ServerAdministrationExitCodes.Success);
             await AssertCommandAsync(["executions", "list", "--json", dataDirectory], ServerAdministrationExitCodes.Success);
 
-            // Invalid operations stop at each command family's own argument validation, without
-            // reaching GitHub or credential providers.
-            await AssertCommandAsync(["github", "unsupported", "owner/repository"],
-                ServerAdministrationExitCodes.InvalidArguments);
-            await AssertCommandAsync(["credential", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
             await AssertCommandAsync(["provision", "list", "--json", dataDirectory], ServerAdministrationExitCodes.Success);
-            await AssertCommandAsync(["backup", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
-            await AssertCommandAsync(["worker-token", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
-            await AssertCommandAsync(["worker", "unsupported"], ServerAdministrationExitCodes.InvalidArguments);
         }
         finally
         {

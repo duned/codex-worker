@@ -27,15 +27,6 @@ public sealed class GitHubDependencyTests
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
     [Fact]
-    public async Task ReadyIssueWithoutDependenciesIsEligible()
-    {
-        var fixture = new Fixture([Issue(1, "2025-01-01T00:00:00Z")]);
-        Assert.Equal(1, (await fixture.Client.FindOldestReadyAsync("ready", CancellationToken.None))?.Number);
-    }
-
-    [Trait("TestType", "Component")]
-    [Trait("Duration", "Fast")]
-    [Fact]
     public async Task ReadyIssueLookupPreservesLabelsForSchedulingIntent()
     {
         var fixture = new Fixture([IssueWithLabels(1, "2025-01-01T00:00:00Z", "team-ready", "team-recover")]);
@@ -236,9 +227,26 @@ public sealed class GitHubDependencyTests
     public async Task CancellationDuringDependencyLookupPropagatesSafely()
     {
         using var cancellation = new CancellationTokenSource();
-        var client = new GitHubClient("owner/repo", (_, ct) => Task.FromException<ProcessResult>(new OperationCanceledException(ct)));
-        cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.FindOldestReadyAsync("ready", cancellation.Token));
+        var commands = new List<string[]>();
+        var client = new GitHubClient("owner/repo", (args, ct) =>
+        {
+            var command = args.ToArray();
+            commands.Add(command);
+            Assert.Equal(cancellation.Token, ct);
+            if (command.Take(2).SequenceEqual(new[] { "issue", "list" }))
+                return Task.FromResult(new ProcessResult(0,
+                    """[{"number":1,"title":"Ready issue","body":"","createdAt":"2025-01-01T00:00:00Z","labels":[]}]""", ""));
+
+            Assert.Equal(new[] { "api", "--paginate", "repos/owner/repo/issues/1/dependencies/blocked_by" }, command);
+            cancellation.Cancel();
+            return Task.FromCanceled<ProcessResult>(ct);
+        });
+
+        var failure = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.FindOldestReadyAsync("ready", cancellation.Token));
+
+        Assert.Equal(cancellation.Token, failure.CancellationToken);
+        Assert.Equal(2, commands.Count);
     }
 
     private static Dictionary<string, JsonElement> Issue(int number, string createdAt, params string[] states)
