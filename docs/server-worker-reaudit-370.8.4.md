@@ -1,5 +1,7 @@
 # Server and Worker second-pass audit (370.8.4 / #456)
 
+Parent integration subsequently resolved W1, W3 and W5 and added regression coverage; see the [parent final report](server-worker-audit-370.8.md) for current dispositions, source counts and validation. The evidence below describes the child audit state.
+
 Audited 2026-11-02 on Linux with .NET SDK 10.0.114 and Node 24.21.0. Parent handoff for #370.8: this independently revisits the current source, representative test bodies, workflow boundaries and guidance against the [Server inventory](server-functionality-audit-370.8.1.md), [Worker inventory](worker-functionality-audit-370.8.2.md) and [test consolidation](test-suite-audit-370.8.3.md). Those records remain the first-pass evidence; this report does not replace their inventories or claim their checks ran here.
 
 The bounded simplifications remain justified by source and assertion review. No further production change or test deletion is justified by this pass. This is **not a runtime regression certification**: .NET restore is denied, and the dashboard suite is only partially runnable. Actual executed .NET case counts and before/after test durations remain unavailable. Open policy, presentation and measurement risks below must accompany the parent’s acceptance decision.

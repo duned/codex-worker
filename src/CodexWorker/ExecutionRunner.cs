@@ -170,12 +170,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 {
                     integration = await output.RunProgressAsync(TaskLabel(issue, "Integrating", execution), () => git.CommitAndIntegrateAsync(issue,
                         token => ValidateAfterRebaseAsync(context, repairs, token),
-                        async (details, token) =>
-                        {
-                            var resolution = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                                () => engine.ResolveIntegrationConflictAsync(Request(context), details, token), x => x.Status, x => x.Status == "success", ct: token);
-                            return resolution.Status == "success";
-                        }, (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
+                        // Conflicts require inspection; only validation failures on successfully rebased
+                        // source may enter the bounded integration-repair loop.
+                        (_, _) => Task.FromResult(false), (details, token) => RepairIntegrationAsync(context, engine, implementationSummary, repairs, details, token),
                         ct, token => EnsureIntegrationAuthorityAsync(execution, token)),
                         completion: x => x.HasChanges ? "complete" : "no changes", ct: ct);
                 }
@@ -317,14 +314,8 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             var integration = await output.RunProgressAsync(TaskLabel(issue, "Integration recovery", execution), () =>
                 git.CommitAndIntegrateAsync(issue,
                     token => ValidateAfterRebaseAsync(context, repairs, token),
-                    async (details, token) =>
-                    {
-                        if (context.InterruptedExecution) return false;
-                        var resolved = await output.RunProgressAsync(TaskLabel(issue, "Resolving integration conflict", execution),
-                            () => engine.ResolveIntegrationConflictAsync(Request(context), details, token),
-                            x => x.Status, x => x.Status == "success", ct: token);
-                        return resolved.Status == "success";
-                    }, (details, token) => RepairIntegrationAsync(context, engine, source.ImplementationSummary, repairs, details, token),
+                    // Recovery preserves the same no-automatic-conflict-resolution policy.
+                    (_, _) => Task.FromResult(false), (details, token) => RepairIntegrationAsync(context, engine, source.ImplementationSummary, repairs, details, token),
                     ct, token => EnsureIntegrationAuthorityAsync(execution, token)), x => x.HasChanges ? "integrated" : "no changes", ct: ct);
             var report = new IssueExecutionReport($"Integration recovery from execution {source.ExecutionId} completed without rerunning implementation.\n\n{source.ImplementationSummary}", repairs, Integration: integration);
             if (history is not null && !context.InterruptedExecution) await history.UpdateRecoveryAsync(source.ExecutionId, "integration-recovered", ct);

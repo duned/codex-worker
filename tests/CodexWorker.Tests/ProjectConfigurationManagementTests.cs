@@ -6,6 +6,59 @@ public sealed class ProjectConfigurationManagementTests
 {
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CaseDistinctYamlFilesRemainIndependentDuringMutation(bool remove)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var provider = new LocalYamlProjectConfigurationProvider(fixture.Projects);
+        var alpha = await provider.WriteAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        var beta = await provider.WriteAsync(fixture.Configuration("beta", "owner/beta"), CancellationToken.None);
+        var manualBeta = Path.Combine(fixture.Projects, Path.GetFileName(alpha).ToUpperInvariant());
+        File.Move(beta, manualBeta);
+        var before = await File.ReadAllTextAsync(alpha);
+        var service = fixture.Service(history);
+
+        if (remove)
+        {
+            Assert.True(await service.RemoveAsync("alpha", CancellationToken.None));
+            Assert.Equal("beta", Assert.Single(await service.ListAsync(CancellationToken.None)).Name);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => service.UpdateAsync("alpha",
+                fixture.Configuration("alpha", "owner/beta"), CancellationToken.None));
+            Assert.Equal(before, await File.ReadAllTextAsync(alpha));
+            Assert.Equal(2, (await service.ListAsync(CancellationToken.None)).Count);
+        }
+        Assert.True(File.Exists(manualBeta));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task UpdatingManuallyCasedYamlRemovesOnlyTheReplacedFile()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var provider = new LocalYamlProjectConfigurationProvider(fixture.Projects);
+        var path = await provider.WriteAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        var manual = Path.Combine(fixture.Projects, Path.GetFileName(path).ToUpperInvariant());
+        File.Move(path, manual);
+
+        await fixture.Service(history).UpdateAsync("alpha", fixture.Configuration("alpha", "owner/renamed"), CancellationToken.None);
+
+        Assert.False(File.Exists(manual));
+        var remaining = Assert.Single(await provider.ReadAllAsync(CancellationToken.None));
+        Assert.Equal("owner/renamed", remaining.Configuration.Project.Repository);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
     [Fact]
     public async Task CreateUpdateRemoveReloadAndNeverExposeEnvironmentValues()
     {

@@ -42,7 +42,7 @@ internal static class WorkerHostResourceCollector
         }
         try
         {
-            var drive = DriveInfo.GetDrives().Where(item => AppContext.BaseDirectory.StartsWith(item.RootDirectory.FullName, StringComparison.Ordinal))
+            var drive = DriveInfo.GetDrives().Where(item => ContainsDirectory(item.RootDirectory.FullName, AppContext.BaseDirectory))
                 .OrderByDescending(item => item.RootDirectory.FullName.Length).FirstOrDefault();
             if (drive is not null && drive.IsReady)
             {
@@ -63,9 +63,23 @@ internal static class WorkerHostResourceCollector
     private static async Task<(long Total, long Idle, int Count)> ReadCpuAsync(CancellationToken cancellationToken)
     {
         var lines = await File.ReadAllLinesAsync("/proc/stat", cancellationToken);
+        return ParseCpu(lines);
+    }
+
+    internal static bool ContainsDirectory(string mountRoot, string directory)
+    {
+        var relative = Path.GetRelativePath(mountRoot, directory);
+        return !Path.IsPathRooted(relative) && relative != ".." &&
+            !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
+    internal static (long Total, long Idle, int Count) ParseCpu(string[] lines)
+    {
+        if (lines.Length == 0 || !lines[0].StartsWith("cpu ", StringComparison.Ordinal))
+            throw new IOException("Host CPU counters unavailable.");
         var counters = lines[0].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Skip(1).Take(8)
             .Select(value => long.Parse(value, CultureInfo.InvariantCulture)).ToArray();
-        if (counters.Length < 5) throw new IOException("Host CPU counters unavailable.");
+        if (counters.Length < 5 || counters.Any(value => value < 0)) throw new IOException("Host CPU counters unavailable.");
         return (counters.Sum(), counters[3] + counters[4], lines.Count(line => line.Length > 3 && line.StartsWith("cpu", StringComparison.Ordinal) && char.IsDigit(line[3])));
     }
 }

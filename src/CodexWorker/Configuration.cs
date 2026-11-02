@@ -298,7 +298,8 @@ public static class ProjectConfigurationDiscovery
     {
         configuration.Validate();
         var candidates = existing.Where(item => replacingPath is null ||
-                !string.Equals(Path.GetFullPath(item.Path), Path.GetFullPath(replacingPath), StringComparison.OrdinalIgnoreCase))
+                !string.Equals(Path.GetFullPath(item.Path), Path.GetFullPath(replacingPath),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             .Append((Path.GetFullPath(path), configuration)).ToArray();
         ValidateSet(candidates);
     }

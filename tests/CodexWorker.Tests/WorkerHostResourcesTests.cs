@@ -5,6 +5,46 @@ namespace CodexWorker.Tests;
 
 public sealed class WorkerHostResourcesTests
 {
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("app", "app", true)]
+    [InlineData("app", "app/work", true)]
+    [InlineData("app", "application", false)]
+    [InlineData("app/work", "app", false)]
+    [InlineData(".", "app", true)]
+    public void DiskMountMustContainDirectory(string mount, string directory, bool expected)
+    {
+        var root = Path.GetTempPath();
+        Assert.Equal(expected, CodexWorker.WorkerHostResourceCollector.ContainsDirectory(
+            Path.Combine(root, mount), Path.Combine(root, directory)));
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("")]
+    [InlineData("cpu 1 2 3")]
+    [InlineData("intr 1 2 3 4 5")]
+    [InlineData("cpu 1 2 3 -4 5")]
+    public void MissingOrInvalidCpuCountersAreUnavailable(string input)
+    {
+        Assert.Throws<IOException>(() => CodexWorker.WorkerHostResourceCollector.ParseCpu(
+            input.Length == 0 ? [] : [input]));
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public void CpuCountersExcludeGuestTimeAndCountOnlyProcessorRows()
+    {
+        var sample = CodexWorker.WorkerHostResourceCollector.ParseCpu([
+            "cpu 10 20 30 40 50 60 70 80 90 100", "cpu0 1 2 3", "cpu1 1 2 3", "intr 123"]);
+        Assert.Equal(360, sample.Total);
+        Assert.Equal(90, sample.Idle);
+        Assert.Equal(2, sample.Count);
+    }
+
     [Trait("TestType", "Component")]
     [Trait("Duration", "Fast")]
     [Fact]

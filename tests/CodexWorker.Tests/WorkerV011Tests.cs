@@ -572,10 +572,14 @@ public sealed class WorkerV011Tests
         using var h = new Harness(history: history);
         h.GitHub.ReadyIssueCount = 2;
         h.Git.IntegrationFailure = new GitIntegrationConflictException("rebase conflict was safely aborted");
+        h.Git.CheckConflictPolicy = true;
 
         var conflicted = await h.ProcessOneAsync();
         Assert.Equal(IssueOutcomeKind.IntegrationConflict, conflicted!.Kind);
         Assert.Equal(1, h.Git.Integrations);
+        Assert.Equal(1, h.Git.ConflictPolicyChecks);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+        Assert.Single(h.Codex.Issues);
         Assert.Equal("IntegrationConflict", Assert.Single(await history.ReadAllAsync()).State);
 
         h.Git.IntegrationFailure = null;
@@ -833,6 +837,7 @@ public sealed class WorkerV011Tests
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(history: history);
         h.GitHub.ReturnRecoveryIssueOnFirstQuery = true;
+        h.Git.CheckConflictPolicy = true;
         h.GitHub.IssueLabels = ["codex-integration-recovery", "codex-integration-conflict"];
         var sourceId = Guid.NewGuid();
         await history.CreateAsync(new ExecutionHistoryEntry(sourceId, "Test Project", "owner/repo", 17, "Example task",
@@ -845,6 +850,9 @@ public sealed class WorkerV011Tests
         await claim!;
 
         Assert.Equal(1, h.Git.RecoveryStarted);
+        Assert.Equal(1, h.Git.ConflictPolicyChecks);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+        Assert.Empty(h.Codex.Issues);
         Assert.Equal(0, h.Git.Started);
         var recovery = (await history.ReadAllAsync()).Single(entry => entry.ExecutionId != sourceId);
         Assert.Equal(sourceId, recovery.RetryOfExecutionId);
@@ -3247,6 +3255,21 @@ public sealed class WorkerV011Tests
             if (Recovery is null) Cleanups++;
             return Task.FromResult(Recovery);
         }
+        public bool CheckConflictPolicy { get; set; }
+        public int ConflictPolicyChecks { get; private set; }
+        public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
+            Func<CancellationToken, Task<ValidationResult>> validateAfterRebase,
+            Func<string, CancellationToken, Task<bool>> resolveConflict,
+            Func<IntegrationRepairContext, CancellationToken, Task<IntegrationRepairResult>> repairIntegration,
+            CancellationToken ct, Func<CancellationToken, Task>? ensureAuthority = null)
+        {
+            if (CheckConflictPolicy)
+            {
+                ConflictPolicyChecks++;
+                Assert.False(await resolveConflict("confirmed rebase conflict", ct));
+            }
+            return await CommitAndIntegrateAsync(issue, validateAfterRebase, ct);
+        }
         public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
             Func<CancellationToken, Task<ValidationResult>> validateAfterRebase, CancellationToken ct)
         {
@@ -3273,6 +3296,13 @@ public sealed class WorkerV011Tests
 
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
+        public int ConflictResolutions { get; private set; }
+        public Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
+            GitHubIssue issue, string conflictDetails, CancellationToken ct)
+        {
+            ConflictResolutions++;
+            return Task.FromResult(Success("resolved"));
+        }
         public ICodexQuotaReader? QuotaReader { get; set; }
         public List<GitHubIssue> Issues { get; } = [];
         private Action<string?>? _modelObserver;

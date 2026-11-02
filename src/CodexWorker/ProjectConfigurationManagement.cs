@@ -123,7 +123,8 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             if (item.Configuration is null) return false;
             if ((await history.ReadActiveAsync(ct)).Any(x => string.Equals(x.Project, name, StringComparison.OrdinalIgnoreCase)))
                 throw new ProjectConfigurationConflictException($"Project '{name}' has an active execution and cannot be removed.");
-            var remaining = projects.Where(x => !string.Equals(x.Path, item.Path, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var remaining = projects.Where(x => !string.Equals(x.Path, item.Path,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)).ToArray();
             var removalReserved = runtimeRegistry is null || runtimeRegistry.TryBeginRemoval(name);
             if (!removalReserved)
                 throw new ProjectConfigurationConflictException($"Project '{name}' has an active execution or is already being removed.");
@@ -161,7 +162,8 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
                 !ProjectRuntimeRegistry.SameExecutionIdentity(previous, configuration))
                 throw new ProjectConfigurationConflictException($"Project '{existingName}' has an active execution and cannot change repository or checkout.");
             var path = await provider.WriteAsync(configuration, ct);
-            if (oldPath is not null && !string.Equals(oldPath, path, StringComparison.OrdinalIgnoreCase)) await provider.RemoveAsync(oldPath, ct);
+            if (oldPath is not null && !string.Equals(oldPath, path,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) await provider.RemoveAsync(oldPath, ct);
             await RefreshRuntimeAsync(ct, configuration.Project.Name);
             return ToView(configuration);
         }
