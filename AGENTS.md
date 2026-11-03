@@ -67,7 +67,7 @@ Before implementing, inspect the existing architecture, relevant contracts, repr
 
 ## Product versions and releases
 
-- Roadmap/Issue series are not product versions. Working on 16.x does **not** make the product version `0.16.0`; that becomes the product version only through the explicit release/version process. Until the v0.16 release is prepared, the current intended version remains `0.15.0`.
+- Roadmap/Issue series are not product versions. The authoritative current product version is the shared MSBuild `Version` property in `Directory.Build.props`; change it only through the explicit release/version process.
 - Never infer or bump a product version from an Issue number, branch name or milestone. Unrelated feature/fix Issues must not silently change versions, assembly metadata, banners or release configuration.
 - `Directory.Build.props` defines the shared source `Version`; Server and Worker derive product metadata from generated assembly metadata. Respect [release tooling and policy](docs/release-packaging.md#product-version-policy): explicit release preparation changes the source version, while `packaging/release.sh VERSION` and `packaging/release-linux-x64.sh --set-version VERSION` override the build version without editing it. Do not introduce independent version constants.
 

@@ -62,9 +62,9 @@ Run `bash tests/release-tests.sh` to exercise packaging and release decisions wi
 
 ## Product version policy
 
-The shared MSBuild `Version` property in `Directory.Build.props` is the authoritative current product version: `0.15.0`. Worker and Server product metadata, banners and version endpoints derive from that property through generated assembly metadata.
+The shared MSBuild `Version` property in `Directory.Build.props` is the authoritative current product version. Read that property for the current source version rather than maintaining a separate version value in documentation. Worker and Server product metadata, banners and version endpoints derive from that property through generated assembly metadata.
 
-The current product version changes only through the explicit release/version process. Starting the next numbered roadmap or GitHub Issue series does not bump it; neither Issue numbering nor branch names determine a product version. While 16.x work is in progress before the v0.16 release, the intended current version remains `0.15.0`. Do not independently bump versions as part of unrelated feature Issues.
+The current product version changes only through the explicit release/version process. Starting the next numbered roadmap or GitHub Issue series does not bump it; neither Issue numbering nor branch names determine a product version. Do not independently bump versions as part of unrelated feature Issues.
 
 Explicitly prepare the next source version in `Directory.Build.props` as part of its release. `packaging/release.sh VERSION` and `packaging/release-linux-x64.sh --set-version VERSION` continue to override the shared MSBuild version for the requested build, including published assemblies, archive names and archive `VERSION` files, without editing the source property.
 
