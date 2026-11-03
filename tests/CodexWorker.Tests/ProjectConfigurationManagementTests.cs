@@ -229,6 +229,51 @@ public sealed class ProjectConfigurationManagementTests
         Assert.False(File.Exists(inside));
     }
 
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task EachFailedReloadPublishesOnceAndPreservesSnapshot(bool watched, bool serviceHasRegistry)
+    {
+        using var fixture = new Fixture();
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var provider = new LocalYamlProjectConfigurationProvider(fixture.Projects);
+        var path = await provider.WriteAsync(fixture.Configuration("alpha", "owner/alpha"), CancellationToken.None);
+        var events = new RuntimeEventLog();
+        var registry = new ProjectRuntimeRegistry(await provider.ReadAllAsync(CancellationToken.None), events);
+        var accepted = Assert.Single(registry.Snapshot()).Configuration;
+        var service = new ProjectConfigurationService(provider, history, fixture.Projects, serviceHasRegistry ? registry : null);
+        // Prepare the invalid file before starting the watcher: drive reload batches explicitly,
+        // without depending on the platform's number or timing of filesystem events.
+        await File.WriteAllTextAsync(path, "project: [incomplete");
+        await using (var watcher = watched ? new ProjectConfigurationWatcher(fixture.Projects, service, registry) : null)
+        {
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => watcher is null
+                ? service.ReloadAsync(canceled.Token)
+                : watcher.ReloadAsync(canceled.Token));
+            Assert.Empty(events.ReadRecent());
+
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                if (watcher is not null) await watcher.ReloadAsync(CancellationToken.None);
+                else await Assert.ThrowsAsync<InvalidDataException>(() => service.ReloadAsync(CancellationToken.None));
+
+                Assert.Equal(attempt, events.ReadRecent().Count);
+                Assert.All(events.ReadRecent(), item => Assert.Equal("configuration.reload.rejected", item.Type));
+                Assert.Same(accepted, Assert.Single(registry.Snapshot()).Configuration);
+            }
+        }
+
+        await provider.WriteAsync(fixture.Configuration("alpha", "owner/renamed"), CancellationToken.None);
+        await service.ReloadAsync(CancellationToken.None);
+        if (serviceHasRegistry)
+            Assert.Equal("owner/renamed", Assert.Single(registry.Snapshot()).Configuration.Project.Repository);
+    }
+
     private sealed class Fixture : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "project-config-management-" + Guid.NewGuid().ToString("N"));

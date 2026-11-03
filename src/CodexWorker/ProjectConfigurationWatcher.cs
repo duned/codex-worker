@@ -60,15 +60,21 @@ public sealed class ProjectConfigurationWatcher : IAsyncDisposable
                 while (_changes.Reader.TryRead(out _)) { }
                 await Task.Delay(_debounce, ct);
                 while (_changes.Reader.TryRead(out _)) { }
-                try { await _service.ReloadAsync(ct); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
-                catch (Exception)
-                {
-                    _registry.Publish("configuration.reload.rejected", "Project configuration reload was rejected.");
-                }
+                await ReloadAsync(ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    internal async Task ReloadAsync(CancellationToken ct)
+    {
+        try { await _service.ReloadAsync(ct, _registry); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception)
+        {
+            // The service has already published this invocation's rejection.
+            // Keep watching so a later valid configuration can be accepted.
+        }
     }
 
     private static bool IsProjectYaml(string path) =>

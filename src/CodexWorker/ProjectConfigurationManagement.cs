@@ -91,7 +91,12 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
     }
 
     /// <summary>Validates the complete on-disk set before atomically replacing the active configuration snapshot.</summary>
-    public async Task<IReadOnlyList<ProjectConfigurationView>> ReloadAsync(CancellationToken ct)
+    public Task<IReadOnlyList<ProjectConfigurationView>> ReloadAsync(CancellationToken ct) => ReloadAsync(ct, null);
+
+    // The watcher supplies a rejection sink for services used without a runtime registry.
+    // Select it per invocation; filesystem notifications need not correspond one-to-one to writes.
+    internal async Task<IReadOnlyList<ProjectConfigurationView>> ReloadAsync(CancellationToken ct,
+        ProjectRuntimeRegistry? rejectionFallback)
     {
         await _gate.WaitAsync(ct);
         try
@@ -102,9 +107,10 @@ public sealed class ProjectConfigurationService(IProjectConfigurationProvider pr
             runtimeRegistry?.Publish("configuration.reloaded", "Project configuration reloaded.");
             return candidate.Select(x => ToView(x.Configuration)).ToArray();
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception)
         {
-            runtimeRegistry?.Publish("configuration.reload.rejected", "Project configuration reload was rejected.");
+            (runtimeRegistry ?? rejectionFallback)?.Publish("configuration.reload.rejected", "Project configuration reload was rejected.");
             throw;
         }
         finally { _gate.Release(); }
