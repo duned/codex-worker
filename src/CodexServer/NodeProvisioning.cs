@@ -4,8 +4,9 @@ using CodexProvisioning;
 
 public static class NodeProvisioning
 {
-    public static ProvisionableNode Describe(WorkerRegistrationResponse worker, IReadOnlyList<ProvisioningPlan> plans)
+    public static ProvisionableNode Describe(WorkerRegistrationResponse worker, IReadOnlyList<ProvisioningPlan> plans, TimeProvider? clock = null)
     {
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
         var connected = worker.Availability is "online" or "draining";
         var capabilities = CapabilityCatalog.Definitions.Select(definition =>
         {
@@ -26,10 +27,10 @@ public static class NodeProvisioning
         }).ToArray();
         var operationRunning = capabilities.Any(item => item.State.Operation.State == CapabilityOperationState.Running);
         var stale = !connected || capabilities.Any(item => item.State.DetectedAtUtc is null ||
-            DateTimeOffset.UtcNow - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
+            now - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
         var executionCapabilities = capabilities.Where(item => item.Definition.RequiredForExecution).ToArray();
         var executionStale = executionCapabilities.Any(item => item.State.DetectedAtUtc is null ||
-            DateTimeOffset.UtcNow - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
+            now - item.State.DetectedAtUtc > TimeSpan.FromMinutes(6));
         var ready = connected && !executionStale && worker.LifecycleState == "running" &&
             CapabilityCatalog.ExecutionReadiness(capabilities.Select(item => item.State).ToArray()).Available;
         return new(worker.WorkerId, "worker", worker.DisplayName, connected ? "connected" : "disconnected",

@@ -105,6 +105,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton<IServerGitHubAdministrationService>(services => services.GetRequiredService<ServerGitHubAdministrationService>());
         builder.Services.AddHostedService<AutomaticIssueDiscoveryService>();
         builder.Services.AddSingleton<IRegistryStore>(services => new SqliteRegistryStore(databasePath, configuration.WorkerStaleAfterSeconds,
+            timeProvider: services.GetRequiredService<TimeProvider>(),
             leaseDurationSeconds: configuration.ExecutionLeaseDurationSeconds,
             leaseRenewalIntervalSeconds: configuration.ExecutionLeaseRenewalIntervalSeconds,
             logger: services.GetRequiredService<ILogger<SqliteRegistryStore>>()));
@@ -113,7 +114,7 @@ public static partial class ServerApplication
         builder.Services.AddSingleton(services => new McpOAuthStore(databasePath, configuration, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new ProvisioningCommandStore(databasePath));
         builder.Services.AddSingleton(services => new TelegramTestStore(databasePath, services.GetRequiredService<TimeProvider>()));
-        builder.Services.AddSingleton(_ => new ExecutionMaintenanceStore(databasePath));
+        builder.Services.AddSingleton(services => new ExecutionMaintenanceStore(databasePath, services.GetRequiredService<TimeProvider>()));
         builder.Services.AddSingleton(_ => new IssuePlanningOperations(databasePath));
         builder.Services.AddSingleton(services => new NodeProvisioningCommandExecutor(
             services.GetRequiredService<NodeCapabilityDiscovery>(), requireManagedGitHubAuthentication: true));
@@ -249,7 +250,7 @@ public static partial class ServerApplication
             }
         });
         app.MapGet("/api/v1/nodes", async (HttpContext context, ServerConfiguration settings, IRegistryStore store,
-            NodeCapabilityDiscovery discovery, IServerHealthService health, ProvisioningCommandStore commands) =>
+            NodeCapabilityDiscovery discovery, IServerHealthService health, ProvisioningCommandStore commands, TimeProvider clock) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             var nodes = new List<ProvisionableNode>();
@@ -261,7 +262,7 @@ public static partial class ServerApplication
                     local.Single(state => state.Id == definition.Id), true)).ToArray(), serverHealth.Status));
             var plans = await store.GetProvisioningPlansAsync(context.RequestAborted);
             foreach (var worker in await store.GetWorkersAsync(context.RequestAborted))
-                nodes.Add(NodeProvisioning.Describe(worker, plans));
+                nodes.Add(NodeProvisioning.Describe(worker, plans, clock));
             var described = new List<ProvisionableNode>();
             foreach (var node in nodes)
                 described.Add(NodeProvisioning.WithCommands(node, await commands.ListNodeAsync(node.Id, context.RequestAborted), plans));

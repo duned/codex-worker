@@ -9,7 +9,7 @@ public static partial class ServerApplication
     private static void MapExecutionMaintenance(WebApplication app)
     {
         app.MapPost("/api/v1/maintenance/executions", async (ExecutionMaintenanceRequest request, HttpContext context,
-            ServerConfiguration settings, IRegistryStore registry, ExecutionMaintenanceStore commands) =>
+            ServerConfiguration settings, IRegistryStore registry, ExecutionMaintenanceStore commands, TimeProvider clock) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             if (!ExecutionMaintenanceProtocol.Valid(request)) return Results.BadRequest(new { reason = "invalid-maintenance-scope" });
@@ -17,7 +17,7 @@ public static partial class ServerApplication
             var prior = await commands.GetAsync(request.OperationId, context.RequestAborted);
             if (prior is null)
             {
-                var reason = await MaintenanceAuthorityReasonAsync(request, registry, context.RequestAborted);
+                var reason = await MaintenanceAuthorityReasonAsync(request, registry, context.RequestAborted, clock);
                 if (reason is not null) return Results.Conflict(new { reason });
             }
             try
@@ -83,14 +83,14 @@ public static partial class ServerApplication
         });
         // Fresh confirmation is required inside the Worker's repository/drain gate before a mutation.
         app.MapPost("/api/v1/workers/{workerId}/maintenance/executions/{id}/authorize", async (string workerId, string id,
-            HttpContext context, IRegistryStore registry, ExecutionMaintenanceStore commands) =>
+            HttpContext context, IRegistryStore registry, ExecutionMaintenanceStore commands, TimeProvider clock) =>
         {
             if (!await AuthorizedWorkerAsync(context, registry, workerId)) return WorkerUnauthorized();
             var operation = await commands.GetAsync(id, context.RequestAborted);
             if (operation is null) return Results.NotFound(new { reason = "maintenance-record-missing" });
             if (operation.Request.WorkerId != workerId || operation.Status != "running")
                 return Results.Conflict(new { reason = "maintenance-not-current" });
-            var reason = await MaintenanceAuthorityReasonAsync(operation.Request, registry, context.RequestAborted);
+            var reason = await MaintenanceAuthorityReasonAsync(operation.Request, registry, context.RequestAborted, clock);
             return reason is null ? Results.Ok(operation) : Results.Conflict(new { reason });
         });
         app.MapPost("/api/v1/workers/{workerId}/maintenance/executions/{id}/report", async (string workerId, string id,
@@ -109,7 +109,7 @@ public static partial class ServerApplication
     }
 
     internal static async Task<string?> MaintenanceAuthorityReasonAsync(ExecutionMaintenanceRequest request,
-        IRegistryStore registry, CancellationToken ct)
+        IRegistryStore registry, CancellationToken ct, TimeProvider? clock = null)
     {
         var worker = await registry.GetWorkerAsync(request.WorkerId, ct);
         if (worker is null) return "worker-missing";
@@ -150,7 +150,7 @@ public static partial class ServerApplication
 
         if (request.Action == "retry-report")
             return execution.State is "Completed" or "Failed" && execution.WorkerExecutionId is not null && execution.Lease.State == "Released" ||
-                execution.State is "Assigned" or "Running" && execution.Lease is { State: "Active" } lease && lease.ExpiresAtUtc > DateTimeOffset.UtcNow
+                execution.State is "Assigned" or "Running" && execution.Lease is { State: "Active" } lease && lease.ExpiresAtUtc > (clock ?? TimeProvider.System).GetUtcNow()
                 ? null : "stale-lease-report-reconciliation-required";
         if (execution.WorkerExecutionId is null) return "worker-execution-proof-missing";
         return execution.State is "Completed" or "Failed" && execution.Lease.State == "Released"

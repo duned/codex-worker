@@ -265,7 +265,7 @@ public sealed class ManagedExecutionMaintenanceTests
     public async Task RegistryAuthorityRejectsOfflineOutdatedAndExpiredLeaseWithoutInventingLocalAuthority()
     {
         using var temporary = new TemporaryDirectory();
-        var clock = new Clock();
+        var clock = new Clock { Now = DateTimeOffset.Parse("2040-01-01T00:00:00Z") };
         var registry = new SqliteRegistryStore(Path.Combine(temporary.Path, "server.db"), timeProvider: clock, leaseDurationSeconds: 60);
         await registry.InitializeAsync();
         var worker = Guid.NewGuid().ToString("N");
@@ -285,6 +285,15 @@ public sealed class ManagedExecutionMaintenanceTests
         var assignment = Assert.IsType<WorkAssignment>(response.Assignment);
         var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), worker, execution.Id,
             Guid.NewGuid(), assignment.AssignmentId, assignment.Lease?.Generation, "retry-report");
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        clock.Now = lease.ExpiresAtUtc.AddTicks(-1);
+        Assert.Null(await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None, clock));
+        clock.Now = lease.ExpiresAtUtc;
+        Assert.Equal("stale-lease-report-reconciliation-required",
+            await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None, clock));
+        clock.Now = lease.ExpiresAtUtc.AddTicks(1);
+        Assert.Equal("stale-lease-report-reconciliation-required",
+            await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None, clock));
         clock.Now += TimeSpan.FromMinutes(3);
         Assert.Equal("worker-offline", await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None));
         await registry.ExpireLeasesAsync();

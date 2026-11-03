@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
 // Ephemeral read requests: no journal content is persisted in the registry.
-public sealed class WorkerJournalRequests
+public sealed class WorkerJournalRequests(TimeProvider? clock = null)
 {
     private readonly object gate = new();
     private readonly Dictionary<string, (WorkerJournalRequest Request, DateTimeOffset Expires, WorkerJournalResult? Result)> requests = new();
@@ -14,24 +14,25 @@ public sealed class WorkerJournalRequests
         if (lines is < 1 or > WorkerJournalProtocol.MaximumLines) throw new ArgumentOutOfRangeException(nameof(lines));
         lock (gate)
         {
-            foreach (var key in requests.Where(pair => pair.Value.Expires <= DateTimeOffset.UtcNow).Select(pair => pair.Key).ToArray()) requests.Remove(key);
+            var now = (clock ?? TimeProvider.System).GetUtcNow();
+            foreach (var key in requests.Where(pair => pair.Value.Expires <= now).Select(pair => pair.Key).ToArray()) requests.Remove(key);
             if (requests.TryGetValue(worker, out var current) && current.Request.Lines == lines &&
                 (current.Result is null || !refresh))
                 return current.Result ?? new("pending", []);
             if (requests.Count >= 64 && !requests.ContainsKey(worker)) return new("busy", []);
-            requests[worker] = (new(Guid.NewGuid(), lines), DateTimeOffset.UtcNow.AddSeconds(90), null);
+            requests[worker] = (new(Guid.NewGuid(), lines), now.AddSeconds(90), null);
             return new("pending", []);
         }
     }
     public WorkerJournalRequest? Pending(string worker)
     {
-        lock (gate) return requests.TryGetValue(worker, out var value) && value.Expires > DateTimeOffset.UtcNow && value.Result is null ? value.Request : null;
+        lock (gate) return requests.TryGetValue(worker, out var value) && value.Expires > (clock ?? TimeProvider.System).GetUtcNow() && value.Result is null ? value.Request : null;
     }
     public bool Complete(string worker, Guid id, WorkerJournalResult result)
     {
         lock (gate)
         {
-            if (!WorkerJournalProtocol.Valid(result) || !requests.TryGetValue(worker, out var value) || value.Request.Id != id || value.Expires <= DateTimeOffset.UtcNow || result.Lines.Count > value.Request.Lines) return false;
+            if (!WorkerJournalProtocol.Valid(result) || !requests.TryGetValue(worker, out var value) || value.Request.Id != id || value.Expires <= (clock ?? TimeProvider.System).GetUtcNow() || result.Lines.Count > value.Request.Lines) return false;
             requests[worker] = (value.Request, value.Expires, result with { Lines = result.Lines.Select(line => SecretSanitizer.Sanitize(line, 1000)).ToArray() });
             return true;
         }
