@@ -1,0 +1,6 @@
+{"inventory": 10, "projectedReadMs": 0.109, "storedJsonBytes": 3930, "databaseBytes": 40960}
+{"inventory": 100, "projectedReadMs": 0.3, "storedJsonBytes": 39390, "databaseBytes": 106496}
+{"inventory": 1000, "projectedReadMs": 1.681, "storedJsonBytes": 394890, "databaseBytes": 720896}
+{"rotations": 100, "credentialRows": 103, "lookupMs": 0.053, "databaseBytes": 741376}
+{"rotations": 2160, "credentialRows": 2163, "lookupMs": 0.035, "databaseBytes": 1126400}
+{"rotations": 129600, "credentialRows": 129603, "lookupMs": 0.335, "databaseBytes": 25677824}

@@ -639,6 +639,52 @@ public sealed class McpOAuthTests
         public TemporaryDirectory() => Directory.CreateDirectory(Path);
         public void Dispose() => Directory.Delete(Path, recursive: true);
     }
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task RotationGrowthRetainsReplayEvidenceUntilGrantExpiryAndCleansOnlyExpiredFamilies()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "growth-test-management");
+        try
+        {
+            var database = Path.Combine(directory.Path, "oauth.db");
+            var clock = new Clock();
+            var store = new McpOAuthStore(database, new() { AdministrationOrigin = Origin }, clock);
+            await store.InitializeAsync();
+            var code = Assert.IsType<string>(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default));
+            var tokens = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(code, Client, Origin + "/mcp", false, Redirect, Verifier, default));
+            var originalRefresh = tokens.refresh_token;
+            for (var i = 0; i < 100; i++)
+                tokens = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(tokens.refresh_token, Client, Origin + "/mcp", true, null, null, default));
+            await using var connection = new SqliteConnection($"Data Source={database}");
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM mcp_oauth_credentials";
+            Assert.Equal(103L, await command.ExecuteScalarAsync()); // Used code + 101 refreshes + latest access.
+            clock.Now = clock.Now.AddMinutes(6);
+            // Even an expired used code must revoke its still-live family on replay.
+            Assert.Null(await store.ExchangeAsync(code, Client, Origin + "/mcp", false, Redirect, Verifier, default));
+            Assert.False(await store.AuthorizedAsync(tokens.access_token, default));
+            Assert.Null(await store.ExchangeAsync(originalRefresh, Client, Origin + "/mcp", true, null, null, default));
+            Assert.Equal(0L, await command.ExecuteScalarAsync());
+
+            await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default);
+            clock.Now = clock.Now.AddDays(1);
+            var liveCode = Assert.IsType<string>(await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default));
+            var live = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(liveCode, Client, Origin + "/mcp", false, Redirect, Verifier, default));
+            clock.Now = clock.Now.AddDays(89); // Exact expiry of older grant, younger family remains authoritative.
+            Assert.False(await store.AuthorizedAsync(live.access_token, default));
+            await store.AuthorizeAsync(Client, Redirect, Origin + "/mcp", Challenge, default);
+            Assert.Equal(2, (await store.ListAsync(default)).Count);
+            Assert.Equal(4L, await command.ExecuteScalarAsync());
+            var refreshed = Assert.IsType<McpOAuthStore.Tokens>(await store.ExchangeAsync(live.refresh_token, Client, Origin + "/mcp", true, null, null, default));
+            Assert.True(await store.AuthorizedAsync(refreshed.access_token, default));
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
     private sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
