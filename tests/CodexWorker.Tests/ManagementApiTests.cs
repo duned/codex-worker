@@ -132,8 +132,10 @@ public sealed class ManagementApiTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
-    [Fact]
-    public async Task ActiveDrainCompletesOnFinalReleaseAndCancellationRestoresScheduling()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ActiveDrainCompletesOnFinalReleaseAndCancellationRestoresScheduling(bool executionReady)
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -170,9 +172,15 @@ public sealed class ManagementApiTests
                 Assert.Equal(HttpStatusCode.Conflict, cancelRejected.StatusCode);
                 Assert.False(model.Registry.TryReserve("sample"));
             }
+            model.Lifecycle.SetExecutionReadiness(executionReady, "execution prerequisites unavailable");
+            model.State = executionReady ? "running" : "not-ready";
             using var cancel = await client.PostAsync("/api/worker/drain/cancel", null);
             Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
-            Assert.Equal("running", model.State);
+            var status = await model.StatusAsync(CancellationToken.None);
+            Assert.Equal(executionReady ? "ready" : "not-ready", status.LifecycleState);
+            Assert.Equal(executionReady ? "running" : "not-ready", status.State);
+            Assert.Equal(executionReady ? "ready" : "execution prerequisites unavailable", status.ReconnectReadinessResult);
+            Assert.Equal(status.State, model.HeartbeatStatus(new WorkerHeartbeatStatus(0, [], "running")).State);
             Assert.False(model.Lifecycle.Snapshot.DrainRequested);
             Assert.True(model.Registry.TryReserve("sample"));
             model.Registry.Release("sample");
@@ -223,6 +231,7 @@ public sealed class ManagementApiTests
             Environment = new ProjectEnvironmentSettings { Variables = new Dictionary<string, string> { ["TOKEN"] = "secret-value" } }
         };
         var model = new WorkerRuntimeReadModel(configuration, [("/safe/project.yml", project)], history.Store);
+        model.Lifecycle.SetExecutionReadiness(true);
         model.State = "running";
         var executionId = Guid.NewGuid();
         await history.Store.CreateAsync(new ExecutionHistoryEntry(executionId, "sample", "owner/repo", 4, "Example issue",
@@ -252,7 +261,7 @@ public sealed class ManagementApiTests
             Assert.Equal(0, status.GetProperty("activeExecutionCount").GetInt32());
             Assert.Equal(3, status.GetProperty("availableExecutionCapacity").GetInt32());
             Assert.Equal("running", status.GetProperty("state").GetString());
-            Assert.Equal("starting", status.GetProperty("lifecycleState").GetString());
+            Assert.Equal("ready", status.GetProperty("lifecycleState").GetString());
 
             var projects = JsonDocument.Parse(await client.GetStringAsync("/api/projects")).RootElement;
             Assert.Equal("/safe/project.yml", projects[0].GetProperty("configurationPath").GetString());

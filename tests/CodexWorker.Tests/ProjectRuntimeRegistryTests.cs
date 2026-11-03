@@ -116,10 +116,13 @@ public sealed class ProjectRuntimeRegistryTests
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Trait("ValidationProfile", "FastCandidate")]
-    [Fact]
-    public void IdleWorkerDrainImmediatelyUpdatesTheAuthoritativeLifecycle()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void IdleWorkerDrainImmediatelyUpdatesTheAuthoritativeLifecycle(bool executionReady)
     {
         var registry = new ProjectRuntimeRegistry([("alpha.yml", Config("alpha"))]);
+        registry.Lifecycle.SetExecutionReadiness(executionReady, "execution prerequisites unavailable");
         Assert.False(registry.WorkerDrainComplete);
         registry.DrainWorker();
         Assert.True(registry.WorkerDraining);
@@ -129,7 +132,7 @@ public sealed class ProjectRuntimeRegistryTests
         Assert.False(registry.TryReserve("alpha"));
         Assert.True(registry.CancelWorkerDrain());
         Assert.False(registry.WorkerDraining);
-        Assert.Equal("ready", registry.Lifecycle.Snapshot.State);
+        Assert.Equal(executionReady ? "ready" : "not-ready", registry.Lifecycle.Snapshot.State);
         Assert.True(registry.TryReserve("alpha"));
         registry.Release("alpha");
     }

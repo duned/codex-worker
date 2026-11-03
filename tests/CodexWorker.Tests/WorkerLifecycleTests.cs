@@ -7,6 +7,31 @@ public sealed class WorkerLifecycleTests
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Trait("ValidationProfile", "FastCandidate")]
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void CancelDrainRestoresLatestExecutionReadiness(bool initiallyReady, bool readyDuringDrain)
+    {
+        var lifecycle = new WorkerLifecycle();
+        lifecycle.SetExecutionReadiness(initiallyReady, "initially unavailable");
+        lifecycle.RequestDrain();
+        lifecycle.SetExecutionReadiness(readyDuringDrain, "prerequisites unavailable");
+
+        Assert.Equal("drained", lifecycle.Snapshot.State);
+        Assert.True(lifecycle.Snapshot.DrainRequested);
+        lifecycle.CancelDrain(0);
+
+        Assert.Equal(readyDuringDrain ? "ready" : "not-ready", lifecycle.Snapshot.State);
+        Assert.Equal(readyDuringDrain ? "ready" : "prerequisites unavailable", lifecycle.Snapshot.ReconnectReadinessResult);
+        Assert.False(lifecycle.Snapshot.DrainRequested);
+        Assert.Equal(0, lifecycle.Snapshot.ActiveExecutions);
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Trait("ValidationProfile", "FastCandidate")]
     [Fact]
     public void InvalidManagedConfigurationCanDrainForUpdateWithoutBecomingExecutionReady()
     {

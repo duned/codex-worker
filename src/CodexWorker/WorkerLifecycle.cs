@@ -4,6 +4,8 @@ namespace CodexWorker;
 public sealed class WorkerLifecycle
 {
     private readonly object _gate = new();
+    private bool _executionReady;
+    private string _executionReadinessResult = "not-ready";
     private WorkerLifecycleSnapshot _snapshot = new(ApplicationVersion.Display, "starting", false, 0, null, "not-ready");
 
     internal object SyncRoot => _gate;
@@ -16,9 +18,13 @@ public sealed class WorkerLifecycle
     {
         lock (_gate)
         {
+            _executionReady = ready;
+            _executionReadinessResult = ready ? "ready" : diagnostic ?? "Execution capabilities are unavailable.";
+            // Keep drain and maintenance presentation intact while retaining the host
+            // readiness result to restore when the operator cancels drain.
             if (_snapshot.DrainRequested) return;
             _snapshot = _snapshot with { State = ready ? "ready" : "not-ready",
-                ReconnectReadinessResult = ready ? "ready" : diagnostic ?? "Execution capabilities are unavailable." };
+                ReconnectReadinessResult = _executionReadinessResult };
         }
     }
 
@@ -36,7 +42,8 @@ public sealed class WorkerLifecycle
         {
             if (!_snapshot.DrainRequested || activeExecutions != 0)
                 throw new InvalidOperationException("A worker drain can only be cancelled when no executions are active.");
-            _snapshot = _snapshot with { State = "ready", DrainRequested = false, ActiveExecutions = 0 };
+            _snapshot = _snapshot with { State = _executionReady ? "ready" : "not-ready", DrainRequested = false, ActiveExecutions = 0,
+                ReconnectReadinessResult = _executionReadinessResult };
         }
     }
 
@@ -106,9 +113,16 @@ public sealed class WorkerLifecycle
     private void Update(string state, bool draining, string? updateResult = null, string? readinessResult = null)
     {
         lock (_gate)
+        {
+            if (readinessResult is not null)
+            {
+                _executionReady = state == "ready";
+                _executionReadinessResult = readinessResult;
+            }
             _snapshot = _snapshot with { State = state, DrainRequested = draining,
                 LastUpdateResult = updateResult ?? _snapshot.LastUpdateResult,
                 ReconnectReadinessResult = readinessResult ?? _snapshot.ReconnectReadinessResult };
+        }
     }
 
     private static string CapabilityKey(WorkerCapabilityContract capability) =>
