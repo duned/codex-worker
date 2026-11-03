@@ -1549,12 +1549,13 @@ public sealed class CodexServerTests
         var restoredWorker = await restoredRegistry.GetWorkerAsync(workerId);
         Assert.Equal("backup worker", restoredWorker?.DisplayName);
         Assert.Equal(WorkerSchedulingPolicy.Draining, restoredWorker?.SchedulingPolicy);
-        Assert.Equal("Pending", (await restoredRegistry.GetProvisioningPlanAsync(legacyPlan.Id))?.State);
+        Assert.Equal("Cancelled", (await restoredRegistry.GetProvisioningPlanAsync(legacyPlan.Id))?.State);
         var restoredCommands = new ProvisioningCommandStore(restoredDatabase);
         await restoredCommands.InitializeAsync();
         var restoredTypedCommand = Assert.Single(await restoredCommands.ListAsync());
         Assert.Equal(typedCommand.Id, restoredTypedCommand.Id);
-        Assert.Equal(ProvisioningCommandStatus.Pending, restoredTypedCommand.Status);
+        Assert.Equal(ProvisioningCommandStatus.Cancelled, restoredTypedCommand.Status);
+        Assert.Null(await restoredCommands.ClaimAsync(workerId));
         Assert.Equal("revoked", restoredWorker?.AuthenticationCredentialStatus);
 
         await using (var metadataConnection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = restoredDatabase, Mode = SqliteOpenMode.ReadOnly }.ToString()))
@@ -2523,8 +2524,54 @@ public sealed class CodexServerTests
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
+    [Theory]
+    [InlineData(ProvisioningCommandStatus.Running, ProvisioningDiagnostic.Executing)]
+    [InlineData(ProvisioningCommandStatus.Succeeded, ProvisioningDiagnostic.Completed)]
+    [InlineData(ProvisioningCommandStatus.Failed, ProvisioningDiagnostic.ProcessFailed)]
+    [InlineData(ProvisioningCommandStatus.TimedOut, ProvisioningDiagnostic.TimedOut)]
+    public async Task RestoreRetainsDispatchedProvisioningWithoutReplay(ProvisioningCommandStatus status,
+        ProvisioningDiagnostic diagnostic)
+    {
+        using var temporary = new TemporaryDirectory();
+        var database = Path.Combine(temporary.Path, "source.db");
+        var target = Path.Combine(temporary.Path, "restored.db");
+        var archive = Path.Combine(temporary.Path, "backup.zip");
+        var clock = new TestTimeProvider(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var registry = new SqliteRegistryStore(database, timeProvider: clock);
+        await registry.InitializeAsync();
+        var credentials = new SqliteCredentialStore(database, Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        await credentials.InitializeAsync();
+        var workerId = Guid.NewGuid().ToString("N");
+        await registry.RegisterWorkerAsync(new WorkerRegistrationRequest(1, workerId, "worker", "1.0", "test", 1, []));
+        var plan = await registry.CreateProvisioningPlanAsync(new(workerId, [new ProvisioningAction("refresh", "refresh-capabilities", "worker", Operation: "refresh")]));
+        await registry.AcceptProvisioningPlanAsync(workerId);
+        if (status == ProvisioningCommandStatus.Running)
+            await registry.ReportProvisioningPlanAsync(plan.Id, new(workerId, "Running", "refresh"));
+        var commands = new ProvisioningCommandStore(database, clock);
+        await commands.InitializeAsync();
+        var pending = await commands.CreateAsync(new("server", "git", ProvisioningCommandAction.Detect));
+        var dispatched = Assert.IsType<ProvisioningCommand>(await commands.ClaimAsync("server"));
+        if (status != ProvisioningCommandStatus.Running)
+            dispatched = Assert.IsType<ProvisioningCommand>(await commands.ReportAsync(pending.Id, "server", new(status, diagnostic)));
+        await new ServerBackup(database).ExportAsync(archive);
+        await new ServerBackup(target).RestoreOfflineAsync(archive);
+        var restored = new ProvisioningCommandStore(target, clock);
+        await restored.InitializeAsync();
+        Assert.Equal(dispatched, await restored.GetAsync(pending.Id));
+        Assert.Null(await restored.ClaimAsync("server"));
+        if (status == ProvisioningCommandStatus.Running)
+            await Assert.ThrowsAsync<InvalidOperationException>(() => restored.CreateAsync(pending.Request));
+        var restoredRegistry = new SqliteRegistryStore(target, timeProvider: clock);
+        await restoredRegistry.InitializeAsync();
+        Assert.Equal(status == ProvisioningCommandStatus.Running ? "Running" : "Accepted",
+            (await restoredRegistry.GetProvisioningPlanAsync(plan.Id))!.State);
+        Assert.Null(await restoredRegistry.AcceptProvisioningPlanAsync(workerId));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
     [Fact]
-    public async Task ProvisioningPlansPersistLifecycleRecoverInterruptedWorkAndSanitizeFailure()
+    public async Task ProvisioningPlansPersistLifecycleWithoutReplayingInterruptedWorkAndSanitizeFailure()
     {
         using var temporary = new TemporaryDirectory();
         var database = Path.Combine(temporary.Path, "provisioning.db");
@@ -2551,13 +2598,14 @@ public sealed class CodexServerTests
         Assert.Equal("Accepted", claimed.State);
         var restartedStore = new SqliteRegistryStore(database);
         await restartedStore.InitializeAsync();
+        Assert.Null(await restartedStore.AcceptProvisioningPlanAsync(workerId));
         var interrupted = await restartedStore.ReportProvisioningPlanAsync(plan.Id,
             new ProvisioningWorkerReport(workerId, "Running", "runtime-dotnet"));
         Assert.Equal("Running", interrupted!.State);
         Assert.Equal("runtime-dotnet", interrupted.CurrentActionId);
         var recovered = await new SqliteRegistryStore(database).AcceptProvisioningPlanAsync(workerId);
-        Assert.Equal("Accepted", recovered!.State);
-        Assert.Equal(plan.Id, recovered.Id);
+        Assert.Null(recovered);
+        Assert.Equal("Running", (await restartedStore.GetProvisioningPlanAsync(plan.Id))!.State);
         var failed = await restartedStore.ReportProvisioningPlanAsync(plan.Id,
             new ProvisioningWorkerReport(workerId, "Failed", "runtime-dotnet", Failure: "runtime install token=secret-value failed"));
         Assert.Equal("Failed", failed!.State);

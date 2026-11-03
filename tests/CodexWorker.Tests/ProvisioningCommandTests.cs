@@ -229,7 +229,9 @@ public sealed class ProvisioningCommandTests
             var pending = await store.CreateAsync(new("server", "git", ProvisioningCommandAction.Detect));
             await Assert.ThrowsAsync<InvalidOperationException>(() => store.CreateAsync(pending.Request));
             var other = await store.CreateAsync(new("server", "codex-cli", ProvisioningCommandAction.Detect));
-            var claims = await Task.WhenAll(store.ClaimAsync("server"), store.ClaimAsync("server"));
+            var pendingRestart = new ProvisioningCommandStore(path);
+            await pendingRestart.InitializeAsync();
+            var claims = await Task.WhenAll(pendingRestart.ClaimAsync("server"), store.ClaimAsync("server"));
             Assert.Equal(2, claims.Select(item => item!.Id).Distinct().Count());
             var restarted = new ProvisioningCommandStore(path);
             await restarted.InitializeAsync();

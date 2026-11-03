@@ -73,6 +73,7 @@ public sealed class ServerBackup(string? databasePath = null)
         var restored = await ExtractAndValidateAsync(archivePath, cancellationToken, targetDirectory);
         try
         {
+            await CancelRestoredPendingProvisioningAsync(restored, cancellationToken);
             await using (var poolKey = new SqliteConnection(ConnectionString(databasePath)))
             {
                 await poolKey.OpenAsync(cancellationToken);
@@ -83,6 +84,31 @@ public sealed class ServerBackup(string? databasePath = null)
             File.Move(restored, databasePath, overwrite: true);
         }
         finally { DeleteIfExists(restored); }
+    }
+
+    // A snapshot cannot prove that queued work was not dispatched after export.
+    // Invalidate queued authorization only on restore, never on ordinary restart/export.
+    private static async Task CancelRestoredPendingProvisioningAsync(string path, CancellationToken token)
+    {
+        await using var connection = new SqliteConnection(ConnectionString(path));
+        await connection.OpenAsync(token);
+        var hasTypedCommands = await TableExistsAsync(connection, "provisioning_commands", token);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE provisioning_plans SET state='Cancelled', completed_at_utc=$now WHERE state='Pending';";
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(token);
+        if (hasTypedCommands)
+        {
+            command.CommandText = """
+                UPDATE provisioning_commands SET active=0,
+                    body=json_set(body, '$.Status', 'Cancelled', '$.Diagnostic', 'Cancelled', '$.CompletedAtUtc', $now)
+                WHERE json_extract(body, '$.Status')='Pending';
+                """;
+            await command.ExecuteNonQueryAsync(token);
+        }
+        await transaction.CommitAsync(token);
     }
 
     private async Task<string> ExtractAndValidateAsync(string archivePath, CancellationToken cancellationToken, string? directory = null)

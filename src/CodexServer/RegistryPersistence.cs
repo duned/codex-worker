@@ -1880,15 +1880,15 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        // Reissuing Accepted or Running plans to the same Worker makes process interruption recoverable.
-        // Worker actions are required to be idempotent, and the plan identity remains stable.
-        command.CommandText = "SELECT id FROM provisioning_plans WHERE worker_id=$worker AND state IN ('Pending','Accepted','Running') AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND last_seen_at_utc > $stale) ORDER BY created_at_utc, id LIMIT 1;";
+        // Persist dispatch before returning. Accepted/Running plans are uncertain after
+        // interruption and must never be blindly replayed, even by the same Worker.
+        command.CommandText = "SELECT id FROM provisioning_plans WHERE worker_id=$worker AND state='Pending' AND EXISTS (SELECT 1 FROM workers WHERE worker_id=$worker AND last_seen_at_utc > $stale) ORDER BY created_at_utc, id LIMIT 1;";
         command.Parameters.AddWithValue("$worker", workerId);
         command.Parameters.AddWithValue("$stale", (_timeProvider.GetUtcNow() - _staleAfter).ToString("O"));
         var id = await command.ExecuteScalarAsync(cancellationToken) as string;
         if (id is null) return null;
         command.Parameters.Clear();
-        command.CommandText = "UPDATE provisioning_plans SET state='Accepted' WHERE id=$id AND state IN ('Pending','Accepted','Running');";
+        command.CommandText = "UPDATE provisioning_plans SET state='Accepted' WHERE id=$id AND state='Pending';";
         command.Parameters.AddWithValue("$id", id);
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return null;
         await transaction.CommitAsync(cancellationToken);
