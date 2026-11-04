@@ -86,6 +86,9 @@ or authorize execution. History and session availability are checked again after
 waiting for a thread. Restart uses durable history and local session metadata;
 it does not reconstruct conversation text. Failed, blocked, cancelled or uncertain
 turns on a shared thread prevent further inheritance, including after restart.
+Every recorded turn must also belong to the same project, repository and parent
+package and use Codex. An unfinished record without captured implementation
+success cannot certify a shared thread, even when an older blocker completed.
 An interrupted child follows its own verified same-Issue recovery policy and
 resume budget, rather than selecting a blocker again.
 

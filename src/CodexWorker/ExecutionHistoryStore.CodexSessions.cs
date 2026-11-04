@@ -36,8 +36,15 @@ public sealed partial class ExecutionHistoryStore
         // Retain this check across host restarts as well as the in-memory turn gate.
         var turns = await ReadAsync(" WHERE codex_thread_id=$thread COLLATE NOCASE AND codex_session_owner=$owner",
             null, null, ct, ("$thread", thread), ("$owner", sessionOwner));
-        if (turns.Any(turn => turn.State is "Failed" or "Blocked" or "Cancelled" or "InfrastructureFailure" ||
-            turn.CodexRecovery is { ImplementationSucceeded: false })) return null;
+        if (turns.Any(turn => turn.Project != project ||
+            !string.Equals(turn.Repository, repository, StringComparison.OrdinalIgnoreCase) ||
+            turn.ParentIssueNumber != parentIssueNumber || turn.Engine != "codex" ||
+            turn.State is "Failed" or "Blocked" or "Cancelled" or "InfrastructureFailure" ||
+            turn.CodexRecovery is { ImplementationSucceeded: false } ||
+            // Older or incomplete records cannot certify that an active turn finished.
+            // Completed executions remain valid without interruption-recovery metadata.
+            (!(turn.State == "Completed" && turn.CompletedAtUtc is not null) &&
+                turn.CodexRecovery?.ImplementationSucceeded != true))) return null;
         return latest;
     }
 }

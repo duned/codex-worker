@@ -849,6 +849,52 @@ public sealed class ExecutionHistoryStoreTests
         Assert.Equal(successful, inherited is not null);
     }
 
+    [Theory]
+    [InlineData("project")]
+    [InlineData("repository")]
+    [InlineData("parent")]
+    [InlineData("engine")]
+    [InlineData("unfinished")]
+    [InlineData("missing-completion")]
+    [InlineData("compatible")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task SharedThreadCannotInheritUnrelatedOrUncertifiedTurnsAfterRestart(string scenario)
+    {
+        using var database = new TemporaryDatabase();
+        var blocker = Entry(Guid.NewGuid(), DateTimeOffset.UnixEpoch) with
+        {
+            State = "Completed", CompletedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            CodexThreadId = Guid.NewGuid().ToString(), CodexSessionOwner = "local-store", ParentIssueNumber = 2
+        };
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(blocker);
+            var later = blocker with
+            {
+                ExecutionId = Guid.NewGuid(), IssueNumber = 9,
+                StartedAtUtc = blocker.StartedAtUtc.AddMinutes(2),
+                CompletedAtUtc = blocker.StartedAtUtc.AddMinutes(3),
+                Repository = blocker.Repository.ToUpperInvariant()
+            };
+            later = scenario switch
+            {
+                "project" => later with { Project = "other-project" },
+                "repository" => later with { Repository = "other/repo" },
+                "parent" => later with { ParentIssueNumber = 3 },
+                "engine" => later with { Engine = "ccc" },
+                "unfinished" => later with { State = "Implementing", CompletedAtUtc = null },
+                "missing-completion" => later with { CompletedAtUtc = null },
+                _ => later
+            };
+            await store.CreateAsync(later);
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var inherited = await reopened.FindInheritedCodexSessionAsync(blocker.Project, blocker.Repository,
+            blocker.IssueNumber, 2, "local-store", (_, _) => Task.FromResult(true));
+        Assert.Equal(scenario == "compatible", inherited is not null);
+    }
+
     private static ExecutionHistoryEntry Entry(Guid id, DateTimeOffset started) => new(
         id, "sample", "owner/repo", 8, "Persist execution history", "feature/8-history", "main", started,
         null, "Created", null, null, null, 0, [], null, null, null, null);
