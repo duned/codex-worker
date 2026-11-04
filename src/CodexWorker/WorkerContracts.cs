@@ -25,6 +25,8 @@ public interface IGitHubClient
     Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
         IReadOnlyList<string>? secretValues = null);
     Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult<int?>(null);
+    Task<IReadOnlyList<int>?> GetBlockerIssueNumbersAsync(int issueNumber, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<int>?>(null);
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
     Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct);
     Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;
@@ -112,6 +114,8 @@ public interface ICodexExecutor
     ICodexExecutor WithSessionObserver(Func<string, Task> observer) => this;
     ICodexExecutor WithModelObserver(Action<string?> observer) => this;
     ICodexExecutor WithProfile(CodexExecutionProfile profile) => this;
+    Task<CodexOutcome> RunAsync(ImplementationRequest request, CancellationToken ct) =>
+        RunAsync(request.ProjectDirectory, request.InstructionsFile, request.Issue, request.RetryOf, request.Resumed, request.AttemptNumber, ct);
     Task PreflightAsync(CancellationToken ct);
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct);
     Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) => RunAsync(projectDirectory, instructionsFile, issue, ct);

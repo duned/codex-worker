@@ -29,10 +29,12 @@ public sealed class CodexServiceEnvironmentTests
                 fi
                 printf '%s\n' "$PWD" >> "$0.directories"
                 printf '%s\n' "$@" >> "$0.args"
-                if [ "$2" = resume ] && [ MISSING = yes ]; then
-                  printf 'error: No session found' >&2
-                  exit 1
-                fi
+                case "$*" in *'exec resume'*)
+                  if [ MISSING = yes ]; then
+                    printf 'error: No session found' >&2
+                    exit 1
+                  fi ;;
+                esac
                 while [ "$#" -gt 0 ]; do
                   if [ "$1" = --output-last-message ]; then shift; output=$1; fi
                   shift
@@ -57,7 +59,7 @@ public sealed class CodexServiceEnvironmentTests
             Assert.Equal(session, Assert.Single(observed));
             var arguments = await File.ReadAllLinesAsync(executable + ".args");
             Assert.Equal(supported, arguments.Contains("resume", StringComparer.Ordinal));
-            if (supported) Assert.Contains(Guid.Parse(session).ToString(), arguments);
+            if (supported) Assert.Contains(session, arguments);
             Assert.Contains("original-model", arguments);
             Assert.Contains("model_reasoning_effort=\"high\"", arguments);
             if (recovering) Assert.Contains("SAME preserved worktree", string.Join("\n", arguments), StringComparison.Ordinal);

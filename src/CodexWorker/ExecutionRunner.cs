@@ -15,7 +15,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
     Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null,
-    ImplementationEngineSelector? engines = null)
+    ImplementationEngineSelector? engines = null, IGitHubClient? github = null)
 {
     private ImplementationRequest Request(ExecutionContext context) => new(git.ExecutionDirectory, config.Codex.InstructionsFile,
         context.Issue, context.RetryOf, context.Execution.Resumed, context.Execution.AttemptNumber,
@@ -110,8 +110,19 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                 RecoveryBaseCommit = workspaceSnapshot?.BaseCommit, RecoveryStatus = workspaceSnapshot?.StatusSummary
             }, ct);
             await TransitionAsync(execution, ExecutionState.Implementing, ct);
+            var request = Request(context) with
+            {
+                CodexSessionDiagnostic = reason => output.Warning($"Execution {execution.ExecutionId} · {reason}.")
+            };
+            var inherited = await BlockerCodexSession.SelectAsync(request, execution.Project, execution.Repository,
+                identity, history, github, CodexSessionOwnership.Current,
+                new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home).ContainsAsync, ct);
+            if (inherited.Thread is { } thread)
+                request = request with { InheritedCodexThreadId = thread };
+            else
+                output.Warning($"Execution {execution.ExecutionId} · Codex thread inheritance skipped: {inherited.Reason}.");
             var outcome = await output.RunProgressAsync(TaskLabel(issue, $"{engineLabel} working", execution), () =>
-                CodexCapacityRetry.RunAsync(() => engine.RunAsync(Request(context), ct), async token =>
+                CodexCapacityRetry.RunAsync(() => engine.RunAsync(request, ct), async token =>
                 {
                     var clock = timeProvider ?? TimeProvider.System;
                     if (execution.CodexRecovery is { } recovery)

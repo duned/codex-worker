@@ -901,7 +901,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, engines);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, engines, github);
         return runner.RunAsync(context, ct);
     }
 

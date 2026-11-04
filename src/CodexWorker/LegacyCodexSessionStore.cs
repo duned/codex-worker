@@ -75,6 +75,43 @@ internal sealed class LegacyCodexSessionStore(string codexHome)
         };
     }
 
+    internal async Task<bool> ContainsAsync(string thread, CancellationToken ct)
+    {
+        if (!Guid.TryParse(thread, out var expected) || expected == Guid.Empty) return false;
+        var pending = new Stack<string>();
+        pending.Push(Path.Combine(codexHome, "sessions"));
+        var examined = 0;
+        try
+        {
+            while (pending.TryPop(out var directory))
+            {
+                ct.ThrowIfCancellationRequested();
+                if (++examined > 20000) return false;
+                if (!Directory.Exists(directory) || IsLink(directory)) continue;
+                foreach (var child in Directory.EnumerateDirectories(directory))
+                {
+                    if (++examined > 20000) return false;
+                    pending.Push(child);
+                }
+                foreach (var file in Directory.EnumerateFiles(directory, "rollout-*.jsonl"))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (++examined > 20000) return false;
+                    if (IsLink(file) || !Path.GetFileName(file).Contains(expected.ToString(), StringComparison.OrdinalIgnoreCase)) continue;
+                    var header = await ReadHeaderAsync(file, ct);
+                    if (header is null) return false;
+                    using var document = JsonDocument.Parse(header);
+                    var root = document.RootElement;
+                    if (HasDuplicateKeys(root) || Text(root, "type") != "session_meta" ||
+                        !root.TryGetProperty("payload", out var payload)) return false;
+                    return Guid.TryParse(Text(payload, "id"), out var actual) && actual == expected;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return false; }
+        return false;
+    }
+
     private static bool IsLink(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
     private static bool HasDuplicateKeys(JsonElement element)
     {

@@ -3,7 +3,8 @@ namespace CodexWorker;
 /// <summary>Inputs for file implementation inside a Worker-owned isolated worktree.
 /// Engines never own Git mutations, reporting, or authoritative validation.</summary>
 public sealed record ImplementationRequest(string ProjectDirectory, string InstructionsFile, GitHubIssue Issue,
-    ExecutionHistoryEntry? RetryOf = null, bool Resumed = false, int AttemptNumber = 1, string? Model = null, string? Effort = null);
+    ExecutionHistoryEntry? RetryOf = null, bool Resumed = false, int AttemptNumber = 1, string? Model = null, string? Effort = null,
+    string? InheritedCodexThreadId = null, Action<string>? CodexSessionDiagnostic = null);
 
 public sealed record ImplementationResult(string Status, string Summary, string[] TestsOrValidationPerformed,
     bool NeedsHumanInput, string? Question, string? BlockerType = null)
@@ -40,8 +41,7 @@ internal sealed class CodexImplementationEngine(ICodexExecutor codex) : IImpleme
 {
     public string Identity => "codex";
     public async Task<ImplementationResult> RunAsync(ImplementationRequest request, CancellationToken ct) =>
-        ImplementationResult.FromCodex(await codex.RunAsync(request.ProjectDirectory, request.InstructionsFile, request.Issue, request.RetryOf,
-            request.Resumed, request.AttemptNumber, ct));
+        ImplementationResult.FromCodex(await codex.RunAsync(request, ct));
     public async Task<ImplementationResult> RepairAsync(ImplementationRequest request, ValidationFailure failure,
         int attempt, int maximumAttempts, CancellationToken ct) =>
         ImplementationResult.FromCodex(await codex.RepairAsync(request.ProjectDirectory, request.InstructionsFile, request.Issue, failure, attempt, maximumAttempts, ct));

@@ -93,8 +93,16 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
         return await RunStructuredAsync(projectDirectory, BuildPrompt(instructions, instructionsFile, issue), ct);
     }
 
-    public async Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
-        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct)
+    public Task<CodexOutcome> RunAsync(ImplementationRequest request, CancellationToken ct) =>
+        RunImplementationAsync(request.ProjectDirectory, request.InstructionsFile, request.Issue, request.RetryOf,
+            request.Resumed, request.AttemptNumber, request.InheritedCodexThreadId, ct, request.CodexSessionDiagnostic);
+
+    public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, CancellationToken ct) =>
+        RunImplementationAsync(projectDirectory, instructionsFile, issue, retryOf, resumed, attemptNumber, null, ct);
+
+    private async Task<CodexOutcome> RunImplementationAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+        ExecutionHistoryEntry? retryOf, bool resumed, int attemptNumber, string? inheritedThread, CancellationToken ct, Action<string>? sessionDiagnostic = null)
     {
         var instructions = await ReadExecutionInstructionsAsync(instructionsFile, ct);
         var prompt = BuildPrompt(instructions, instructionsFile, issue);
@@ -111,7 +119,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 """;
         if (retryOf?.RecoveryState == "codex-interrupted")
             prompt += "\n# Infrastructure continuation\nThis is recovery of an interrupted Codex invocation on the SAME preserved worktree. Inspect existing changes and continue the original Issue. Do not recreate or discard existing implementation. Prior implementation and self-checks may already be complete; finish only what remains and return the structured outcome. The Worker will run authoritative validation and owns all Git lifecycle operations.\n";
-        return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : null);
+        return await RunStructuredAsync(projectDirectory, prompt, ct, sessionId: retryOf?.RecoveryState == "codex-interrupted" ? retryOf.CodexRecovery?.SessionId : inheritedThread, sessionDiagnostic: sessionDiagnostic);
     }
 
     public async Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
@@ -214,7 +222,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
     }
 
     private async Task<CodexOutcome> RunStructuredAsync(string projectDirectory, string prompt, CancellationToken ct,
-        bool useStandardInput = false, string? sessionId = null)
+        bool useStandardInput = false, string? sessionId = null, Action<string>? sessionDiagnostic = null)
     {
         var schemaPath = Path.Combine(Path.GetTempPath(), $"codex-worker-schema-{Guid.NewGuid():N}.json");
         var outputPath = Path.Combine(Path.GetTempPath(), $"codex-worker-output-{Guid.NewGuid():N}.json");
@@ -224,14 +232,18 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             using var environment = CodexEnvironment.Create(projectEnvironment);
             var args = BuildArguments(settings, schemaPath, outputPath, useStandardInput ? "-" : prompt).ToList();
             args.Insert(1, "--json");
-            if (Guid.TryParse(sessionId, out var parsedSession))
+            if (sessionId is { } threadId && Guid.TryParse(threadId, out _))
             {
                 // Resume only by an explicit recorded UUID, never --last or a caller-provided thread name.
                 if (await SupportsResumeAsync(projectDirectory, environment.Variables, ct))
                 {
                     args.Insert(1, "resume");
-                    args.Insert(args.Count - 1, parsedSession.ToString());
+                    args.Insert(args.Count - 1, threadId);
+                    // Override the source thread's persisted CWD with this execution worktree.
+                    args.Remove("--approve-for-me");
+                    args.InsertRange(0, ["--cd", projectDirectory, "--approve-for-me"]);
                 }
+                else sessionDiagnostic?.Invoke("Codex CLI does not support structured resume; starting a fresh session");
             }
             ProcessResult result;
             var modelReported = false;
@@ -280,7 +292,10 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 if (args.Contains("resume") && TryReadSession(result.StandardOutput) is null &&
                     (evidence.Contains("No session found", StringComparison.OrdinalIgnoreCase) ||
                      evidence.Contains("session not found", StringComparison.OrdinalIgnoreCase)))
+                {
+                    sessionDiagnostic?.Invoke("Codex session is no longer available; starting a fresh session");
                     return await RunStructuredAsync(projectDirectory, prompt, ct, useStandardInput);
+                }
                 var failure = CodexFailure.Classify(CodexFailure.ProcessEvidence(result.StandardOutput, result.StandardError));
                 throw new CodexExecutionInfrastructureException(failure.Category,
                     $"{failure.Reason}. Exit code {result.ExitCode}.\n{CodexFailure.Evidence(result.StandardOutput, result.StandardError, projectEnvironment?.Values.ToArray())}")
@@ -307,8 +322,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
             var help = await runner.RunAsync(Executable, ["exec", "resume", "--help"], directory,
                 TimeSpan.FromSeconds(10), ct, environment);
             return help.ExitCode == 0 && help.StandardOutput.Contains("--output-schema", StringComparison.Ordinal) &&
-                help.StandardOutput.Contains("--json", StringComparison.Ordinal) &&
-                help.StandardOutput.Contains("--approve-for-me", StringComparison.Ordinal);
+                help.StandardOutput.Contains("--json", StringComparison.Ordinal);
         }
         catch (Exception ex) when (ex is InvalidOperationException or TimeoutException && !ct.IsCancellationRequested)
         {

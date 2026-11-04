@@ -280,6 +280,28 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         }
     }
 
+    public async Task<IReadOnlyList<int>?> GetBlockerIssueNumbersAsync(int issueNumber, CancellationToken ct)
+    {
+        using var pages = await GetBlockingDependenciesAsync(issueNumber, ct);
+        var numbers = new HashSet<int>();
+        if (pages.RootElement.ValueKind != JsonValueKind.Array) return null;
+        foreach (var page in pages.RootElement.EnumerateArray())
+        {
+            if (page.ValueKind != JsonValueKind.Array) return null;
+            foreach (var dependency in page.EnumerateArray())
+            {
+                if (dependency.ValueKind != JsonValueKind.Object ||
+                    !dependency.TryGetProperty("number", out var number) || number.ValueKind != JsonValueKind.Number || !number.TryGetInt32(out var value) || value <= 0 ||
+                    !dependency.TryGetProperty("repository_url", out var url) || url.ValueKind != JsonValueKind.String ||
+                    !string.Equals(url.GetString(), $"https://api.github.com/repos/{repository}", StringComparison.OrdinalIgnoreCase))
+                    return null;
+                numbers.Add(value);
+                if (numbers.Count > 1000) return null;
+            }
+        }
+        return numbers.ToArray();
+    }
+
     internal static string[] DependencyApiArguments(string repository, int issueNumber) =>
         ["api", "--paginate", $"repos/{repository}/issues/{issueNumber}/dependencies/blocked_by"];
 
