@@ -426,6 +426,12 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
             case "$1 $2" in
               'api repos/owner/repo') printf '%s' '{"push":true}';;
               'api --paginate') printf '%s' '[]';;
+              'api graphql')
+                for argument do
+                  case "$argument" in
+                    number=17|number=18) printf '{"data":{"repository":{"issue":{"number":%s,"parent":null}}}}' "${argument#number=}";;
+                  esac
+                done;;
               'api '*'/issues/'*) printf '0';;
               'issue view') printf '%s' '{"state":"OPEN","labels":[{"name":"codex-ready"}]}';;
               'issue list')

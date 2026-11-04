@@ -33,13 +33,16 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         var executionCodex = execution.CodexProfile is { } profile ? codex.WithProfile(profile) : codex;
         executionCodex = executionCodex.WithSessionObserver(async session =>
         {
+            execution.CodexThreadId = session;
+            execution.CodexSessionOwner = CodexSessionOwnership.Current;
             if (execution.CodexRecovery is { } recovery)
             {
                 execution.CodexRecovery = recovery with { SessionId = session };
                 if (context.RetryOf?.RecoveryState == "codex-interrupted" && session != recovery.SessionId)
                     output.Warning($"Execution {execution.ExecutionId} · continuing preserved workspace with Codex session {session}.");
-                await SaveHistoryAsync(CreateEntry(execution, null, null, null), CancellationToken.None);
             }
+            // Record startup durably even if the invocation is subsequently cancelled.
+            await SaveHistoryAsync(CreateEntry(execution, null, null, null), CancellationToken.None);
         });
         executionCodex = executionCodex.WithModelObserver(model =>
         {
@@ -612,7 +615,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
-            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
+            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
+            CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
+            ParentIssueNumber: execution.ParentIssueNumber);
 
     private static string? Extract(string? text, string pattern)
     {

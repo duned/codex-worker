@@ -328,7 +328,7 @@ public sealed class CodexExecutor(ProcessRunner runner, CodexSettings settings,
                 var root = document.RootElement;
                 if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String && type.GetString() == "thread.started" &&
                     root.TryGetProperty("thread_id", out var id) && id.ValueKind == JsonValueKind.String && Guid.TryParse(id.GetString(), out var session) && session != Guid.Empty)
-                    return session.ToString();
+                    return id.GetString();
             }
             catch (JsonException) { /* Ignore partial and non-event lines. */ }
         }

@@ -159,7 +159,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                         continue;
                     }
                 }
-                else issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc);
+                else issue = new GitHubIssue(source.IssueNumber, source.IssueTitle, originalBody, source.StartedAtUtc,
+                    ParentIssueNumber: source.ParentIssueNumber);
                 if (!await github.IsIssueOpenAsync(source.IssueNumber, ct))
                 {
                     if (source.ValidationOutcome == "legacy: pending validation")
@@ -172,6 +173,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     attemptNumber: source.AttemptNumber + 1, resumed: true, featureBranchOverride: source.FeatureBranch,
                     codexSettings: config.Codex, settingsSource: source, serverExecutionId: assignment?.ServerExecutionId,
                     assignmentId: assignment?.AssignmentId, ownershipGeneration: assignment?.Lease?.Generation);
+                execution.CodexThreadId = source.CodexThreadId;
+                execution.CodexSessionOwner = source.CodexSessionOwner;
                 execution.CodexRecovery = snapshot with { ResumeCount = snapshot.ResumeCount + 1 };
                 if (!await history.TryClaimCodexRecoveryAsync(source, CreateInitialEntry(execution) with { RecoveryBaseCommit = source.RecoveryBaseCommit, RecoveryStatus = source.RecoveryStatus }, ct)) continue;
                 await TransitionAsync(execution, ExecutionState.Claimed, ct);
@@ -306,6 +309,11 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 resumed: true, serverExecutionId: assignment?.ServerExecutionId, assignmentId: assignment?.AssignmentId,
                 ownershipGeneration: assignment?.Lease?.Generation);
             execution.CodexRecovery = source.CodexRecovery;
+            if (execution.ParentIssueNumber == source.ParentIssueNumber)
+            {
+                execution.CodexThreadId = source.CodexThreadId;
+                execution.CodexSessionOwner = source.CodexSessionOwner;
+            }
             if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
                     CreateInitialEntry(execution), integrationBase ?? "explicit", explicitRecovery, ct))
             {
@@ -547,7 +555,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     }
 
     private async Task<GitHubIssue> PrepareCommentContextAsync(GitHubIssue issue, CancellationToken ct) =>
-        issue with { CommentContext = await github.GetIssueCommentContextAsync(issue.Number, ct,
+        issue with { ParentIssueNumber = await github.GetParentIssueNumberAsync(issue.Number, ct),
+            CommentContext = await github.GetIssueCommentContextAsync(issue.Number, ct,
             config.Environment.Variables.Values.ToArray()) };
 
     private static bool IsTerminalIntegrationConflict(ExecutionHistoryEntry entry) =>
@@ -1010,7 +1019,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,
-            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery);
+            OwnershipGeneration: execution.OwnershipGeneration, CodexRecovery: execution.CodexRecovery,
+            CodexThreadId: execution.CodexThreadId, CodexSessionOwner: execution.CodexSessionOwner,
+            ParentIssueNumber: execution.ParentIssueNumber);
 
     private static string? Extract(string? text, string pattern)
     {

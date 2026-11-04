@@ -24,6 +24,7 @@ public interface IGitHubClient
     Task<GitHubIssue?> GetCompletionIssueAsync(int issueNumber, CancellationToken ct) => GetIssueAsync(issueNumber, ct);
     Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
         IReadOnlyList<string>? secretValues = null);
+    Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult<int?>(null);
     Task<bool> IsIssueOpenAsync(int issueNumber, CancellationToken cancellationToken) => Task.FromResult(true);
     Task ReplaceLabelAsync(int issueNumber, string remove, string add, CancellationToken ct);
     Task RemoveLabelAsync(int issueNumber, string label, CancellationToken ct) => Task.CompletedTask;

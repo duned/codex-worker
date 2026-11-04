@@ -44,12 +44,15 @@ public sealed record ExecutionHistoryEntry(
     CodexInterruptionRecovery? CodexRecovery = null,
     string? CompletionJson = null,
     string? StandaloneRecoveryDiagnosticJson = null,
-    string Engine = "codex");
+    string Engine = "codex",
+    string? CodexThreadId = null,
+    string? CodexSessionOwner = null,
+    int? ParentIssueNumber = null);
 
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed partial class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 19;
+    private const int CurrentSchemaVersion = 20;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -79,10 +82,10 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome,
                 repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason,
                 recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc,
-                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json, engine)
+                server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json, engine, codex_thread_id, codex_session_owner, parent_issue_number)
             VALUES ($id,$project,$repository,$number,$title,$feature,$base,$started,$completed,$state,$duration,$summary,$validation,
                 $repairCount,$repairs,$sha,$integration,$completedBranch,$failure,$recoveryState,$recoveryBase,$recoveryStatus,
-                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery,$completion,$standaloneRecoveryDiagnostic,$engine)
+                $retryOf,$attempt,$resumed,$recoveryExpires,$serverExecutionId,$assignmentId,$ownershipGeneration,$effectiveModel,$effectiveEffort,$reportingFailure,$recoveryAttemptBase,$recoveryClaim,$originalIssueBody,$modelSelectedByCli,$codexRecovery,$completion,$standaloneRecoveryDiagnostic,$engine,$codexThreadId,$codexSessionOwner,$parentIssueNumber)
             """;
         Bind(command, entry);
         Add(command, "$standaloneRecoveryDiagnostic", entry.StandaloneRecoveryDiagnosticJson);
@@ -111,6 +114,8 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 model_selected_by_cli=CASE WHEN effective_effort IS NULL THEN $modelSelectedByCli ELSE model_selected_by_cli END,
                 effective_effort=COALESCE(effective_effort,$effectiveEffort),
                 codex_recovery_json=COALESCE($codexRecovery,codex_recovery_json),
+                codex_thread_id=COALESCE($codexThreadId,codex_thread_id),
+                codex_session_owner=COALESCE($codexSessionOwner,codex_session_owner),
                 reporting_failure=COALESCE($reportingFailure,reporting_failure)
                 WHERE execution_id=$id AND engine=$engine AND completed_at_utc IS NULL
                     AND state NOT IN ('Completed','Blocked','Failed','IntegrationConflict','InfrastructureFailure','Cancelled')
@@ -407,7 +412,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
     {
         await using var connection = await OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json, engine FROM executions" + suffix;
+        command.CommandText = "SELECT execution_id, project, repository, issue_number, issue_title, feature_branch, base_branch, started_at_utc, completed_at_utc, state, duration_ms, implementation_summary, validation_outcome, repair_count, repairs_json, commit_sha, integration_branch, completed_branch, failure_reason, recovery_state, recovery_base_commit, recovery_status, retry_of_execution_id, attempt_number, resumed, recovery_expires_at_utc, server_execution_id, assignment_id, ownership_generation, effective_model, effective_effort, reporting_failure, integration_recovery_attempt_base, integration_recovery_claim, original_issue_body, model_selected_by_cli, codex_recovery_json, completion_json, standalone_recovery_diagnostic_json, engine, codex_thread_id, codex_session_owner, parent_issue_number FROM executions" + suffix;
         if (parameter is not null) command.Parameters.AddWithValue(parameter, value ?? DBNull.Value);
         foreach (var (name, parameterValue) in additionalParameters) command.Parameters.AddWithValue(name, parameterValue);
         var entries = new List<ExecutionHistoryEntry>();
@@ -424,7 +429,7 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 reader.IsDBNull(22) ? null : Guid.Parse(reader.GetString(22)), reader.GetInt32(23), reader.GetBoolean(24), NullableDate(reader, 25),
                 NullableString(reader, 26), NullableString(reader, 27), reader.IsDBNull(28) ? null : reader.GetInt64(28),
                 NullableString(reader, 29), NullableString(reader, 30), NullableString(reader, 31),
-                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36)), NullableString(reader, 37), NullableString(reader, 38), reader.GetString(39)));
+                NullableString(reader, 32), reader.IsDBNull(33) ? null : Guid.Parse(reader.GetString(33)), NullableString(reader, 34), reader.GetBoolean(35), reader.IsDBNull(36) ? null : JsonSerializer.Deserialize<CodexInterruptionRecovery>(reader.GetString(36)), NullableString(reader, 37), NullableString(reader, 38), reader.GetString(39), NullableString(reader, 40), NullableString(reader, 41), reader.IsDBNull(42) ? null : reader.GetInt32(42)));
         }
         return entries;
     }
@@ -685,6 +690,14 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 migration.ExecuteNonQuery();
             }
 
+            if (schemaVersion < 20)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "ALTER TABLE executions ADD COLUMN codex_thread_id TEXT NULL; ALTER TABLE executions ADD COLUMN codex_session_owner TEXT NULL; ALTER TABLE executions ADD COLUMN parent_issue_number INTEGER NULL; PRAGMA user_version = 20;";
+                migration.ExecuteNonQuery();
+            }
+
             transaction.Commit();
         }
         catch (WorkerInfrastructureException) { throw; }
@@ -732,6 +745,9 @@ public sealed partial class ExecutionHistoryStore : IDisposable
         command.Parameters.AddWithValue("$modelSelectedByCli", entry.ModelSelectedByCli ? 1 : 0);
         Add(command, "$effectiveEffort", entry.EffectiveEffort);
         Add(command, "$engine", entry.Engine);
+        Add(command, "$codexThreadId", entry.CodexThreadId);
+        Add(command, "$codexSessionOwner", entry.CodexSessionOwner);
+        Add(command, "$parentIssueNumber", entry.ParentIssueNumber);
         Add(command, "$reportingFailure", entry.ReportingFailure);
         Add(command, "$recoveryAttemptBase", entry.IntegrationRecoveryAttemptBase);
         Add(command, "$recoveryClaim", entry.IntegrationRecoveryClaim?.ToString());

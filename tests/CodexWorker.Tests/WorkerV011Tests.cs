@@ -2838,6 +2838,33 @@ public sealed class WorkerV011Tests
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
         "integration conflict", "integration-conflict", "preserved-head", "preserved implementation", EffectiveEffort: "high");
 
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failed")]
+    [InlineData("blocked")]
+    public async Task EveryStartedCodexSessionIsRecordedSeparatelyFromRecovery(string status)
+    {
+        using var database = new TempHistoryDatabase();
+        var thread = Guid.NewGuid().ToString().ToUpperInvariant();
+        using (var history = new ExecutionHistoryStore(database.Path))
+        using (var h = new Harness(history: history))
+        {
+            h.GitHub.Issue = h.GitHub.Issue with { ParentIssueNumber = 2 };
+            h.Codex.ThreadId = thread;
+            h.Codex.InitialOutcome = new(status, "Implementation result", [], false, null);
+            await h.ProcessOneAsync();
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var entry = Assert.Single(await reopened.ReadAllAsync());
+        Assert.Equal(2, entry.ParentIssueNumber);
+        Assert.Equal(thread, entry.CodexThreadId);
+        Assert.Equal(CodexSessionOwnership.Current, entry.CodexSessionOwner);
+        Assert.Equal(thread, entry.CodexRecovery?.SessionId);
+        Assert.Equal(0, entry.CodexRecovery?.ResumeCount);
+    }
+
     private static CodexOutcome Success(string summary) => new("success", summary, [], false, null);
 
     [Trait("TestType", "Integration")]
@@ -3093,6 +3120,7 @@ public sealed class WorkerV011Tests
         public string CommentContext { get; set; } = "";
         public Exception? CommentFetchFailure { get; set; }
         public int CommentFetches { get; private set; }
+        public Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct) => Task.FromResult(Issue.ParentIssueNumber);
         public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
             IReadOnlyList<string>? secretValues = null)
         {
@@ -3307,6 +3335,13 @@ public sealed class WorkerV011Tests
         public List<GitHubIssue> Issues { get; } = [];
         private Action<string?>? _modelObserver;
         public string? CliModel { get; set; }
+        public string? ThreadId { get; set; }
+        private Func<string, Task>? _sessionObserver;
+        public ICodexExecutor WithSessionObserver(Func<string, Task> observer)
+        {
+            _sessionObserver = observer;
+            return this;
+        }
         public ICodexExecutor WithModelObserver(Action<string?> observer)
         {
             _modelObserver = observer;
@@ -3343,6 +3378,7 @@ public sealed class WorkerV011Tests
         }
         private async Task<CodexOutcome> RunCoreAsync(string projectDirectory, CancellationToken ct)
         {
+            if (ThreadId is not null && _sessionObserver is not null) await _sessionObserver(ThreadId);
             if (CliModel is not null) _modelObserver?.Invoke(CliModel);
             InitialDirectory = projectDirectory;
             RunStarted.TrySetResult();

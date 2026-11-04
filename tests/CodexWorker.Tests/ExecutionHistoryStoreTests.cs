@@ -29,7 +29,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 18;";
+            command.CommandText = "ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 18;";
             await command.ExecuteNonQueryAsync();
         }
         using var reopened = new ExecutionHistoryStore(database.Path);
@@ -340,7 +340,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 11;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 11;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -443,7 +443,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 7;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 7;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -466,7 +466,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 6;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN effective_model; ALTER TABLE executions DROP COLUMN effective_effort; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN reporting_failure; ALTER TABLE executions DROP COLUMN integration_recovery_attempt_base; ALTER TABLE executions DROP COLUMN integration_recovery_claim; ALTER TABLE executions DROP COLUMN original_issue_body; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 6;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -493,7 +493,7 @@ public sealed class ExecutionHistoryStoreTests
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 9;";
+            command.CommandText = "DROP TABLE execution_legacy_reviews; DROP TABLE execution_maintenance_receipts; DROP TABLE execution_archives; DROP TABLE execution_server_report_dispositions; DROP TABLE execution_acknowledgements; ALTER TABLE executions DROP COLUMN completion_json; ALTER TABLE executions DROP COLUMN codex_recovery_json; ALTER TABLE executions DROP COLUMN model_selected_by_cli; ALTER TABLE executions DROP COLUMN standalone_recovery_diagnostic_json; ALTER TABLE executions DROP COLUMN codex_thread_id; ALTER TABLE executions DROP COLUMN codex_session_owner; ALTER TABLE executions DROP COLUMN parent_issue_number; ALTER TABLE executions DROP COLUMN engine; PRAGMA user_version = 9;";
             await command.ExecuteNonQueryAsync();
         }
         using var migrated = new ExecutionHistoryStore(database.Path);
@@ -660,7 +660,7 @@ public sealed class ExecutionHistoryStoreTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA user_version";
-            Assert.Equal(19L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(20L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM executions";
             Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
             var raw = await File.ReadAllTextAsync(database.Path);
@@ -737,6 +737,81 @@ public sealed class ExecutionHistoryStoreTests
         var unchanged = Assert.Single(await store.ReadAllAsync());
         Assert.Null(unchanged.IntegrationRecoveryClaim);
         Assert.Null(unchanged.IntegrationRecoveryAttemptBase);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Fact]
+    public async Task SuccessfulThreadSurvivesRestartAndLatestAttemptIsAuthoritative()
+    {
+        using var database = new TemporaryDatabase();
+        var thread = "ABCDEF12-1234-1234-1234-123456789ABC";
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UnixEpoch) with
+        { CodexThreadId = thread, CodexSessionOwner = "local-store", ParentIssueNumber = 2 };
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            await store.UpdateAsync(entry with { State = "Completed", CompletedAtUtc = entry.StartedAtUtc.AddMinutes(1) });
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var saved = await reopened.FindInheritedCodexSessionAsync(entry.Project, entry.Repository, entry.IssueNumber,
+            2, "local-store", (id, _) => Task.FromResult(id == thread));
+        Assert.NotNull(saved);
+        Assert.Equal(thread, saved.CodexThreadId);
+        Assert.Equal(entry.ExecutionId, saved.ExecutionId);
+        Assert.Equal(1, saved.AttemptNumber);
+        var latest = entry with { ExecutionId = Guid.NewGuid(), StartedAtUtc = entry.StartedAtUtc.AddHours(-1),
+            RetryOfExecutionId = entry.ExecutionId, AttemptNumber = 2, CodexThreadId = Guid.NewGuid().ToString(),
+            State = "Completed", CompletedAtUtc = entry.StartedAtUtc.AddHours(2) };
+        await reopened.CreateAsync(latest);
+        Assert.Equal(latest.ExecutionId, (await reopened.FindInheritedCodexSessionAsync(entry.Project, entry.Repository,
+            entry.IssueNumber, 2, "local-store", (_, _) => Task.FromResult(true)))?.ExecutionId);
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("Blocked")]
+    [InlineData("Superseded")]
+    [InlineData("InfrastructureFailure")]
+    [InlineData("active")]
+    [InlineData("repository")]
+    [InlineData("project")]
+    [InlineData("issue")]
+    [InlineData("parent")]
+    [InlineData("ccc")]
+    [InlineData("legacy")]
+    [InlineData("owner")]
+    [InlineData("unavailable")]
+    public async Task IneligibleLatestAttemptCannotSupplyInheritedSession(string reason)
+    {
+        using var database = new TemporaryDatabase();
+        using var store = new ExecutionHistoryStore(database.Path);
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UnixEpoch) with
+        { State = "Completed", CompletedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            CodexThreadId = Guid.NewGuid().ToString(), CodexSessionOwner = "local-store", ParentIssueNumber = 2 };
+        if (reason is "Failed" or "Blocked" or "Superseded" or "InfrastructureFailure" or "active")
+        {
+            // A newer failed/unfinished attempt must not expose an older successful conversation.
+            await store.CreateAsync(entry with { ExecutionId = Guid.NewGuid(), StartedAtUtc = entry.StartedAtUtc.AddHours(-1) });
+            entry = entry with { State = reason == "active" ? "Implementing" : reason,
+                CompletedAtUtc = reason == "active" ? null : entry.CompletedAtUtc };
+        }
+        entry = reason switch
+        {
+            "repository" => entry with { Repository = "other/repo" },
+            "project" => entry with { Project = "other" },
+            "issue" => entry with { IssueNumber = 42 },
+            "parent" => entry with { ParentIssueNumber = 3 },
+            "ccc" => entry with { Engine = "ccc" },
+            "legacy" => entry with { CodexThreadId = null, CodexRecovery = new(entry.ExecutionId, 1, 0, "config", Guid.NewGuid().ToString()) },
+            "owner" => entry with { CodexSessionOwner = "other-worker" },
+            _ => entry
+        };
+        await store.CreateAsync(entry);
+        Assert.Null(await store.FindInheritedCodexSessionAsync("sample", "owner/repo", 8, 2, "local-store",
+            (_, _) => Task.FromResult(reason != "unavailable")));
     }
 
     private static ExecutionHistoryEntry Entry(Guid id, DateTimeOffset started) => new(

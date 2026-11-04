@@ -8,10 +8,11 @@ public sealed class CodexServiceEnvironmentTests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, false)]
-    [InlineData(true, true)]
-    public async Task RecoveryResumesExplicitSessionOrContinuesSameWorkspaceWhenUnavailable(bool supported, bool missing)
+    [InlineData(true, false, true)]
+    [InlineData(false, false, true)]
+    [InlineData(true, true, true)]
+    [InlineData(false, false, false)]
+    public async Task RecoveryResumesExplicitSessionOrContinuesSameWorkspaceWhenUnavailable(bool supported, bool missing, bool recovering)
     {
         if (OperatingSystem.IsWindows()) return;
         var directory = CreateDirectory();
@@ -19,7 +20,7 @@ public sealed class CodexServiceEnvironmentTests
         try
         {
             var executable = Path.Combine(directory, "codex");
-            var session = Guid.NewGuid().ToString();
+            var session = Guid.NewGuid().ToString().ToUpperInvariant();
             await File.WriteAllTextAsync(executable, """
                 #!/bin/sh
                 if [ "$3" = --help ]; then
@@ -51,15 +52,15 @@ public sealed class CodexServiceEnvironmentTests
             var observed = new List<string>();
             var executor = new CodexExecutor(new ProcessRunner(), new CodexSettings { Model = "original-model", ReasoningEffort = "high" })
                 .WithSessionObserver(id => { observed.Add(id); return Task.CompletedTask; });
-            var result = await executor.RunAsync(directory, instructions, issue, source, true, 2, CancellationToken.None);
+            var result = await executor.RunAsync(directory, instructions, issue, recovering ? source : null, recovering, recovering ? 2 : 1, CancellationToken.None);
             Assert.Equal("success", result.Status);
             Assert.Equal(session, Assert.Single(observed));
             var arguments = await File.ReadAllLinesAsync(executable + ".args");
             Assert.Equal(supported, arguments.Contains("resume", StringComparer.Ordinal));
-            if (supported) Assert.Contains(session, arguments);
+            if (supported) Assert.Contains(Guid.Parse(session).ToString(), arguments);
             Assert.Contains("original-model", arguments);
             Assert.Contains("model_reasoning_effort=\"high\"", arguments);
-            Assert.Contains("SAME preserved worktree", string.Join("\n", arguments), StringComparison.Ordinal);
+            if (recovering) Assert.Contains("SAME preserved worktree", string.Join("\n", arguments), StringComparison.Ordinal);
             var directories = await File.ReadAllLinesAsync(executable + ".directories");
             Assert.Equal(missing ? 2 : 1, directories.Length);
             Assert.All(directories, path => Assert.Equal(directory, path));

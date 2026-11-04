@@ -33,6 +33,7 @@ public sealed class WorkerExecution
         IssueNumber = issue.Number;
         IssueTitle = issue.Title;
         IssueBody = issue.Body;
+        ParentIssueNumber = issue.ParentIssueNumber;
         BaseBranch = baseBranch;
         FeatureBranch = featureBranch;
         StartedAtUtc = startedAtUtc;
@@ -51,6 +52,9 @@ public sealed class WorkerExecution
     public int IssueNumber { get; }
     public string IssueTitle { get; }
     public string IssueBody { get; }
+    public int? ParentIssueNumber { get; }
+    public string? CodexThreadId { get; internal set; }
+    public string? CodexSessionOwner { get; internal set; }
     public string BaseBranch { get; }
     public string FeatureBranch { get; }
     public DateTimeOffset StartedAtUtc { get; }
@@ -85,9 +89,10 @@ public sealed class WorkerExecution
 
     internal static WorkerExecution Continue(ExecutionHistoryEntry source, WorkerConfiguration config, GitHubIssue issue)
     {
-        var execution = new WorkerExecution(source.Project, source.Repository, issue, source.BaseBranch,
+        var execution = new WorkerExecution(source.Project, source.Repository, issue with { ParentIssueNumber = source.ParentIssueNumber }, source.BaseBranch,
             source.FeatureBranch, source.StartedAtUtc, source.RetryOfExecutionId, source.AttemptNumber, source.Resumed)
         {
+            CodexThreadId = source.CodexThreadId, CodexSessionOwner = source.CodexSessionOwner,
             ExecutionId = source.ExecutionId, State = ExecutionState.Claimed, CodexRecovery = source.CodexRecovery,
             CodexProfile = CodexExecutionProfile.Resolve(issue.Body, config.Codex, source)
         };

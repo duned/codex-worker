@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace CodexWorker;
 
 public sealed record GitHubIssue(int Number, string Title, string Body, DateTimeOffset CreatedAt,
-    IReadOnlyList<string>? Labels = null, string CommentContext = "");
+    IReadOnlyList<string>? Labels = null, string CommentContext = "", int? ParentIssueNumber = null);
 public sealed record GitHubIssueState(bool IsOpen, IReadOnlyList<string> Labels);
 public sealed record RequiredGitHubLabel(string Name, string Color, string Description);
 
@@ -97,6 +97,39 @@ public sealed class GitHubClient : IGitHubClient, IGitHubLabelClient
         {
             throw ReadFailure("issue view", issueNumber,
                 $"Could not read assigned Issue #{issueNumber} in '{repository}': {ex.Message}", ex);
+        }
+    }
+
+    public async Task<int?> GetParentIssueNumberAsync(int issueNumber, CancellationToken ct)
+    {
+        if (issueNumber <= 0) throw new ArgumentOutOfRangeException(nameof(issueNumber));
+        // GraphQL distinguishes an absent parent from an inaccessible Issue (REST returns 404 for both).
+        const string query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number parent{number repository{nameWithOwner}}}}}";
+        var parts = repository.Split('/');
+        var result = await RunGhAsync(["api", "graphql", "-f", $"query={query}", "-f", $"owner={parts[0]}",
+            "-f", $"name={parts[1]}", "-F", $"number={issueNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)}"], ct,
+            allowGracefulCancellation: true);
+        try
+        {
+            using var document = JsonDocument.Parse(result.StandardOutput);
+            var root = document.RootElement;
+            if (root.TryGetProperty("errors", out var errors) &&
+                (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0))
+                throw new JsonException("GitHub returned GraphQL errors.");
+            var issue = root.GetProperty("data").GetProperty("repository").GetProperty("issue");
+            if (issue.GetProperty("number").GetInt32() != issueNumber)
+                throw new JsonException("GitHub returned a different Issue.");
+            var parent = issue.GetProperty("parent");
+            if (parent.ValueKind == JsonValueKind.Null) return null;
+            var number = parent.GetProperty("number").GetInt32();
+            if (number <= 0 || number == issueNumber || !string.Equals(repository,
+                parent.GetProperty("repository").GetProperty("nameWithOwner").GetString(), StringComparison.OrdinalIgnoreCase))
+                throw new JsonException("GitHub parent did not match the selected repository.");
+            return number;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw ReadFailure("issue parent", issueNumber, "Could not reliably read the Issue parent relationship.", ex);
         }
     }
 

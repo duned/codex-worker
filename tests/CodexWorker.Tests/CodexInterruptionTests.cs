@@ -51,7 +51,7 @@ public sealed class CodexInterruptionTests
     [Fact]
     public void SessionIdentityComesOnlyFromValidatedThreadStartedEvent()
     {
-        var id = Guid.NewGuid().ToString();
+        var id = Guid.NewGuid().ToString().ToUpperInvariant();
         Assert.Equal(id, CodexExecutor.TryReadSession($"{{\"type\":\"thread.started\",\"thread_id\":\"{id}\"}}\n{{partial"));
         Assert.Null(CodexExecutor.TryReadSession("{\"type\":\"thread.started\",\"thread_id\":\"--last\"}"));
         Assert.Null(CodexExecutor.TryReadSession($"{{\"type\":\"item.completed\",\"thread_id\":\"{id}\"}}"));
