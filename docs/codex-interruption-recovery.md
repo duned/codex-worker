@@ -66,3 +66,69 @@ Every observed Codex `thread.started.thread_id` is also saved separately from in
 For a new Codex execution, the Worker reads the child's native blocked-by relationships and verifies each blocker's current parent. It resumes a blocker thread only when every blocker belongs to the same repository and parent package and every latest authoritative attempt supplies the same exact locally available thread ID. Missing or incompatible history, different threads, independent Issues and Claude-selected Issues keep the fresh-session path, with a bounded skip diagnostic. Retry/recovery attempts retain their existing continuation policy.
 
 The implementation request carries the child's own current Issue prompt, execution profile and isolated worktree. The invocation is `codex --cd CHILD_WORKTREE --approve-for-me exec resume … THREAD_ID PROMPT`: `--cd` explicitly overrides the source workspace, and the global approval flag precedes the resume subcommand. The [official CLI reference](https://learn.chatgpt.com/docs/cli/reference) documents explicit session IDs, follow-up prompts and working-root overrides. Local CLI help/parser checks verify these options; deterministic stub-process tests verify the exact arguments, prompt and process working directory without live Codex access. Unsupported structured resume or a session disappearing before invocation falls back to a fresh session with a diagnostic. The Worker never forks threads, imports transcripts or merges separate conversation histories.
+
+### Child dependency examples and operational limits
+
+A parent/child link groups Issues; it does not establish execution order or inherit
+context. Use native blocked-by dependencies to express the order. For children of
+one parent, `A → B → C` (each arrow means “blocks”) lets B resume A's exact thread
+and C resume B's thread after successful completion. Independent roots start fresh.
+Two children blocked by A both resume A's thread. A child blocked by both of them
+can resume that thread only if their latest compatible successes still name the
+same exact ID. Blockers with different IDs cause a fresh session: the MVP neither
+forks nor merges Codex histories. Shared siblings see a mutable conversation,
+including earlier sibling turns; they do not receive isolated snapshots of A.
+
+Inheritance is limited to the owning Worker node, service account and configured
+Codex home. The matching local session must still exist. Server history, a cached
+assignment, repository files and another Worker's success cannot transfer a session
+or authorize execution. History and session availability are checked again after
+waiting for a thread. Restart uses durable history and local session metadata;
+it does not reconstruct conversation text. Failed, blocked, cancelled or uncertain
+turns on a shared thread prevent further inheritance, including after restart.
+An interrupted child follows its own verified same-Issue recovery policy and
+resume budget, rather than selecting a blocker again.
+
+The host serializes implementation turns that use the same thread, through durable
+completion capture. A waiting child retains its execution slot, and waiting respects
+cancellation and shutdown. Cancellation or timeout during a turn leaves that thread
+ineligible; cancelling only a waiter does not invalidate the running turn. Different
+threads and fresh sessions can execute concurrently within existing global/project
+capacity and repository gates. Thread coordination does not serialize all Worker work.
+
+A top-level parent final execution starts fresh even after every child completes:
+it has no same-repository parent and there is no implicit “last child” selection.
+Review/integration must use the parent's own prompt, repository state and ordinary
+Worker validation. A nested parent is subject to the same explicit blocker rule as
+any other child; its sub-Issues alone do not supply context.
+
+Journal warnings identify the execution and a bounded reason: `Codex thread
+inheritance skipped` for ineligible dependencies, `inherited Codex context is no
+longer valid` after waiting, or `starting a fresh session` when structured resume
+is unsupported or the CLI explicitly reports a missing session. Other resume
+failures retain the normal infrastructure/recovery classification. A successful
+fresh task is not evidence of inheritance: compare its observed
+`thread.started.thread_id` in execution history with the blocker's exact ID and
+check fallback diagnostics. Each invocation receives its own Issue prompt,
+model/effort and current worktree, including when falling back. Only session IDs
+and ownership metadata are recorded for inheritance; raw transcripts and credentials
+are not copied into task prompts, execution history or reports. Child credential
+filtering remains in force for resumed and fresh invocations.
+
+### Deterministic regression coverage
+
+These tests use local history/session fixtures, fake GitHub dependencies, explicit
+coordination signals and stub Codex processes; no model access or Claude CLI is needed.
+
+| Boundary | Coverage |
+| --- | --- |
+| Dependency graph and restart | `BlockerCodexSessionTests.DependencyGraphPreservesExactThreadAcrossChainSiblingsAndRestart`: chain, independent roots, siblings, same/different-thread joins and top-level parent final. |
+| Compatibility and recovery selection | `OnlyCompatibleAuthoritativeBlockersSupplyAThread`: missing/failed/newer failed blocker, parent/repository/owner mismatch, unavailable local session, retry and interrupted recovery. |
+| Child invocation and fallback identity | `InheritedThreadUsesChildPromptProfileAndExplicitWorktree`: two child prompts, explicit CWD, exact observed thread, unsupported/missing-session fallback and GitHub credential filtering. |
+| Worker lifecycle | `WorkerV011Tests.WorkerFallbackRecordsOnlyTheFreshObservedSession`: ineligible blockers do not become inherited IDs in successful child history. |
+| Shared-thread scheduling | `CodexThreadCoordinatorTests`: serialization through completion capture, unrelated sessions in parallel, revalidation, cancellation, shutdown, timeout and failed turns. |
+| Durable uncertainty | `ExecutionHistoryStoreTests.SuccessfulThreadSurvivesRestartAndLatestAttemptIsAuthoritative`, `IneligibleLatestAttemptCannotSupplyInheritedSession` and `LaterTurnsOnBlockerThreadMustHaveCapturedSuccessfulCompletion`. |
+
+Same-Issue interruption lifecycle and preserved-worktree validation remain covered
+by `WorkerV011Tests.InterruptedCodexRecoveryRestoresStartVisibilityAndPreservesLineage`
+and `StandaloneInterruptedExecutionTests`; child inheritance does not replace those paths.
