@@ -13,13 +13,14 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     IValidationRunner validation, TelegramNotifier telegram, WorkerConsole? output = null, ExecutionHistoryStore? history = null,
     SemaphoreSlim? repositoryGate = null, WorkerServerSettings? serverSettings = null, Action<string>? operationalLog = null, CancellationToken shutdownToken = default,
     WorkerRegistrationClient? registrationClient = null, TimeProvider? timeProvider = null, ImplementationEngineSelector? engines = null,
-    Func<string, bool>? engineReady = null)
+    Func<string, bool>? engineReady = null, CodexThreadCoordinator? threadCoordinator = null)
 {
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly WorkerRegistrationClient _registration = registrationClient ?? new WorkerRegistrationClient();
     private readonly WorkerConsole _output = output ?? new WorkerConsole();
     private readonly Action<string> _operationalLog = operationalLog ?? (_ => { });
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
+    private readonly CodexThreadCoordinator _threadCoordinator = threadCoordinator ?? new();
     private readonly ConcurrentDictionary<int, byte> _activeIssues = new();
     private IntegrationRecoveryCoordinator? _integrationRecovery;
     private IntegrationRecoveryCoordinator IntegrationRecovery => LazyInitializer.EnsureInitialized(ref _integrationRecovery,
@@ -901,7 +902,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         // Mutable branch/worktree state belongs to this attempt. Integration still targets its shared repository.
         var executionRepository = git.CreateExecutionRepository();
         var runner = new ExecutionRunner(config, executionRepository, codex, validation, _output, history, _repositoryGate,
-            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, engines, github);
+            (entry, state, token) => ReportServerAsync(entry, state, token), IsAuthoritativeAsync, shutdownToken, _clock, engines, github, _threadCoordinator);
         return runner.RunAsync(context, ct);
     }
 

@@ -15,7 +15,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     IValidationRunner validation, WorkerConsole output, ExecutionHistoryStore? history = null, SemaphoreSlim? repositoryGate = null,
     Func<ExecutionHistoryEntry, ExecutionState, CancellationToken, Task>? reportServer = null,
     Func<WorkerExecution, CancellationToken, Task<bool>>? isAuthoritative = null, CancellationToken shutdownToken = default, TimeProvider? timeProvider = null,
-    ImplementationEngineSelector? engines = null, IGitHubClient? github = null)
+    ImplementationEngineSelector? engines = null, IGitHubClient? github = null, CodexThreadCoordinator? threadCoordinator = null)
 {
     private ImplementationRequest Request(ExecutionContext context) => new(git.ExecutionDirectory, config.Codex.InstructionsFile,
         context.Issue, context.RetryOf, context.Execution.Resumed, context.Execution.AttemptNumber,
@@ -25,6 +25,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         (source.ValidationOutcome is "pending: validation" or "legacy: pending validation") &&
         source.CodexRecovery?.ImplementationSucceeded == true;
 
+    private readonly CodexThreadCoordinator _threadCoordinator = threadCoordinator ?? new();
     private readonly SemaphoreSlim _repositoryGate = repositoryGate ?? new SemaphoreSlim(1, 1);
     public async Task<IssueProcessingResult> RunAsync(ExecutionContext context, CancellationToken ct)
     {
@@ -114,15 +115,37 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             {
                 CodexSessionDiagnostic = reason => output.Warning($"Execution {execution.ExecutionId} · {reason}.")
             };
-            var inherited = await BlockerCodexSession.SelectAsync(request, execution.Project, execution.Repository,
-                identity, history, github, CodexSessionOwnership.Current,
-                new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home).ContainsAsync, ct);
-            if (inherited.Thread is { } thread)
-                request = request with { InheritedCodexThreadId = thread };
-            else
+            using var turnCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, shutdownToken);
+            var turnToken = turnCancellation.Token;
+            Task<(string? Thread, string Reason)> SelectThreadAsync(CancellationToken token) =>
+                BlockerCodexSession.SelectAsync(request, execution.Project, execution.Repository,
+                    identity, history, github, CodexSessionOwnership.Current,
+                    new LegacyCodexSessionStore(CodexProvisioning.CodexServiceEnvironment.Home).ContainsAsync, token);
+            var inherited = await SelectThreadAsync(turnToken);
+            if (inherited.Thread is null)
                 output.Warning($"Execution {execution.ExecutionId} · Codex thread inheritance skipped: {inherited.Reason}.");
             var outcome = await output.RunProgressAsync(TaskLabel(issue, $"{engineLabel} working", execution), () =>
-                CodexCapacityRetry.RunAsync(() => engine.RunAsync(request, ct), async token =>
+                CodexCapacityRetry.RunAsync(() => _threadCoordinator.RunAsync(inherited.Thread, async token =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (execution.IsTerminal || (isAuthoritative is not null && !await isAuthoritative(execution, token)))
+                        throw new OperationCanceledException("Execution is no longer authoritative.", token);
+                    var current = await SelectThreadAsync(token);
+                    return Guid.TryParse(current.Thread, out var currentId) &&
+                        Guid.TryParse(inherited.Thread, out var selectedId) && currentId == selectedId;
+                }, async (thread, token) =>
+                {
+                    if (inherited.Thread is not null && thread is null)
+                        output.Warning($"Execution {execution.ExecutionId} · inherited Codex context is no longer valid; starting a fresh session.");
+                    var result = await engine.RunAsync(request with { InheritedCodexThreadId = thread }, token);
+                    if (execution.CodexRecovery is { } recovery)
+                        execution.CodexRecovery = recovery with
+                        { ImplementationSucceeded = result.Status == "success", RetryAfterUtc = null };
+                    // Capture completion before another child may advance this thread.
+                    await SaveHistoryAsync(CreateEntry(execution,
+                        new IssueExecutionReport(result.Summary, []), null, null), token);
+                    return result;
+                }, turnToken), async token =>
                 {
                     var clock = timeProvider ?? TimeProvider.System;
                     if (execution.CodexRecovery is { } recovery)
@@ -132,11 +155,9 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
                     await Task.Delay(TimeSpan.FromMinutes(5), clock, token);
                     if (isAuthoritative is not null && !await isAuthoritative(execution, token))
                         throw new OperationCanceledException("Managed execution ownership is no longer authoritative.", token);
-                }, ct),
+                }, turnToken),
                 completion: x => x.Status, succeeded: x => x.Status == "success",
-                warning: x => x.Status == "blocked", ct: ct);
-            if (execution.CodexRecovery is { } completedRecovery)
-                execution.CodexRecovery = completedRecovery with { RetryAfterUtc = null };
+                warning: x => x.Status == "blocked", ct: turnToken);
             if (outcome.Status == "failed")
                 output.FailureReason(execution.ExecutionId, $"{engineLabel} reported incomplete task", outcome.Summary,
                     config.Environment.Variables.Values.ToArray());
@@ -221,7 +242,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             return new IssueProcessingResult(IssueOutcomeKind.Succeeded,
                 new IssueExecutionReport(implementationSummary, repairs, Integration: integration));
         }
-        catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
+        catch (Exception shutdownError) when (shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
             var recoveryState = GitHubOperationException.Find(shutdownError) is { IsMutation: true }
                 ? GitHubOperationException.ReconciliationRequiredState : "uncertain";

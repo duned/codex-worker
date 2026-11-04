@@ -12,6 +12,7 @@ public sealed class WorkerHost
     private readonly Action<string> _operationalLog;
     private readonly Action<string>? _executionOperationalLog;
     private readonly ProcessRunner _runner = new();
+    private readonly CodexThreadCoordinator _threadCoordinator = new();
     private readonly WorkerRegistrationClient _registration;
     private readonly IAgentAuthenticationProvider? _agentAuthentication;
     private readonly string? _executionHistoryPath;
@@ -1253,7 +1254,7 @@ public sealed class WorkerHost
         var repositoryGate = repositoryGates.GetOrAdd(config.Project.Repository, _ => new SemaphoreSlim(1, 1));
         return new ProjectRuntime(path, config, git,
             new Worker(config, github, git, codex, validation, telegram, _output, history, repositoryGate, _global.Server, _executionOperationalLog, shutdownToken,
-                registrationClient: _registration, timeProvider: _timeProvider, engineReady: engineReady), codex, github, repositoryGate);
+                registrationClient: _registration, timeProvider: _timeProvider, engineReady: engineReady, threadCoordinator: _threadCoordinator), codex, github, repositoryGate);
     }
 
     private void PauseProjectForGitHubFailure(WorkerRuntimeReadModel runtime, string projectName,

@@ -814,6 +814,41 @@ public sealed class ExecutionHistoryStoreTests
             (_, _) => Task.FromResult(reason != "unavailable")));
     }
 
+    [Theory]
+    [InlineData("Failed", false)]
+    [InlineData("Blocked", false)]
+    [InlineData("Cancelled", false)]
+    [InlineData("InfrastructureFailure", false)]
+    [InlineData("Implementing", false)]
+    [InlineData("Validating", true)]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task LaterTurnsOnBlockerThreadMustHaveCapturedSuccessfulCompletion(string state, bool successful)
+    {
+        using var database = new TemporaryDatabase();
+        var thread = Guid.NewGuid().ToString();
+        var entry = Entry(Guid.NewGuid(), DateTimeOffset.UnixEpoch) with
+        {
+            State = "Completed", CompletedAtUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+            CodexThreadId = thread, CodexSessionOwner = "local-store", ParentIssueNumber = 2
+        };
+        using (var store = new ExecutionHistoryStore(database.Path))
+        {
+            await store.CreateAsync(entry);
+            var childId = Guid.NewGuid();
+            await store.CreateAsync(entry with
+            {
+                ExecutionId = childId, IssueNumber = 9, State = state, CompletedAtUtc = null,
+                CodexThreadId = thread.ToUpperInvariant(),
+                CodexRecovery = new(childId, 1, 0, "config", ImplementationSucceeded: successful)
+            });
+        }
+        using var reopened = new ExecutionHistoryStore(database.Path);
+        var inherited = await reopened.FindInheritedCodexSessionAsync(entry.Project, entry.Repository,
+            entry.IssueNumber, 2, "local-store", (_, _) => Task.FromResult(true));
+        Assert.Equal(successful, inherited is not null);
+    }
+
     private static ExecutionHistoryEntry Entry(Guid id, DateTimeOffset started) => new(
         id, "sample", "owner/repo", 8, "Persist execution history", "feature/8-history", "main", started,
         null, "Created", null, null, null, 0, [], null, null, null, null);

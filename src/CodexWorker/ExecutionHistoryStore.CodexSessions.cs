@@ -32,6 +32,12 @@ public sealed partial class ExecutionHistoryStore
             latest.ParentIssueNumber != parentIssueNumber || latest.CodexSessionOwner != sessionOwner ||
             !Guid.TryParse(thread, out var id) || id == Guid.Empty ||
             !await sessionAvailable(thread, ct)) return null;
+        // A completed blocker does not certify later turns on the same mutable conversation.
+        // Retain this check across host restarts as well as the in-memory turn gate.
+        var turns = await ReadAsync(" WHERE codex_thread_id=$thread COLLATE NOCASE AND codex_session_owner=$owner",
+            null, null, ct, ("$thread", thread), ("$owner", sessionOwner));
+        if (turns.Any(turn => turn.State is "Failed" or "Blocked" or "Cancelled" or "InfrastructureFailure" ||
+            turn.CodexRecovery is { ImplementationSucceeded: false })) return null;
         return latest;
     }
 }
