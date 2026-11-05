@@ -7,9 +7,10 @@ Issues default to Codex. Use one level-two `Worker` section to select an engine:
 engine: ccc
 model: sonnet
 effort: low
+retryMode: resume
 ```
 
-Only `engine`, `model`, and `effort` are accepted. Engine names are `codex` and
+Only `engine`, `model`, `effort`, and `retryMode` are accepted. Engine names are `codex` and
 `ccc` (case insensitive). Missing engine means `codex`. Missing Codex model and
 effort use project settings. Missing CCC model is recorded as CLI-selected (the
 current adapter supplies `sonnet`); missing CCC effort means `medium`. Codex project defaults never supply CCC settings.
@@ -26,6 +27,7 @@ Existing Issues can continue using:
 ## Codex
 model: gpt-6.1-sol
 effort: low
+retryMode: resume
 ```
 
 If both sections exist, Worker values take precedence, Codex supplies missing
@@ -34,6 +36,22 @@ section order. Nonempty Codex settings alongside `engine: ccc` are incompatible.
 Duplicate sections, duplicate keys, empty values and unknown keys are errors.
 End metadata with another level-one or level-two heading before writing prose.
 Fenced examples and indented code outside metadata do not select an engine.
+
+`retryMode` accepts `restart` or `resume`, case insensitively, in either section.
+It follows the same section fallback and conflict rules as effort. When omitted,
+it inherits the project's effective `worker.retryMode` (default `restart`). An
+Issue override affects only that Issue's next attempt in standalone and managed
+execution; it does not change project configuration. `restart` starts from the
+current authoritative base without replaying preserved changes. `resume` uses
+only verified recoverable state and blocks for operator review when that state
+is unsafe or unavailable. Existing no-change cleanup and explicit recovery rules
+still apply; metadata does not authorize recovery or bypass lease checks.
+
+Each new attempt records its resolved retry mode with its lineage. Continuation
+and explicit recovery retain the source attempt's recorded mode. Older history
+has no recorded mode and remains readable without inventing a historical value.
+Invalid metadata is rejected before workspace mutation, including on retries
+whose engine/model/effort were frozen by a previous attempt.
 
 Server queues retain selection in the existing work-reference JSON and require
 the selected agent provider when assigning work. Older references default to

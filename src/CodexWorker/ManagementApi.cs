@@ -27,7 +27,7 @@ public sealed record ExecutionRuntimeInfo(Guid ExecutionId, string Project, stri
     string? Result, string? RecoveryState, string? RecoveryBaseCommit, string? RecoveryStatus,
     Guid? RetryOfExecutionId, int AttemptNumber, bool Resumed, DateTimeOffset? RecoveryExpiresAtUtc, string? EffectiveModel = null, string? EffectiveEffort = null,
     string? FailureReason = null, string? ReportingFailure = null, string? FeatureBranch = null,
-    string? BaseBranch = null, string? CompletedBranch = null, string? CommitSha = null, string? IntegrationBranch = null, string Engine = "codex", StandaloneRecoveryDiagnostic? StandaloneRecovery = null);
+    string? BaseBranch = null, string? CompletedBranch = null, string? CommitSha = null, string? IntegrationBranch = null, string Engine = "codex", StandaloneRecoveryDiagnostic? StandaloneRecovery = null, string? RetryMode = null);
 
 /// <summary>Bounded, process-local event history with fan-out subscriptions for SSE consumers.</summary>
 public sealed class RuntimeEventLog
@@ -292,7 +292,7 @@ public sealed class WorkerRuntimeReadModel
                 ? RecoveryRetentionPolicy.ExpiresAt(e, TimeSpan.FromDays(retentionDays)) : e.RecoveryExpiresAtUtc,
             e.EffectiveModel, e.EffectiveEffort,
             e.State is "InfrastructureFailure" or "Cancelled" ? Diagnostic(e.FailureReason) : null,
-            Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch, e.Engine, StandaloneDiagnostic(e));
+            Diagnostic(e.ReportingFailure), e.FeatureBranch, e.BaseBranch, e.CompletedBranch, e.CommitSha, e.IntegrationBranch, e.Engine, StandaloneDiagnostic(e), e.RetryMode);
     }
 
     public async Task<ExecutionCleanupInspection?> InspectExecutionCleanupAsync(Guid executionId, CancellationToken ct)

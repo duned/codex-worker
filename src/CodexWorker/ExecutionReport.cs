@@ -25,7 +25,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
     string? EffectiveModel = null,
     string? EffectiveEffort = null,
     string? RecoveryGuidance = null,
-    CodexQuotaObservation? QuotaAtEnd = null, string Engine = "codex")
+    CodexQuotaObservation? QuotaAtEnd = null, string Engine = "codex", string? RetryMode = null)
 {
     public string PostRebaseValidationOutcome => ValidationRepairs.Any(repair => repair.IntegrationRepair)
         ? $"failed: post-rebase validation ({ValidationRepairs.Count(repair => repair.IntegrationRepair)} integration repair attempt(s))"
@@ -39,6 +39,7 @@ public sealed record IssueExecutionReport(string? ImplementationSummary,
             sections.Add("### Execution");
             sections.Add($"Execution `{ExecutionFormatting.Display(executionId)}` (`{executionId}`).");
         }
+        if (RetryMode is not null) sections.Add($"Retry mode: `{RetryMode}`.");
         if (EffectiveEffort is not null)
             sections.Add($"{(Engine == "ccc" ? "CCC" : "Codex")} model: `{EffectiveModel ?? "unknown (CLI model unavailable)"}` · effort: `{EffectiveEffort}`.");
         if (AttemptNumber > 1)

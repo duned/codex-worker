@@ -29,6 +29,11 @@ public sealed class IssueExecutionMetadataTests
     [Trait("TestType", "Unit")]
     [Trait("Duration", "Fast")]
     [Theory]
+    [InlineData("retryMode: unknown")]
+    [InlineData("retryMode:")]
+    [InlineData("retryMode: restart\nretryMode: restart")]
+    [InlineData("retryMode: restart\n## Codex\nretryMode: resume")]
+    [InlineData("retryMode: restart\n## Codex\nretryMode: restart\n## Codex\nretryMode: restart")]
     [InlineData("engine: unknown")]
     [InlineData("engine: ccc\nmodel: gpt-6.1-sol")]
     [InlineData("engine: ccc\neffort: xhigh")]
@@ -50,9 +55,23 @@ public sealed class IssueExecutionMetadataTests
     [Fact]
     public void SectionOrderDoesNotChangeResolution()
     {
-        const string worker = "## Worker\nengine: codex\nmodel: task-model\n";
-        const string legacy = "## Codex\neffort: low\n";
+        const string worker = "## Worker\nengine: codex\nmodel: task-model\nretryMode: RESUME\n";
+        const string legacy = "## Codex\neffort: low\nretryMode: resume\n";
         Assert.Equal(IssueExecutionMetadata.Parse(worker + legacy), IssueExecutionMetadata.Parse(legacy + worker));
+    }
+
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("## Worker\nretryMode: RESTART", "restart")]
+    [InlineData("## Codex\nretryMode: ReSuMe", "resume")]
+    [InlineData("## Worker\nretryMode: RESUME\n## Codex\nretryMode: resume", "resume")]
+    [InlineData("## Codex\nretryMode: resume\n## Worker\nmodel: task-model", "resume")]
+    [InlineData("## Worker\nengine: ccc\nretryMode: restart", "restart")]
+    public void ResolvesRetryMode(string body, string? expected)
+    {
+        Assert.Equal(expected, IssueExecutionMetadata.Parse(body).RetryMode);
     }
 
     [Trait("TestType", "Component")]
@@ -60,7 +79,7 @@ public sealed class IssueExecutionMetadataTests
     [Fact]
     public void ManagedSelectionSurvivesCanonicalizationAndWorkerWireRoundTrip()
     {
-        var selection = IssueExecutionMetadata.Parse("## Worker\nengine: ccc\nmodel: sonnet\neffort: low");
+        var selection = IssueExecutionMetadata.Parse("## Worker\nengine: ccc\nmodel: sonnet\neffort: low\nretryMode: resume");
         var reference = ExecutionRequestValidation.Canonicalize(new("issue", "001") { Selection = selection }, "owner/repo");
         var json = JsonSerializer.Serialize(reference, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var worker = JsonSerializer.Deserialize<ServerWorkReferenceContract>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));

@@ -494,12 +494,15 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         var attemptNumber = issueHistory.Length == 0 ? 1 : issueHistory.Max(e => e.AttemptNumber) + 1;
         // Verified no-change cleanup or safe standalone retirement authorizes a clean retry.
         var cleanRetry = retryOf?.RecoveryState is "cleaned-no-changes" or "standalone-retired";
-        var resumed = retryOf is not null && !cleanRetry && config.Worker.RetryMode.Equals("resume", StringComparison.OrdinalIgnoreCase);
+        var retryMode = config.Worker.RetryMode.ToLowerInvariant();
+        try { retryMode = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body).RetryMode ?? retryMode; }
+        catch (InvalidDataException) { /* Attempt preparation records and reports invalid metadata before Git mutation. */ }
+        var resumed = retryOf is not null && !cleanRetry && retryMode == "resume";
         issue = await PrepareCommentContextAsync(issue, ct);
         var execution = WorkerExecution.Create(config.Project, config.Git, issue, retryOfExecutionId: retryOf?.ExecutionId,
             attemptNumber: attemptNumber, resumed: resumed, serverExecutionId: serverExecutionId, assignmentId: assignmentId,
             ownershipGeneration: ownershipGeneration, codexSettings: config.Codex,
-            settingsSource: retryOf?.RecoveryState == "standalone-retired" ? null : retryOf);
+            settingsSource: retryOf?.RecoveryState == "standalone-retired" ? null : retryOf, configuredRetryMode: config.Worker.RetryMode);
         await CreateHistoryAsync(execution, ct);
         if (ct.IsCancellationRequested)
         {
@@ -510,7 +513,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         }
         try
         {
-            if (resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
+            if (execution.MetadataError is null && resumed && (retryOf!.RecoveryState != "recoverable" || string.IsNullOrWhiteSpace(retryOf.RecoveryBaseCommit)))
             {
                 await RejectPreparationAsync(execution, issue, config.GitHub.ReadyLabel,
                     $"Previous execution {ExecutionFormatting.Display(retryOf.ExecutionId)} ({retryOf.ExecutionId}) has no verified safe recoverable state; possible work or uncertain state requires operator review. Inspect the preserved state before selecting worker.retryMode: restart.", ct);
@@ -597,7 +600,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
-                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, EffectiveModel = execution.CodexProfile?.EffectiveModel,
+                AttemptNumber = execution.AttemptNumber, RetryOfExecutionId = execution.RetryOfExecutionId, Resumed = execution.Resumed, RetryMode = execution.RetryMode, EffectiveModel = execution.CodexProfile?.EffectiveModel,
                 Engine = execution.CodexProfile?.Engine ?? "codex", EffectiveEffort = execution.CodexProfile?.Effort, QuotaAtEnd = execution.QuotaAtEnd };
             var terminalState = result.Kind switch
             {
@@ -1034,7 +1037,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
-            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed, RetryMode: execution.RetryMode,
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,

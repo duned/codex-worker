@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace CodexProvisioning;
 
 /// <summary>Untrusted Issue selection only; never supplies commands or authorization.</summary>
-public sealed record IssueExecutionMetadata(string Engine = "codex", string? Model = null, string? Effort = null)
+public sealed record IssueExecutionMetadata(string Engine = "codex", string? Model = null, string? Effort = null, string? RetryMode = null)
 {
     public static IssueExecutionMetadata Parse(string body)
     {
@@ -43,8 +43,8 @@ public sealed record IssueExecutionMetadata(string Engine = "codex", string? Mod
             }
             if (Regex.IsMatch(line, @"^#{1,2}\s+")) inSection = false;
             if (!inSection || line.Length == 0) continue;
-            var match = Regex.Match(line, @"^(engine|model|effort):\s*(\S+)\s*$", RegexOptions.CultureInvariant);
-            if (!match.Success) throw Invalid("Use plain engine:, model: and effort: values, followed by a new level 1 or 2 heading for prose.");
+            var match = Regex.Match(line, @"^(engine|model|effort|retryMode):\s*(\S+)\s*$", RegexOptions.CultureInvariant);
+            if (!match.Success) throw Invalid("Use plain engine:, model:, effort: and retryMode: values, followed by a new level 1 or 2 heading for prose.");
             var key = match.Groups[1].Value;
             var value = match.Groups[2].Value;
             var target = section.Equals("Codex", StringComparison.OrdinalIgnoreCase) ? legacy : values;
@@ -57,13 +57,13 @@ public sealed record IssueExecutionMetadata(string Engine = "codex", string? Mod
         foreach (var pair in legacy)
         {
             if (values.TryGetValue(pair.Key, out var other) && !string.Equals(pair.Value, other,
-                pair.Key == "effort" ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                pair.Key is "effort" or "retryMode" ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 throw Invalid($"Conflicting {pair.Key} values in ## Worker and ## Codex.");
             values.TryAdd(pair.Key, pair.Value);
         }
         var model = values.GetValueOrDefault("model");
         var effort = values.GetValueOrDefault("effort")?.ToLowerInvariant();
-        var result = new IssueExecutionMetadata(engine, model, effort);
+        var result = new IssueExecutionMetadata(engine, model, effort, values.GetValueOrDefault("retryMode")?.ToLowerInvariant());
         if (ValidationError(result) is { } error) throw Invalid(error);
         return result;
 
@@ -73,7 +73,8 @@ public sealed record IssueExecutionMetadata(string Engine = "codex", string? Mod
     public static string? ValidationError(IssueExecutionMetadata? selection)
     {
         if (selection is null) return "Execution selection is required.";
-        var (engine, model, effort) = selection;
+        var (engine, model, effort, retryMode) = selection;
+        if (retryMode is not null && retryMode is not ("restart" or "resume")) return "retryMode must be restart or resume.";
         if (engine is not ("codex" or "ccc")) return "engine must be codex or ccc.";
         if (model is not null && !Regex.IsMatch(model, @"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant))
             return "model must be a model ID of at most 128 letters, digits, dots, underscores or hyphens, starting with a letter or digit.";

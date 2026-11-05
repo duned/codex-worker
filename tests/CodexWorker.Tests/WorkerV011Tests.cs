@@ -307,15 +307,19 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
-    [InlineData(false, "restart", true, "blocked")]
-    [InlineData(false, "resume", true, "blocked")]
-    [InlineData(true, "restart", true, "blocked")]
-    [InlineData(true, "resume", true, "blocked")]
-    [InlineData(false, "resume", false, "blocked")]
-    [InlineData(true, "resume", false, "blocked")]
-    [InlineData(false, "resume", false, "failed")]
-    [InlineData(true, "resume", false, "failed")]
-    public async Task BlockedRetryFetchesNewUnblockContextForStandaloneAndManagedWork(bool managed, string retryMode, bool usefulChanges, string outcome)
+    [InlineData(false, "restart", true, "blocked", null)]
+    [InlineData(false, "resume", true, "blocked", null)]
+    [InlineData(true, "restart", true, "blocked", null)]
+    [InlineData(true, "resume", true, "blocked", null)]
+    [InlineData(false, "resume", false, "blocked", null)]
+    [InlineData(true, "resume", false, "blocked", null)]
+    [InlineData(false, "resume", false, "failed", null)]
+    [InlineData(true, "resume", false, "failed", null)]
+    [InlineData(false, "resume", true, "blocked", "restart")]
+    [InlineData(true, "resume", true, "blocked", "restart")]
+    [InlineData(false, "restart", true, "blocked", "resume")]
+    [InlineData(true, "restart", true, "blocked", "resume")]
+    public async Task BlockedRetryFetchesNewUnblockContextForStandaloneAndManagedWork(bool managed, string retryMode, bool usefulChanges, string outcome, string? issueRetryMode)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
@@ -345,7 +349,7 @@ public sealed class WorkerV011Tests
         var source = Assert.Single(await history.ReadAllAsync());
         h.GitHub.ReadyIssueCount = 2;
         h.GitHub.IssueLabels = ["ready", outcome];
-        h.GitHub.Issue = h.GitHub.Issue with { Body = "Updated description", Labels = h.GitHub.IssueLabels };
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "Updated description" + (issueRetryMode is null ? "" : $"\n## Worker\nretryMode: {issueRetryMode}"), Labels = h.GitHub.IssueLabels };
         h.GitHub.CommentContext = "Original human clarification\nNew unblock authorization";
         h.Codex.InitialOutcome = Success("Completed authorized task");
 
@@ -354,10 +358,14 @@ public sealed class WorkerV011Tests
         Assert.Equal(2, h.GitHub.CommentFetches);
         Assert.Equal("Original human clarification", h.Codex.Issues[0].CommentContext);
         Assert.Contains("New unblock authorization", h.Codex.Issues[1].CommentContext);
-        Assert.Equal("Updated description", h.Codex.Issues[1].Body);
+        Assert.StartsWith("Updated description", h.Codex.Issues[1].Body);
         var retry = (await history.ReadAllAsync()).Single(entry => entry.AttemptNumber == 2);
         Assert.Equal(source.ExecutionId, retry.RetryOfExecutionId);
-        Assert.Equal(usefulChanges && retryMode == "resume", retry.Resumed);
+        Assert.Equal(issueRetryMode ?? retryMode, retry.RetryMode);
+        Assert.Equal(retryMode, source.RetryMode);
+        Assert.Equal(usefulChanges && (issueRetryMode ?? retryMode) == "resume", retry.Resumed);
+        Assert.Equal(retry.Resumed, h.Git.LastResume);
+        Assert.Equal(source.ExecutionId, h.Git.LastRetryOf?.ExecutionId);
         Assert.NotEqual(source.ExecutionId, retry.ExecutionId);
         Assert.Contains(outcome, h.GitHub.RemovedLabels);
         if (!usefulChanges)
@@ -371,6 +379,45 @@ public sealed class WorkerV011Tests
         Assert.DoesNotContain("New unblock authorization", System.Text.Json.JsonSerializer.Serialize(await history.ReadAllAsync()));
         Assert.DoesNotContain("New unblock authorization", h.Output.ToString());
         Assert.DoesNotContain(h.OperationalMessages, message => message.Contains("New unblock authorization", StringComparison.Ordinal));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    [Theory]
+    [InlineData(false, "retryMode: invalid")]
+    [InlineData(true, "retryMode: invalid")]
+    [InlineData(false, "retryMode: resume\nretryMode: resume")]
+    [InlineData(true, "retryMode: resume\nretryMode: resume")]
+    [InlineData(false, "retryMode: restart\n## Codex\nretryMode: resume")]
+    [InlineData(true, "retryMode: restart\n## Codex\nretryMode: resume")]
+    public async Task InvalidRetryMetadataRejectsEvenWhenPreviousProfileWasFrozen(bool managed, string metadata)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        h.Git.Recovery = new GitRecoveryInfo("feature/example-task-17", "base-sha", "Workspace retained.");
+        h.Codex.InitialOutcome = new("failed", "Partial work", [], false, null);
+        Assert.Equal(IssueOutcomeKind.Failed, (await h.ProcessOneAsync())?.Kind);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\n" + metadata };
+        h.GitHub.ReadyIssueCount = 2;
+        if (managed)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var assignment = new WorkerAssignmentContract("assignment", "server-execution",
+                new ServerProjectContract("test-project", "Test Project", "owner/repo", "main", "", [], 1, now, now),
+                new ServerWorkReferenceContract("github-issue", "17"), "worker-id", new Dictionary<string, string>(),
+                new ServerExecutionLeaseContract("server-execution", "worker-id", 1, now, now.AddMinutes(5), "Active"));
+            var error = await Assert.ThrowsAsync<IssuePreparationRejectedException>(() => h.Worker.ClaimAssignedAsync(assignment, h.Cancellation.Token));
+            Assert.Contains("Invalid ## Worker metadata", error.Message, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Equal(IssueOutcomeKind.Blocked, (await h.ProcessOneAsync())?.Kind);
+            Assert.Contains(h.GitHub.Comments, comment => comment.Contains("Invalid ## Worker metadata", StringComparison.Ordinal));
+            Assert.Equal("preparation-failed", (await history.ReadAllAsync()).Single(entry => entry.AttemptNumber == 2).RecoveryState);
+        }
+        Assert.Equal(1, h.Git.Started);
+        Assert.Single(h.Codex.Issues);
     }
 
     [Trait("TestType", "Integration")]
@@ -692,16 +739,19 @@ public sealed class WorkerV011Tests
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
-    [InlineData(null)]
-    [InlineData("uncertain")]
-    [InlineData("missing")]
-    [InlineData("cleanup-pending")]
-    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling(string? recoveryState)
+    [InlineData(null, false)]
+    [InlineData(null, true)]
+    [InlineData("uncertain", false)]
+    [InlineData("uncertain", true)]
+    [InlineData("missing", false)]
+    [InlineData("cleanup-pending", false)]
+    public async Task UnrecoverableResumeIsRejectedAndAnotherIssueRunsWithoutStoppingPolling(string? recoveryState, bool issueOverride)
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
         using var h = new Harness(telegramEnabled: true, history: history);
-        h.Worker.Configuration.Worker.RetryMode = "resume";
+        h.Worker.Configuration.Worker.RetryMode = issueOverride ? "restart" : "resume";
+        if (issueOverride) h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nretryMode: resume" };
         h.GitHub.ReadyIssueCount = 2;
         h.GitHub.ReturnDistinctIssues = true;
         var oldId = Guid.NewGuid();
@@ -718,6 +768,7 @@ public sealed class WorkerV011Tests
         Assert.Equal("Failed", entries.Single(entry => entry.ExecutionId == oldId).State);
         var rejected = entries.Single(entry => entry.IssueNumber == 17 && entry.ExecutionId != oldId);
         Assert.Equal("InfrastructureFailure", rejected.State);
+        Assert.Equal("resume", rejected.RetryMode);
         Assert.Equal("Completed", entries.Single(entry => entry.IssueNumber == 18).State);
         Assert.Contains(h.OperationalMessages, message => message.Contains(rejected.ExecutionId.ToString(), StringComparison.Ordinal) &&
             message.Contains(oldId.ToString(), StringComparison.Ordinal));
@@ -2007,7 +2058,7 @@ public sealed class WorkerV011Tests
         h.Worker.Configuration.Worker.RetryMode = mode;
         h.Worker.Configuration.Codex.Model = "new-project-model";
         h.Worker.Configuration.Codex.ReasoningEffort = "xhigh";
-        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\nmodel: edited-model\neffort: invalid" };
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Codex\nmodel: edited-model\neffort: high" };
         h.GitHub.ReadyIssueCount = 2;
         h.Codex.InitialOutcome = Success("Completed");
         Assert.Equal(IssueOutcomeKind.Succeeded, (await h.ProcessOneAsync())!.Kind);

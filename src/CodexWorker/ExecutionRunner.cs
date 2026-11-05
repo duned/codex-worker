@@ -700,7 +700,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
             report?.Integration?.IntegrationBranch ?? Extract(report?.Integration?.Summary, "Merged into `([^`]+)`"),
             report?.Integration is { HasChanges: true } integration ? integration.CompletedBranch : null,
             failure ?? report?.Failure ?? report?.HumanInput, RetryOfExecutionId: execution.RetryOfExecutionId,
-            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed,
+            AttemptNumber: execution.AttemptNumber, Resumed: execution.Resumed, RetryMode: execution.RetryMode,
             ServerExecutionId: execution.ServerExecutionId, EffectiveModel: execution.CodexProfile?.EffectiveModel, EffectiveEffort: execution.CodexProfile?.Effort,
             Engine: execution.CodexProfile?.Engine ?? "codex", ModelSelectedByCli: execution.CodexProfile is { Model: null },
             AssignmentId: execution.AssignmentId,

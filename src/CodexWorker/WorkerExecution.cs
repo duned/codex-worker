@@ -61,6 +61,7 @@ public sealed class WorkerExecution
     public Guid? RetryOfExecutionId { get; }
     public int AttemptNumber { get; }
     public bool Resumed { get; }
+    public string? RetryMode { get; private set; }
     public string? ServerExecutionId { get; }
     public string? AssignmentId { get; }
     public long? OwnershipGeneration { get; }
@@ -73,12 +74,20 @@ public sealed class WorkerExecution
     public static WorkerExecution Create(ProjectSettings project, GitSettings git, GitHubIssue issue,
         DateTimeOffset? startedAtUtc = null, Guid? retryOfExecutionId = null, int attemptNumber = 1, bool resumed = false,
         string? serverExecutionId = null, string? assignmentId = null, long? ownershipGeneration = null,
-        string? featureBranchOverride = null, CodexSettings? codexSettings = null, ExecutionHistoryEntry? settingsSource = null)
+        string? featureBranchOverride = null, CodexSettings? codexSettings = null, ExecutionHistoryEntry? settingsSource = null, string? configuredRetryMode = null)
     {
         var featureBranch = featureBranchOverride ?? GitRepository.FeatureBranchName(git, issue);
         if (featureBranchOverride is null && attemptNumber > 1) featureBranch = $"{featureBranch}-retry-{attemptNumber}";
         var execution = new WorkerExecution(project.Name, project.Repository, issue, git.BaseBranch, featureBranch, startedAtUtc ?? DateTimeOffset.UtcNow,
         retryOfExecutionId, attemptNumber, resumed, serverExecutionId, assignmentId, ownershipGeneration);
+        execution.RetryMode = settingsSource?.RetryMode;
+        // New attempts validate current metadata even when their engine profile comes from history.
+        if (configuredRetryMode is not null)
+        {
+            execution.RetryMode = configuredRetryMode.ToLowerInvariant();
+            try { execution.RetryMode = CodexProvisioning.IssueExecutionMetadata.Parse(issue.Body).RetryMode ?? execution.RetryMode; }
+            catch (InvalidDataException ex) { execution.MetadataError = ex.Message; }
+        }
         if (codexSettings is not null)
         {
             try { execution.CodexProfile = CodexExecutionProfile.Resolve(issue.Body, codexSettings, settingsSource); }
@@ -92,6 +101,7 @@ public sealed class WorkerExecution
         var execution = new WorkerExecution(source.Project, source.Repository, issue with { ParentIssueNumber = source.ParentIssueNumber }, source.BaseBranch,
             source.FeatureBranch, source.StartedAtUtc, source.RetryOfExecutionId, source.AttemptNumber, source.Resumed)
         {
+            RetryMode = source.RetryMode,
             CodexThreadId = source.CodexThreadId, CodexSessionOwner = source.CodexSessionOwner,
             ExecutionId = source.ExecutionId, State = ExecutionState.Claimed, CodexRecovery = source.CodexRecovery,
             CodexProfile = CodexExecutionProfile.Resolve(issue.Body, config.Codex, source)
