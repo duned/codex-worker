@@ -46,13 +46,13 @@ public sealed class ObserverReadApiTests
             const string otherId = "obs_1123456789abcdef0123456789abcdef";
             const string credential = "obr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
             var paths = new[] { "/api/v1/observers", $"/api/v1/observers/{id}", $"/api/v1/observers/{id}/history" };
-            foreach (var path in paths)
+            foreach (var path in paths.Append("/api/v1/observers/inventory"))
             {
                 using var denied = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
             }
             client.DefaultRequestHeaders.Authorization = new("Bearer", credential);
-            foreach (var path in paths)
+            foreach (var path in paths.Append("/api/v1/observers/inventory"))
             {
                 using var denied = await client.GetAsync(path);
                 Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
@@ -87,6 +87,11 @@ public sealed class ObserverReadApiTests
                 Assert.Null(await store.AuthenticateObserverAsync(observerId, settings.AdministrationOrigin, credential));
                 Assert.NotNull(await store.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, credential));
             }
+            var initialInventory = Assert.IsType<ObserverInventory>(await client.GetFromJsonAsync<ObserverInventory>("/api/v1/observers/inventory"));
+            Assert.Equal(2, initialInventory.Total);
+            Assert.Equal(0, initialInventory.Active);
+            Assert.Null(initialInventory.TotalCapacity);
+            Assert.Empty(initialInventory.Executions);
             var empty = Assert.IsType<ObserverDetail>(await client.GetFromJsonAsync<ObserverDetail>(paths[1]));
             Assert.Equal("unknown", empty.Observer.Freshness);
             Assert.Null(empty.Observer.ReportedLifecycle);
@@ -109,6 +114,23 @@ public sealed class ObserverReadApiTests
             var completed = execution with { Stage = "Completed", Outcome = "success", CompletedAtUtc = clock.Now, DurationMilliseconds = 60000 };
             Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverEventAsync(settings.AdministrationOrigin, credential,
                 new(1, id, "2123456789abcdef0123456789abcdef", clock.Now, completed)));
+            var reportedInventory = Assert.IsType<ObserverInventory>(await client.GetFromJsonAsync<ObserverInventory>("/api/v1/observers/inventory"));
+            Assert.Equal(2, reportedInventory.Total);
+            Assert.Equal(1, reportedInventory.Active);
+            Assert.Null(reportedInventory.TotalCapacity); // Other observer has never reported capacity.
+            Assert.Equal("success", Assert.Single(reportedInventory.Executions).Observation.Execution.Outcome);
+            // Identical local execution IDs on different observers remain separate.
+            Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverSnapshotAsync(settings.AdministrationOrigin, credential,
+                snapshot with { ObserverId = otherId, SnapshotId = "6123456789abcdef0123456789abcdef" }));
+            var mixedInventory = Assert.IsType<ObserverInventory>(await client.GetFromJsonAsync<ObserverInventory>("/api/v1/observers/inventory"));
+            Assert.Equal(2, mixedInventory.Active);
+            Assert.Equal(8, mixedInventory.TotalCapacity);
+            Assert.Equal(2, mixedInventory.Executions.Count);
+            Assert.Equal(2, mixedInventory.Executions.Select(item => item.ObserverId).Distinct().Count());
+            Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverSnapshotAsync(settings.AdministrationOrigin, credential,
+                snapshot with { ObserverId = otherId, SnapshotId = "7123456789abcdef0123456789abcdef",
+                    ObservedAtUtc = clock.Now.AddTicks(1), Lifecycle = "stopped" }));
+            Assert.Equal(1, (await store.GetObserverInventoryAsync()).Active);
             var second = execution with { LocalExecutionId = "3123456789abcdef0123456789abcdef", IssueNumber = 2 };
             Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverEventAsync(settings.AdministrationOrigin, credential,
                 new(1, id, "4123456789abcdef0123456789abcdef", clock.Now.AddTicks(1), second)));
@@ -134,12 +156,16 @@ public sealed class ObserverReadApiTests
             // A new execution event does not refresh the old lifecycle/capacity snapshot.
             Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverEventAsync(settings.AdministrationOrigin, credential,
                 new(1, id, "5123456789abcdef0123456789abcdef", clock.Now, second)));
+            var staleInventory = Assert.IsType<ObserverInventory>(await client.GetFromJsonAsync<ObserverInventory>("/api/v1/observers/inventory"));
+            Assert.Equal(0, staleInventory.Active);
+            Assert.Equal(8, staleInventory.TotalCapacity);
+            Assert.Equal(3, staleInventory.Executions.Count);
             var stale = Assert.IsType<ObserverDetail>(await client.GetFromJsonAsync<ObserverDetail>(paths[1]));
             Assert.Equal("stale", stale.Observer.Freshness);
             Assert.Equal("running", stale.Observer.ReportedLifecycle);
             Assert.Equal("not-ready", stale.Observer.ReportedReadiness);
             Assert.Equal(clock.Now, stale.Observer.LastReceivedAtUtc);
-            foreach (var path in paths)
+            foreach (var path in paths.Append("/api/v1/observers/inventory"))
             {
                 using var response = await client.GetAsync(path);
                 Assert.True(response.Headers.CacheControl?.NoStore);
@@ -155,6 +181,10 @@ public sealed class ObserverReadApiTests
             Assert.Null(await store.GetExecutionAsync(execution.LocalExecutionId));
             using (var revokedResponse = await client.PostAsync($"/api/v1/observers/{id}/revoke", null))
                 Assert.Equal(HttpStatusCode.NoContent, revokedResponse.StatusCode);
+            var revokedInventory = Assert.IsType<ObserverInventory>(await client.GetFromJsonAsync<ObserverInventory>("/api/v1/observers/inventory"));
+            Assert.Equal(1, revokedInventory.Total);
+            Assert.Equal(otherId, Assert.Single(revokedInventory.Observers).ObserverId);
+            Assert.Equal(otherId, Assert.Single(revokedInventory.Executions).ObserverId);
             var revoked = Assert.IsType<ObserverDetail>(await client.GetFromJsonAsync<ObserverDetail>(paths[1]));
             Assert.Equal("revoked", revoked.Observer.RegistrationState);
             Assert.Equal("stale", revoked.Observer.Freshness);
@@ -177,6 +207,48 @@ public sealed class ObserverReadApiTests
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task SharedInventoryBoundsBothWindowsButCountsEveryAcceptedObserver()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var store = new SqliteRegistryStore(Path.Combine(temporary.Path, "registry.db"), timeProvider: clock);
+        await store.InitializeAsync();
+        const string origin = "https://observer.example";
+        const string credential = "obr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        var empty = await store.GetObserverInventoryAsync();
+        Assert.Equal(0, empty.Total);
+        Assert.Equal(0, empty.Active);
+        Assert.Equal(0, empty.TotalCapacity);
+        for (var index = 0; index < 101; index++)
+        {
+            var id = $"obs_{index:x32}";
+            var request = new ObserverPairingRequest(1, ObserverProtocol.Mode, id, origin);
+            var authorization = Assert.IsType<ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(request));
+            Assert.NotNull(await store.RedeemObserverAuthorizationAsync(request, authorization.Authorization, credential));
+            var execution = new ObserverExecution("0123456789abcdef0123456789abcdef", "Local", "owner/repo", 1,
+                "Issue", "Implementing", null, null, clock.Now.AddMinutes(-1));
+            Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverSnapshotAsync(origin, credential,
+                new(1, id, "1123456789abcdef0123456789abcdef", clock.Now, "running", [execution],
+                    MaximumCapacity: 2, ActiveExecutions: 1)));
+        }
+        // Pending authorizations do not enter either totals or windows.
+        Assert.NotNull(await store.CreateObserverAuthorizationAsync(new(1, ObserverProtocol.Mode,
+            "obs_ffffffffffffffffffffffffffffffff", origin)));
+        var inventory = await store.GetObserverInventoryAsync();
+        Assert.Equal(101, inventory.Total);
+        Assert.Equal(101, inventory.Active);
+        Assert.Equal(202, inventory.TotalCapacity);
+        Assert.Equal(100, inventory.Observers.Count);
+        Assert.Equal(100, inventory.Executions.Count);
+        Assert.All(inventory.Executions, item => Assert.Contains(inventory.Observers, observer => observer.ObserverId == item.ObserverId));
+        Assert.Empty(await store.GetWorkersAsync());
+        Assert.Empty(await store.GetExecutionsAsync());
+        Assert.Empty(await store.GetProjectsAsync());
     }
 
     private sealed class Clock : TimeProvider

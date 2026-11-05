@@ -54,19 +54,19 @@ function Revoke({ observerId, revoked, inventoryPath }: { observerId: string; re
   </> : null;
 }
 
-export function ObserversSection() {
+export function ObserversSection({ administrationOnly = false }: { administrationOnly?: boolean }) {
   useLanguage();
   const session = useSession(), [pair, setPair] = useState(false), [offset, setOffset] = useState(0);
   const inventory = useApiRead(`/api/v1/observers?limit=50&offset=${offset}`, observers), server = useApiRead('/api/status', serverStatus);
   if (!session.authenticated) return null;
   return <section className="mt-8 space-y-4" aria-labelledby="standalone-workers">
-    <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="standalone-workers" className="text-lg font-semibold text-primary">{t('observers.title')}</h2>
+    <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="standalone-workers" className="text-lg font-semibold text-primary">{t(administrationOnly ? 'observers.administration' : 'observers.title')}</h2>
       <div className="flex flex-wrap gap-2"><Button color="secondary" isDisabled={inventory.fetching} onPress={() => { void inventory.refetch(); }}>{t('observers.refresh')}</Button><Button color="secondary" onPress={() => setPair(true)}>{t('observers.add')}</Button></div>
     </div>
     <p className="text-sm text-tertiary">{t('observers.scope')}</p>
     {inventory.error && <Notice error>{t('observers.readError')}</Notice>}
     {!inventory.data ? <ViewState title={inventory.error ? t('observers.unavailable') : t('observers.loading')} /> : inventory.data.length === 0 ? <Notice>{t('observers.empty')}</Notice> :
-      <ul className="grid gap-4 lg:grid-cols-2">{inventory.data.map(observer => <li key={observer.observerId}><TableCard.Root><div className="space-y-4 p-5">
+      <ul className="grid gap-4 lg:grid-cols-2">{inventory.data.filter(observer => !administrationOnly || !['reporting', 'awaiting-first-report'].includes(observer.registrationState)).map(observer => <li key={observer.observerId}><TableCard.Root><div className="space-y-4 p-5">
         <h3 className="break-all font-semibold text-primary">{observer.name ?? observer.observerId}</h3>
         <ObserverStatus observer={observer} unavailable={!!inventory.error || !!server.error} />
         <div className="flex flex-wrap gap-3">{!observer.pairingExpiresAtUtc && <Link className="text-sm font-semibold text-brand-secondary" href={`/workers?observer=${encodeURIComponent(observer.observerId)}`}>{t('observers.details')}</Link>}

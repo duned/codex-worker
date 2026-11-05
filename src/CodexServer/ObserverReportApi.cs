@@ -18,6 +18,13 @@ public static partial class ServerApplication
 
     private static void MapObserverReads(WebApplication app)
     {
+        app.MapGet("/api/v1/observers/inventory", async (HttpContext context,
+            ServerConfiguration settings, IRegistryStore store) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(await store.GetObserverInventoryAsync(context.RequestAborted));
+        });
         app.MapGet("/api/v1/observers", async (int? limit, int? offset, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {

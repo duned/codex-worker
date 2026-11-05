@@ -132,7 +132,7 @@ export class DashboardRuntime {
         if (!affected.has(category)) return false;
         const targetId = path.split('/')[4]?.split('?')[0];
         const cachedId = cachedPath.split('/')[4]?.split('?')[0];
-        return !cachedId || category === root && (!targetId || cachedId === targetId);
+        return !cachedId || category === 'observers' && cachedId === 'inventory' || category === root && (!targetId || cachedId === targetId);
       } });
   }
   /** One status round; collection invalidation never expands identifiers into detail reads. */

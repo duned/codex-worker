@@ -1,3 +1,6 @@
+import { observerInventory } from '../../shared/api/observers';
+import { acceptedObservers, observerExecutions, observerTerminal } from '../observers/model';
+import { ObserverCard, ObserverExecutionRow } from '../observers/InventoryPresentation';
 import { executionStageLabel } from '../executions/model';
 import { t, useLanguage, statusLabel, localizeText } from '../../shared/i18n';
 import { useState } from 'react';
@@ -20,6 +23,7 @@ import { WorkerConnectionBadge } from '../workers/WorkerConnectionBadge';
 export function HomePage() {
   useLanguage();
   const registry = useApiRead('/api/v1/workers', workers);
+  const standalone = useApiRead('/api/v1/observers/inventory', observerInventory);
   const catalog = useApiRead('/api/v1/projects', projects);
   const activity = useApiRead('/api/v1/executions?limit=50&offset=0', executions);
   const readiness = useServerReadiness();
@@ -27,15 +31,24 @@ export function HomePage() {
   const [filter, setFilter] = useState('All');
   const current = activity.data?.filter(item => item.state === 'Assigned' || isActiveExecutionState(item.state)) ?? [];
   const completed = completedExecutions(activity.data ?? [], filter);
-  const workerSummary = homeWorkerSummary(registry.data);
+  const observers = acceptedObservers(standalone.data?.observers ?? []);
+  const observations = observerExecutions(standalone.data);
+  const observerCurrent = observations.filter(item => !observerTerminal(item.observation.execution));
+  const observerCompleted = observations.filter(item => observerTerminal(item.observation.execution));
+  const filteredObserverCompleted = observerCompleted.filter(item => filter === 'All' || item.observation.execution.stage === filter);
+  const workerSummary = standalone.data ? homeWorkerSummary(registry.data, standalone.data.observers, !!standalone.error, standalone.data) : undefined;
+  const executionDataAvailable = !!activity.data && !!standalone.data;
+  const currentCount = current.length + observerCurrent.length;
   const today = new Date().toISOString().slice(0, 10);
   const completedToday = activity.data?.filter(item => item.completedAtUtc?.slice(0, 10) === today) ?? [];
   const running = activity.data?.filter(item => isActiveExecutionState(item.state)) ?? [];
+  const runningCount = running.length + observerCurrent.length;
+  const completedTodayCount = completedToday.length + observerCompleted.filter(item => item.observation.execution.completedAtUtc?.slice(0, 10) === today).length;
   const metrics = [
     { label: t('home.workers'), value: workerSummary ? `${workerSummary.active} / ${workerSummary.total}` : undefined, detail: workerSummary ? t('home.activeTotalWorkers') : undefined },
     { label: t('home.projects'), value: catalog.data?.length, detail: undefined },
-    { label: t('home.runningExecutions'), value: activity.data ? `${running.length} / ${workerSummary?.totalSlots ?? t('home.unknown')}` : undefined, detail: activity.data ? t('home.runningCapacityDetail') : undefined },
-    { label: t('home.completedToday'), value: activity.data ? completedToday.length : undefined, detail: activity.data ? t('home.latest50Requests') : undefined }
+    { label: t('home.runningExecutions'), value: executionDataAvailable ? `${runningCount} / ${workerSummary?.totalSlots ?? t('home.unknown')}` : undefined, detail: activity.data ? t('home.runningCapacityDetail') : undefined },
+    { label: t('home.completedToday'), value: executionDataAvailable ? completedTodayCount : undefined, detail: activity.data ? t('observers.executionWindow') : undefined }
   ];
   const linkClass = 'text-brand-secondary hover:underline';
   function issue(item: ExecutionSummary) {
@@ -58,7 +71,7 @@ export function HomePage() {
     <header className="mb-1"><h1 className="text-display-sm font-semibold text-primary">{t('home.greeting')}</h1><p className="mt-2 text-sm text-tertiary">{t('home.greetingSupport')}</p></header>
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{metrics.map(metric => <section key={metric.label} className="rounded-xl border border-secondary bg-primary p-4" aria-label={metric.label}><p className="text-sm text-tertiary">{metric.label}</p><p className="mt-2 text-3xl font-semibold text-primary">{metric.value ?? t('home.unavailable')}</p>{metric.detail && <p className="mt-1 text-xs text-tertiary">{metric.detail}</p>}</section>)}</div>
     <div className="grid items-start gap-5 xl:grid-cols-[260px_minmax(0,1fr)]">
-      <section aria-labelledby="home-workers"><div className="mb-3 flex items-center justify-between gap-2"><h2 id="home-workers" className="text-lg font-semibold text-primary">{t("home.workers")}</h2><Button href="/workers" color="link-color">{t("home.allWorkers")}</Button></div>{registry.data && <p className="mb-2 text-xs text-tertiary">{registry.data.length} {t('home.totalWorkers')}</p>}{readState(registry, t("home.noWorkersRegisteredAddAWorkerToGetStarted"))}
+      <section aria-labelledby="home-workers"><div className="mb-3 flex items-center justify-between gap-2"><h2 id="home-workers" className="text-lg font-semibold text-primary">{t("home.workers")}</h2><Button href="/workers" color="link-color">{t("home.allWorkers")}</Button></div>{workerSummary && <p className="mb-2 text-xs text-tertiary">{workerSummary.total} {t('home.totalWorkers')}</p>}{readState(registry, standalone.data && !observers.length ? t("home.noWorkersRegisteredAddAWorkerToGetStarted") : "")}{readState({ ...standalone, data: standalone.data?.observers }, "")}<p className="mb-2 text-xs text-tertiary">{t("observers.inventoryWindow")}</p>
         <div className="grid gap-3">{registry.data?.map(worker => {
           const capacity = worker.maximumCapacity ?? worker.capacity;
           const occupied = worker.activeExecutions;
@@ -68,7 +81,7 @@ export function HomePage() {
           return <Link key={worker.workerId} className="block min-w-0 rounded-xl border border-secondary bg-primary p-3 hover:bg-secondary" to={`/workers/${encodeURIComponent(worker.workerId)}`}>
           <span className="flex min-w-0 items-center justify-between gap-2"><span className="truncate font-medium text-primary">{worker.displayName ?? t("home.workerNameUnavailable")}{worker.workerVersion && <span className="ml-2 text-xs font-normal text-tertiary">{worker.workerVersion}</span>}</span><span className="flex items-center gap-2"><WorkerConnectionBadge worker={worker} node={node} />{processingExecution && <span className="text-xs font-medium text-utility-blue-500">{t('workers.working')}</span>}</span></span><span className="mt-3 block text-xs text-tertiary">{t("home.slotsOccupied")}: {occupied ?? t("home.unknown")} / {capacity ?? t("home.unknown")}</span><span className="mt-2 block h-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true"><span className="block h-full rounded-full bg-brand-solid" style={{ width: `${usage ?? 0}%` }} /></span>
         </Link>;
-        })}</div>{readiness.inventory.error && <Notice error>{t("home.readinessUnavailableRefreshSystemStateToRetry")}</Notice>}</section>
+        })}{observers.map(observer => <ObserverCard key={observer.observerId} observer={observer} unavailable={!!standalone.error} />)}</div>{readiness.inventory.error && <Notice error>{t("home.readinessUnavailableRefreshSystemStateToRetry")}</Notice>}</section>
       <section aria-labelledby="home-projects"><div className="mb-3 flex items-center justify-between"><h2 id="home-projects" className="text-lg font-semibold text-primary">{t("home.recentlyActiveProjects")}</h2><Button href="/projects" color="link-color">{t("home.allProjects")}</Button></div><div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(catalog, t("home.noProjectsRegisteredCreateAProjectToGetStarted"))}
         <ul className="min-w-[720px] divide-y divide-secondary"><li className="grid grid-cols-[minmax(15rem,1fr)_7.5rem_minmax(18rem,1.25fr)] gap-4 px-5 py-3 text-[11px] font-bold uppercase tracking-wider text-quaternary"><span>{t('home.projectRepository')}</span><span>{t('home.status')}</span><span>{t('home.latestExecution')}</span></li>{recentProjects(catalog.data ?? [], activity.data ?? []).map(({ project, latest }) => {
           const repoHref = repositoryLink(project.repository);
@@ -79,9 +92,16 @@ export function HomePage() {
         </li>;
         })}</ul></div></section>
     </div>
-    <section aria-labelledby="home-current"><h2 id="home-current" className="mb-1 text-lg font-semibold text-primary">{`${t('home.currentExecutions')}${activity.data ? t('home.activeCount', { count: current.length }) : ''}`}</h2>{activity.data && <p className="mb-3 text-sm text-tertiary">{t('home.runningExecutionCapacity', { running: running.length, capacity: workerSummary?.totalSlots ?? t('home.unknown') })}{' · '}{t('home.latest50Requests')}</p>}<div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(activity, t("home.noExecutionRequestsYet"))}{activity.data && !current.length && <p className="px-5 py-4 text-sm text-tertiary">{t("home.noActiveExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{current.map(item => executionRow(item, true))}</ul></div><Button className="mt-2" href="/executions" color="link-color">{t("home.allExecutions")}</Button></section>
-    <section aria-labelledby="home-completed"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 id="home-completed" className="text-lg font-semibold text-primary">{t("home.recentCompletedExecutions")}</h2><label className="text-sm">{t("home.status")}<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...completedStatuses].map(state => <option key={state} value={state}>{statusLabel(state)}</option>)}</select></label></div><div className="rounded-xl border border-secondary bg-primary">
-      {activity.data && !completed.length ? <p className="px-5 py-4 text-sm text-tertiary">{completedExecutions(activity.data).length ? t("home.noCompletedExecutionsMatchThisStatus") : t("home.noCompletedExecutionsInThisSnapshot")}</p> : activity.data && <ExecutionTable items={completed} projects={catalog.data ?? []} workers={registry.data ?? []} />}
+    <section aria-labelledby="home-current"><h2 id="home-current" className="mb-1 text-lg font-semibold text-primary">{`${t('home.currentExecutions')}${executionDataAvailable ? t('home.activeCount', { count: currentCount }) : ''}`}</h2>{executionDataAvailable && <p className="mb-3 text-sm text-tertiary">{t('home.runningExecutionCapacity', { running: runningCount, capacity: workerSummary?.totalSlots ?? t('home.unknown') })}{' · '}{t('observers.executionWindow')}</p>}<div className="overflow-x-auto rounded-xl border border-secondary bg-primary">{readState(activity, executionDataAvailable && !observations.length ? t("home.noExecutionRequestsYet") : "")}{readState({ ...standalone, data: standalone.data?.executions }, "")}{executionDataAvailable && !currentCount && <p className="px-5 py-4 text-sm text-tertiary">{t("home.noActiveExecutionsInThisSnapshot")}</p>}<ul className="min-w-[720px] divide-y divide-secondary">{current.map(item => executionRow(item, true))}{observerCurrent.map(item => {
+      const observer = observers.find(observer => observer.observerId === item.observerId);
+      return observer && <ObserverExecutionRow key={`${item.observerId}:${item.observation.execution.localExecutionId}`} item={item} observer={observer} unavailable={!!standalone.error} />;
+    })}</ul></div><Button className="mt-2" href="/executions" color="link-color">{t("home.allExecutions")}</Button></section>
+    <section aria-labelledby="home-completed"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 id="home-completed" className="text-lg font-semibold text-primary">{t("home.recentCompletedExecutions")}{executionDataAvailable ? ` · ${completed.length + filteredObserverCompleted.length}` : ""}</h2><label className="text-sm">{t("home.status")}<select className="ml-3 rounded-lg border border-secondary bg-primary p-2" value={filter} onChange={event => setFilter(event.target.value)}>{['All', ...new Set([...completedStatuses, ...observerCompleted.map(item => item.observation.execution.stage)])].map(state => <option key={state} value={state}>{statusLabel(state)}</option>)}</select></label></div><p className="mb-3 text-sm text-tertiary">{t("observers.executionWindow")}</p><div className="rounded-xl border border-secondary bg-primary">
+      {readState({ ...standalone, data: standalone.data?.executions }, "")}{readState(activity, "")}{executionDataAvailable && !completed.length && !filteredObserverCompleted.length ? <p className="px-5 py-4 text-sm text-tertiary">{completedExecutions(activity.data ?? []).length + observerCompleted.length ? t("home.noCompletedExecutionsMatchThisStatus") : t("home.noCompletedExecutionsInThisSnapshot")}</p> : completed.length > 0 && <ExecutionTable items={completed} projects={catalog.data ?? []} workers={registry.data ?? []} />}
+      <ul className="divide-y divide-secondary">{filteredObserverCompleted.map(item => {
+        const observer = observers.find(observer => observer.observerId === item.observerId);
+        return observer && <ObserverExecutionRow key={`${item.observerId}:${item.observation.execution.localExecutionId}`} item={item} observer={observer} unavailable={!!standalone.error} />;
+      })}</ul>
     </div></section>
   </div>;
 }

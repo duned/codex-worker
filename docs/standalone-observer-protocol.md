@@ -212,6 +212,19 @@ Authenticated administrators use the normal management Bearer or dashboard sessi
   ordered by observer ID. Each includes optional name/version, registration state,
   last Server receipt, snapshot observation/receipt times, derived freshness and
   reported lifecycle/readiness/capacity. No managed controls are offered.
+- GET `/api/v1/observers/inventory` is the shared Workers/Home read projection.
+  It returns up to 100 accepted, non-revoked `observers` in observer-ID order and
+  up to 100 latest retained `executions` for those observers, ordered by observation
+  time. Each execution retains its `observerId` and `observation`; the persisted
+  observer/local-execution key deduplicates snapshot and event reports. `total`,
+  `active` and `totalCapacity` aggregate all accepted, non-revoked observers,
+  independently of the display window. Active means a fresh snapshot whose reported
+  lifecycle is not stopped, not execution readiness. Capacity is null if any
+  accepted observer has not reported it. Stale capacity remains explicitly reported.
+  These reads use one consistent database transaction and never create managed
+  Workers, project catalog entries or execution requests. Home combines the bounded
+  execution window with its latest 50 managed requests; current work includes stale
+  nonterminal reports with freshness shown, and today's completions use UTC dates.
 - GET `/api/v1/observers/{observerId}` returns `observer` (the same summary) and
   `currentExecutions` (retained nonterminal execution observations, at most 256).
 - GET `/api/v1/observers/{observerId}/history?limit=50&offset=0` returns one latest

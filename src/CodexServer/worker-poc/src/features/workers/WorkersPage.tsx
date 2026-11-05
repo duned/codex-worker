@@ -1,3 +1,6 @@
+import { observerInventory } from '../../shared/api/observers';
+import { acceptedObservers, observerConnection, observerName } from '../observers/model';
+import { ObserverSignals } from '../observers/InventoryPresentation';
 import { lazy, Suspense } from 'react';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { GuidDisplay } from '../../shared/GuidDisplay';
@@ -34,28 +37,37 @@ export function WorkersPage() {
   useLanguage();
   const [params] = useSearchParams();
   const observerId = params.get('observer');
-  return observerId ? <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserverDetailPage key={observerId} id={observerId} /></Suspense> : <ManagedWorkersPage />;
+  return observerId ? <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserverDetailPage key={observerId} id={observerId} /></Suspense> : <WorkerInventoryPage />;
 }
-function ManagedWorkersPage() {
+function WorkerInventoryPage() {
   useLanguage();
   const inventory = useApiRead('/api/v1/workers', workers), capabilities = useApiRead('/api/v1/nodes', nodes);
+  const standalone = useApiRead('/api/v1/observers/inventory', observerInventory);
   const [params, setParams] = useSearchParams();
   const filter = params.get('filter') ?? 'all';
   function enrollment(open: boolean) { const next = new URLSearchParams(params); if (open) next.set('enroll', '1'); else { next.delete('enroll'); next.delete('prepare'); } setParams(next); }
   const allWorkers = inventory.data ?? [];
   const shownWorkers = allWorkers.filter(worker => filter === 'all' || (filter === 'connected' ? worker.availability === 'online' : worker.availability !== 'online'));
+  const allObservers = acceptedObservers(standalone.data?.observers ?? []);
+  const shownObservers = allObservers.filter(observer => filter === 'all' || (filter === 'connected' ? !standalone.error && observerConnection(observer) === 'connected' : !!standalone.error || observerConnection(observer) !== 'connected'));
+  const total = allWorkers.length + allObservers.length;
+  const shown = shownWorkers.length + shownObservers.length;
   return <section className="mx-auto max-w-[1132px]">
     <PageHeading title={t('workers.workers')} actions={<Button color="secondary" onPress={() => enrollment(true)}>{t('workers.addWorker')}</Button>} />
-    {inventory.error ? <ViewState error title={t('workers.workerInventoryUnavailable')}>{inventory.error}</ViewState> : !inventory.data ? <ViewState title={t('workers.loadingWorkers')} /> : <>
+    {inventory.error && <ViewState error title={t('workers.workerInventoryUnavailable')}>{inventory.error}</ViewState>}
+    {!inventory.data && !inventory.error && <ViewState title={t('workers.loadingWorkers')} />}
+    {standalone.error && <Notice error>{t('observers.readError')}</Notice>}
+    {!standalone.data && !standalone.error && <ViewState title={t('observers.loading')} />}
+    <>
       <TableCard.Root className="mb-4 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-secondary px-5 py-4">
-          <div><h2 className="text-sm font-semibold text-primary">{t('workers.workerInventory')}</h2><p className="mt-1 text-xs text-tertiary">{t('workers.inventorySummary', { count: allWorkers.length })}</p></div>
+          <div><h2 className="text-sm font-semibold text-primary">{t('workers.workerInventory')}</h2><p className="mt-1 text-xs text-tertiary">{inventory.data && standalone.data ? t('workers.inventorySummary', { count: total }) : t('home.unavailable')}</p></div>
           <label className="sr-only" htmlFor="worker-filter">{t('workers.filterWorkers')}</label>
           <select id="worker-filter" value={filter} onChange={event => { const next = new URLSearchParams(params); if (event.target.value === 'all') next.delete('filter'); else next.set('filter', event.target.value); setParams(next); }} className="h-9 rounded-lg border border-secondary bg-primary px-3 text-sm text-secondary">
             <option value="all">{t('workers.allWorkers')}</option><option value="connected">{t('workers.connectedWorkers')}</option><option value="disconnected">{t('workers.disconnectedWorkers')}</option>
           </select>
         </div>
-        {allWorkers.length === 0 ? <div className="p-5"><Notice>{t('workers.noWorkersRegistered')}. {t('workers.addAWorkerToEnrollANewMachineOrSafelyAssociateAn')}</Notice></div> : shownWorkers.length === 0 ? <div className="p-5"><Notice>{t('workers.noWorkersMatchFilter')}</Notice></div> : <div className="overflow-x-auto">
+        {total === 0 && inventory.data && standalone.data ? <div className="p-5"><Notice>{t('workers.noWorkersRegistered')}. {t('workers.addAWorkerToEnrollANewMachineOrSafelyAssociateAn')}</Notice></div> : shown === 0 && inventory.data && standalone.data ? <div className="p-5"><Notice>{t('workers.noWorkersMatchFilter')}</Notice></div> : <div className="overflow-x-auto">
           <table className="w-full min-w-[940px] table-fixed border-collapse text-left">
             <colgroup><col className="w-[22%]"/><col className="w-[24%]"/><col className="w-[23%]"/><col className="w-[10%]"/><col className="w-[21%]"/></colgroup>
             <thead className="bg-secondary"><tr className="h-[52px] text-[11px] font-semibold uppercase tracking-wide text-tertiary">
@@ -79,10 +91,16 @@ function ManagedWorkersPage() {
                 <td className="px-5"><span className="block text-sm font-semibold text-primary">{signals.occupiedSlots ?? t('workers.unknown')} / {signals.totalSlots ?? t('workers.unknown')}</span><span className="mt-1 block text-xs text-tertiary">{Number.isFinite(signals.occupiedSlots) && Number.isFinite(signals.totalSlots) ? signals.occupiedSlots === signals.totalSlots ? t('workers.atCapacity') : t('workers.occupied') : t('workers.reported')}</span>{worker.workerExecutionSlots != null && worker.workerExecutionSlots !== worker.maximumCapacity && <span className="mt-1 block text-xs text-warning-primary">{t('workers.slotsPending', { count: worker.workerExecutionSlots })}</span>}</td>
                 <td className="px-5"><Link href={`/workers/${encodeURIComponent(worker.workerId)}`} className="flex items-center justify-between gap-2 rounded focus-visible:outline-2 focus-visible:outline-focus-ring"><span className="min-w-0"><span className="block truncate text-sm text-brand-secondary">{projects[0] ?? t('workers.noActiveProjects')}</span><span className="mt-1 block truncate text-xs text-tertiary">{projects.length > 1 ? t('workers.additionalProjects', { count: projects.length - 1 }) : projects.length === 1 ? t('workers.oneActiveProject') : ''}</span></span><span aria-hidden="true" className="text-xl text-brand-secondary">›</span></Link></td>
               </tr>;
-            })}</tbody>
+            })}{shownObservers.map(observer => <tr key={observer.observerId} className="h-[87px]">
+              <td className="px-5 py-4"><Link href={`/workers?observer=${encodeURIComponent(observer.observerId)}`} className="text-sm font-semibold text-brand-secondary">{observerName(observer)}</Link><span className="ml-2 text-xs text-tertiary">{observer.version ?? t('workers.unknown')}</span></td>
+              <td colSpan={2} className="px-5 py-4"><ObserverSignals observer={observer} unavailable={!!standalone.error} /></td>
+              <td className="px-5 text-sm">{observer.activeExecutions ?? t('workers.unknown')} / {observer.maximumCapacity ?? t('workers.unknown')}</td>
+              <td className="px-5 text-xs text-tertiary">{t('observers.localProjects')}</td>
+            </tr>)}</tbody>
           </table>
         </div>}
-        <p className="border-t border-secondary px-5 py-3 text-xs text-tertiary">{t('workers.showingWorkers', { shown: shownWorkers.length, total: allWorkers.length })}</p>
+        <p className="px-5 py-3 text-xs text-tertiary">{t('observers.inventoryWindow')}</p>
+        <p className="border-t border-secondary px-5 py-3 text-xs text-tertiary">{inventory.data && standalone.data ? t('workers.showingWorkers', { shown, total }) : t('home.unavailable')}</p>
       </TableCard.Root>
       <section aria-labelledby="worker-status-guide" className="mx-auto max-w-[1088px] rounded-lg border border-secondary bg-secondary p-5 sm:p-6">
         <h2 id="worker-status-guide" className="mb-4 text-sm font-semibold text-primary">{t('workers.readingWorkerStatus')}</h2>
@@ -94,9 +112,9 @@ function ManagedWorkersPage() {
           ].map(([tone, text]) => <p key={text} className="flex items-center gap-3"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dotTone(tone)}`}/>{text}</p>)}
         </div>
       </section>
-    </>}
+    </>
     {capabilities.error && <Notice error>{t('workers.readinessObservationsUnavailable')}</Notice>}
-    <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserversSection /></Suspense>
+    <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserversSection administrationOnly /></Suspense>
     {(params.get('enroll') === '1' || params.get('prepare') === '1') && <EnrollmentDialog onClose={() => enrollment(false)} />}
   </section>;
 }

@@ -64,3 +64,19 @@ export const observerAuthorization: Validator<ObserverAuthorization> = value => 
   return { authorization: String(item.authorization), expiresAtUtc: String(item.expiresAtUtc),
     observerId: String(item.observerId), server: item.server };
 };
+
+export const observerInventory: Validator<import('./contracts').ObserverInventory> = value => {
+  const item = record(value);
+  integer(item.total, 0, Number.MAX_SAFE_INTEGER);
+  integer(item.active, 0, Number(item.total));
+  if (item.totalCapacity != null) integer(item.totalCapacity, 0, Number.MAX_SAFE_INTEGER);
+  return {
+    total: Number(item.total), active: Number(item.active), totalCapacity: item.totalCapacity == null ? null : Number(item.totalCapacity),
+    observers: observers(item.observers),
+    executions: bounded(item.executions, 100, value => {
+      const row = record(value);
+      if (!/^obs_[0-9a-f]{32}$/.test(String(row.observerId))) throw new Error('Invalid observer identity.');
+      return { observerId: String(row.observerId), observation: observerExecution(row.observation) };
+    })
+  };
+};

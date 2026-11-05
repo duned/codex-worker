@@ -109,3 +109,5 @@ export interface ObserverExecutionObservation {
   };
 }
 export interface ObserverDetail { observer: ObserverSummary; currentExecutions: ObserverExecutionObservation[] }
+export interface ObserverInventoryExecution { observerId: string; observation: ObserverExecutionObservation }
+export interface ObserverInventory { total: number; active: number; totalCapacity: number | null; observers: ObserverSummary[]; executions: ObserverInventoryExecution[] }

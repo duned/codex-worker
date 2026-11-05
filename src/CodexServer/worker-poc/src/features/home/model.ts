@@ -1,5 +1,6 @@
 import { t, statusLabel } from '../../shared/i18n';
-import type { ExecutionSummary, NodeSummary, WorkerObservation } from '../../shared/api/contracts';
+import type { ExecutionSummary, NodeSummary, WorkerObservation, ObserverSummary } from '../../shared/api/contracts';
+import { acceptedObservers, observerConnection } from '../observers/model';
 import { workerListSignals } from '../../model.js';
 export function executionNeedsAttention(item: ExecutionSummary) {
   return !!(item.pendingReason || item.recoveryState || item.managedEligibilityState === 'blocked');
@@ -20,12 +21,13 @@ export function aggregateCapacity(workers: WorkerObservation[] | undefined, fiel
   return workers.reduce((sum, worker) => sum + (worker[field] ?? 0), 0);
 }
 
-export function homeWorkerSummary(workers: WorkerObservation[] | undefined) {
-  if (!workers) return undefined;
-  const capacities = workers.map(worker => workerListSignals(worker, undefined).totalSlots);
+export function homeWorkerSummary(workers: WorkerObservation[] | undefined, observers: ObserverSummary[] | undefined, observersUnavailable = false, totals?: Pick<import('../../shared/api/contracts').ObserverInventory, 'total' | 'active' | 'totalCapacity'>) {
+  if (!workers || !observers) return undefined;
+  const accepted = acceptedObservers(observers);
+  const capacities = [...workers.map(worker => workerListSignals(worker, undefined).totalSlots), ...(totals ? [totals.totalCapacity] : accepted.map(observer => observer.maximumCapacity))];
   return {
-    active: workers.filter(worker => worker.availability === 'online').length,
-    total: workers.length,
+    active: workers.filter(worker => worker.availability === 'online').length + (observersUnavailable ? 0 : (totals?.active ?? accepted.filter(observer => observerConnection(observer) === 'connected').length)),
+    total: workers.length + (totals?.total ?? accepted.length),
     totalSlots: capacities.some(capacity => capacity == null)
       ? undefined
       : capacities.reduce((sum, capacity) => sum + (capacity ?? 0), 0)

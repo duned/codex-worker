@@ -15,3 +15,26 @@ export function observerIssueUrl(repository: string, number: number) {
     repository.split('/').every(part => part !== '.' && part !== '..') && Number.isSafeInteger(number) && number > 0
     ? `https://github.com/${repository}/issues/${number}` : undefined;
 }
+
+// Accepted registrations only; pairing and revoked records belong to administration.
+export function acceptedObservers(items: ObserverSummary[]) {
+  return items.filter(item => item.registrationState === 'reporting' || item.registrationState === 'awaiting-first-report');
+}
+export function observerName(item: ObserverSummary) {
+  return item.name || `obs_…${item.observerId.slice(-8)}`;
+}
+export function observerTerminal(item: import('../../shared/api/contracts').ObserverExecutionObservation['execution']) {
+  return item.outcome != null || item.completedAtUtc != null ||
+    ['Completed', 'Blocked', 'Failed', 'IntegrationConflict', 'InfrastructureFailure', 'Cancelled', 'Superseded'].includes(item.stage);
+}
+export function observerExecutions(inventory: import('../../shared/api/contracts').ObserverInventory | undefined) {
+  const accepted = new Set(acceptedObservers(inventory?.observers ?? []).map(item => item.observerId));
+  const latest = new Map<string, import('../../shared/api/contracts').ObserverInventoryExecution>();
+  for (const item of inventory?.executions ?? []) {
+    if (!accepted.has(item.observerId)) continue;
+    const key = `${item.observerId}:${item.observation.execution.localExecutionId}`;
+    const previous = latest.get(key);
+    if (!previous || Date.parse(item.observation.observedAtUtc) > Date.parse(previous.observation.observedAtUtc)) latest.set(key, item);
+  }
+  return [...latest.values()].sort((a, b) => Date.parse(b.observation.observedAtUtc) - Date.parse(a.observation.observedAtUtc));
+}

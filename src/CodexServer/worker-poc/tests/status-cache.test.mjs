@@ -183,3 +183,16 @@ test('observer receipt freshness refreshes only active bounded views through the
   assert.equal(f.counts.has('/api/v1/observers/pairing/authorize'), false);
   assert.equal(f.counts.has('/api/v1/observers/obs_other'), false);
 });
+
+test('observer revocation refreshes shared inventory without fetching unrelated observer details', async t => {
+  const f = await fixture(t);
+  for (const path of ['/api/v1/observers/inventory', '/api/v1/observers', '/api/v1/observers/obs_one', '/api/v1/observers/obs_other', '/api/v1/workers']) {
+    await f.runtime.queries.fetchQuery(f.options(path)); f.observe(path);
+  }
+  await f.runtime.mutate('observer', '/api/v1/observers/obs_one/revoke', 'POST', undefined, value => value, async () => {});
+  assert.equal(f.counts.get('/api/v1/observers/inventory'), 2);
+  assert.equal(f.counts.get('/api/v1/observers'), 2);
+  assert.equal(f.counts.get('/api/v1/observers/obs_one'), 2);
+  assert.equal(f.counts.get('/api/v1/observers/obs_other'), 1);
+  assert.equal(f.counts.get('/api/v1/workers'), 1);
+});

@@ -1,5 +1,10 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "observers.workReported": "Trabajo informado",
+  "observers.localProjects": "Proyectos locales · solo lectura",
+  "observers.inventoryWindow": "Incluye observadores independientes aceptados. Se muestran hasta 100; los totales de Inicio incluyen todos los aceptados y no revocados.",
+  "observers.executionWindow": "Últimas 50 solicitudes gestionadas + hasta 100 observaciones de ejecución independientes retenidas de los observadores mostrados. El trabajo informado puede estar desactualizado; hoy usa fechas de finalización UTC.",
+  "observers.administration": "Administración de vínculos independientes",
   "observers.title": "Workers independientes",
   "observers.add": "Añadir Worker independiente",
   "observers.standalone": "Independiente",
@@ -429,9 +434,9 @@ export const es = {
   "home.workers": "Agentes",
   "home.activeWorkers": "Agentes activos",
   "home.totalWorkers": "agentes en total",
-  "home.activeTotalWorkers": "Activos / total de agentes",
+  "home.activeTotalWorkers": "Conectados / total de agentes · incluye informes independientes",
   "home.runningExecutions": "Ejecuciones en curso",
-  "home.runningCapacityDetail": "Recuento en las 50 solicitudes más recientes / plazas totales de ejecución de los agentes",
+  "home.runningCapacityDetail": "Solicitudes gestionadas en ejecución + trabajo no terminal informado en ventanas limitadas / plazas totales conocidas",
   "home.runningExecutionCapacity": "Ejecuciones en curso: {running} / {capacity} plazas",
   "home.completedToday": "Completadas hoy",
   "home.latest50Requests": "De las 50 solicitudes de ejecución más recientes",
