@@ -2,6 +2,12 @@
 
 The Server executable provides local status, diagnostics, and configuration commands. These commands reuse the Server configuration and registry services. They do not start a second web host, use a separate registry, or contact the running Server over loopback.
 
+## Standalone observers in the dashboard
+
+Use **Add standalone Worker** to authorize an existing standalone host's public reporting request. The CLI consumes the displayed five-minute, one-use authorization through hidden input. This is separate from managed Worker tokens and enrollment. **Paired · awaiting first report** means redemption succeeded; confirm **Connected** and a snapshot receipt timestamp before assuming observations are arriving. Freshness uses Server receipt time and does not establish execution readiness or liveness.
+
+**Revoke reporting** invalidates pending pairing and reporting credentials while retaining observations. Refresh to confirm revocation; the standalone host continues its own execution. Server cannot provision or control observers. Local disconnect deletes the host credential but does not revoke Server history. See [the operator flow](operations.md#optional-standalone-reporting) for pairing, expiry/retry, uncertain-response recovery, outages and disabling both sides. These actions use the authenticated dashboard API, not the managed `worker`/`worker-token` commands below.
+
 ## Commands
 
 ```sh

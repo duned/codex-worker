@@ -35,3 +35,7 @@ server:
   url: https://codex-server.example
   heartbeatIntervalSeconds: 20
   identityFile: /var/lib/codex-worker/.codex-worker/worker-id
+
+# Standalone observer reporting is a separate opt-in flow for standalone ownership only.
+# Do not add reporting credentials here; managed heartbeats/reports use enrollment above.
+# See docs/operations.md#optional-standalone-reporting before choosing an ownership mode.

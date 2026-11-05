@@ -1,6 +1,10 @@
 namespace CodexWorker.Tests;
 
 using CodexProvisioning;
+using CodexServer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using CodexWorker;
 using System.Net;
 using System.Net.Http.Json;
@@ -8,6 +12,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using TemporaryDirectory = ObserverReportingTests.TemporaryDirectory;
 
+[Collection("ServerTokenEnvironment")]
 public sealed class StandaloneReportingTests
 {
     private const string Server = "https://observer.example";
@@ -500,6 +505,148 @@ public sealed class StandaloneReportingTests
         Assert.Equal("running", fixture.Runtime.State);
         if (response == "refused") Assert.Equal("rejected", (await fixture.Store.LoadAsync(CancellationToken.None))?.LastResult);
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task DashboardAuthorizationCliAndReporterRecoverWithoutManagedEnrollment(bool expireFirst)
+    {
+        using var fixture = new Fixture();
+        var configurationBefore = await File.ReadAllTextAsync(fixture.ConfigurationPath);
+        var clock = new PairingClock();
+        var registry = new SqliteRegistryStore(Path.Combine(fixture.Root, "registry.db"), timeProvider: clock);
+        await registry.InitializeAsync();
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton(new ServerConfiguration { AdministrationOrigin = Server });
+        builder.Services.AddSingleton<TimeProvider>(clock);
+        builder.Services.AddSingleton<AdministrationSessions>();
+        builder.Services.AddSingleton<IRegistryStore>(registry);
+        var previous = Environment.GetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN");
+        Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", "observer-lifecycle-test-management");
+        try
+        {
+            await using var app = builder.Build();
+            ServerApplication.MapObserverPairing(app);
+            await app.StartAsync();
+            var loopback = new Uri(app.Urls.Single());
+            using var admin = new HttpClient { BaseAddress = loopback };
+            admin.DefaultRequestHeaders.Authorization = new("Bearer", "observer-lifecycle-test-management");
+            using var transport = new HttpMessageInvoker(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false });
+            var unavailable = false;
+            var loseRedemptionResponse = true;
+            var calls = 0;
+            // Only the test transport maps the exact HTTPS contract origin to ephemeral loopback HTTP.
+            using var http = new HttpClient(new Handler(async (request, ct) =>
+            {
+                Assert.Equal(Server, request.RequestUri?.GetLeftPart(UriPartial.Authority));
+                calls++;
+                if (unavailable) throw new HttpRequestException("Simulated Server outage.");
+                var path = Assert.IsType<Uri>(request.RequestUri).PathAndQuery;
+                request.RequestUri = new Uri(loopback, path);
+                var response = await transport.SendAsync(request, ct);
+                if (path.EndsWith("/redeem", StringComparison.Ordinal) && response.IsSuccessStatusCode && loseRedemptionResponse)
+                {
+                    loseRedemptionResponse = false;
+                    response.Dispose();
+                    throw new HttpRequestException("Simulated lost redemption acknowledgement.");
+                }
+                return response;
+            }));
+            using var client = new StandaloneReportingClient(http);
+            await using var reporter = new StandaloneReporting(fixture.Config, fixture.Runtime, clock, CancellationToken.None, client);
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            Assert.Equal(0, calls);
+            Assert.False(File.Exists(fixture.Store.FilePath));
+            Assert.Empty(await registry.ListObserversAsync());
+
+            ObserverPairingAuthorization? authorization = null;
+            var output = new StringWriter();
+            var cli = new StandaloneReportingCli(client, output, async ct =>
+            {
+                var local = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(ct));
+                var request = new ObserverPairingRequest(1, ObserverProtocol.Mode, local.ObserverId, Server);
+                using var response = await admin.PostAsJsonAsync("/api/v1/observers/pairing/authorize", request, ct);
+                response.EnsureSuccessStatusCode();
+                authorization = Assert.IsType<ObserverPairingAuthorization>(await response.Content.ReadFromJsonAsync<ObserverPairingAuthorization>(ct));
+                if (expireFirst) clock.Now = authorization.ExpiresAtUtc;
+                return authorization.Authorization;
+            });
+            var connect = fixture.Command("connect", "--server", Server);
+            Assert.Equal(ProcessExitCodes.StartupFailure, await cli.ExecuteAsync(connect, CancellationToken.None));
+            var pending = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(CancellationToken.None));
+            Assert.False(pending.Accepted);
+            if (expireFirst)
+            {
+                Assert.Equal("pairing-expired", Assert.Single(await registry.ListObserversAsync()).RegistrationState);
+                await reporter.ReportOnceAsync(CancellationToken.None);
+                Assert.Equal(1, calls); // Pending credentials cannot send reports.
+                expireFirst = false;
+                Assert.Equal(ProcessExitCodes.StartupFailure, await cli.ExecuteAsync(connect, CancellationToken.None));
+            }
+            Assert.Equal("awaiting-first-report", Assert.Single(await registry.ListObserversAsync()).RegistrationState);
+            var recover = new StandaloneReportingCli(client, output, _ => Task.FromResult(""));
+            Assert.Equal(0, await recover.ExecuteAsync(connect, CancellationToken.None));
+            Assert.Equal(0, await recover.ExecuteAsync(connect, CancellationToken.None));
+            var paired = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(CancellationToken.None));
+            Assert.Equal(pending.ObserverId, paired.ObserverId);
+            Assert.Equal(pending.Credential, paired.Credential);
+            using (var replay = new HttpRequestMessage(HttpMethod.Post, "/api/v1/observers/pairing/redeem"))
+            {
+                replay.Headers.Authorization = new("Bearer", Assert.IsType<ObserverPairingAuthorization>(authorization).Authorization);
+                replay.Headers.Add("X-Codex-Observer-Token", paired.Credential);
+                replay.Content = JsonContent.Create(new ObserverPairingRequest(1, ObserverProtocol.Mode, paired.ObserverId, Server));
+                using var response = await admin.SendAsync(replay);
+                Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            }
+            await fixture.History.CreateAsync(new(Guid.NewGuid(), "Project", "owner/repo", 42, "Issue", "branch", "main",
+                Now.AddMinutes(-2), Now.AddMinutes(-1), "Completed", 60000, null, "passed", 0, [], null, null, null, null));
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            var detail = Assert.IsType<ObserverDetail>(await admin.GetFromJsonAsync<ObserverDetail>($"/api/v1/observers/{paired.ObserverId}"));
+            Assert.Equal("reporting", detail.Observer.RegistrationState);
+            Assert.Equal("fresh", detail.Observer.Freshness);
+            Assert.Equal(clock.Now, detail.Observer.SnapshotReceivedAtUtc);
+            Assert.Single(await admin.GetFromJsonAsync<ObserverExecutionObservation[]>($"/api/v1/observers/{paired.ObserverId}/history") ?? []);
+
+            unavailable = true;
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            Assert.Equal("unavailable", (await fixture.Store.LoadAsync(CancellationToken.None))?.LastResult);
+            unavailable = false;
+            Assert.Equal(0, await recover.ExecuteAsync(connect, CancellationToken.None));
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            Assert.Equal("reporting", (await fixture.Store.LoadAsync(CancellationToken.None))?.LastResult);
+            Assert.Single(await registry.ListObserversAsync());
+            using (var revoked = await admin.PostAsync($"/api/v1/observers/{paired.ObserverId}/revoke", null))
+                Assert.Equal(HttpStatusCode.NoContent, revoked.StatusCode);
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            Assert.Equal("unauthorized", (await fixture.Store.LoadAsync(CancellationToken.None))?.LastResult);
+            Assert.Equal(ProcessExitCodes.StartupFailure, await recover.ExecuteAsync(connect, CancellationToken.None));
+            Assert.Equal(0, await recover.ExecuteAsync(fixture.Command("disconnect"), CancellationToken.None));
+            var callsBeforeDisable = calls;
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            Assert.Equal(0, await recover.ExecuteAsync(fixture.Command("status"), CancellationToken.None));
+            Assert.Equal(callsBeforeDisable, calls);
+            Assert.False(File.Exists(fixture.Store.FilePath));
+            Assert.Single((await registry.GetObserverInspectionAsync(paired.ObserverId))?.Executions ?? []);
+            Assert.Empty(await registry.GetWorkersAsync());
+            Assert.Empty(await registry.GetExecutionsAsync());
+            Assert.Equal("running", fixture.Runtime.State);
+            Assert.Equal("Completed", Assert.Single(await fixture.History.ReadAllAsync()).State);
+            Assert.Equal(configurationBefore, await File.ReadAllTextAsync(fixture.ConfigurationPath));
+            Assert.DoesNotContain(paired.Credential, output.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain(Assert.IsType<ObserverPairingAuthorization>(authorization).Authorization, output.ToString(), StringComparison.Ordinal);
+            await app.StopAsync();
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }
+    }
+
+    private sealed class PairingClock : TimeProvider
+    {
+        internal DateTimeOffset Now { get; set; } = StandaloneReportingTests.Now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct);

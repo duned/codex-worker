@@ -41,6 +41,41 @@ For standalone deployment, install Worker without registration or start, replace
 
 The services run as separate `codex-server` and `codex-worker` accounts. Worker HOME is `/var/lib/codex-worker`; configuration is `/etc/codex-worker/worker.yml` and protected `worker.env`. Git, GitHub CLI, Codex CLI, repository read/write and Issue permissions, authenticated Codex preflight and project runtimes are execution prerequisites. Authenticate in the service context using [Worker administration](worker-local-administration.md), not root's or an interactive user's login. Server GitHub read access for discovery is separate from Worker Git/GitHub execution access. Server-managed credentials are optional and require protected storage and per-Worker assignment/delivery authorization; private node keys and CLI logins stay on the node. Never place secrets in project YAML, task prompts or logs.
 
+## Optional standalone reporting
+
+Reporting is **off by default**. A standalone Worker can opt in to read-only observations in a Server dashboard while keeping `projects.ownership: standalone` and its local project YAML, scheduling, capacity and execution ownership. Do not enable `server.enabled`, register a managed Worker, or change ownership to enable this feature. Server does not provision, assign work to, start, stop, drain or otherwise control observer execution.
+
+The shortest supported flow for an existing standalone Worker is:
+
+1. Sign in to the Server dashboard and choose **Add standalone Worker** in the standalone Workers view. Verify that Server has the exact public HTTPS `AdministrationOrigin` configured, with a certificate trusted by the Worker OS.
+2. In an interactive terminal on the Worker host, using the Worker service account and its configuration, run:
+
+   ```sh
+   sudo codex-worker reporting connect --server https://server.example
+   ```
+
+   Packaged Linux `sudo codex-worker` uses the service account. For another installation, run as the account that runs Worker and append `--config /path/to/worker.yml` when needed. Copy the complete **public observer request** printed by the CLI into the dashboard. Choose **Authorize pairing**, then paste the displayed one-time authorization into the CLI's hidden prompt. Never use the management token here or put authorization in command arguments, YAML, scripts or logs.
+3. After CLI acknowledgement, refresh the standalone view. **Paired · awaiting first report** confirms redemption only. Confirm **Connected** and the first **status snapshot received** timestamp. A running Worker applies pairing within `reporting.intervalSeconds` (default 30 seconds); no restart is required. If stopped, start it (`sudo systemctl start codex-worker` on packaged Linux). Reporting does not prove authenticated execution readiness.
+
+The one-time authorization expires after **five minutes** and is single-use, bound to the observer identity and exact Server origin. If it expires before redemption, rerun connect on the same host with the same configuration and Server, authorize its public request again, and enter the fresh authorization. Closing/reloading the dashboard loses the displayed authorization. Check Server status; if pairing is still pending and the value is lost, wait for its displayed expiry before requesting another authorization. If redemption may have succeeded but its response was lost, rerun connect against the same Server and press Enter at the hidden prompt: the retained credential checks its registration without replaying authorization. Repeated recovery uses the same identity. Preserve pending local state; disconnect is an explicit abandonment, not an outage repair. A different retained Server is refused until disconnect.
+
+Inspect or disable locally:
+
+```sh
+sudo codex-worker reporting status
+sudo codex-worker reporting disconnect
+```
+
+`status` reads local state only, including the last result and last successful report time; it does not probe Server or the running Worker. `disconnect` (alias `disable`) waits for any in-flight reporting exchange, deletes the local observer credential, and prevents further reports without restarting or stopping execution. Server history remains. In the dashboard, **Revoke reporting** invalidates both pending pairing and accepted reporting credentials; confirm the refreshed revocation state. Revocation retains history and does not stop the standalone host. The local status records `unauthorized` after a rejected report. To opt in again after revocation, disconnect locally and pair a new identity.
+
+Reporting uses outbound HTTPS only, with certificate/hostname checks and no authenticated redirects; no inbound Worker port is needed. The node generates and retains its reporting credential in `reporting.credentialFile` (default `~/.codex-worker/observer.json`), separate from managed enrollment state. The file is atomically replaced, rejects symbolic links and is owner-only on Unix. Protect the service account and this file; do not copy it into task content or source control. Server stores credential/authorization hashes, not the durable credential. The dashboard shows authorization transiently; it cannot retrieve it later.
+
+Snapshots contain allowlisted lifecycle, product version, capacity, active counts and bounded current execution summaries. Execution observations include local execution ID, project/repository, Issue number/title, stage, outcome, validation state, timing and retry/resume lineage. Repository names and Issue titles are visible to Server administrators. Prompts, Issue bodies, raw process output, failure diagnostics, paths, environment contents and provider credentials are excluded. Optional protocol name/readiness fields can be absent; absence is unknown, not ready. This is a bounded latest-summary feed, not a complete execution log: the Worker selects at most 256 local standalone history entries, sends up to 32 events per interval and up to 32 current executions per snapshot, within 64 KiB payloads. Managed execution history is excluded.
+
+A Server outage or reporting rejection never changes local scheduling, execution capacity or outcomes. The reporter tries again on later intervals; pending summaries survive restart and uncertain event acknowledgements are replayed idempotently. The dashboard uses Server snapshot receipt time for freshness: stale means no recent snapshot, not proof the host stopped. Correct DNS/TLS/network or Server availability, then allow reporting to resume; pairing again is unnecessary. Managed heartbeats, leases and stage/final reporting keep their existing separate contracts and outage rules below.
+
+The optional `reporting` block in [worker.example.yml](../config/worker.example.yml) configures only interval and credential location; adding it alone does not enable reporting. Changing those YAML settings requires the usual Worker restart. Connect/disconnect does not.
+
 ## Communication and connectivity loss
 
 Workers initiate outbound HTTP requests to Server: enrollment/registration, heartbeats with capabilities/readiness/capacity, validated versioned configuration snapshots, assignment requests, lease renewals, stage/final execution reports and idle provisioning polling/reporting. Server does not need an inbound listener on the Worker. Both nodes need outbound access to their providers (GitHub, Codex and enabled package sources).

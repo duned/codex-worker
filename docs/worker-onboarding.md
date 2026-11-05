@@ -10,6 +10,12 @@ The authorization is held only in the current dialog, cleared on close, navigati
 
 Choose **Check progress / Resume** after local acknowledgement and service startup. A registry row without a current authenticated heartbeat is waiting for communication. Registration plus observed communication leads to **Prepare this Worker**, not execution-ready status. Guided enrollments and associations start with scheduling disabled; tool/account setup, project eligibility and explicit scheduling administration remain separate.
 
+## Standalone reporting enrollment
+
+For an independently operated host, use **Add standalone Worker**, not managed enrollment or association. Keep standalone ownership and local project configuration. Open that dashboard action, run `sudo codex-worker reporting connect --server https://server.example` on the host, paste its public request into the dashboard and enter the five-minute, one-use authorization at the hidden CLI prompt. Refresh to confirm the first accepted snapshot; redemption alone is awaiting first report. A running Worker picks up pairing at the next reporting interval without a restart; start the service if stopped.
+
+See the [standalone reporting operator flow](operations.md#optional-standalone-reporting) for account/configuration selection, expiry and lost-response recovery, local status/disconnect and dashboard revocation. Reporting is default-off, outbound HTTPS and read-only; it does not convert the host to managed ownership or permit Server provisioning/control.
+
 ## Existing Worker and recovery
 
 Association reads the existing identity and fails if it is missing or invalid. Use the installed configuration and service account. Before changing Server, drain the old association, finish or reconcile active leases, and stop the local service. Add Worker cannot stop an unknown node or grant local administrative permission. Destination association is refused while that identity has active destination assignments, including at authorization consumption. The association preserves configuration, execution history, cached snapshots and uncertain worktrees/recovery resources. It does not transfer active leases or revoke credentials at the previous Server. Retained snapshots never grant scheduling authority at either Server. Follow existing reconciliation paths for uncertain resources before further execution.

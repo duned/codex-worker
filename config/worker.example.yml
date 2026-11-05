@@ -44,9 +44,13 @@ api:
   listenUrl: http://127.0.0.1:5080
   eventHistoryLimit: 500
 
-# Passive standalone reporting is off until 'codex-worker reporting connect'.
+# Passive standalone reporting is off until dashboard pairing + 'codex-worker reporting connect'.
+# Keep projects.ownership: standalone; do not enable server.enabled for observer reporting.
+# Use an exact HTTPS origin and enter the five-minute one-use authorization at the hidden prompt.
+# See docs/operations.md#optional-standalone-reporting for setup/status/disconnect/revocation.
 # This file contains no observer credential; connect manages a protected node-local file.
-# Connect/disconnect take effect on the next interval without restarting a running Worker.
+# Connect applies on the next interval; disconnect waits for in-flight delivery and stops reports.
+# Neither requires a restart. Changing these YAML settings requires a restart.
 reporting:
   intervalSeconds: 30
   credentialFile: ~/.codex-worker/observer.json

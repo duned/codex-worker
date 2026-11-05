@@ -12,10 +12,15 @@ The existing root help alias `h` remains supported.
 | `config validate` | Validate Worker and project configuration without starting execution; invalid configuration exits 2. |
 | `config set <setting> <value>` | Atomically update an existing allowlisted setting after complete validation. Protected installed configuration requires appropriate local permissions. Restart the service to apply the change. |
 | `capabilities [list]`, `capabilities refresh` | Observe typed local capability inventory or force fresh detection. Missing capabilities are inventory state. |
+| `reporting connect --server <https-origin>` | Opt in a standalone host using a dashboard authorization entered at a hidden prompt. Retains protected local recovery credentials; empty input recovers an uncertain redemption. Does not change ownership. |
+| `reporting status` | Read local reporting state without contacting Server or the running service. |
+| `reporting disconnect`, `reporting disable` | Delete local observer credentials and stop reports without stopping execution. Dashboard revocation and retained Server history are separate. |
 | `register` | Enroll using `--token-stdin` from a protected secret source. Credential-valued `--token` arguments are rejected. Explicit `--server`, `--identity-file` and `--capacity` override installed configuration defaults. `--operation enroll` is the default; `rotate`, `recover` and `associate` require a Worker- and operation-bound Server authorization. Registration does not establish execution readiness. |
 | `provision status` | Inspect capability state, typed authentication dependencies and local action policy. |
 | `provision <operation> <capability-id>` | Run an allowlisted typed operation under node-local provisioning policy. Package changes require `--allow-elevation` as well as policy permission. `verify-repository-access` requires `--repository owner/repository`. |
 | `credential status`, `credential check/login/logout <provider>` | Observe shared node-local credential state or run typed GitHub/Codex authentication under the same local policy as provisioning. Login publishes a transient browser/device challenge. |
+
+See [standalone reporting](operations.md#optional-standalone-reporting) for the complete dashboard/CLI enrollment, expiry, recovery and disable flow. Connect/disconnect applies without a service restart; reporting YAML changes need a restart.
 
 Managed configuration diagnostics separate retrieval from contract validation and local synchronization. Local `status`/`diagnostics` text and JSON expose the validated cached catalog with source `cached`, retrieval `unverified`, and project preparation `unverified`; they do not infer readiness from a checkout or contact Server. The running Worker's `/api/status` (`managedDiagnostics`) and `/api/configuration-sync` expose current observations, also displayed on its dashboard. Server Worker diagnostics retain these heartbeat observations as `workerReportedManagedDiagnostics`; project readiness includes the reported revision and labels stale heartbeats or revision mismatches separately from Server-derived eligibility.
 

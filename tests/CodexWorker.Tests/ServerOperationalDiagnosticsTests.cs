@@ -6,6 +6,37 @@ using WorkerCapability = CodexServer.WorkerCapability;
 
 public sealed class ServerOperationalDiagnosticsTests
 {
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ObserverPairingAndRevocationLeaveManagedLeaseAndReportingUnchanged()
+    {
+        using var fixture = new Fixture();
+        var (project, worker) = await fixture.InitializeAsync();
+        var store = fixture.Store;
+        var execution = await store.EnqueueExecutionAsync(new(project.Id, new("issue", "1")));
+        var assignment = Assert.IsType<WorkAssignment>((await store.RequestAssignmentAsync(Request(project.Id, worker))).Assignment);
+        var lease = Assert.IsType<ExecutionLease>(assignment.Lease);
+        var pairing = new CodexProvisioning.ObserverPairingRequest(1, CodexProvisioning.ObserverProtocol.Mode,
+            "obs_0123456789abcdef0123456789abcdef", "https://observer.example");
+        var authorization = Assert.IsType<CodexProvisioning.ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(pairing));
+        var credential = "obr_" + new string('a', 64);
+        Assert.NotNull(await store.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, credential));
+        var snapshot = new CodexProvisioning.ObserverStatusSnapshot(1, pairing.ObserverId,
+            Guid.NewGuid().ToString("N"), fixture.Clock.GetUtcNow(), "running", []);
+        Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverSnapshotAsync(pairing.Server, credential, snapshot));
+        var running = new WorkerExecutionReport(worker, assignment.AssignmentId, "managed-local-run", "Running", "Codex", Generation: lease.Generation);
+        await store.ReportExecutionAsync(execution.Id, running);
+        Assert.True(await store.RevokeObserverAsync(pairing.ObserverId));
+        Assert.Equal(ObserverIngestionResult.Unauthorized, await store.IngestObserverSnapshotAsync(pairing.Server, credential, snapshot));
+        Assert.NotNull(await store.RenewExecutionLeaseAsync(execution.Id, new(worker, lease.Generation)));
+        await store.ReportExecutionAsync(execution.Id, running with { State = "Completed", Summary = "Implemented", ValidationResult = "passed" });
+        var completed = Assert.Single(await store.GetExecutionsAsync());
+        Assert.Equal("Completed", completed.State);
+        Assert.Equal(worker, Assert.Single(await store.GetWorkersAsync()).WorkerId);
+        Assert.Empty((await store.GetObserverInspectionAsync(pairing.ObserverId))?.Executions ?? []);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
