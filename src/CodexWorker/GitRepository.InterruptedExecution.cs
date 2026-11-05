@@ -92,6 +92,7 @@ public sealed partial class GitRepository
     public Task<string?> InspectExecutionProcessesAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         InterruptedWorkspaceProcesses.CheckAsync(RecoveryWorkspacePath(source),
             BeforeWorkspaceCreation(source) ||
+            source.State == "IntegrationConflict" && source.CompletedAtUtc is not null ||
             source.State == "Cancelled" && source.FailureReason?.StartsWith("Execution interrupted by Worker shutdown", StringComparison.Ordinal) == true,
             source.CodexRecovery?.ProcessScope, ct);
 

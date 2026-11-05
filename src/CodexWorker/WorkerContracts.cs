@@ -76,6 +76,8 @@ public interface IGitRepository : IDisposable
         throw new WorkerInfrastructureException("This repository cannot continue interrupted validation/integration.");
     Task RetireInterruptedExecutionAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This repository cannot safely retire interrupted execution resources.");
+    void PreservePartialConflictResolution() =>
+        throw new WorkerInfrastructureException("This repository cannot preserve operator-assisted conflict resolution.");
     Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
         throw new WorkerInfrastructureException("This Git repository does not support integration recovery.");
     Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>

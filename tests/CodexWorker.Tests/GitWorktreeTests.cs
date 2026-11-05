@@ -1253,6 +1253,117 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         Assert.False(Directory.Exists(directory));
     }
 
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("changed-intent")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    public async Task ExplicitResolutionEditsThePreservedWorktreeAndPreservesFailures(string outcome)
+    {
+        using var fixture = await seed.CreateAsync();
+        var config = new WorkerConfiguration
+        {
+            Project = new() { Name = "demo", Repository = "owner/repo", Directory = fixture.Checkout },
+            Git = new() { AutoMerge = true },
+            GitHub = new() { ReadyLabel = "ready", WorkingLabel = "working", DoneLabel = "done", BlockedLabel = "blocked", FailedLabel = "failed" },
+            Validation = new() { Commands = ["verify combined source"], MaxFixAttempts = 1 }
+        };
+        using var original = fixture.CreateRepository(config.Git);
+        await original.InitializeAsync(CancellationToken.None);
+        var id = Guid.NewGuid();
+        await original.StartIssueAsync(id, fixture.Issue, CancellationToken.None);
+        var workspace = original.ExecutionDirectory;
+        await File.WriteAllTextAsync(Path.Combine(workspace, "base.txt"), "implementation");
+        await fixture.AdvanceBaseAsync("base.txt", "new base value");
+        await Assert.ThrowsAsync<GitIntegrationConflictException>(() => original.CommitAndIntegrateAsync(fixture.Issue,
+            _ => Task.FromResult(ValidationResult.Success), CancellationToken.None));
+        var preserved = Assert.IsType<GitRecoveryInfo>(await original.PreserveIntegrationConflictAsync(CancellationToken.None));
+        var source = new ExecutionHistoryEntry(id, "demo", "owner/repo", fixture.Issue.Number, fixture.Issue.Title,
+            preserved.Branch, "main", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "IntegrationConflict", null,
+            "original implementation", "passed", 0, [], preserved.BaseCommit, "main", null, "conflict",
+            RecoveryState: "integration-conflict", RecoveryBaseCommit: preserved.BaseCommit, OriginalIssueBody: fixture.Issue.Body);
+        using var history = new ExecutionHistoryStore(Path.Combine(fixture.Checkout, "../explicit-conflict.db"));
+        await history.CreateAsync(source);
+        var execution = WorkerExecution.Create(config.Project, config.Git, fixture.Issue, retryOfExecutionId: id,
+            attemptNumber: 2, resumed: true, featureBranchOverride: source.FeatureBranch);
+        var attempt = source with { ExecutionId = execution.ExecutionId, CompletedAtUtc = null, State = "Created",
+            RetryOfExecutionId = id, AttemptNumber = 2, RecoveryState = null };
+        Assert.True(await history.TryClaimIntegrationRecoveryAsync(source, attempt, "explicit", true));
+        using var cancellation = new CancellationTokenSource();
+        var github = new ConcurrentGitHub(fixture.Issue);
+        github.Labels.Add((fixture.Issue.Number, config.GitHub.WorkingLabel));
+        var engine = new ConflictFileEngine(workspace, outcome, cancellation, () => github.ChangedBody = "changed intent");
+        using var repository = original.CreateExecutionRepository();
+        using var output = new StringWriter();
+        var validation = new ConflictSourceValidation(workspace);
+        var codex = new ConflictFileCodex(engine);
+        var claimed = WorkerExecution.Continue(attempt with { State = "Claimed" }, config, fixture.Issue);
+        var runner = new ExecutionRunner(config, repository, codex, validation, new WorkerConsole(output, false), history, github: github);
+        var context = new CodexWorker.ExecutionContext(claimed, fixture.Issue, source,
+            IntegrationRecovery: true, ResolveIntegrationConflict: true);
+        if (outcome is "cancelled" or "changed-intent")
+            await Assert.ThrowsAnyAsync<Exception>(() => runner.RunAsync(context, cancellation.Token));
+        else Assert.Equal(outcome == "success" ? IssueOutcomeKind.Succeeded : IssueOutcomeKind.IntegrationConflict,
+            (await runner.RunAsync(context, cancellation.Token)).Kind);
+        Assert.Equal(1, engine.Calls);
+        if (outcome == "success")
+        {
+            Assert.Equal(1, validation.Calls);
+            Assert.Equal("combined source", await fixture.Git("show", "main:base.txt"));
+            Assert.False(Directory.Exists(workspace));
+        }
+        else
+        {
+            Assert.Equal(0, validation.Calls);
+            Assert.True(Directory.Exists(workspace));
+            Assert.Equal("combined source", await File.ReadAllTextAsync(Path.Combine(workspace, "base.txt")));
+            Assert.Equal(preserved.BaseCommit, await fixture.Git("rev-parse", source.FeatureBranch));
+            Assert.NotEmpty(await fixture.GitAt(workspace, "ls-files", "-u"));
+            Assert.Equal("integration-conflict", (await history.ReadExecutionAsync(id))?.RecoveryState);
+        }
+    }
+
+    private sealed class ConflictSourceValidation(string workspace) : IValidationRunner
+    {
+        public int Calls { get; private set; }
+        public async Task<ValidationResult> RunAsync(IEnumerable<string> commands, string directory, CancellationToken ct)
+        {
+            Calls++;
+            Assert.Equal(workspace, directory);
+            Assert.Equal("combined source", await File.ReadAllTextAsync(Path.Combine(directory, "base.txt"), ct));
+            return ValidationResult.Success;
+        }
+    }
+
+    private sealed class ConflictFileEngine(string workspace, string outcome, CancellationTokenSource cancellation, Action changeIntent)
+    {
+        public int Calls { get; private set; }
+        public async Task<CodexOutcome> ResolveAsync(string directory, string details, CancellationToken ct)
+        {
+            Calls++;
+            Assert.Equal(workspace, directory);
+            Assert.Contains("base.txt", details, StringComparison.Ordinal);
+            await File.WriteAllTextAsync(Path.Combine(directory, "base.txt"), "combined source", ct);
+            if (outcome == "cancelled") { cancellation.Cancel(); ct.ThrowIfCancellationRequested(); }
+            if (outcome == "changed-intent") changeIntent();
+            return new CodexOutcome(outcome == "failed" ? "failed" : "success", "conflict result", [], false, null);
+        }
+    }
+
+    private sealed class ConflictFileCodex(ConflictFileEngine engine) : ICodexExecutor
+    {
+        public Task PreflightAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<CodexOutcome> RunAsync(string projectDirectory, string instructionsFile, GitHubIssue issue, CancellationToken ct) =>
+            throw new InvalidOperationException("Conflict resolution must not rerun implementation.");
+        public Task<CodexOutcome> RepairAsync(string projectDirectory, string instructionsFile, GitHubIssue issue,
+            ValidationFailure failure, int attempt, int maximumAttempts, CancellationToken ct) =>
+            throw new InvalidOperationException("Unexpected validation repair.");
+        public Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
+            GitHubIssue issue, string conflictDetails, CancellationToken ct) => engine.ResolveAsync(projectDirectory, conflictDetails, ct);
+    }
+
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Fact]
@@ -2175,12 +2286,15 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
-    [Fact]
-    public async Task LaterRepairCommitConflictAbortsRebaseAndPreservesCompleteImplementation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LaterRepairCommitConflictPreservesImplementationAndHonorsResolutionAuthorization(bool preservePartial)
     {
         using var fixture = await seed.CreateAsync();
         using var git = fixture.CreateRepository(new GitSettings { AutoMerge = true });
         await git.InitializeAsync(CancellationToken.None);
+        if (preservePartial) git.PreservePartialConflictResolution();
         await git.StartIssueAsync(Guid.NewGuid(), fixture.Issue, CancellationToken.None);
         var workspace = git.ExecutionDirectory;
         await File.WriteAllTextAsync(Path.Combine(workspace, "first.txt"), "original implementation");
@@ -2190,7 +2304,7 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
         string? preservedHead = null;
         string? currentBase = null;
         var resolutions = 0;
-        var error = await Assert.ThrowsAsync<GitIntegrationConflictException>(() => git.CommitAndIntegrateAsync(fixture.Issue,
+        Task<GitIntegrationResult> IntegrateAsync() => git.CommitAndIntegrateAsync(fixture.Issue,
             async _ =>
             {
                 if (!repaired) return new ValidationResult(new ValidationFailure(1, "check", 1, "failed test", "", false));
@@ -2213,9 +2327,20 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
                 await File.WriteAllTextAsync(Path.Combine(workspace, "second.txt"), "semantic repair", ct);
                 repaired = true;
                 return new IntegrationRepairResult(true, true);
-            }, CancellationToken.None));
+            }, CancellationToken.None);
+        GitIntegrationConflictException error = preservePartial
+            ? await Assert.ThrowsAsync<GitConflictResolutionIncompleteException>(IntegrateAsync)
+            : await Assert.ThrowsAsync<GitIntegrationConflictException>(IntegrateAsync);
 
         Assert.Equal(1, resolutions);
+        if (preservePartial)
+        {
+            Assert.Contains("partial resolution", error.Message, StringComparison.Ordinal);
+            Assert.Equal(currentBase, await fixture.Git("rev-parse", "main"));
+            Assert.Equal("combined implementation", await File.ReadAllTextAsync(Path.Combine(workspace, "first.txt")));
+            Assert.NotEmpty(await fixture.GitAt(workspace, "ls-files", "-u"));
+            return;
+        }
         Assert.Contains("rebase was aborted", error.Message);
         Assert.Contains("conflicts unresolved", error.Message);
         Assert.Equal(currentBase, await fixture.Git("rev-parse", "main"));
@@ -2363,6 +2488,9 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
 
     private sealed class ConcurrentGitHub(GitHubIssue template) : IGitHubClient
     {
+        public string? ChangedBody { get; set; }
+        public Task<GitHubIssue?> GetIssueAsync(int issueNumber, CancellationToken ct) =>
+            Task.FromResult<GitHubIssue?>(template with { Number = issueNumber, Body = ChangedBody ?? template.Body });
         public Task<string> GetIssueCommentContextAsync(int issueNumber, CancellationToken cancellationToken,
             IReadOnlyList<string>? secretValues = null) => Task.FromResult("");
         private int _number = 16;

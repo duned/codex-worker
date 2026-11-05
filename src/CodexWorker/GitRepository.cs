@@ -9,6 +9,7 @@ public sealed record IntegrationRepairContext(ValidationFailure Failure, string 
     string ImplementationCommit, string IntegratedBaseCommit, string RebasedCommit);
 public sealed record IntegrationRepairResult(bool Attempted, bool Completed);
 public class GitIntegrationConflictException(string message, Exception? inner = null) : Exception(message, inner);
+internal sealed class GitConflictResolutionIncompleteException(string message) : GitIntegrationConflictException(message);
 
 public sealed class GitIntegrationArchiveException(string message, Exception inner) : GitIntegrationConflictException(message, inner);
 
@@ -32,6 +33,9 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
     private FileStream? _workerLock;
     private bool _implementationAlreadyCommitted;
     private bool _forcePostRebaseValidation;
+    private bool _preservePartialConflictResolution;
+
+    public void PreservePartialConflictResolution() => _preservePartialConflictResolution = true;
 
     private Func<GitIntegrationResult, bool, CancellationToken, Task>? _integrationObserver;
     public IGitRepository WithIntegrationObserver(Func<GitIntegrationResult, bool, CancellationToken, Task> observer)
@@ -367,6 +371,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 return "recovery state invalid: repository or integration branch differs from persisted execution configuration";
             if (source.State != "IntegrationConflict" || string.IsNullOrWhiteSpace(source.RecoveryBaseCommit))
                 return "recovery state invalid: implementation commit metadata is missing";
+            var ownership = await InspectRecoveryOwnershipAsync(source, ct);
+            if (ownership.Error is { } error) return error.Message;
             await ValidateRecoveryWorkspaceAsync(RecoveryWorkspacePath(source), source, ct);
             return null;
         }
@@ -396,6 +402,10 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             throw new IssuePreparationRejectedException("Recovery workspace path is a link; refusing recovery.");
         var top = (await GitAtAsync(source, ["rev-parse", "--show-toplevel"], ct)).StandardOutput.Trim();
         if (!PathEquals(top, source)) throw new IssuePreparationRejectedException("Recovery workspace is not its own Git worktree.");
+        var common = (await GitAsync(["rev-parse", "--git-common-dir"], ct)).StandardOutput.Trim();
+        var workspaceCommon = (await GitAtAsync(source, ["rev-parse", "--git-common-dir"], ct)).StandardOutput.Trim();
+        if (!PathEquals(Path.GetFullPath(common, directory), Path.GetFullPath(workspaceCommon, source)))
+            throw new IssuePreparationRejectedException("Recovery workspace belongs to a different repository.");
         var branch = (await GitAtAsync(source, ["branch", "--show-current"], ct)).StandardOutput.Trim();
         var head = (await GitAtAsync(source, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
         if (branch != recovery.FeatureBranch || head != recovery.RecoveryBaseCommit)
@@ -753,6 +763,7 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                     settings.PushCompletedBranch ? _completedBranch : settings.DeleteLocalFeatureBranch ? null : _featureBranch,
                     _resourceExecutionId, _resourceAttemptNumber);
                 if (_integrationObserver is not null) await _integrationObserver(prepared, false, ct);
+                if (ensureAuthority is not null) await ensureAuthority(ct);
                 var prePush = (await GitAsync(["rev-parse", settings.BaseBranch], ct)).StandardOutput.Trim();
                 await GitAsync(["merge", "--ff-only", $"refs/heads/{_featureBranch}"], ct);
                 await PushVerifiedAsync(settings.BaseBranch, commit, prePush, ct, ensureAuthority);
@@ -893,8 +904,14 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
             throw new WorkerInfrastructureException($"Git rebase for Issue #{issueNumber} failed without a confirmed merge conflict; repository state is preserved for inspection.");
 
         var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
-        if (await resolveConflict(Tail(detail), ct))
+        var conflictHead = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+        var replayedCommit = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "REBASE_HEAD"], ct)).StandardOutput.Trim();
+        if (await resolveConflict($"Base branch: {settings.BaseBranch}\nReplayed commit: {replayedCommit}\n{Tail(detail)}\nUnmerged index:\n{Tail(unmerged)}", ct))
         {
+            var resolvedHead = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "HEAD"], ct)).StandardOutput.Trim();
+            var resolvedReplay = (await GitAtAsync(ExecutionDirectory, ["rev-parse", "REBASE_HEAD"], ct)).StandardOutput.Trim();
+            if (resolvedHead != conflictHead || resolvedReplay != replayedCommit)
+                throw new WorkerInfrastructureException("Conflict resolver changed Git history or rebase identity; preserving the workspace for inspection.");
             await GitAtAsync(ExecutionDirectory, ["add", "--all"], ct);
             var remaining = (await GitAtAsync(ExecutionDirectory, ["ls-files", "-u"], ct)).StandardOutput;
             if (string.IsNullOrWhiteSpace(remaining))
@@ -905,10 +922,12 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 if (continued.ExitCode == 0) return;
                 var unresolved = (await GitAtAsync(ExecutionDirectory, ["ls-files", "-u"], ct)).StandardOutput;
                 if (!string.IsNullOrWhiteSpace(unresolved))
-                    // A repair adds another Worker-owned commit. Continuing the first resolved
-                    // conflict may encounter a conflict in that later commit. Abort through the
-                    // verified recovery path below, retaining the whole implementation lineage.
+                {
+                    if (_preservePartialConflictResolution)
+                        throw new GitConflictResolutionIncompleteException(
+                            $"Resolution reached a further conflict for Issue #{issueNumber}; partial resolution and the rebase remain preserved for inspection.");
                     detail = $"Codex resolution left conflicts unresolved. {Tail(continued.StandardError)}";
+                }
 
                 // Git can report a nonzero continuation result after it has already finished
                 // applying the commit. Treat it as complete only when the rebase state is gone
@@ -922,6 +941,8 @@ public sealed partial class GitRepository(ProcessRunner runner, string directory
                 var status = (await GitAtAsync(ExecutionDirectory,
                     ["status", "--porcelain=v1", "--untracked-files=all"], ct)).StandardOutput;
                 if (!rebaseInProgress && containsBase.ExitCode == 0 && string.IsNullOrWhiteSpace(status)) return;
+                if (_preservePartialConflictResolution)
+                    throw new WorkerInfrastructureException("Rebase continuation could not be verified after conflict resolution; workspace preserved for inspection.");
             }
         }
         try

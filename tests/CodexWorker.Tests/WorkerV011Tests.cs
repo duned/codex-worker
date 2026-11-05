@@ -2833,6 +2833,200 @@ public sealed class WorkerV011Tests
             System.Text.Json.JsonSerializer.Serialize(await history.ReadExecutionAsync(entry.ExecutionId)));
     }
 
+    [Theory]
+    [InlineData("not-an-id")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    [InlineData("12345678-1234-1234-1234-123456789abc", "--apply")]
+    [InlineData("12345678-1234-1234-1234-123456789abc", "--confirm", "--confirm")]
+    [Trait("TestType", "Unit")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictCliRejectsInvalidOrAmbiguousAuthorization(params string[] args)
+    {
+        using var text = new StringWriter();
+        var command = new WorkerCommandLine("executions", "/missing-config.yml", ["resolve-conflict", .. args]);
+        Assert.Equal(ProcessExitCodes.StartupFailure,
+            await ExecutionAdministrationCli.RunAsync(command, new WorkerConsole(text, false, text), CancellationToken.None, text));
+        Assert.Contains("resolve-conflict", text.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictSelectsOriginalAfterSettledConservativeRecovery()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        await history.CreateAsync(source);
+        await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), RetryOfExecutionId = source.ExecutionId,
+            AttemptNumber = 2, Resumed = true });
+        h.Git.RequestConflictResolution = true;
+        Assert.Equal(IssueOutcomeKind.Succeeded,
+            (await h.Worker.ResolveStandaloneConflictAsync(source.ExecutionId, true, CancellationToken.None))?.Kind);
+        Assert.Equal(source.ExecutionId, h.Git.LastRetryOf?.ExecutionId);
+        Assert.Equal(1, h.Codex.ConflictResolutions);
+    }
+
+    [Fact]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictInspectionDoesNotClaimOrInvokeEngine()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        await history.CreateAsync(source);
+        Assert.Null(await h.Worker.ResolveStandaloneConflictAsync(source.ExecutionId, false, CancellationToken.None));
+        Assert.Single(await history.ReadAllAsync());
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+    }
+
+    [Theory]
+    [InlineData("managed")]
+    [InlineData("assignment")]
+    [InlineData("generation")]
+    [InlineData("missing-intent")]
+    [InlineData("claim")]
+    [InlineData("base")]
+    [InlineData("workspace")]
+    [InlineData("process")]
+    [InlineData("later")]
+    [InlineData("active")]
+    [InlineData("unknown-id")]
+    [InlineData("changed-intent")]
+    [InlineData("closed")]
+    [InlineData("ready")]
+    [InlineData("budget")]
+    [InlineData("integration-disabled")]
+    [InlineData("failed-label")]
+    [InlineData("blocked-label")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictResolutionRefusesUnverifiedTargetsWithoutMutation(string refusal)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        source = refusal switch
+        {
+            "managed" => source with { ServerExecutionId = "server" },
+            "assignment" => source with { AssignmentId = "assignment" },
+            "generation" => source with { OwnershipGeneration = 1 },
+            "missing-intent" => source with { OriginalIssueBody = null },
+            "claim" => source with { IntegrationRecoveryClaim = Guid.NewGuid() },
+            "base" => source with { BaseBranch = "other" },
+            _ => source
+        };
+        if (refusal == "base") h.Git.RecoveryRejection = "base mismatch";
+        if (refusal == "workspace") h.Git.RecoveryRejection = "workspace identity mismatch";
+        if (refusal == "process") h.Git.ProcessBlocker = "workspace-process-active";
+        if (refusal == "changed-intent") h.GitHub.Issue = h.GitHub.Issue with { Body = "changed" };
+        if (refusal == "closed") h.GitHub.Closed = true;
+        if (refusal == "ready") h.GitHub.CompletionLabels = ["ready"];
+        if (refusal == "budget") h.Worker.Configuration.Validation.MaxFixAttempts = 0;
+        if (refusal == "integration-disabled") h.Worker.Configuration.Git.AutoMerge = false;
+        if (refusal == "failed-label") h.GitHub.CompletionLabels = ["working", "failed"];
+        if (refusal == "blocked-label") h.GitHub.CompletionLabels = ["working", "blocked"];
+        await history.CreateAsync(source);
+        if (refusal is "later" or "active")
+            await history.CreateAsync(source with { ExecutionId = Guid.NewGuid(), AttemptNumber = 2,
+                CompletedAtUtc = refusal == "active" ? null : source.CompletedAtUtc });
+        await Assert.ThrowsAnyAsync<Exception>(() => h.Worker.ResolveStandaloneConflictAsync(
+            refusal == "unknown-id" ? Guid.NewGuid() : source.ExecutionId, true, CancellationToken.None));
+        Assert.Empty(h.GitHub.Labels);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+        Assert.Equal(0, h.Git.Cleanups);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(source),
+            System.Text.Json.JsonSerializer.Serialize(await history.ReadExecutionAsync(source.ExecutionId)));
+    }
+
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("ccc")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictResolutionUsesSelectedEngineAndExistingIntegrationLifecycle(string engine)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        var implementation = new ImplementationEngineTests.Engine();
+        using var h = new Harness(history: history, engine: implementation);
+        h.GitHub.Issue = h.GitHub.Issue with { Body = "## Worker\nengine: " + engine };
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body, Engine = engine };
+        await history.CreateAsync(source);
+        h.Git.RequestConflictResolution = true;
+        var result = await h.Worker.ResolveStandaloneConflictAsync(source.ExecutionId, true, CancellationToken.None);
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        Assert.Equal(1, h.Git.RecoveryStarted);
+        Assert.Equal(source.ExecutionId, h.Git.LastRetryOf?.ExecutionId);
+        Assert.Equal(0, h.Git.Started);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(1, h.Validation.Calls);
+        if (engine == "codex")
+        {
+            Assert.Equal(1, h.Codex.ConflictResolutions);
+            Assert.Equal(h.Git.ExecutionDirectory, h.Codex.ConflictDirectory);
+        }
+        else Assert.Equal(h.Git.ExecutionDirectory, Assert.Single(implementation.Requests).ProjectDirectory);
+        Assert.True(h.GitHub.Closed);
+        var rows = await history.ReadAllAsync();
+        Assert.Equal("integration-recovered", rows.Single(row => row.ExecutionId == source.ExecutionId).RecoveryState);
+        var completed = rows.Single(row => row.State == "Completed");
+        Assert.Equal(source.ExecutionId, completed.RetryOfExecutionId);
+        Assert.Contains("Operator authorized conflict resolution", completed.RecoveryStatus, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("changed-intent")]
+    [InlineData("validation")]
+    [Trait("TestType", "Component")]
+    [Trait("Duration", "Fast")]
+    public async Task ExplicitConflictResolutionFailurePreservesSourceAndNeverCompletesIssue(string failure)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history, gracefulShutdown: true);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        await history.CreateAsync(source);
+        h.Git.RequestConflictResolution = true;
+        h.Git.Recovery = new(source.FeatureBranch, source.RecoveryBaseCommit ?? "missing", "preserved");
+        h.Codex.ConflictAction = () =>
+        {
+            if (failure == "cancelled") { h.Cancellation.Cancel(); h.Cancellation.Token.ThrowIfCancellationRequested(); }
+            if (failure == "changed-intent") h.GitHub.Issue = h.GitHub.Issue with { Body = "changed" };
+            return new CodexOutcome(failure == "failed" ? "failed" : "success", "resolution result", [], false, null);
+        };
+        if (failure is "validation" or "failed")
+        {
+            if (failure == "validation") h.Validation.Results.Enqueue(Failure("check", 1, "failed"));
+            Assert.Equal(IssueOutcomeKind.IntegrationConflict,
+                (await h.Worker.ResolveStandaloneConflictAsync(source.ExecutionId, true, h.Cancellation.Token))?.Kind);
+        }
+        else await Assert.ThrowsAnyAsync<Exception>(() => h.Worker.ResolveStandaloneConflictAsync(source.ExecutionId, true, h.Cancellation.Token));
+        Assert.False(h.GitHub.Closed);
+        Assert.DoesNotContain("working->done", h.GitHub.Labels);
+        if (failure == "changed-intent")
+        {
+            Assert.DoesNotContain("working->blocked", h.GitHub.Labels);
+            Assert.Empty(h.GitHub.Comments);
+        }
+        Assert.Equal(0, h.Git.Cleanups);
+        var retained = await history.ReadExecutionAsync(source.ExecutionId);
+        Assert.NotNull(retained);
+        Assert.Equal("integration-conflict", retained.RecoveryState);
+        Assert.Equal(source.FeatureBranch, retained.FeatureBranch);
+        Assert.Equal(source.RecoveryBaseCommit, retained.RecoveryBaseCommit);
+        Assert.Equal(2, (await history.ReadAllAsync()).Count);
+    }
+
     private static ExecutionHistoryEntry PreservedConflict() => new(Guid.NewGuid(), "Test Project", "owner/repo", 17,
         "Example task", "feature/example-task-17", "main", DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow,
         "IntegrationConflict", 1000, "Original implementation intent", "passed", 0, [], "preserved-head", "main", null,
@@ -3309,6 +3503,7 @@ public sealed class WorkerV011Tests
         public Func<Task>? IntegrationAction { get; set; }
         public Task<string?> GetIntegrationBaseAsync(CancellationToken ct) => Task.FromResult(IntegrationBase);
         public Task<GitRecoveryInfo?> PreserveIntegrationConflictAsync(CancellationToken ct) => Task.FromResult(Recovery);
+        public void PreservePartialConflictResolution() { }
         public Task StartIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct)
         { RecoveryStarted++; LastRetryOf = source; return Task.CompletedTask; }
         public Task<string?> ValidateIntegrationRecoveryAsync(ExecutionHistoryEntry source, CancellationToken ct) =>
@@ -3323,6 +3518,9 @@ public sealed class WorkerV011Tests
             if (Recovery is null) Cleanups++;
             return Task.FromResult(Recovery);
         }
+        public string? ProcessBlocker { get; set; }
+        public Task<string?> InspectExecutionProcessesAsync(ExecutionHistoryEntry source, CancellationToken ct) => Task.FromResult(ProcessBlocker);
+        public bool RequestConflictResolution { get; set; }
         public bool CheckConflictPolicy { get; set; }
         public int ConflictPolicyChecks { get; private set; }
         public async Task<GitIntegrationResult> CommitAndIntegrateAsync(GitHubIssue issue,
@@ -3331,6 +3529,14 @@ public sealed class WorkerV011Tests
             Func<IntegrationRepairContext, CancellationToken, Task<IntegrationRepairResult>> repairIntegration,
             CancellationToken ct, Func<CancellationToken, Task>? ensureAuthority = null)
         {
+            if (RequestConflictResolution)
+            {
+                if (ensureAuthority is not null) await ensureAuthority(ct);
+                Assert.True(await resolveConflict("confirmed rebase conflict", ct));
+                var validated = await validateAfterRebase(ct);
+                if (!validated.Succeeded) throw new PostRebaseValidationException("validation failed", validated.Failure);
+                if (ensureAuthority is not null) await ensureAuthority(ct);
+            }
             if (CheckConflictPolicy)
             {
                 ConflictPolicyChecks++;
@@ -3365,11 +3571,14 @@ public sealed class WorkerV011Tests
     private sealed class FakeCodex(List<string> events) : ICodexExecutor
     {
         public int ConflictResolutions { get; private set; }
+        public string? ConflictDirectory { get; private set; }
+        public Func<CodexOutcome>? ConflictAction { get; set; }
         public Task<CodexOutcome> ResolveIntegrationConflictAsync(string projectDirectory, string instructionsFile,
             GitHubIssue issue, string conflictDetails, CancellationToken ct)
         {
             ConflictResolutions++;
-            return Task.FromResult(Success("resolved"));
+            ConflictDirectory = projectDirectory;
+            return Task.FromResult(ConflictAction?.Invoke() ?? Success("resolved"));
         }
         public ICodexQuotaReader? QuotaReader { get; set; }
         public List<GitHubIssue> Issues { get; } = [];

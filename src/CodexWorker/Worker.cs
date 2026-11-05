@@ -196,7 +196,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     }
 
     private async Task<Task<IssueProcessingResult?>?> ClaimIntegrationRecoveryAsync(GitHubIssue issue, CancellationToken ct, bool explicitRecovery = true,
-        WorkerAssignmentContract? assignment = null)
+        WorkerAssignmentContract? assignment = null, Guid? resolveExecutionId = null)
     {
         var issueKey = issue.Number;
         if (!_activeIssues.TryAdd(issueKey, 0)) return null;
@@ -208,7 +208,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number &&
                 entry.State == "IntegrationConflict" && entry.RecoveryState is (null or "integration-conflict"))
                 .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
-            var source = prior.FirstOrDefault();
+            var source = resolveExecutionId is { } exactId ? prior.SingleOrDefault(entry => entry.ExecutionId == exactId) : prior.FirstOrDefault();
             // Recovery attempts use their original worktree, not a workspace named for the new history row.
             // A later implementation or completion supersedes older conflicts.
             var latest = allHistory.Where(entry => entry.Project == config.Project.Name &&
@@ -218,6 +218,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 latest.FeatureBranch != source.FeatureBranch) source = null;
             if (source is null)
             {
+                if (resolveExecutionId is not null) throw new InvalidOperationException("Selected execution is stale or no longer recoverable.");
                 const string missingHistoryReason = "no recoverable integration-conflict execution history";
                 if (!explicitRecovery)
                 {
@@ -234,8 +235,10 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
+            if (resolveExecutionId is not null)
+                await VerifyConflictResolutionAsync(source, allHistory, ct);
             var lineage = new HashSet<Guid> { source.ExecutionId };
-            while (source.RetryOfExecutionId is { } parentId)
+            while (resolveExecutionId is null && source.RetryOfExecutionId is { } parentId)
             {
                 var parent = allHistory.FirstOrDefault(entry => entry.ExecutionId == parentId);
                 if (parent is null || parent.Project != source.Project || parent.Repository != source.Repository ||
@@ -316,20 +319,25 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 execution.CodexSessionOwner = source.CodexSessionOwner;
             }
             if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
-                    CreateInitialEntry(execution), integrationBase ?? "explicit", explicitRecovery, ct))
+                    CreateInitialEntry(execution) with
+                    {
+                        RecoveryStatus = resolveExecutionId is null ? null : $"Operator authorized conflict resolution for execution {source.ExecutionId}."
+                    }, integrationBase ?? "explicit", explicitRecovery, ct))
             {
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
             claimedExecution = execution;
+            if (resolveExecutionId is not null) await VerifyConflictIntentAsync(source, ct);
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
+            if (resolveExecutionId is not null) await VerifyConflictIntentAsync(source, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
             _operationalLog($"Integration recovery claimed · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {source.ExecutionId}");
             DisplayIssueStart(issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
-            return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true);
+            return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true, resolveIntegrationConflict: resolveExecutionId is not null);
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {
@@ -571,7 +579,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
          entry.FailureReason?.StartsWith($"Integration conflict for Issue #{entry.IssueNumber};", StringComparison.Ordinal) == true);
 
     private async Task<IssueProcessingResult?> ProcessClaimedAsync(WorkerExecution execution, GitHubIssue issue, ExecutionHistoryEntry? retryOf,
-        int issueKey, CancellationToken ct, bool integrationRecovery = false, bool interruptedExecution = false)
+        int issueKey, CancellationToken ct, bool integrationRecovery = false, bool interruptedExecution = false, bool resolveIntegrationConflict = false)
     {
         var finalQuotaDisplayed = false;
         try
@@ -585,7 +593,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             }
             await ReadQuotaAsync(final: false, ct);
             var timer = Stopwatch.StartNew();
-            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery, interruptedExecution), ct);
+            var result = await RunExecutionAsync(new ExecutionContext(execution, issue, retryOf, integrationRecovery, interruptedExecution, resolveIntegrationConflict), ct);
             timer.Stop();
             await TransitionAsync(execution, ExecutionState.Reporting, ct);
             var report = result.Report with { Duration = timer.Elapsed, ExecutionId = execution.ExecutionId,
@@ -609,6 +617,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                     ExecutionCompletion.Read(pending) with { Report = ExecutionCompletion.Sanitize(report, config.Environment.Variables.Values.ToArray()) }, false, ct);
             try
             {
+                if (resolveIntegrationConflict && retryOf is not null) await VerifyConflictIntentAsync(retryOf, ct);
                 report = await ReportResultAsync(issue, reportedResult, ct);
                 execution.QuotaAtEnd = report.QuotaAtEnd;
                 reportedResult = result with { Report = report };
@@ -644,11 +653,16 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
         {
-            await ReportInterruptedExecutionAsync(execution, issue, "Cancellation interrupted execution.", ex);
+            await ReportInterruptedExecutionAsync(execution, issue, "Cancellation interrupted execution.", ex, suppressGitHubMutations: resolveIntegrationConflict);
             throw new WorkerInfrastructureException("Cancellation interrupted an operation while Issue or repository state may be uncertain; inspect before restarting.", ex);
         }
         catch (PreExecutionInfrastructureException ex)
         {
+            if (resolveIntegrationConflict)
+            {
+                await RecordInfrastructureFailureAsync(execution, ex.Message, "preparation-failed");
+                throw;
+            }
             await RejectPreparationAsync(execution, issue, config.GitHub.WorkingLabel, ex.Message, CancellationToken.None,
                 ex.InnerException is ProjectCheckoutDirtyException ? null : "preparation-failed");
             return null;
@@ -656,7 +670,8 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
         catch (Exception ex)
         {
             await ReportInterruptedExecutionAsync(execution, issue,
-                ex is CodexExecutionInfrastructureException codexError ? $"{codexError.Category}. Execution preserved; waiting for Codex readiness." : ex.Message, ex);
+                ex is CodexExecutionInfrastructureException codexError ? $"{codexError.Category}. Execution preserved; waiting for Codex readiness." : ex.Message, ex,
+                suppressGitHubMutations: resolveIntegrationConflict);
             if (ex is GitHubOperationException githubFailure)
                 throw githubFailure.ForExecution(execution.ExecutionId);
             if (ex is WorkerInfrastructureException && history is not null &&
@@ -700,7 +715,7 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
     }
 
     private async Task ReportInterruptedExecutionAsync(WorkerExecution execution, GitHubIssue issue, string reason,
-        Exception? primaryFailure = null)
+        Exception? primaryFailure = null, bool suppressGitHubMutations = false)
     {
         var safeReason = Limit(FailureDiagnosticRedactor.Redact(reason, config.Environment.Variables.Values.ToArray()), 1200);
         var primaryGitHubFailure = primaryFailure is null ? null : GitHubOperationException.Find(primaryFailure);
@@ -748,6 +763,9 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             _operationalLog($"Execution {execution.ExecutionId} · remote push outcome uncertain or completion reporting pending · verify the exact integration commit on the authoritative remote base; do not replay Codex.");
             return;
         }
+        // An explicit local recovery failure may have observed changed intent or uncertain
+        // state. Retain diagnostics and the claim without changing that Issue again.
+        if (suppressGitHubMutations) return;
         try
         {
             // These reporting mutations are attempted once. A failed mutation is retained for

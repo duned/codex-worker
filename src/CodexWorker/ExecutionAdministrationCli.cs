@@ -2,13 +2,15 @@ using System.Text.Json;
 
 namespace CodexWorker;
 
-/// <summary>Offline, checkout-fenced administration. Never replays execution or completion effects.</summary>
+/// <summary>Offline, checkout-fenced administration. Execution requires separate exact-target confirmation.</summary>
 internal static class ExecutionAdministrationCli
 {
     internal const string Help = """
         Usage: codex-worker executions list [--config <path>]
                codex-worker executions show <execution-id> [--config <path>]
                codex-worker executions acknowledge <execution-id> [--confirm] [--prune] [--config <path>]
+               codex-worker executions resolve-conflict <execution-id> [--confirm] [--config <path>]
+        Resolve-conflict inspects by default; --confirm authorizes one bounded recovery.
         Acknowledge defaults to dry-run. Stop the Worker first. Remote Issue proof is required.
         --prune removes only the retained Issue prompt, never history, provenance, branches,
         worktrees or session evidence. Managed ownership must be reconciled on the Server.
@@ -62,6 +64,8 @@ internal static class ExecutionAdministrationCli
         {
             var args = command.Arguments;
             var action = args.FirstOrDefault();
+            if (action == "resolve-conflict")
+                return await StandaloneConflictResolutionCli.RunAsync(command, output, destination, databasePath, ct);
             var list = action == "list" && args.Count == 1;
             var show = action == "show" && args.Count == 2;
             var acknowledge = action == "acknowledge" && args.Count >= 2 &&
@@ -81,7 +85,8 @@ internal static class ExecutionAdministrationCli
                     {
                         entry.ExecutionId, entry.Project, entry.Repository, entry.IssueNumber, entry.State,
                         entry.CompletedAtUtc, entry.RecoveryState, entry.ValidationOutcome, entry.CommitSha,
-                        entry.IntegrationBranch,
+                        entry.IntegrationBranch, entry.FeatureBranch, entry.BaseBranch, entry.RecoveryBaseCommit,
+                        entry.RecoveryStatus, entry.RetryOfExecutionId, entry.AttemptNumber, entry.IntegrationRecoveryClaim,
                         acknowledgment = await history.ReadAcknowledgementAsync(entry.ExecutionId, ct),
                         legacyReview = await history.ReadLegacyReviewAsync(entry.ExecutionId, ct),
                         eligibility = Ineligible(entry, entries) ?? "Remote verification and exclusive checkout lock required",

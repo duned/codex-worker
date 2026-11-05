@@ -179,3 +179,7 @@ maintenance inspection/cleanup to review deferred resources. Once resource-free,
 the normal 30-day archive policy applies; history, lineage, anti-duplicate receipts
 and proof remain retained, never physically purged. Managed histories require the
 original Server's fresh protocol authorization and are not reinterpreted here.
+
+For an open standalone Issue with a retained integration conflict, use the separate
+[explicit conflict-resolution workflow](standalone-conflict-resolution.md).
+Acknowledgment does not resolve conflicts or authorize implementation execution.
