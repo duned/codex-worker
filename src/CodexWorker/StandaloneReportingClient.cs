@@ -39,7 +39,7 @@ internal sealed class StandaloneReportingClient : IDisposable
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", local.Credential);
         request.Content = JsonContent.Create(snapshot);
         using var response = await WorkerServerHttpTransport.SendAsync(client, request, TimeSpan.FromSeconds(5), ct);
-        return response.IsSuccessStatusCode ? "reporting" : response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "unauthorized" : "rejected";
+        return await ReportingResultAsync(response, ct);
     }
     public void Dispose() { if (ownsClient) client.Dispose(); }
 
@@ -49,6 +49,11 @@ internal sealed class StandaloneReportingClient : IDisposable
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", local.Credential);
         request.Content = JsonContent.Create(report);
         using var response = await WorkerServerHttpTransport.SendAsync(client, request, TimeSpan.FromSeconds(5), ct);
+        return await ReportingResultAsync(response, ct);
+    }
+
+    private static async Task<string> ReportingResultAsync(HttpResponseMessage response, CancellationToken ct)
+    {
         if (!response.IsSuccessStatusCode)
             return response.StatusCode switch
             {

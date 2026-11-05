@@ -20,6 +20,92 @@ public sealed class StandaloneReportingTests
     private static StandaloneReportingCredential Local(bool accepted = true) => new(1, "obs_" + Guid.NewGuid().ToString("N"),
         Server, "obr_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)), accepted, accepted);
 
+    [Theory]
+    [InlineData("lost")]
+    [InlineData("unknown")]
+    [InlineData("oversize")]
+    [InlineData("malformed")]
+    [InlineData("unavailable")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task UnacknowledgedSnapshotReplaysAfterRestartWithoutRefreshingServerReceipt(string failure)
+    {
+        using var fixture = new Fixture();
+        var local = Local();
+        await fixture.Store.SaveAsync(local, CancellationToken.None);
+        var clock = new PairingClock();
+        var registry = new SqliteRegistryStore(Path.Combine(fixture.Root, "registry.db"), timeProvider: clock);
+        await registry.InitializeAsync();
+        var pairing = new ObserverPairingRequest(1, ObserverProtocol.Mode, local.ObserverId, Server);
+        var authorization = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(pairing));
+        Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, local.Credential));
+        var bodies = new List<string>();
+        using var http = new HttpClient(new Handler(async (request, ct) =>
+        {
+            var body = await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadAsStringAsync(ct);
+            bodies.Add(body);
+            var report = ObserverProtocol.ReadSnapshot(System.Text.Encoding.UTF8.GetBytes(body));
+            var persisted = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(ct));
+            Assert.Equal(report.SnapshotId, persisted.PendingSnapshot?.SnapshotId);
+            var result = await registry.IngestObserverSnapshotAsync(Server, local.Credential, report, ct);
+            Assert.True(result is ObserverIngestionResult.Accepted or ObserverIngestionResult.Duplicate);
+            if (bodies.Count == 1) return failure switch
+            {
+                "lost" => throw new HttpRequestException("Lost acknowledgement."),
+                "unknown" => Json(new { state = "unknown" }),
+                "oversize" => Json(new { state = "accepted", padding = new string('x', 1024) }),
+                "malformed" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{") },
+                _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            };
+            return Json(new { state = "duplicate" });
+        }));
+        using var client = new StandaloneReportingClient(http);
+        await using (var reporter = fixture.Reporter(client)) await reporter.ReportOnceAsync(CancellationToken.None);
+        Assert.NotNull((await fixture.Store.LoadAsync(CancellationToken.None))?.PendingSnapshot);
+        clock.Now = Now.AddMinutes(1);
+        await using (var reporter = fixture.Reporter(client)) await reporter.ReportOnceAsync(CancellationToken.None);
+        Assert.Equal(2, bodies.Count);
+        Assert.Equal(bodies[0], bodies[1]);
+        var state = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(CancellationToken.None));
+        Assert.Null(state.PendingSnapshot);
+        Assert.Equal("reporting", state.LastResult);
+        Assert.Equal(Now, Assert.Single(await registry.ListObserversAsync()).SnapshotReceivedAtUtc);
+        Assert.Equal("running", fixture.Runtime.State);
+        Assert.Empty(await registry.GetWorkersAsync());
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task ExpiredAndPermanentlyRefusedSnapshotsAllowCurrentStatusOnNextInterval()
+    {
+        using var fixture = new Fixture();
+        var local = Local();
+        var expired = await fixture.Runtime.ObserverSnapshotAsync(local.ObserverId, Now.AddDays(-7), CancellationToken.None);
+        await fixture.Store.SaveAsync(local with { PendingSnapshot = expired }, CancellationToken.None);
+        var snapshots = new List<ObserverStatusSnapshot>();
+        using var http = new HttpClient(new Handler(async (request, ct) =>
+        {
+            snapshots.Add(ObserverProtocol.ReadSnapshot(await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadAsByteArrayAsync(ct)));
+            return snapshots.Count == 1 ? new HttpResponseMessage(HttpStatusCode.Conflict) : Json(new { state = "accepted" });
+        }));
+        using var client = new StandaloneReportingClient(http);
+        await using var reporter = fixture.Reporter(client);
+        await reporter.ReportOnceAsync(CancellationToken.None);
+        var refused = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(CancellationToken.None));
+        Assert.Null(refused.PendingSnapshot);
+        Assert.Equal("rejected", refused.LastResult);
+        Assert.Null(refused.LastReportAtUtc);
+        fixture.Runtime.State = "stopped";
+        await reporter.ReportOnceAsync(CancellationToken.None);
+        Assert.Equal(2, snapshots.Count);
+        Assert.NotEqual(expired.SnapshotId, snapshots[0].SnapshotId);
+        Assert.Equal(Now, snapshots[0].ObservedAtUtc);
+        Assert.NotEqual(snapshots[0].SnapshotId, snapshots[1].SnapshotId);
+        Assert.Equal("stopped", snapshots[1].Lifecycle);
+        Assert.Null((await fixture.Store.LoadAsync(CancellationToken.None))?.PendingSnapshot);
+    }
+
     [Fact]
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Fast")]
@@ -171,7 +257,7 @@ public sealed class StandaloneReportingTests
     }
 
     [Theory]
-    [InlineData("error", "rejected")]
+    [InlineData("error", "unavailable")]
     [InlineData("revoked", "unauthorized")]
     [InlineData("timeout", "unavailable")]
     [InlineData("exception", "unavailable")]
@@ -316,11 +402,16 @@ public sealed class StandaloneReportingTests
         for (var number = 0; number < 33; number++)
             await fixture.History.CreateAsync(new(Guid.NewGuid(), new string('界', 200), "owner/repo", number + 1, new string('界', 500), "branch", "main",
                 Now.AddMinutes(-1), null, "Implementing", null, null, null, 0, [], null, null, null, null));
-        var snapshot = await fixture.Runtime.ObserverSnapshotAsync(Local().ObserverId, Now, CancellationToken.None);
+        var local = Local();
+        var snapshot = await fixture.Runtime.ObserverSnapshotAsync(local.ObserverId, Now, CancellationToken.None);
         Assert.True(snapshot.IsValid());
         Assert.InRange(snapshot.Executions.Count, 1, ObserverProtocol.MaximumExecutions - 1);
         Assert.Null(snapshot.ActiveExecutions);
         Assert.True(JsonSerializer.SerializeToUtf8Bytes(snapshot, new JsonSerializerOptions(JsonSerializerDefaults.Web)).Length <= ObserverProtocol.MaximumPayloadBytes);
+        await fixture.Store.SaveAsync(local with { PendingSnapshot = snapshot }, CancellationToken.None);
+        var retained = Assert.IsType<StandaloneReportingCredential>(await fixture.Store.LoadAsync(CancellationToken.None));
+        Assert.Equal(snapshot.SnapshotId, retained.PendingSnapshot?.SnapshotId);
+        Assert.Equal(snapshot.Executions.Count, retained.PendingSnapshot?.Executions.Count);
     }
 
     [Theory]

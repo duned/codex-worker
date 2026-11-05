@@ -23,9 +23,9 @@ and registration recovery use `Cache-Control: no-store`.
 
 ## Dashboard to CLI pairing
 
-The Server implements pairing, report ingestion, storage and inspection APIs.
-Dashboard UI is separate work. The standalone Worker CLI can pair and send passive
-runtime snapshots as described below.
+The Server dashboard's Workers page has a separate, read-only standalone section
+with pairing, receipt freshness, reported status, execution history and revocation.
+The standalone Worker CLI pairs and sends passive runtime snapshots as described below.
 
 ## Standalone Worker operation
 
@@ -83,6 +83,15 @@ Server retention cutoffs still apply. Attempts outside the bounded window are
 omitted. Disconnecting and pairing a fresh identity starts a fresh cursor.
 Reporting never invokes implementation, validation, integration, Git/GitHub
 operations, recovery or managed execution reporting.
+
+Before transmission, one bounded pending snapshot is atomically retained with the
+protected local reporting state. Lost, malformed or unrecognized acknowledgements
+replay that same snapshot identity and body, including after restart. Only an
+`accepted` or `duplicate` acknowledgement completes delivery; a permanent protocol
+or retention refusal clears the snapshot so the next interval can report current
+status. Pending snapshots outside the seven-day admission window are refreshed.
+Duplicate replay does not advance Server receipt freshness. Disconnect deletes
+the pending snapshot together with the reporting credential.
 
 Credentials and pending recovery proof are atomically stored with owner-only Unix
 file permissions, separately from managed enrollment. A local process-shared lock

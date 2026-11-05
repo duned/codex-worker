@@ -77,8 +77,20 @@ internal sealed class StandaloneReporting : IAsyncDisposable
             string result;
             try
             {
-                var snapshot = await runtime.ObserverSnapshotAsync(local.ObserverId, clock.GetUtcNow(), ct);
+                var now = clock.GetUtcNow();
+                // Persist before sending: an uncertain response must replay the same identity and body,
+                // including after restart. Refresh only outside the Server's admission window.
+                var snapshot = local.PendingSnapshot is { } pending && pending.ObservedAtUtc > now.AddDays(-7)
+                    ? pending : await runtime.ObserverSnapshotAsync(local.ObserverId, now, ct);
+                local = local with { PendingSnapshot = snapshot };
+                await store.SaveAsync(local, ct);
                 result = snapshot.IsValid() ? await client.ReportAsync(local, snapshot, ct) : "rejected";
+                if (result is "reporting" or "refused")
+                {
+                    local = local with { PendingSnapshot = null };
+                    await store.SaveAsync(local, ct);
+                    if (result == "refused") result = "rejected";
+                }
                 if (result == "reporting")
                 {
                     var reports = await runtime.ObserverHistory.PrepareObserverDeliveryAsync(local.ObserverId, clock.GetUtcNow(), ct);
