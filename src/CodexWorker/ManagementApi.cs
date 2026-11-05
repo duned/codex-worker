@@ -169,7 +169,9 @@ public sealed class WorkerRuntimeReadModel
 
     internal async Task<ObserverStatusSnapshot> ObserverSnapshotAsync(string observerId, DateTimeOffset now, CancellationToken ct) =>
         StandaloneReportingSnapshot.Create(observerId, now, await StatusAsync(ct),
-            (await _history.ReadActiveAsync(ct)).Select(ProjectExecution).ToArray());
+            (await _history.ReadObserverHistoryAsync(ct)).Where(item => item.CompletedAtUtc is null).Select(ExecutionHistoryStore.ObserverSummary).ToArray());
+
+    internal ExecutionHistoryStore ObserverHistory => _history;
 
     public IReadOnlyList<WorkerCapability> Capabilities =>
     [

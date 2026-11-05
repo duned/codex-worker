@@ -7,11 +7,10 @@ internal static class StandaloneReportingSnapshot
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal static ObserverStatusSnapshot Create(string observerId, DateTimeOffset now, WorkerStatus status,
-        IReadOnlyList<ExecutionRuntimeInfo> active)
+        IReadOnlyList<ObserverExecution> active)
     {
-        var executions = active.Where(item => item.CompletedAtUtc is null && item.Result is null).Take(ObserverProtocol.MaximumExecutions).Select(item => new ObserverExecution(
-            item.ExecutionId.ToString("N"), item.Project, item.Repository, item.IssueNumber, item.IssueTitle, item.State,
-            null, null, item.StartedAtUtc.ToUniversalTime())).Where(item => item.IsValid() && item.StartedAtUtc <= now).ToArray();
+        var executions = active.Where(item => item.CompletedAtUtc is null && item.Outcome is null && item.IsValid() && item.StartedAtUtc <= now)
+            .Take(ObserverProtocol.MaximumExecutions).ToArray();
         var lifecycle = WorkerLifecycleStates.IsValid(status.State) ? status.State : status.State switch
         {
             "shutting-down" => WorkerLifecycleStates.Stopped,
@@ -80,6 +79,23 @@ internal sealed class StandaloneReporting : IAsyncDisposable
             {
                 var snapshot = await runtime.ObserverSnapshotAsync(local.ObserverId, clock.GetUtcNow(), ct);
                 result = snapshot.IsValid() ? await client.ReportAsync(local, snapshot, ct) : "rejected";
+                if (result == "reporting")
+                {
+                    var reports = await runtime.ObserverHistory.PrepareObserverDeliveryAsync(local.ObserverId, clock.GetUtcNow(), ct);
+                    foreach (var report in reports)
+                    {
+                        result = await client.ReportEventAsync(local, report, ct);
+                        if (result == "refused")
+                        {
+                            // A permanent protocol/retention refusal must not poison the remaining backlog.
+                            // Keep a distinct local disposition; it is not an acknowledgement or execution outcome.
+                            await runtime.ObserverHistory.SettleObserverDeliveryAsync(report, true, ct);
+                            result = "rejected";
+                        }
+                        if (result != "reporting") break; // One bounded exchange per event; retry on the next interval.
+                        await runtime.ObserverHistory.AcknowledgeObserverDeliveryAsync(report, ct);
+                    }
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException or JsonException)
@@ -90,7 +106,7 @@ internal sealed class StandaloneReporting : IAsyncDisposable
             Diagnostic(result);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or Microsoft.Data.Sqlite.SqliteException)
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or Microsoft.Data.Sqlite.SqliteException or WorkerInfrastructureException)
         {
             Diagnostic("local-state-unavailable");
         }

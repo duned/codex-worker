@@ -42,4 +42,34 @@ internal sealed class StandaloneReportingClient : IDisposable
         return response.IsSuccessStatusCode ? "reporting" : response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? "unauthorized" : "rejected";
     }
     public void Dispose() { if (ownsClient) client.Dispose(); }
+
+    internal async Task<string> ReportEventAsync(StandaloneReportingCredential local, ObserverExecutionEvent report, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, local.Server + $"/api/v1/observers/{local.ObserverId}/events");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", local.Credential);
+        request.Content = JsonContent.Create(report);
+        using var response = await WorkerServerHttpTransport.SendAsync(client, request, TimeSpan.FromSeconds(5), ct);
+        if (!response.IsSuccessStatusCode)
+            return response.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "unauthorized",
+                HttpStatusCode.BadRequest or HttpStatusCode.Conflict or HttpStatusCode.RequestEntityTooLarge => "refused",
+                _ => "unavailable"
+            };
+        // Do not consume unbounded or unrecognized acknowledgements, or mark an uncertain delivery complete.
+        var bytes = new byte[1025];
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var count = await stream.ReadAsync(bytes.AsMemory(length), ct);
+            if (count == 0) break;
+            length += count;
+        }
+        if (length > 1024) return "rejected";
+        using var acknowledgement = System.Text.Json.JsonDocument.Parse(bytes.AsMemory(0, length));
+        return acknowledgement.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            acknowledgement.RootElement.TryGetProperty("state", out var state) && state.ValueKind == System.Text.Json.JsonValueKind.String &&
+            state.GetString() is "accepted" or "duplicate" ? "reporting" : "rejected";
+    }
 }

@@ -67,7 +67,8 @@ public sealed record ObserverRegistration(int ContractVersion, string ObserverId
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ObserverExecution(string LocalExecutionId, string Project, string Repository, int IssueNumber,
     string IssueTitle, string Stage, string? Outcome, string? ValidationResult, DateTimeOffset StartedAtUtc,
-    DateTimeOffset? CompletedAtUtc = null, long? DurationMilliseconds = null)
+    DateTimeOffset? CompletedAtUtc = null, long? DurationMilliseconds = null,
+    int AttemptNumber = 1, string? RetryOfLocalExecutionId = null, bool Resumed = false)
 {
     public bool IsValid() => ObserverProtocol.ValidId(LocalExecutionId) && ObserverProtocol.Display(Project, 200) &&
         ObserverProtocol.Display(Repository, 300) && Repository.Split('/') is [var owner, var name] &&
@@ -79,7 +80,8 @@ public sealed record ObserverExecution(string LocalExecutionId, string Project, 
         ValidationResult is null or "pending" or "running" or "passed" or "failed" or "cancelled" or "unavailable" &&
         ObserverProtocol.Timestamp(StartedAtUtc) && (CompletedAtUtc is null ||
             ObserverProtocol.Timestamp(CompletedAtUtc.Value) && CompletedAtUtc >= StartedAtUtc) &&
-        DurationMilliseconds is null or >= 0;
+        DurationMilliseconds is null or >= 0 && AttemptNumber >= 1 &&
+        (RetryOfLocalExecutionId is null || ObserverProtocol.ValidId(RetryOfLocalExecutionId) && RetryOfLocalExecutionId != LocalExecutionId);
 
     private static bool ValidRepositoryPart(string value) => value.Length > 0 && value is not "." and not ".." &&
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.');

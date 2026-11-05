@@ -135,10 +135,17 @@ public sealed class StandaloneReportingTests
         await fixture.Store.SaveAsync(local, CancellationToken.None);
         using var http = new HttpClient(new Handler(async (request, ct) =>
         {
-            Assert.Equal(Server + $"/api/v1/observers/{local.ObserverId}/snapshots", request.RequestUri?.AbsoluteUri);
             var body = await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadAsStringAsync(ct);
             foreach (var excluded in new[] { "private", fixture.Root, "TOKEN", "transcript", "prompt", "validation output", "branch" })
                 Assert.DoesNotContain(excluded, body, StringComparison.OrdinalIgnoreCase);
+            if (request.RequestUri?.AbsolutePath.EndsWith("/events", StringComparison.Ordinal) == true)
+            {
+                var report = ObserverProtocol.ReadEvent(System.Text.Encoding.UTF8.GetBytes(body));
+                Assert.Equal(id.ToString("N"), report.Execution.LocalExecutionId);
+                Assert.Equal("unavailable", report.Execution.ValidationResult);
+                return Json(new { state = "accepted" });
+            }
+            Assert.Equal(Server + $"/api/v1/observers/{local.ObserverId}/snapshots", request.RequestUri?.AbsoluteUri);
             var snapshot = ObserverProtocol.ReadSnapshot(System.Text.Encoding.UTF8.GetBytes(body));
             Assert.Equal(ApplicationVersion.Display, snapshot.Version);
             Assert.Equal(2, snapshot.MaximumCapacity);
@@ -148,7 +155,7 @@ public sealed class StandaloneReportingTests
             Assert.Equal(id.ToString("N"), execution.LocalExecutionId);
             Assert.Equal(42, execution.IssueNumber);
             Assert.Equal("Validating", execution.Stage);
-            Assert.Null(execution.ValidationResult);
+            Assert.Equal("unavailable", execution.ValidationResult);
             return Json(new { state = "accepted" });
         }));
         using var client = new StandaloneReportingClient(http);
@@ -346,6 +353,153 @@ public sealed class StandaloneReportingTests
     }
 
     private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
+
+    [Theory]
+    [InlineData("Completed", "success", "passed", "passed")]
+    [InlineData("Failed", "failed", "failed: private output", "failed")]
+    [InlineData("Blocked", "blocked", null, null)]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task OutageAndLostAcknowledgementReplayAfterRestartWithoutChangingLocalHistory(
+        string terminal, string outcome, string? validation, string? expectedValidation)
+    {
+        using var fixture = new Fixture();
+        var local = Local();
+        await fixture.Store.SaveAsync(local, CancellationToken.None);
+        var registry = new CodexServer.SqliteRegistryStore(Path.Combine(fixture.Root, "server.db"), timeProvider: new Clock());
+        await registry.InitializeAsync();
+        var pairing = new ObserverPairingRequest(1, ObserverProtocol.Mode, local.ObserverId, Server);
+        var authorization = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(pairing));
+        Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, local.Credential));
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "Project", "owner/repo", 42, "Issue", "private-branch", "main",
+            Now.AddMinutes(-2), null, "Implementing", null, "private prompt", null, 0, [], null, null, null, "private failure",
+            RetryOfExecutionId: Guid.NewGuid(), AttemptNumber: 2, Resumed: true);
+        await fixture.History.CreateAsync(entry);
+        await fixture.History.CreateAsync(entry with { ExecutionId = Guid.NewGuid(), ServerExecutionId = "managed-execution" });
+        var unavailable = false;
+        var loseAcknowledgement = false;
+        var events = new List<ObserverExecutionEvent>();
+        using var http = new HttpClient(new Handler(async (request, ct) =>
+        {
+            if (unavailable) throw new HttpRequestException("offline");
+            var body = await Assert.IsAssignableFrom<HttpContent>(request.Content).ReadAsByteArrayAsync(ct);
+            if (request.RequestUri?.AbsolutePath.EndsWith("/snapshots", StringComparison.Ordinal) == true)
+            {
+                Assert.Equal(CodexServer.ObserverIngestionResult.Accepted,
+                    await registry.IngestObserverSnapshotAsync(Server, local.Credential, ObserverProtocol.ReadSnapshot(body), ct));
+                return Json(new { state = "accepted" });
+            }
+            var report = ObserverProtocol.ReadEvent(body);
+            events.Add(report);
+            var result = await registry.IngestObserverEventAsync(Server, local.Credential, report, ct);
+            Assert.True(result is CodexServer.ObserverIngestionResult.Accepted or CodexServer.ObserverIngestionResult.Duplicate);
+            if (loseAcknowledgement) throw new HttpRequestException("lost acknowledgement");
+            return Json(new { state = result == CodexServer.ObserverIngestionResult.Duplicate ? "duplicate" : "accepted" });
+        }));
+        using var client = new StandaloneReportingClient(http);
+        await using (var reporter = fixture.Reporter(client))
+        {
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            unavailable = true;
+            entry = entry with { State = terminal, CompletedAtUtc = Now.AddMinutes(-1), DurationMilliseconds = 60000, ValidationOutcome = validation };
+            await fixture.History.UpdateAsync(entry);
+            await reporter.ReportOnceAsync(CancellationToken.None);
+        }
+        unavailable = false;
+        loseAcknowledgement = true;
+        await using (var reporter = fixture.Reporter(client)) await reporter.ReportOnceAsync(CancellationToken.None);
+        // Reopen the durable database as a new process would, without an execution runner or Git dependency.
+        using var reopened = new ExecutionHistoryStore(Path.Combine(fixture.Root, "history.db"));
+        var replay = Assert.Single(await reopened.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None));
+        Assert.Equal(events[^1], replay);
+        loseAcknowledgement = false;
+        await using (var reporter = fixture.Reporter(client))
+        {
+            await reporter.ReportOnceAsync(CancellationToken.None);
+            await reporter.ReportOnceAsync(CancellationToken.None);
+        }
+        Assert.Equal(3, events.Count); // Active, terminal with lost response, exact duplicate replay.
+        Assert.Equal(events[1], events[2]);
+        Assert.Empty(await reopened.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None));
+        var inspection = Assert.IsType<CodexServer.ObserverInspection>(await registry.GetObserverInspectionAsync(local.ObserverId));
+        var execution = Assert.Single(inspection.Executions).Execution;
+        Assert.Equal(outcome, execution.Outcome);
+        Assert.Equal(expectedValidation, execution.ValidationResult);
+        Assert.Equal(entry.RetryOfExecutionId?.ToString("N"), execution.RetryOfLocalExecutionId);
+        Assert.Equal(2, execution.AttemptNumber);
+        Assert.True(execution.Resumed);
+        Assert.Equal(entry.State, (await reopened.ReadExecutionAsync(entry.ExecutionId))?.State);
+        Assert.Empty(await registry.GetExecutionsAsync());
+        Assert.Equal(2, (await reopened.ReadAllAsync()).Count);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task DeliveryCursorIsBoundedAndOldAcknowledgementsCannotConsumeNewUpdates()
+    {
+        using var fixture = new Fixture();
+        var local = Local();
+        for (var index = 0; index < 270; index++)
+            await fixture.History.CreateAsync(new(Guid.NewGuid(), "Project", "owner/repo", index + 1, "Issue", "branch", "main",
+                Now.AddMinutes(-300 + index), Now.AddMinutes(-299 + index), "Completed", 60000, null, "passed", 0, [], null, null, null, null));
+        var count = 0;
+        for (var round = 0; round < 9; round++)
+        {
+            var batch = await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None);
+            if (batch.Count == 0) break;
+            Assert.InRange(batch.Count, 1, ObserverProtocol.MaximumExecutions);
+            foreach (var report in batch) await fixture.History.AcknowledgeObserverDeliveryAsync(report, CancellationToken.None);
+            count += batch.Count;
+        }
+        Assert.Equal(256, count);
+        var active = new ExecutionHistoryEntry(Guid.NewGuid(), "Project", "owner/repo", 300, "Issue", "branch", "main",
+            Now.AddMinutes(-1), null, "Implementing", null, null, null, 0, [], null, null, null, null);
+        await fixture.History.CreateAsync(active);
+        var previous = Assert.Single(await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None));
+        await fixture.History.UpdateAsync(active with { State = "Validating" });
+        var next = Assert.Single(await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None));
+        Assert.True(next.ObservedAtUtc > previous.ObservedAtUtc);
+        await fixture.History.AcknowledgeObserverDeliveryAsync(previous, CancellationToken.None);
+        Assert.Equal(next, Assert.Single(await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None)));
+        var refreshed = Assert.Single(await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now.AddDays(8), CancellationToken.None));
+        Assert.NotEqual(next.EventId, refreshed.EventId);
+        Assert.Equal(next.Execution, refreshed.Execution);
+    }
+
+    [Theory]
+    [InlineData("accepted", true)]
+    [InlineData("duplicate", true)]
+    [InlineData("unknown", false)]
+    [InlineData("oversize", false)]
+    [InlineData("transient", false)]
+    [InlineData("refused", true)]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task DeliveryRequiresKnownAcknowledgementAndPermanentRefusalDoesNotPoisonBacklog(string response, bool settled)
+    {
+        using var fixture = new Fixture();
+        var local = Local();
+        await fixture.Store.SaveAsync(local, CancellationToken.None);
+        await fixture.History.CreateAsync(new(Guid.NewGuid(), "Project", "owner/repo", 42, "Issue", "branch", "main",
+            Now.AddMinutes(-2), Now.AddMinutes(-1), "Completed", 60000, null, "passed", 0, [], null, null, null, null));
+        using var http = new HttpClient(new Handler((request, _) => Task.FromResult(
+            request.RequestUri?.AbsolutePath.EndsWith("/snapshots", StringComparison.Ordinal) == true ? Json(new { state = "accepted" }) : response switch
+            {
+                "transient" => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+                "refused" => new HttpResponseMessage(HttpStatusCode.Conflict),
+                "oversize" => Json(new { state = "accepted", padding = new string('x', 1024) }),
+                _ => Json(new { state = response })
+            })));
+        using var client = new StandaloneReportingClient(http);
+        await using var reporter = fixture.Reporter(client);
+        await reporter.ReportOnceAsync(CancellationToken.None);
+        var pending = await fixture.History.PrepareObserverDeliveryAsync(local.ObserverId, Now, CancellationToken.None);
+        Assert.Equal(settled ? 0 : 1, pending.Count);
+        Assert.Equal("Completed", Assert.Single(await fixture.History.ReadAllAsync()).State);
+        Assert.Equal("running", fixture.Runtime.State);
+        if (response == "refused") Assert.Equal("rejected", (await fixture.Store.LoadAsync(CancellationToken.None))?.LastResult);
+    }
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct);

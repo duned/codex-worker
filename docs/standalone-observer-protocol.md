@@ -63,8 +63,26 @@ selecting only version, lifecycle, capacity, active count and up to 32 active
 execution references (execution ID, project/repository, Issue number/title, stage
 and start time). Diagnostic text, validation output, paths, prompts, provider
 settings, transcripts and environment values are never copied. Invalid display
-references are omitted. No execution events or terminal history are uploaded by
-this passive snapshot feature.
+references are omitted. After a successful snapshot, the reporter also sends
+allowlisted execution events from local `ExecutionHistoryStore`, including recent
+terminal attempts. Managed history is excluded even when retained in the same
+database. Local history remains authoritative for execution and recovery.
+
+The durable delivery cursor retains at most 256 latest attempt summaries, with
+active attempts first and recent completions next, including archived attempts.
+Each interval sends at most 32 pending events sequentially, stopping on the first
+failure. Unchanged acknowledged summaries are skipped; an uncertain response is
+replayed with the same event identity and body after restart. Only `accepted` or
+`duplicate` acknowledgements mark delivery complete. Permanent protocol/identity/
+retention refusals are recorded separately and skipped until the summary changes,
+so one refused event cannot starve the backlog. Other failures retry at the next
+interval, with no immediate retry loop. Changed summaries get a new
+event ID and increasing observation time. Pending events older than seven days
+are refreshed to the current observation time to respect Server admission limits;
+Server retention cutoffs still apply. Attempts outside the bounded window are
+omitted. Disconnecting and pairing a fresh identity starts a fresh cursor.
+Reporting never invokes implementation, validation, integration, Git/GitHub
+operations, recovery or managed execution reporting.
 
 Credentials and pending recovery proof are atomically stored with owner-only Unix
 file permissions, separately from managed enrollment. A local process-shared lock
@@ -123,7 +141,9 @@ lifecycle and at most 32 execution summaries. Events carry a stable event ID,
 observer ID, Worker UTC observation time and one summary. The summary includes a
 stable local execution ID, project display name, repository slug, Issue number
 and title, allowlisted execution stage, optional outcome/validation result,
-start/completion UTC times and optional nonnegative duration. No Server assignment
+start/completion UTC times, optional nonnegative duration, attempt number,
+optional local retry-parent ID and resumed flag. Validation is mapped to fixed
+classification values; diagnostic text is never copied. No Server assignment
 or lease is implied. IDs must survive retry; receiver deduplication keys are
 `(observerId, eventId)` and execution identity is `(observerId, localExecutionId)`.
 Conflicting reuse of an ID must be rejected, not overwrite a different observation.

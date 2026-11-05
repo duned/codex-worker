@@ -52,7 +52,7 @@ public sealed record ExecutionHistoryEntry(
 /// <summary>Local, single-worker SQLite history with an SQLite user_version migration sequence.</summary>
 public sealed partial class ExecutionHistoryStore : IDisposable
 {
-    private const int CurrentSchemaVersion = 20;
+    private const int CurrentSchemaVersion = 21;
     private readonly string _connectionString;
 
     public ExecutionHistoryStore(string? databasePath = null)
@@ -695,6 +695,14 @@ public sealed partial class ExecutionHistoryStore : IDisposable
                 using var migration = connection.CreateCommand();
                 migration.Transaction = transaction;
                 migration.CommandText = "ALTER TABLE executions ADD COLUMN codex_thread_id TEXT NULL; ALTER TABLE executions ADD COLUMN codex_session_owner TEXT NULL; ALTER TABLE executions ADD COLUMN parent_issue_number INTEGER NULL; PRAGMA user_version = 20;";
+                migration.ExecuteNonQuery();
+            }
+
+            if (schemaVersion < 21)
+            {
+                using var migration = connection.CreateCommand();
+                migration.Transaction = transaction;
+                migration.CommandText = "CREATE TABLE observer_delivery (execution_id TEXT PRIMARY KEY, observer_id TEXT NOT NULL, body TEXT NOT NULL, disposition INTEGER NOT NULL DEFAULT 0 CHECK(disposition IN (0,1,2))); PRAGMA user_version = 21;";
                 migration.ExecuteNonQuery();
             }
 
