@@ -16,15 +16,15 @@ The observer credential is `obr_` plus 32 cryptographically random bytes encoded
 as hex. Pairing authorization is independently generated as `oba_` plus 32 random
 bytes encoded as hex. Neither credential type is interchangeable.
 
-Only SHA-256 verifiers, observer identity, exact HTTPS Server origin, acceptance,
-expiry, consumption, and revocation timestamps are stored. Credentials and
+Authorization storage contains only SHA-256 verifiers, observer identity, exact
+HTTPS Server origin, acceptance, expiry, consumption, and revocation timestamps. Credentials and
 authorizations must never be logged or included in diagnostics. Pairing responses
 and registration recovery use `Cache-Control: no-store`.
 
 ## Dashboard to CLI pairing
 
-This change defines the handoff and implements its Server boundary; dashboard UI,
-Worker CLI integration, report ingestion, and report persistence are separate work.
+The Server implements pairing, report ingestion, storage and inspection APIs.
+Dashboard UI and Worker CLI integration are separate work.
 
 1. The standalone CLI retains a new observer identity and supplies its public
    `ObserverPairingRequest` (contractVersion 1, mode, observerId, server) to the
@@ -63,7 +63,7 @@ execution or managed Worker authentication. Portable Server backups erase
 observer verifiers and revoke both registered and pending identities; restore
 cannot resurrect reporting access.
 
-## Reporting contracts and future receiver obligations
+## Reporting contracts and ingestion
 
 `ObserverStatusSnapshot` and `ObserverExecutionEvent` are v1 allowlisted DTOs.
 Snapshots carry a stable snapshot ID, observer ID, Worker UTC observation time,
@@ -81,17 +81,61 @@ Use `ObserverProtocol.ReadSnapshot`/`ReadEvent` at the reporting boundary after
 limiting the HTTP body to 65,536 bytes. They reject unknown/duplicate properties,
 unsupported versions, excessive depth, invalid identities, oversized fields,
 duplicate snapshot executions and invalid lifecycle/stage/result/timing values.
-Missing optional information is null, not a free-form explanation. A future
-receiver must match payload observer identity to the authenticated route identity,
-check revocation on each request, and mark the observer reporting only after an
-accepted first report. `awaiting-first-report` currently remains until that
-receiver is implemented; no report data is stored by this change.
+Missing optional information is null, not a free-form explanation. POST snapshots
+to `/api/v1/observers/{observerId}/snapshots` and events to
+`/api/v1/observers/{observerId}/events` using the reporting Bearer credential and
+JSON content type. Both known-length and chunked bodies are bounded before
+deserialization. Payload identity must match the authenticated route. Authorization
+is checked again within the persistence transaction so revocation cannot race a
+write. Unknown observers, management credentials and pairing authorizations cannot
+submit reports. No unsolicited report creates an observer.
+
+Only the first accepted **snapshot** establishes connectivity and changes
+`awaiting-first-report` to `reporting`. Events received before it can be retained,
+but do not establish connectivity. The Server persists receipt time independently
+from Worker observation time. Exact duplicates return `200 {"state":"duplicate"}`
+without changing receipt time or adding history. Accepted new observations return
+`200 {"state":"accepted"}`. Conflicting reuse of a retained report identity or
+execution identity returns 409. Execution identity binds repository, Issue number
+and start time. Reports older than or equal to seven days, more than five minutes
+in the future, or behind a retention cutoff return 409 `observer_report_expired`.
+These limits are Server admission policy; clocks never determine freshness.
+An execution cannot start or complete after its report's Worker observation time.
+
+Snapshot lifecycle advances only with a strictly newer Worker observation time.
+Execution projections advance with newer observations; a terminal observation can
+also replace a nonterminal observation at the same timestamp. Once terminal, the
+execution projection remains fixed. Snapshot execution display is normalized
+against those projections so a stale summary cannot undo a terminal outcome.
+History preserves the original validated observations, including delayed reports;
+inspection presents the current projection separately. Rejected reports roll back
+all changes. Duplicate or reordered deliveries never mutate managed work.
+
+Each observer retains the latest snapshot, at most 256 execution projections and
+512 snapshot/event history receipts. History is pruned by Server insertion order;
+execution projections are pruned by Worker observation time. Pruning durably
+advances conservative replay cutoffs: new report timestamps must exceed the
+largest pruned report timestamp, and previously unretained executions must start
+after the largest pruned execution start time. Thus evicted deliveries are
+rejected instead of becoming new work/history. Exact idempotency and identity
+collision detection apply within retained history; callers must never reuse IDs
+outside that window. Long-delayed reports and old executions that have been
+evicted can be rejected even with a new report ID. Retained execution projections
+and the latest snapshot's at most 32 summaries retain their identity and terminal
+state regardless of the execution start cutoff. Snapshot enrichment is persisted
+before projection pruning so eviction cannot reveal an older running summary.
+
+Authenticated administrators can GET `/api/v1/observers/{observerId}` for safe
+registration/connectivity metadata, snapshot and execution projections, or
+`/api/v1/observers/{observerId}/history?limit=50` for recent receipts (1..512).
+Reporting credentials cannot read these administration views. Revocation retains
+history for inspection and denies further ingestion. Reports survive restart and
+portable backup/restore; restored identities remain revoked. There are no UI,
+managed project, assignment, lease, execution request or GitHub state mutations.
 
 The credential verifier is exclusively for reporting routes and the read-only
 registration recovery route. It must never authorize assignments, configuration,
 credential retrieval/delivery, provisioning, maintenance or lifecycle controls.
-Reporting routes are deliberately not mapped yet; they must not acknowledge and
-discard reports before persistence exists.
 
 Producers must select display fields explicitly. Never serialize execution
 history or configuration wholesale. Secrets, environment values, local paths,

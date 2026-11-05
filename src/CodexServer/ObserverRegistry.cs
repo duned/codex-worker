@@ -69,15 +69,27 @@ public sealed partial class SqliteRegistryStore
             !ObserverProtocol.ValidCredential(reportingCredential)) return null;
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        return await AuthenticateObserverAsync(connection, null, observerId, server, reportingCredential, ct);
+    }
+
+    private static async Task<ObserverRegistration?> AuthenticateObserverAsync(SqliteConnection connection, SqliteTransaction? transaction,
+        string observerId, string server, string reportingCredential, CancellationToken ct)
+    {
+        if (!ObserverProtocol.ValidIdentity(observerId) || !ObserverProtocol.ValidOrigin(server) ||
+            !ObserverProtocol.ValidCredential(reportingCredential)) return null;
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT credential_hash,accepted_at_utc FROM observers WHERE observer_id=$id AND server_origin=$server AND revoked_at_utc IS NULL;";
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT credential_hash,accepted_at_utc,EXISTS(SELECT 1 FROM observer_status s WHERE s.observer_id=observers.observer_id AND s.snapshot_json IS NOT NULL)
+            FROM observers WHERE observer_id=$id AND server_origin=$server AND revoked_at_utc IS NULL;
+            """;
         command.Parameters.AddWithValue("$id", observerId);
         command.Parameters.AddWithValue("$server", server);
         await using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct) || !CryptographicOperations.FixedTimeEquals(
             Convert.FromHexString(reader.GetString(0)), Convert.FromHexString(HashToken(reportingCredential)))) return null;
         return new(ObserverProtocol.Version, observerId, ObserverProtocol.Mode, server,
-            DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture), "awaiting-first-report");
+            DateTimeOffset.Parse(reader.GetString(1), CultureInfo.InvariantCulture), reader.GetBoolean(2) ? "reporting" : "awaiting-first-report");
     }
 
     public async Task<bool> RevokeObserverAsync(string observerId, CancellationToken ct = default)

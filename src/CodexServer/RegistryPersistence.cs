@@ -18,6 +18,10 @@ public interface IRegistryStore
     Task<ObserverRegistration?> RedeemObserverAuthorizationAsync(ObserverPairingRequest request, string authorization, string reportingCredential, CancellationToken ct = default);
     Task<ObserverRegistration?> AuthenticateObserverAsync(string observerId, string server, string reportingCredential, CancellationToken ct = default);
     Task<bool> RevokeObserverAsync(string observerId, CancellationToken ct = default);
+    Task<ObserverIngestionResult> IngestObserverSnapshotAsync(string server, string credential, ObserverStatusSnapshot snapshot, CancellationToken ct = default);
+    Task<ObserverIngestionResult> IngestObserverEventAsync(string server, string credential, ObserverExecutionEvent report, CancellationToken ct = default);
+    Task<ObserverInspection?> GetObserverInspectionAsync(string observerId, CancellationToken ct = default);
+    Task<IReadOnlyList<ObserverReportReceipt>> GetObserverHistoryAsync(string observerId, int limit = 50, CancellationToken ct = default);
     Task RestoreCompletionProvenanceAsync(CodexProvisioning.ExecutionMaintenanceCommand inventory, CancellationToken ct = default);
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
@@ -544,7 +548,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json FROM execution_requests";
-    public const int CurrentSchemaVersion = 20;
+    public const int CurrentSchemaVersion = 21;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -569,7 +573,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 20);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 21);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -717,9 +721,24 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 command.CommandText = "ALTER TABLE execution_requests ADD COLUMN stage_started_at_utc_json TEXT NULL; UPDATE schema_metadata SET schema_version = 19 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
-            command.CommandText = "UPDATE schema_metadata SET schema_version = 20 WHERE singleton = 1;";
+            command.CommandText = "UPDATE schema_metadata SET schema_version = 21 WHERE singleton = 1;";
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = """
+                CREATE TABLE IF NOT EXISTS observer_status (
+                    observer_id TEXT NOT NULL PRIMARY KEY, snapshot_json TEXT NULL, snapshot_observed_ticks INTEGER NULL,
+                    snapshot_received_at_utc TEXT NULL, last_received_at_utc TEXT NOT NULL,
+                    replay_before_ticks INTEGER NOT NULL DEFAULT 0, execution_before_ticks INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS observer_reports (
+                    observer_id TEXT NOT NULL, kind TEXT NOT NULL, report_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
+                    observed_ticks INTEGER NOT NULL, received_at_utc TEXT NOT NULL, body TEXT NOT NULL,
+                    PRIMARY KEY(observer_id,kind,report_id)
+                );
+                CREATE TABLE IF NOT EXISTS observer_executions (
+                    observer_id TEXT NOT NULL, execution_id TEXT NOT NULL, observed_ticks INTEGER NOT NULL,
+                    started_ticks INTEGER NOT NULL, received_at_utc TEXT NOT NULL, body TEXT NOT NULL,
+                    PRIMARY KEY(observer_id,execution_id)
+                );
                 CREATE TABLE IF NOT EXISTS observer_pairings (
                     observer_id TEXT NOT NULL PRIMARY KEY, server_origin TEXT NOT NULL,
                     authorization_hash TEXT NOT NULL, expires_at_utc TEXT NOT NULL,

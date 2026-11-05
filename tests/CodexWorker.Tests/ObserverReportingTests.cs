@@ -225,6 +225,8 @@ public sealed class ObserverReportingTests
         Assert.NotNull(await store.RedeemObserverAuthorizationAsync(Request, pairing.Authorization, Credential));
         var pendingRequest = Request with { ObserverId = "obs_1123456789abcdef0123456789abcdef" };
         var pending = Assert.IsType<ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(pendingRequest));
+        Assert.Equal(ObserverIngestionResult.Accepted, await store.IngestObserverSnapshotAsync(Server, Credential,
+            new(1, Identity, "0123456789abcdef0123456789abcdef", clock.Now, "running", [])));
         var archive = Path.Combine(temporary.Path, "backup.zip");
         await new ServerBackup(database).ExportAsync(archive);
         var restoredDatabase = Path.Combine(temporary.Path, "restored.db");
@@ -234,6 +236,8 @@ public sealed class ObserverReportingTests
         Assert.Null(await restored.AuthenticateObserverAsync(Identity, Server, Credential));
         Assert.Null(await restored.RedeemObserverAuthorizationAsync(pendingRequest, pending.Authorization, Credential));
         Assert.Null(await restored.CreateObserverAuthorizationAsync(pendingRequest));
+        Assert.NotNull((await restored.GetObserverInspectionAsync(Identity))?.Snapshot);
+        Assert.Single(await restored.GetObserverHistoryAsync(Identity));
         Assert.NotNull(await store.AuthenticateObserverAsync(Identity, Server, Credential));
     }
 

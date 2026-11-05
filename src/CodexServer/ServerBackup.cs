@@ -201,6 +201,9 @@ public sealed class ServerBackup(string? databasePath = null)
         await RequireColumnsAsync(connection, "worker_bootstrap_tokens", ["token_hash", "expires_at_utc", "consumed_at_utc", "worker_id", "operation"], cancellationToken);
         await RequireColumnsAsync(connection, "observers", ["observer_id", "server_origin", "credential_hash", "accepted_at_utc", "revoked_at_utc"], cancellationToken);
         await RequireColumnsAsync(connection, "observer_pairings", ["observer_id", "server_origin", "authorization_hash", "expires_at_utc", "consumed_at_utc", "revoked_at_utc"], cancellationToken);
+        await RequireColumnsAsync(connection, "observer_status", ["observer_id", "snapshot_json", "snapshot_observed_ticks", "snapshot_received_at_utc", "last_received_at_utc", "replay_before_ticks", "execution_before_ticks"], cancellationToken);
+        await RequireColumnsAsync(connection, "observer_reports", ["observer_id", "kind", "report_id", "payload_hash", "observed_ticks", "received_at_utc", "body"], cancellationToken);
+        await RequireColumnsAsync(connection, "observer_executions", ["observer_id", "execution_id", "observed_ticks", "started_ticks", "received_at_utc", "body"], cancellationToken);
         await RequireColumnsAsync(connection, "credentials", ["id", "provider", "credential_type", "secret_reference", "status", "created_at_utc", "updated_at_utc", "assigned_worker_id", "revoked_at_utc", "version", "nonce", "ciphertext", "tag"], cancellationToken);
         await RequireColumnsAsync(connection, "worker_credential_auth", ["worker_id", "token_hash", "revoked_at_utc"], cancellationToken);
 

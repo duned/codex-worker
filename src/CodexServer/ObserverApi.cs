@@ -41,6 +41,7 @@ public static partial class ServerApplication
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
             return await store.RevokeObserverAsync(observerId, context.RequestAborted) ? Results.NoContent() : Results.NotFound();
         });
+        MapObserverReports(app);
     }
 
     private static string ObserverBearer(HttpContext context)
