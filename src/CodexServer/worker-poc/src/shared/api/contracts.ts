@@ -93,7 +93,7 @@ export interface ProvisioningPlanSummary {
 
 // Standalone observations are separate from managed Workers and executions.
 export interface ObserverSummary {
-  observerId: string; mode: 'standalone-observer'; registrationState: string;
+  observerId: string; mode: 'standalone-observer'; registrationState: string; pairingExpiresAtUtc?: string | null;
   name: string | null; version: string | null; lastReceivedAtUtc: string | null;
   snapshotReceivedAtUtc: string | null; observedAtUtc: string | null;
   freshness: 'unknown' | 'fresh' | 'stale'; freshnessMeaning: string; staleAfterSeconds: number;

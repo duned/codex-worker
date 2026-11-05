@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { t, useLanguage, localizeText } from '../../shared/i18n';
 import { GuidDisplay } from '../../shared/GuidDisplay';
 import { Link } from 'react-aria-components';
@@ -10,6 +11,9 @@ import { workers, nodes } from '../../shared/api/validation';
 import { statusColor, workerListSignals } from '../../model.js';
 import { EnrollmentDialog } from './EnrollmentDialog';
 import { WorkerConnectionBadge } from './WorkerConnectionBadge';
+
+const ObserversSection = lazy(() => import('../observers/Observers').then(module => ({ default: module.ObserversSection })));
+const ObserverDetailPage = lazy(() => import('../observers/Observers').then(module => ({ default: module.ObserverDetailPage })));
 
 const dotTone = (value: string) => {
   const tone = statusColor(value);
@@ -27,6 +31,12 @@ function heartbeatDetail(value?: string) {
 }
 
 export function WorkersPage() {
+  useLanguage();
+  const [params] = useSearchParams();
+  const observerId = params.get('observer');
+  return observerId ? <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserverDetailPage key={observerId} id={observerId} /></Suspense> : <ManagedWorkersPage />;
+}
+function ManagedWorkersPage() {
   useLanguage();
   const inventory = useApiRead('/api/v1/workers', workers), capabilities = useApiRead('/api/v1/nodes', nodes);
   const [params, setParams] = useSearchParams();
@@ -86,6 +96,7 @@ export function WorkersPage() {
       </section>
     </>}
     {capabilities.error && <Notice error>{t('workers.readinessObservationsUnavailable')}</Notice>}
+    <Suspense fallback={<ViewState title={t('observers.loading')} />}><ObserversSection /></Suspense>
     {(params.get('enroll') === '1' || params.get('prepare') === '1') && <EnrollmentDialog onClose={() => enrollment(false)} />}
   </section>;
 }

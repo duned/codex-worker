@@ -62,15 +62,29 @@ public sealed class ObserverReadApiTests
             var context = new DefaultHttpContext();
             context.Request.Host = new("observer.example");
             var sessions = app.Services.GetRequiredService<AdministrationSessions>();
-            Assert.NotNull(sessions.Create(context));
+            var session = Assert.IsType<AdministrationSessions.Session>(sessions.Create(context));
             client.DefaultRequestHeaders.Add("Cookie", context.Response.Headers.SetCookie.ToString().Split(';')[0]);
+            client.DefaultRequestHeaders.Add("Origin", settings.AdministrationOrigin);
+            client.DefaultRequestHeaders.Add(AdministrationSessions.CsrfHeader, session.CsrfToken);
             Assert.Empty(await client.GetFromJsonAsync<ObserverSummary[]>(paths[0]) ?? []);
             using (var missing = await client.GetAsync(paths[1])) Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
             using (var missing = await client.GetAsync(paths[2])) Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
             foreach (var observerId in new[] { id, otherId })
             {
                 var pairing = new ObserverPairingRequest(1, ObserverProtocol.Mode, observerId, settings.AdministrationOrigin);
-                var authorization = Assert.IsType<ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(pairing));
+                using var response = await client.PostAsJsonAsync("/api/v1/observers/pairing/authorize", pairing);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                Assert.True(response.Headers.CacheControl?.NoStore);
+                var authorization = Assert.IsType<ObserverPairingAuthorization>(await response.Content.ReadFromJsonAsync<ObserverPairingAuthorization>());
+                var pending = (await client.GetFromJsonAsync<ObserverSummary[]>(paths[0]) ?? []).Single(item => item.ObserverId == observerId);
+                Assert.Equal("pairing-pending", pending.RegistrationState);
+                Assert.Equal(authorization.ExpiresAtUtc, pending.PairingExpiresAtUtc);
+                Assert.Null(pending.LastReceivedAtUtc);
+                Assert.Null(pending.MaximumCapacity);
+                var pendingJson = await client.GetStringAsync(paths[0]);
+                Assert.DoesNotContain(authorization.Authorization, pendingJson, StringComparison.Ordinal);
+                Assert.DoesNotContain("authorization", pendingJson, StringComparison.OrdinalIgnoreCase);
+                Assert.Null(await store.AuthenticateObserverAsync(observerId, settings.AdministrationOrigin, credential));
                 Assert.NotNull(await store.RedeemObserverAuthorizationAsync(pairing, authorization.Authorization, credential));
             }
             var empty = Assert.IsType<ObserverDetail>(await client.GetFromJsonAsync<ObserverDetail>(paths[1]));
@@ -139,11 +153,27 @@ public sealed class ObserverReadApiTests
             Assert.Equal(managedExecution.Id, Assert.Single(await store.GetExecutionsAsync()).Id);
             Assert.Null(await store.GetWorkerAsync(id));
             Assert.Null(await store.GetExecutionAsync(execution.LocalExecutionId));
-            Assert.True(await store.RevokeObserverAsync(id));
+            using (var revokedResponse = await client.PostAsync($"/api/v1/observers/{id}/revoke", null))
+                Assert.Equal(HttpStatusCode.NoContent, revokedResponse.StatusCode);
             var revoked = Assert.IsType<ObserverDetail>(await client.GetFromJsonAsync<ObserverDetail>(paths[1]));
             Assert.Equal("revoked", revoked.Observer.RegistrationState);
             Assert.Equal("stale", revoked.Observer.Freshness);
             Assert.Equal(2, (await client.GetFromJsonAsync<ObserverExecutionObservation[]>(paths[2]))?.Length);
+            var pendingRequest = new ObserverPairingRequest(1, ObserverProtocol.Mode,
+                "obs_2123456789abcdef0123456789abcdef", settings.AdministrationOrigin);
+            var expiring = Assert.IsType<ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(pendingRequest));
+            clock.Now = expiring.ExpiresAtUtc;
+            var expired = (await client.GetFromJsonAsync<ObserverSummary[]>(paths[0]) ?? []).Single(item => item.ObserverId == pendingRequest.ObserverId);
+            Assert.Equal("pairing-expired", expired.RegistrationState);
+            Assert.Null(await store.RedeemObserverAuthorizationAsync(pendingRequest, expiring.Authorization, credential));
+            var renewed = Assert.IsType<ObserverPairingAuthorization>(await store.CreateObserverAuthorizationAsync(pendingRequest));
+            Assert.NotEqual(expiring.Authorization, renewed.Authorization);
+            using (var revokePending = await client.PostAsync($"/api/v1/observers/{pendingRequest.ObserverId}/revoke", null))
+                Assert.Equal(HttpStatusCode.NoContent, revokePending.StatusCode);
+            Assert.Null(await store.RedeemObserverAuthorizationAsync(pendingRequest, renewed.Authorization, credential));
+            var revokedPending = (await client.GetFromJsonAsync<ObserverSummary[]>(paths[0]) ?? []).Single(item => item.ObserverId == pendingRequest.ObserverId);
+            Assert.Equal("revoked", revokedPending.RegistrationState);
+            Assert.DoesNotContain(renewed.Authorization, await client.GetStringAsync(paths[0]), StringComparison.Ordinal);
             await app.StopAsync();
         }
         finally { Environment.SetEnvironmentVariable("CODEX_SERVER_MANAGEMENT_TOKEN", previous); }

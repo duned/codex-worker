@@ -156,6 +156,12 @@ export class DashboardRuntime {
     await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
       predicate: query => (query.state.isInvalidated || query.state.status === 'error') && /^\/api\/v1\/(projects|workers|executions)$/.test(String(query.queryKey[2]).split('?')[0])
     }, { cancelRefetch: false, throwOnError: true });
+    // Observer freshness can expire without a new write. Refresh only mounted,
+    // bounded observer reads in this same visibility/backoff owner; never fan out
+    // inventory IDs or refresh inactive history. These reads contain no secrets.
+    await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
+      predicate: query => /^\/api\/v1\/observers(?:\?|\/|$)/.test(String(query.queryKey[2]))
+    }, { cancelRefetch: false, throwOnError: true });
   }
   stopLive() { this.pollGeneration++; clearTimeout(this.poll); this.visibilityCleanup?.(); this.visibilityCleanup = undefined; }
   private startLive() {

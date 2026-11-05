@@ -11,7 +11,7 @@ Vite application and asset graph. The local standalone Worker dashboard is uncha
 | --- | --- |
 | Home | `/home` |
 | Projects | `/projects`, `/projects/{id}`; `issue`, `issueState`, `label`, `issues` |
-| Workers | `/workers`, `/workers/{id}`; preparation `step`, `project`, and enrollment `enroll=1` / `prepare=1` |
+| Workers | `/workers`, `/workers/{id}`; preparation `step`, `project`, and enrollment `enroll=1` / `prepare=1`; read-only standalone detail `/workers?observer={observerId}` |
 | Executions | `/executions`, `/executions/{id}`; `view=maintenance`, `project`, `state`, `issue`, `offset`, `operationOffset` |
 | Settings | `/settings`, `/settings/{credentialId}`; `node=server` |
 
@@ -36,3 +36,14 @@ explicit dashboard routes; do not allow arbitrary filesystem/static resources or
 API fallback. Legacy `/dashboard-assets/worker-poc.js` and `.css` return 404.
 
 See [React development/build guidance](server-dashboard-react.md).
+
+Standalone observers appear in a separate bounded section of Workers. Administrators
+run `codex-worker reporting connect --server <exact-https-origin>` on the standalone
+host, paste its public request into **Add standalone Worker**, and copy the
+short-lived authorization into the CLI hidden prompt. The value is shown only
+during that dialog and is never saved in browser storage or returned by later
+reads. Refresh observations after CLI redemption to distinguish pending pairing,
+accepted pairing awaiting a snapshot, and connected reporting. Connectivity uses
+Server snapshot receipt time and stays separate from reported lifecycle/readiness;
+stale reporting does not prove a host is offline. Revocation disables pairing and
+reporting authorization while preserving history and local standalone ownership.

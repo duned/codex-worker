@@ -168,3 +168,18 @@ test('Server restart invalidates all collection markers even when counters repea
   await f.runtime.checkStatus();
   for (const path of paths) assert.equal(f.counts.get(path), 2);
 });
+
+test('observer receipt freshness refreshes only active bounded views through the shared status owner', async t => {
+  const f = await fixture(t);
+  const active = ['/api/v1/observers?limit=50&offset=0', '/api/v1/observers/obs_one', '/api/v1/observers/obs_one/history?limit=20'];
+  const inactive = '/api/v1/observers/obs_other/history?limit=20';
+  for (const path of active) {
+    await f.runtime.queries.fetchQuery(f.options(path)); f.observe(path);
+  }
+  await f.runtime.queries.fetchQuery(f.options(inactive));
+  await f.runtime.checkStatus(); await f.runtime.checkStatus();
+  for (const path of active) assert.equal(f.counts.get(path), 3);
+  assert.equal(f.counts.get(inactive), 1);
+  assert.equal(f.counts.has('/api/v1/observers/pairing/authorize'), false);
+  assert.equal(f.counts.has('/api/v1/observers/obs_other'), false);
+});

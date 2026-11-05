@@ -18,7 +18,7 @@ export const observerSummary: Validator<ObserverSummary> = value => {
   if (!/^obs_[0-9a-f]{32}$/.test(String(item.observerId)) || item.mode !== 'standalone-observer'
     || !['unknown', 'fresh', 'stale'].includes(String(item.freshness))) throw new Error('Invalid observer identity or freshness.');
   for (const key of ['name', 'version', 'reportedLifecycle', 'reportedReadiness']) if (item[key] != null) text(item[key]);
-  for (const key of ['lastReceivedAtUtc', 'snapshotReceivedAtUtc', 'observedAtUtc']) if (item[key] != null) timestamp(item[key]);
+  for (const key of ['lastReceivedAtUtc', 'snapshotReceivedAtUtc', 'observedAtUtc', 'pairingExpiresAtUtc']) if (item[key] != null) timestamp(item[key]);
   integer(item.staleAfterSeconds, 10, 3600);
   if (item.maximumCapacity != null) integer(item.maximumCapacity, 1, 8);
   if (item.activeExecutions != null) integer(item.activeExecutions, 0, 8);
@@ -43,4 +43,24 @@ export const observerHistory: Validator<ObserverExecutionObservation[]> = value 
 export const observerDetail: Validator<ObserverDetail> = value => {
   const item = record(value);
   return { observer: observerSummary(item.observer), currentExecutions: bounded(item.currentExecutions, 256, observerExecution) };
+};
+
+export interface ObserverPairingRequest { contractVersion: 1; mode: 'standalone-observer'; observerId: string; server: string }
+export function readObserverRequest(raw: string, origin: string): ObserverPairingRequest {
+  const value = record(JSON.parse(raw));
+  if (Object.keys(value).sort().join(',') !== 'contractVersion,mode,observerId,server' ||
+      value.contractVersion !== 1 || value.mode !== 'standalone-observer' ||
+      !/^obs_[0-9a-f]{32}$/.test(String(value.observerId)) || value.server !== origin ||
+      new URL(origin).protocol !== 'https:') throw new Error('Invalid observer request.');
+  return value as unknown as ObserverPairingRequest;
+}
+export interface ObserverAuthorization { authorization: string; expiresAtUtc: string; observerId: string; server: string }
+export const observerAuthorization: Validator<ObserverAuthorization> = value => {
+  const item = record(value);
+  if (item.contractVersion !== 1 || item.state !== 'pending' ||
+      !/^oba_[0-9a-fA-F]{64}$/.test(String(item.authorization)) ||
+      !/^obs_[0-9a-f]{32}$/.test(String(item.observerId))) throw new Error('Invalid observer authorization.');
+  text(item.server); timestamp(item.expiresAtUtc);
+  return { authorization: String(item.authorization), expiresAtUtc: String(item.expiresAtUtc),
+    observerId: String(item.observerId), server: item.server };
 };
