@@ -91,6 +91,12 @@ public static class Program
         }
         if (commandLine.Command == "restart")
             return await WorkerRestartCli.RunAsync(commandLine, cancellationToken);
+        if (commandLine.Command == "reporting")
+        {
+            using var reportingClient = new StandaloneReportingClient();
+            return await new StandaloneReportingCli(reportingClient, Console.Out, WorkerPairingConsole.ReadSecretAsync)
+                .ExecuteAsync(commandLine, cancellationToken);
+        }
         if (commandLine.Command == "maintenance")
             return await StandaloneMaintenanceCli.RunAsync(commandLine, output, cancellationToken);
         if (commandLine.Command == "executions")

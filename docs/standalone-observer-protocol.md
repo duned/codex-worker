@@ -24,7 +24,55 @@ and registration recovery use `Cache-Control: no-store`.
 ## Dashboard to CLI pairing
 
 The Server implements pairing, report ingestion, storage and inspection APIs.
-Dashboard UI and Worker CLI integration are separate work.
+Dashboard UI is separate work. The standalone Worker CLI can pair and send passive
+runtime snapshots as described below.
+
+## Standalone Worker operation
+
+Run `codex-worker reporting connect --server https://server.example` (use `sudo`
+for packaged Linux installations). The command uses the Worker's service account,
+prints a public observer pairing request for the dashboard action, then prompts
+for its one-time authorization with hidden input. Do not put either authorization
+or reporting credentials in arguments, YAML, shell history or redirected output.
+Packaged interactive connect uses a local pseudo-terminal. No managed identity,
+provider credential, Server management token, assignment or configuration flow is
+used. Empty hidden input checks registration using the retained recovery proof.
+
+`codex-worker reporting status` reads local setup and last delivery metadata only.
+It contacts neither the Server nor the Worker's local Management API. `reporting
+disconnect` (alias `disable`) waits for any bounded in-flight exchange, deletes the
+observer credential and stops reporting locally. Server history is retained;
+revoke the observer in the dashboard separately. Connecting after disconnect
+creates a fresh identity, so preserve pending state when recovering an uncertain
+redemption rather than disconnecting it accidentally.
+
+Reporting is disabled by default: absent or pending local opt-in makes no Server
+requests. A running standalone Worker polls the protected local opt-in file; a
+successful connect takes effect within the reporting interval without a restart.
+If the Worker is stopped, start it. Optional global YAML `reporting.intervalSeconds`
+(10..3600, default 30) and `reporting.credentialFile` (default
+`~/.codex-worker/observer.json`) only configure the local reporter. The CLI manages
+opt-in and credentials; no YAML edits are required. Relative credential paths are
+resolved against the global configuration file. Configure a separate path if
+running independent Worker instances under one account.
+
+Only standalone ownership runs the reporting loop. Pairing does not change
+`server.enabled`, `projects.ownership` or project configuration. Existing managed
+flows are independent. Snapshots read `WorkerRuntimeReadModel` directly in process,
+selecting only version, lifecycle, capacity, active count and up to 32 active
+execution references (execution ID, project/repository, Issue number/title, stage
+and start time). Diagnostic text, validation output, paths, prompts, provider
+settings, transcripts and environment values are never copied. Invalid display
+references are omitted. No execution events or terminal history are uploaded by
+this passive snapshot feature.
+
+Credentials and pending recovery proof are atomically stored with owner-only Unix
+file permissions, separately from managed enrollment. A local process-shared lock
+serializes connect, disconnect and reporting. HTTPS uses platform certificate and
+hostname verification, no cookies, no redirects and a five-second exchange
+deadline including response buffering. Delivery failures, timeouts and revocation
+update bounded local result codes and runtime events; local execution continues.
+Neither raw responses nor exception messages enter reporting diagnostics.
 
 1. The standalone CLI retains a new observer identity and supplies its public
    `ObserverPairingRequest` (contractVersion 1, mode, observerId, server) to the

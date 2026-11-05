@@ -7,6 +7,7 @@ public static class WorkerCommandHelp
     {
         writer ??= Console.Out;
         if (command == "restart") { writer.WriteLine(WorkerRestartCli.Help); return; }
+        if (command == "reporting") { writer.WriteLine(StandaloneReportingCli.Help); return; }
         if (command == "register")
         {
             writer.WriteLine("Usage: codex-worker register [--server <url>] (--token-stdin|--pair) [--operation enroll|rotate|recover|associate] [--capacity 1..8] [--identity-file <path>] [--config <path>] [--json]");
@@ -119,7 +120,7 @@ public static class WorkerCommandHelp
                 break;
             default:
                 writer.WriteLine("Usage: codex-worker [command] [options]");
-                writer.WriteLine("Commands: run, maintenance, executions, recovery, status, diagnostics, config, capabilities, provision, credential, register, restart, update");
+                writer.WriteLine("Commands: run, maintenance, executions, recovery, status, diagnostics, config, capabilities, provision, credential, reporting, register, restart, update");
                 writer.WriteLine("Use 'codex-worker <command> --help' for command options and examples.");
                 writer.WriteLine("Lifecycle: run starts foreground execution; Ctrl+C/SIGTERM requests graceful shutdown.");
                 writer.WriteLine("Restart: sudo codex-worker restart [--json]; gracefully drains and verifies the new service instance.");

@@ -116,6 +116,7 @@ public sealed class GlobalWorkerConfiguration
     public TelegramSettings Telegram { get; set; } = new();
     public ManagementApiSettings Api { get; set; } = new();
     public WorkerServerSettings Server { get; set; } = new();
+    public StandaloneReportingSettings Reporting { get; set; } = new();
     public ManagedProjectRuntimeSettings ManagedProjects { get; set; } = new();
 
     public static GlobalWorkerConfiguration Load(string path)
@@ -152,6 +153,14 @@ public sealed class GlobalWorkerConfiguration
             if (value.Api.EventHistoryLimit < 1 || value.Api.EventHistoryLimit > 10000)
                 throw new InvalidDataException("api.eventHistoryLimit must be between 1 and 10000.");
             value.Server.Validate();
+            if (value.Reporting is null) throw new InvalidDataException("reporting must be a YAML mapping.");
+            value.Reporting.ResolveAndValidate(fullPath);
+            var managedIdentity = Path.GetFullPath(value.Server.IdentityFile ?? WorkerIdentity.DefaultPath);
+            var pathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (string.Equals(value.Reporting.CredentialFile, fullPath, pathComparison) ||
+                string.Equals(value.Reporting.CredentialFile, managedIdentity, pathComparison) ||
+                value.Reporting.CredentialFile.StartsWith(managedIdentity + ".", pathComparison))
+                throw new InvalidDataException("reporting.credentialFile must be separate from configuration and managed enrollment files.");
             if (value.ManagedProjects is null) throw new InvalidDataException("managedProjects must be a YAML mapping.");
             value.ManagedProjects.ResolveAndValidate(fullPath);
             if (value.Projects.Ownership is not ("standalone" or "managed"))

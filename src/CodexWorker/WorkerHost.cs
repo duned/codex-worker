@@ -105,6 +105,7 @@ public sealed class WorkerHost
         WorkerHeartbeatStatus heartbeatStatus = new(0, Array.Empty<string>(), WorkerLifecycleStates.Starting);
         IReadOnlyList<WorkerCapabilityContract> heartbeatCapabilities = [];
         WorkerHeartbeatLoop? heartbeat = null;
+        StandaloneReporting? reporting = null;
         WorkerHeartbeatStatus CurrentHeartbeatStatus()
         {
             var status = Volatile.Read(ref heartbeatStatus);
@@ -206,6 +207,8 @@ public sealed class WorkerHost
                 : new ProjectConfigurationService(configurationProvider, history, _global.Projects.Directory, runtimeReadModel.Registry);
             runtimeReadModel.Events.Publish("worker.starting", "Worker startup began.");
             managementApi = await ManagementApi.StartAsync(runtimeReadModel, _global.Api, ct, configurationService);
+            reporting = new StandaloneReporting(_global, runtimeReadModel, _timeProvider, ct);
+            reporting.Start();
             foreach (var (path, config) in configuredProjects)
             {
                 var project = CreateRuntime(path, config, telegram, history, repositoryGates, ct,
@@ -962,6 +965,7 @@ public sealed class WorkerHost
                 renewal.Stop.Dispose();
             }
             if (heartbeat is not null) await heartbeat.StopAsync();
+            if (reporting is not null) await reporting.DisposeAsync();
             if (configurationWatcher is not null) await configurationWatcher.DisposeAsync();
             if (managementApi is not null) await managementApi.DisposeAsync();
             await _output.StopWaitingAsync();

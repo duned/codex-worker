@@ -44,6 +44,13 @@ api:
   listenUrl: http://127.0.0.1:5080
   eventHistoryLimit: 500
 
+# Passive standalone reporting is off until 'codex-worker reporting connect'.
+# This file contains no observer credential; connect manages a protected node-local file.
+# Connect/disconnect take effect on the next interval without restarting a running Worker.
+reporting:
+  intervalSeconds: 30
+  credentialFile: ~/.codex-worker/observer.json
+
 # Optional managed registration. Enroll using codex-worker register; normal requests require the durable per-Worker credential.
 # The Server registry API and dashboard use the separate CODEX_SERVER_MANAGEMENT_TOKEN.
 # server:

@@ -167,6 +167,10 @@ public sealed class WorkerRuntimeReadModel
             ConfigurationSyncStatus?.Diagnostics, WorkerProcessIdentity.InstanceId);
     }
 
+    internal async Task<ObserverStatusSnapshot> ObserverSnapshotAsync(string observerId, DateTimeOffset now, CancellationToken ct) =>
+        StandaloneReportingSnapshot.Create(observerId, now, await StatusAsync(ct),
+            (await _history.ReadActiveAsync(ct)).Select(ProjectExecution).ToArray());
+
     public IReadOnlyList<WorkerCapability> Capabilities =>
     [
         new("codex-cli", "executor", Attributes: new Dictionary<string, string> { ["managedBy"] = "worker" }),

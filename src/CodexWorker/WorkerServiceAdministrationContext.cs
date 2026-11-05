@@ -23,7 +23,7 @@ internal static class WorkerServiceAdministrationContext
     ]);
 
     internal static bool IsNodeAdministration(WorkerCommandLine command) =>
-        command.Command is "provision" or "credential" or "capabilities" or "status" or "executions" or "recovery" or "diagnostics" or "maintenance";
+        command.Command is "provision" or "credential" or "capabilities" or "status" or "executions" or "recovery" or "diagnostics" or "maintenance" or "reporting";
 
     internal static bool RequiresTransition(WorkerCommandLine command, bool packaged, string user, bool serviceContext = false)
     {
@@ -40,10 +40,12 @@ internal static class WorkerServiceAdministrationContext
         // shell text or systemd property can be supplied by a CLI caller.
         if (command.Command == "provision") _ = ProvisioningCli.Parse(command.Arguments);
         if (command.Command == "credential") _ = WorkerCredentialCli.Parse(command.Arguments);
+        if (command.Command == "reporting") _ = StandaloneReportingCli.Parse(command.Arguments);
         var start = new ProcessStartInfo("/usr/bin/systemd-run") { UseShellExecute = false };
         start.Environment.Clear();
         start.Environment["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin";
-        foreach (var argument in new[] { "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec" })
+        var terminal = command.Command == "reporting" && command.Arguments.FirstOrDefault() == "connect" ? "--pty" : "--pipe";
+        foreach (var argument in new[] { "--quiet", terminal, "--wait", "--collect", "--service-type=exec" })
             start.ArgumentList.Add(argument);
         foreach (var property in ServiceProperties) start.ArgumentList.Add("--property=" + property);
         start.ArgumentList.Add("--");
