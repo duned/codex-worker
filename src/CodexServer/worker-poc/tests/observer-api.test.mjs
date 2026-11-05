@@ -37,3 +37,16 @@ test('observer validators reject managed identities, invalid data and oversized 
   assert.throws(() => observerHistory([{ ...observation, execution: { ...observation.execution, durationMilliseconds: -1 } }]));
   assert.throws(() => observerDetail({ observer, currentExecutions: Array(257).fill(observation) }));
 });
+
+test('detail reads preserve multiple nonterminal observations and unavailable optional execution data', () => {
+  const active = { ...observation, execution: { ...observation.execution,
+    stage: 'Implementing', outcome: null, validationResult: null, completedAtUtc: null, durationMilliseconds: null } };
+  const second = { ...active, execution: { ...active.execution, localExecutionId: 'fedcba9876543210fedcba9876543210', issueNumber: 2, stage: 'Validating' } };
+  const detail = observerDetail({ observer: { ...observer, freshness: 'stale' }, currentExecutions: [active, second] });
+  assert.equal(detail.currentExecutions.length, 2);
+  assert.equal(detail.currentExecutions[0].observedAtUtc, active.observedAtUtc);
+  assert.equal(detail.currentExecutions[0].execution.durationMilliseconds, null);
+  assert.equal(detail.currentExecutions[0].execution.validationResult, null);
+  assert.equal(detail.currentExecutions[1].execution.stage, 'Validating');
+  assert.equal(observerHistory([active, observation]).length, 2);
+});

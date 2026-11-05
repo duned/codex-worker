@@ -12,6 +12,7 @@ import { Button } from '../../untitled/components/base/buttons/button';
 import { TableCard } from '../../untitled/components/application/table/table';
 import { observerConnection, observerIssueUrl } from './model';
 import { PairingDialog } from './PairingDialog';
+import { duration } from '../../model.js';
 
 const time = (value?: string | null) => value ? new Date(value).toLocaleString() : t('shared.unknown');
 
@@ -79,17 +80,41 @@ export function ObserversSection() {
   </section>;
 }
 
-function ExecutionList({ items }: { items: ObserverExecutionObservation[] }) {
-  return items.length === 0 ? <Notice>{t('observers.noExecutions')}</Notice> : <ul className="divide-y divide-secondary">{items.map(({ execution: item }) => {
+function ExecutionList({ items, current = false, stale = false, currentIds = [] }: {
+  items: ObserverExecutionObservation[]; current?: boolean; stale?: boolean; currentIds?: string[];
+}) {
+  return items.length === 0 ? <Notice>{t('observers.noExecutions')}</Notice> : <ul className="divide-y divide-secondary">{items.map(({ execution: item, observedAtUtc, receivedAtUtc }) => {
     const href = observerIssueUrl(item.repository, item.issueNumber);
-    return <li key={item.localExecutionId} className="space-y-2 py-4">
-      <p className="text-sm text-tertiary">{item.project} · {item.repository}</p>
-      <p className="break-words font-semibold text-primary">{href ? <ExternalLink href={href}>#{item.issueNumber} · {item.issueTitle}</ExternalLink> : <>#{item.issueNumber} · {item.issueTitle}</>}</p>
-      <div className="flex flex-wrap gap-2"><StatusBadge>{localizeText(item.stage)}</StatusBadge>{item.outcome && <StatusBadge>{localizeText(item.outcome)}</StatusBadge>}</div>
-      <p className="text-sm text-secondary">{t('observers.timing', { started: time(item.startedAtUtc), completed: time(item.completedAtUtc), duration: item.durationMilliseconds ?? t('shared.unknown') })}</p>
-      <p className="text-sm text-tertiary">{t('observers.validation', { state: localizeText(item.validationResult ?? t('shared.unknown')) })}</p>
+    return <li key={item.localExecutionId} className="space-y-3 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 max-w-full break-words text-sm text-secondary">{item.project || t('shared.unknown')} · {item.repository || t('shared.unknown')}</p>
+        <div className="flex flex-wrap gap-2">
+          {current && <StatusBadge tone={stale ? 'warning' : 'info'}>{t(stale ? 'observers.lastReportedWork' : 'observers.working')}</StatusBadge>}
+          {!current && currentIds.includes(item.localExecutionId) && <StatusBadge>{t('observers.alsoCurrent')}</StatusBadge>}
+          <StatusBadge tone={current && !stale ? 'warning' : 'gray'}>{localizeText(item.stage || t('shared.unknown'))}</StatusBadge>
+          {item.outcome && <StatusBadge>{localizeText(item.outcome)}</StatusBadge>}
+        </div>
+      </div>
+      <h3 className={`break-words font-semibold text-primary ${current ? 'text-xl' : 'text-base'}`}>{href ? <ExternalLink href={href}><span className="min-w-0 break-words">#{item.issueNumber}{item.issueTitle ? ` · ${item.issueTitle}` : ''}</span></ExternalLink> : <>#{item.issueNumber}{item.issueTitle ? ` · ${item.issueTitle}` : ''}</>}</h3>
+      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-tertiary">{t('executions.started')}</dt><dd className="text-primary">{time(item.startedAtUtc)}</dd></div>
+        <div><dt className="text-tertiary">{t(current || !item.completedAtUtc && !item.outcome ? 'observers.elapsedAtReport' : 'shared.durationLabel')}</dt><dd className="text-primary">{duration(item, Date.parse(item.completedAtUtc ?? observedAtUtc))}</dd></div>
+        {item.completedAtUtc && <div><dt className="text-tertiary">{t('observers.completed')}</dt><dd>{time(item.completedAtUtc)}</dd></div>}
+      </dl>
+      <p className="text-sm text-tertiary">{t('observers.lastReported', { observed: time(observedAtUtc), received: time(receivedAtUtc) })}</p>
+      {item.validationResult && <p className="text-sm text-secondary">{t('observers.validation', { state: localizeText(item.validationResult) })}</p>}
     </li>;
   })}</ul>;
+}
+
+function CurrentWork({ observer, items, unavailable }: { observer: ObserverSummary; items: ObserverExecutionObservation[]; unavailable: boolean }) {
+  const stale = unavailable || observer.freshness !== 'fresh' || observer.registrationState === 'revoked';
+  const idle = observer.snapshotReceivedAtUtc && observer.activeExecutions === 0;
+  return <TableCard.Root><section className="p-5" aria-labelledby="observer-current-work">
+    <h2 id="observer-current-work" className="mb-3 text-lg font-semibold text-primary">{t('observers.current')}</h2>
+    {stale && (observer.snapshotReceivedAtUtc || items.length > 0) && <Notice>{t('observers.workStale', { time: time(observer.snapshotReceivedAtUtc) })}</Notice>}
+    {items.length ? <ExecutionList items={items} current stale={stale} /> : <Notice>{t(idle ? 'observers.idle' : 'observers.workUnknown')}</Notice>}
+  </section></TableCard.Root>;
 }
 
 export function ObserverDetailPage({ id }: { id: string }) {
@@ -103,14 +128,15 @@ export function ObserverDetailPage({ id }: { id: string }) {
     <Notice>{t('observers.scope')}</Notice>
     {detail.error && <Notice error>{t('observers.readError')}</Notice>}
     {!detail.data ? <ViewState title={detail.error ? t('observers.unavailable') : t('observers.loading')} /> : <>
+      <CurrentWork observer={detail.data.observer} items={detail.data.currentExecutions} unavailable={!!detail.error || !!server.error} />
       <TableCard.Root><div className="space-y-4 p-5"><ObserverStatus observer={detail.data.observer} unavailable={!!detail.error || !!server.error} />
         <Revoke observerId={id} revoked={detail.data.observer.registrationState === 'revoked'} />
       </div></TableCard.Root>
-      <TableCard.Root><div className="p-5"><h2 className="mb-3 text-lg font-semibold text-primary">{t('observers.current')}</h2>{detail.error && <Notice>{t('observers.retained')}</Notice>}<ExecutionList items={detail.data.currentExecutions} /></div></TableCard.Root>
     </>}
     <TableCard.Root><div className="p-5"><h2 className="mb-3 text-lg font-semibold text-primary">{t('observers.recent')}</h2>
+      <p className="mb-3 text-sm text-tertiary">{t('observers.historyHelp')}</p>
       {history.error && <Notice error>{t('observers.readError')}</Notice>}
-      {!history.data ? <Notice>{history.error ? t('observers.unavailable') : t('observers.loading')}</Notice> : <>{history.error && <Notice>{t('observers.retained')}</Notice>}<ExecutionList items={history.data} /></>}
+      {!history.data ? <Notice>{history.error ? t('observers.unavailable') : t('observers.loading')}</Notice> : <>{history.error && <Notice>{t('observers.retained')}</Notice>}<ExecutionList items={history.data} currentIds={detail.data?.currentExecutions.map(item => item.execution.localExecutionId)} /></>}
     </div></TableCard.Root>
   </section>;
 }

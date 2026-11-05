@@ -17,7 +17,7 @@ async function bundle(path, plugins = []) {
   const module = { exports: {} };
   vm.runInNewContext(result.outputFiles[0].text, { module, exports: module.exports, require: name => name === 'observer-fixture' ? {
     authenticated: () => authenticated, language: () => language,
-    read: path => ({ data: path.includes('/history') ? [] : path.includes('/obs_') ? data && { observer: data[0], currentExecutions: [] } : data, error, refetch() {} })
+    read: path => ({ data: path.includes('/history') ? historyData : path.includes('/obs_') ? data && { observer: data[0], currentExecutions } : data, error, refetch() {} })
   } : require(name), URL, Date, setTimeout, clearTimeout });
   return module.exports;
 }
@@ -50,7 +50,7 @@ test('pairing accepts only the public standalone request for this HTTPS Server',
   assert.equal(observerIssueUrl('../repo', 42), undefined);
   assert.equal(observerIssueUrl('owner/repo?evil', 42), undefined);
 });
-let data, language = 'en', error, authenticated = true;
+let data, language = 'en', error, authenticated = true, currentExecutions = [], historyData = [];
 const views = await bundle('../src/features/observers/Observers.tsx', [{
   name: 'fixtures', setup(build) {
     build.onResolve({ filter: /shared\/api\/session$/ }, () => ({ path: 'session', namespace: 'fixture' }));
@@ -135,4 +135,88 @@ test('pairing and revocation states render clear next steps in both languages', 
     }
   }
   language = 'en'; data = [observer];
+});
+
+const freshObserver = { ...observer, registrationState: 'reporting', freshness: 'fresh',
+  snapshotReceivedAtUtc: '2040-01-01T00:05:00Z', reportedLifecycle: 'running', reportedReadiness: 'ready', activeExecutions: 1 };
+const activity = { observedAtUtc: '2040-01-01T00:05:00Z', receivedAtUtc: '2040-01-01T00:05:01Z',
+  execution: { localExecutionId: 'execution-one', project: 'Project Alpha', repository: 'owner/repo',
+    issueNumber: 42, issueTitle: 'Implement activity display', stage: 'Implementing', startedAtUtc: '2040-01-01T00:00:00Z' } };
+function detailHtml() { return renderToStaticMarkup(createElement(views.ObserverDetailPage, { id: observer.observerId })); }
+test('active and multiple executions show issue, reported stage and elapsed at report in EN/ES', () => {
+  for (const lang of ['en', 'es']) {
+    language = lang; error = undefined; data = [freshObserver]; historyData = [];
+    currentExecutions = [activity, { ...activity, execution: { ...activity.execution, localExecutionId: 'execution-two', issueNumber: 43, stage: 'Validating', validationResult: 'running' } }];
+    const html = detailHtml();
+    assert.match(html, /Project Alpha/);
+    assert.match(html, /https:\/\/github.com\/owner\/repo\/issues\/42/);
+    assert.match(html, /#43/);
+    assert.match(html, /Implement activity display/);
+    assert.match(html, /Implementing/);
+    assert.match(html, /Validating/);
+    assert.match(html, /5m 0s/);
+    assert.match(html, lang === 'en' ? /Working · reported/ : /Trabajando · informado/);
+    assert.match(html, lang === 'en' ? /Elapsed at report/ : /Tiempo transcurrido al informar/);
+    assert.equal((html.match(lang === 'en' ? /Reported validation:/g : /Validación informada:/g) ?? []).length, 1);
+    assert.ok(html.indexOf('observer-current-work') < html.indexOf(lang === 'en' ? 'Reported lifecycle' : 'Ciclo de vida informado'));
+    assert.match(html, lang === 'en' ? /Read-only/ : /Solo lectura/);
+    assert.doesNotMatch(html, />Restart|>Assign|>Provision|>Drain|>Restart|>Reiniciar|>Asignar|>Aprovisionar|>Drenar|%/);
+  }
+});
+test('idle, unknown, loading and failed detail states stay distinct in both languages', () => {
+  currentExecutions = []; historyData = [];
+  for (const lang of ['en', 'es']) {
+    language = lang; error = undefined; data = undefined;
+    assert.match(detailHtml(), lang === 'en' ? /Loading standalone observations/ : /Cargando observaciones/);
+    error = 'unavailable';
+    assert.match(detailHtml(), lang === 'en' ? /Standalone observations unavailable/ : /Observaciones independientes no disponibles/);
+    error = undefined; data = [{ ...freshObserver, activeExecutions: 0 }];
+    assert.match(detailHtml(), lang === 'en' ? /Idle · no active executions/ : /Inactivo · ninguna ejecución activa/);
+    data = [observer];
+    assert.match(detailHtml(), lang === 'en' ? /Current execution details unavailable/ : /Detalles de ejecución actual no disponibles/);
+    data = [freshObserver];
+    assert.match(detailHtml(), lang === 'en' ? /No idle state can be established/ : /no permite determinar un estado inactivo/);
+  }
+});
+test('stale and retained work uses observation timestamps, preserves stage and does not imply live activity', () => {
+  for (const lang of ['en', 'es']) {
+    language = lang; currentExecutions = [activity]; historyData = [];
+    for (const failedRead of [false, true]) {
+      data = [{ ...freshObserver, freshness: failedRead ? 'fresh' : 'stale' }]; error = failedRead ? 'unavailable' : undefined;
+      const html = detailHtml();
+      assert.match(html, lang === 'en' ? /Last reported work/ : /Último trabajo informado/);
+      assert.match(html, lang === 'en' ? /does not mean the host has stopped/ : /no significa que el host se haya detenido/);
+      assert.match(html, /2040/);
+      assert.match(html, /5m 0s/);
+      assert.match(html, /Implementing/);
+      assert.doesNotMatch(html, /Working · reported|Trabajando · informado/);
+    }
+  }
+  error = undefined;
+});
+test('history identifies ongoing observations and shows terminal outcome without inventing optional fields', () => {
+  language = 'en'; data = [freshObserver]; currentExecutions = [activity];
+  historyData = [activity, { ...activity, execution: { ...activity.execution, localExecutionId: 'completed',
+    stage: 'Completed', outcome: 'success', validationResult: 'passed', completedAtUtc: '2040-01-01T00:02:00Z', durationMilliseconds: 120000 } }];
+  const html = detailHtml();
+  assert.match(html, /Also shown in current work/);
+  assert.match(html, /Latest observation per execution, up to 20/);
+  assert.match(html, /success/); assert.match(html, /passed/); assert.match(html, /2m 0s/);
+  currentExecutions = [{ ...activity, execution: { ...activity.execution, issueTitle: '', stage: '', startedAtUtc: undefined } }];
+  historyData = [];
+  const missing = detailHtml();
+  assert.match(missing, /#42/); assert.match(missing, /Unknown/); assert.match(missing, /Duration unavailable/);
+  assert.doesNotMatch(missing, /Implementing|Implement activity display|Reported validation|NaN|Invalid Date|%/);
+});
+
+test('detail retains authorized reporting revocation and never exposes managed controls', () => {
+  language = 'en'; data = [freshObserver]; currentExecutions = [activity]; historyData = []; error = undefined;
+  assert.match(detailHtml(), /Revoke reporting/);
+  authenticated = false;
+  assert.doesNotMatch(detailHtml(), /Revoke reporting/);
+  authenticated = true;
+  data = [{ ...freshObserver, registrationState: 'revoked' }];
+  const html = detailHtml();
+  assert.doesNotMatch(html, /Revoke reporting|Working · reported|>Restart|>Assign|>Provision|>Drain|>Configure|execution-control/);
+  assert.match(html, /Last reported work/);
 });

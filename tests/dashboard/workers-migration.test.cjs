@@ -35,12 +35,17 @@ test('pairing acknowledgement requires active authentication and an observed onl
     assert.equal(api.pairingAcknowledged(item), false);
 });
 test('typed operations reject unavailable, busy and withdrawn capability actions while permitting re-detection of stale observations', () => {
-  const node = { connectivity: 'connected', observationsStale: true, provisioningReadiness: 'ready', capabilities: [{ definition: { id: 'git' }, availableActions: ['refresh', 'verifyrepositoryaccess'] }] };
+  const node = { id: 'node', connectivity: 'connected', observationsStale: true, provisioningReadiness: 'ready', capabilities: [{ definition: { id: 'git' }, availableActions: ['refresh', 'verifyrepositoryaccess'] }] };
   assert.equal(api.provisioningReason(node, [], 'git', 'refresh'), '');
   assert.match(api.provisioningReason(undefined, [], 'git', 'refresh'), /unavailable/);
   assert.match(api.provisioningReason(node, undefined, 'git', 'refresh'), /unavailable/);
   assert.match(api.provisioningReason({ ...node, connectivity: 'disconnected' }, [], 'git', 'refresh'), /disconnected/);
-  assert.match(api.provisioningReason(node, [{ status: 'Running' }], 'git', 'refresh'), /pending/);
+  for (const status of ['Pending', 'Running']) {
+    const command = { status, request: { nodeId: node.id, capabilityId: 'git', action: 'Detect' } };
+    assert.match(api.provisioningReason(node, [command], 'git', 'refresh'), /pending/);
+    assert.equal(api.provisioningReason(node, [{ ...command, request: { ...command.request, nodeId: 'other' } }], 'git', 'refresh'), '');
+    assert.equal(api.provisioningReason(node, [{ ...command, request: { ...command.request, capabilityId: 'claude-cli' } }], 'git', 'refresh'), '');
+  }
   for (const action of ['uninstall', '__proto__', 'constructor']) assert.match(api.provisioningReason(node, [], 'git', action), /advertised/);
 });
 test('command deadlines and device-login links use actual contract evidence without invented expiry or URLs', () => {
