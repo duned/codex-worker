@@ -394,6 +394,7 @@ public static partial class ServerApplication
             return Results.Ok(projection);
         });
         app.MapGet("/api/version", () => Results.Ok(new ServerVersion(DisplayVersion, "Codex Server")));
+        MapObserverPairing(app);
         // The public handoff is produced on the node; authorization uses the existing registry.
         app.MapPost("/api/v1/workers/onboarding/authorize", async (WorkerPairingRequest request, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>

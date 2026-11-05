@@ -14,6 +14,10 @@ using System.Text.RegularExpressions;
 /// <summary>Persistence boundary for future worker and project registry services.</summary>
 public interface IRegistryStore
 {
+    Task<ObserverPairingAuthorization?> CreateObserverAuthorizationAsync(ObserverPairingRequest request, CancellationToken ct = default);
+    Task<ObserverRegistration?> RedeemObserverAuthorizationAsync(ObserverPairingRequest request, string authorization, string reportingCredential, CancellationToken ct = default);
+    Task<ObserverRegistration?> AuthenticateObserverAsync(string observerId, string server, string reportingCredential, CancellationToken ct = default);
+    Task<bool> RevokeObserverAsync(string observerId, CancellationToken ct = default);
     Task RestoreCompletionProvenanceAsync(CodexProvisioning.ExecutionMaintenanceCommand inventory, CancellationToken ct = default);
     Task InitializeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default);
@@ -540,7 +544,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
     private readonly ILogger _logger = logger ?? NullLogger<SqliteRegistryStore>.Instance;
 
     private const string ExecutionSelect = "SELECT id, project_id, work_reference_json, created_at_utc, state, assigned_worker_id, assigned_at_utc, execution_id, assignment_id, current_stage, worker_execution_id, started_at_utc, completed_at_utc, duration_ms, validation_result, integration_result, failure_classification, recoverable, completion_summary, (SELECT worker_id FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT generation FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT acquired_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT expires_at_utc FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), (SELECT state FROM execution_leases l WHERE l.execution_id=execution_requests.id ORDER BY generation DESC LIMIT 1), recovery_state, recovery_reason, retry_of_execution_id, attempt_number, workspace_recovery, managed_eligibility_state, managed_eligibility_reasons_json, managed_eligibility_checked_at_utc, stage_started_at_utc_json FROM execution_requests";
-    public const int CurrentSchemaVersion = 19;
+    public const int CurrentSchemaVersion = 20;
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeSpan _staleAfter = TimeSpan.FromSeconds(staleAfterSeconds);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
@@ -565,7 +569,7 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                     singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL
                 );
-                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 19);
+                INSERT OR IGNORE INTO schema_metadata (singleton, schema_version) VALUES (1, 20);
                 """;
             await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = "SELECT schema_version FROM schema_metadata WHERE singleton = 1;";
@@ -713,7 +717,18 @@ public sealed partial class SqliteRegistryStore(string databasePath, int staleAf
                 command.CommandText = "ALTER TABLE execution_requests ADD COLUMN stage_started_at_utc_json TEXT NULL; UPDATE schema_metadata SET schema_version = 19 WHERE singleton = 1;";
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
+            command.CommandText = "UPDATE schema_metadata SET schema_version = 20 WHERE singleton = 1;";
+            await command.ExecuteNonQueryAsync(cancellationToken);
             command.CommandText = """
+                CREATE TABLE IF NOT EXISTS observer_pairings (
+                    observer_id TEXT NOT NULL PRIMARY KEY, server_origin TEXT NOT NULL,
+                    authorization_hash TEXT NOT NULL, expires_at_utc TEXT NOT NULL,
+                    consumed_at_utc TEXT NULL, revoked_at_utc TEXT NULL
+                );
+                CREATE TABLE IF NOT EXISTS observers (
+                    observer_id TEXT NOT NULL PRIMARY KEY, server_origin TEXT NOT NULL,
+                    credential_hash TEXT NOT NULL, accepted_at_utc TEXT NOT NULL, revoked_at_utc TEXT NULL
+                );
                 CREATE TABLE IF NOT EXISTS workers (
                     worker_id TEXT NOT NULL PRIMARY KEY,
                     display_name TEXT NOT NULL,

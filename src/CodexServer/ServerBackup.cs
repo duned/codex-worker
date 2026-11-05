@@ -45,7 +45,7 @@ public sealed class ServerBackup(string? databasePath = null)
                 await using (var stream = manifest.Open())
                     await JsonSerializer.SerializeAsync(stream, new BackupManifest(CurrentFormatVersion, DateTimeOffset.UtcNow,
                         RegistrySchemaVersion: SqliteRegistryStore.CurrentSchemaVersion,
-                        Contents: ["workers and scheduling policy", "projects and revisions", "execution metadata, history, queue and leases", "legacy provisioning plans", "typed provisioning command history when present", "credential metadata; ready credentials require re-provisioning", "revoked Worker API-token metadata"]), ManifestJson, cancellationToken);
+                        Contents: ["workers and scheduling policy", "projects and revisions", "execution metadata, history, queue and leases", "legacy provisioning plans", "typed provisioning command history when present", "credential metadata; ready credentials require re-provisioning", "revoked Worker API-token metadata", "revoked observer and pairing metadata"]), ManifestJson, cancellationToken);
                 archive.CreateEntryFromFile(databaseCopy, DatabaseName, CompressionLevel.Optimal);
             }
             File.Move(temporaryArchive, target, overwrite: true);
@@ -153,6 +153,10 @@ public sealed class ServerBackup(string? databasePath = null)
             ("worker_credential_auth", new[] { "worker_id", "token_hash", "revoked_at_utc" }, "DELETE FROM worker_credential_auth;"),
             ("worker_auth_tokens", new[] { "worker_id", "token_hash", "created_at_utc", "revoked_at_utc" },
                 "UPDATE worker_auth_tokens SET token_hash=zeroblob(length(token_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));"),
+            ("observers", new[] { "observer_id", "credential_hash", "revoked_at_utc" },
+                "UPDATE observers SET credential_hash=zeroblob(length(credential_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));"),
+            ("observer_pairings", new[] { "observer_id", "authorization_hash", "revoked_at_utc" },
+                "UPDATE observer_pairings SET authorization_hash=zeroblob(length(authorization_hash)),revoked_at_utc=COALESCE(revoked_at_utc,strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));"),
             ("provisioning_commands", new[] { "body" }, "UPDATE provisioning_commands SET body=json_remove(body, '$.LoginInstructions', '$.ClaudeLogin');"),
             ("worker_bootstrap_tokens", new[] { "token_hash", "expires_at_utc", "consumed_at_utc" }, "DELETE FROM worker_bootstrap_tokens;"),
             ("mcp_oauth_credentials", new[] { "hash", "grant_id", "kind", "expires", "used" }, "DELETE FROM mcp_oauth_credentials;"),
@@ -195,6 +199,8 @@ public sealed class ServerBackup(string? databasePath = null)
 
         await RequireColumnsAsync(connection, "worker_auth_tokens", ["worker_id", "token_hash", "created_at_utc", "revoked_at_utc"], cancellationToken);
         await RequireColumnsAsync(connection, "worker_bootstrap_tokens", ["token_hash", "expires_at_utc", "consumed_at_utc", "worker_id", "operation"], cancellationToken);
+        await RequireColumnsAsync(connection, "observers", ["observer_id", "server_origin", "credential_hash", "accepted_at_utc", "revoked_at_utc"], cancellationToken);
+        await RequireColumnsAsync(connection, "observer_pairings", ["observer_id", "server_origin", "authorization_hash", "expires_at_utc", "consumed_at_utc", "revoked_at_utc"], cancellationToken);
         await RequireColumnsAsync(connection, "credentials", ["id", "provider", "credential_type", "secret_reference", "status", "created_at_utc", "updated_at_utc", "assigned_worker_id", "revoked_at_utc", "version", "nonce", "ciphertext", "tag"], cancellationToken);
         await RequireColumnsAsync(connection, "worker_credential_auth", ["worker_id", "token_hash", "revoked_at_utc"], cancellationToken);
 
@@ -210,6 +216,12 @@ public sealed class ServerBackup(string? databasePath = null)
         command.CommandText = "SELECT COUNT(*) FROM worker_bootstrap_tokens;";
         if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
             throw new InvalidDataException("Backup contains reusable Worker bootstrap authorizations.");
+        command.CommandText = """
+            SELECT (SELECT COUNT(*) FROM observers WHERE revoked_at_utc IS NULL OR credential_hash != zeroblob(length(credential_hash)))
+                + (SELECT COUNT(*) FROM observer_pairings WHERE revoked_at_utc IS NULL OR authorization_hash != zeroblob(length(authorization_hash)));
+            """;
+        if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            throw new InvalidDataException("Backup contains observer reporting authentication material.");
 
         // OAuth tables are optional in older archives, but persisted consent and token
         // verifiers must never resurrect access after restore under the same authority.
