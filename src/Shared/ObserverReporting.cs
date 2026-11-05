@@ -87,10 +87,19 @@ public sealed record ObserverExecution(string LocalExecutionId, string Project, 
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ObserverStatusSnapshot(int ContractVersion, string ObserverId, string SnapshotId,
-    DateTimeOffset ObservedAtUtc, string Lifecycle, IReadOnlyList<ObserverExecution> Executions)
+    DateTimeOffset ObservedAtUtc, string Lifecycle, IReadOnlyList<ObserverExecution> Executions,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Version = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Readiness = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MaximumCapacity = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ActiveExecutions = null)
 {
     public bool IsValid() => ContractVersion == ObserverProtocol.Version && ObserverProtocol.ValidIdentity(ObserverId) &&
         ObserverProtocol.ValidId(SnapshotId) && ObserverProtocol.Timestamp(ObservedAtUtc) && WorkerLifecycleStates.IsValid(Lifecycle) &&
+        (Name is null || ObserverProtocol.Display(Name, 200)) && (Version is null || ObserverProtocol.Display(Version, 100)) &&
+        Readiness is null or "ready" or "not-ready" or "unknown" &&
+        MaximumCapacity is null or >= 1 and <= 8 && ActiveExecutions is null or >= 0 and <= 8 &&
+        (MaximumCapacity is null || ActiveExecutions is null || ActiveExecutions <= MaximumCapacity) &&
         Executions is { Count: <= ObserverProtocol.MaximumExecutions } && Executions.All(item => item is not null && item.IsValid()) &&
         Executions.Select(item => item.LocalExecutionId).Distinct(StringComparer.Ordinal).Count() == Executions.Count;
 }

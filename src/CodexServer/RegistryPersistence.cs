@@ -20,6 +20,7 @@ public interface IRegistryStore
     Task<bool> RevokeObserverAsync(string observerId, CancellationToken ct = default);
     Task<ObserverIngestionResult> IngestObserverSnapshotAsync(string server, string credential, ObserverStatusSnapshot snapshot, CancellationToken ct = default);
     Task<ObserverIngestionResult> IngestObserverEventAsync(string server, string credential, ObserverExecutionEvent report, CancellationToken ct = default);
+    Task<IReadOnlyList<ObserverSummary>> ListObserversAsync(int limit = 50, int offset = 0, CancellationToken ct = default);
     Task<ObserverInspection?> GetObserverInspectionAsync(string observerId, CancellationToken ct = default);
     Task<IReadOnlyList<ObserverReportReceipt>> GetObserverHistoryAsync(string observerId, int limit = 50, CancellationToken ct = default);
     Task RestoreCompletionProvenanceAsync(CodexProvisioning.ExecutionMaintenanceCommand inventory, CancellationToken ct = default);

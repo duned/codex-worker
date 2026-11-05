@@ -114,7 +114,7 @@ public sealed class ObserverAuthorizationTests
             using (var history = await client.GetAsync($"/api/v1/observers/{request.ObserverId}/history?limit=2"))
             {
                 Assert.Equal(HttpStatusCode.OK, history.StatusCode);
-                Assert.Equal(2, (await history.Content.ReadFromJsonAsync<ObserverReportReceipt[]>())?.Length);
+                Assert.Single(await history.Content.ReadFromJsonAsync<ObserverExecutionObservation[]>() ?? []);
             }
             using (var revoked = await client.PostAsync($"/api/v1/observers/{request.ObserverId}/revoke", null))
                 Assert.Equal(HttpStatusCode.NoContent, revoked.StatusCode);

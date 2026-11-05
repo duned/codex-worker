@@ -33,6 +33,14 @@ public sealed class ObserverReportingTests
             "Issue title", "Validating", null, "running", Now);
         var snapshot = new ObserverStatusSnapshot(1, Identity, "1123456789abcdef0123456789abcdef", Now, "running", [execution]);
         var json = JsonSerializer.Serialize(snapshot);
+        // Reports without the new optional metadata must keep their canonical payload hash
+        // across upgrades, so replaying an accepted legacy report remains idempotent.
+        var legacyJson = JsonSerializer.Serialize(new
+        {
+            snapshot.ContractVersion, snapshot.ObserverId, snapshot.SnapshotId, snapshot.ObservedAtUtc,
+            snapshot.Lifecycle, snapshot.Executions
+        });
+        Assert.Equal(legacyJson, json);
         Assert.True(ObserverProtocol.ReadSnapshot(Encoding.UTF8.GetBytes(json)).IsValid());
         var report = new ObserverExecutionEvent(1, Identity, "2123456789abcdef0123456789abcdef", Now, execution);
         Assert.True(ObserverProtocol.ReadEvent(JsonSerializer.SerializeToUtf8Bytes(report)).IsValid());
@@ -52,6 +60,13 @@ public sealed class ObserverReportingTests
         Assert.False((execution with { DurationMilliseconds = -1 }).IsValid());
         Assert.False((execution with { CompletedAtUtc = Now.AddTicks(-1) }).IsValid());
         Assert.False((snapshot with { ObservedAtUtc = default }).IsValid());
+        Assert.True((snapshot with { Name = "Node", Version = "1.2.3", Readiness = "ready", MaximumCapacity = 4, ActiveExecutions = 2 }).IsValid());
+        Assert.False((snapshot with { Name = new string('x', 201) }).IsValid());
+        Assert.False((snapshot with { Version = "invalid\nversion" }).IsValid());
+        Assert.False((snapshot with { Readiness = "arbitrary diagnostics" }).IsValid());
+        Assert.False((snapshot with { MaximumCapacity = 0 }).IsValid());
+        Assert.False((snapshot with { ActiveExecutions = 9 }).IsValid());
+        Assert.False((snapshot with { MaximumCapacity = 1, ActiveExecutions = 2 }).IsValid());
         Assert.False((Request with { Server = Server + "/" }).IsValid());
         Assert.False((Request with { Mode = "managed" }).IsValid());
         Assert.False(ObserverProtocol.ValidIdentity(Identity.ToUpperInvariant()));

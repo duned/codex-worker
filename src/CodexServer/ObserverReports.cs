@@ -130,7 +130,7 @@ public sealed partial class SqliteRegistryStore
         return ObserverIngestionResult.Accepted;
     }
 
-    private static bool ObserverTerminal(ObserverExecution execution) => execution.Outcome is not null || execution.CompletedAtUtc is not null ||
+    internal static bool ObserverTerminal(ObserverExecution execution) => execution.Outcome is not null || execution.CompletedAtUtc is not null ||
         execution.Stage is "Completed" or "Blocked" or "Failed" or "IntegrationConflict" or "InfrastructureFailure" or "Cancelled" or "Superseded";
 
     private static ObserverStatusSnapshot NormalizeObserverSnapshot(ObserverStatusSnapshot snapshot, IReadOnlyList<ObserverExecutionObservation> executions,

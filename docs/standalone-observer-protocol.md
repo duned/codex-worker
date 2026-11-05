@@ -66,7 +66,11 @@ cannot resurrect reporting access.
 ## Reporting contracts and ingestion
 
 `ObserverStatusSnapshot` and `ObserverExecutionEvent` are v1 allowlisted DTOs.
-Snapshots carry a stable snapshot ID, observer ID, Worker UTC observation time,
+Snapshots carry optional name (200 printable characters), version (100 printable
+characters), reported readiness (`ready`, `not-ready`, `unknown`), maximum capacity
+(1..8), and active executions (0..8, at most the reported maximum). Missing fields
+remain unknown for older snapshots. Snapshots carry a stable snapshot ID, observer
+ID, Worker UTC observation time,
 lifecycle and at most 32 execution summaries. Events carry a stable event ID,
 observer ID, Worker UTC observation time and one summary. The summary includes a
 stable local execution ID, project display name, repository slug, Issue number
@@ -125,13 +129,39 @@ and the latest snapshot's at most 32 summaries retain their identity and termina
 state regardless of the execution start cutoff. Snapshot enrichment is persisted
 before projection pruning so eviction cannot reveal an older running summary.
 
-Authenticated administrators can GET `/api/v1/observers/{observerId}` for safe
-registration/connectivity metadata, snapshot and execution projections, or
-`/api/v1/observers/{observerId}/history?limit=50` for recent receipts (1..512).
+Authenticated administrators use the normal management Bearer or dashboard session:
+
+- GET `/api/v1/observers?limit=50&offset=0` returns typed observer summaries,
+  ordered by observer ID. Each includes optional name/version, registration state,
+  last Server receipt, snapshot observation/receipt times, derived freshness and
+  reported lifecycle/readiness/capacity. No managed controls are offered.
+- GET `/api/v1/observers/{observerId}` returns `observer` (the same summary) and
+  `currentExecutions` (retained nonterminal execution observations, at most 256).
+- GET `/api/v1/observers/{observerId}/history?limit=50&offset=0` returns one latest
+  observation per retained execution, ordered by observation time descending,
+  then local execution ID descending, including outcomes and execution timing.
+  This dashboard history replaces the earlier report-receipt inspection response;
+  raw report receipts remain internal to ingestion storage.
+
+List and history return arrays, default to 50 items, and accept limits 1..100 and
+offsets 0..10000. A short page ends the available data; no total is promised.
+Invalid bounds return 400, missing observers return 404, and empty lists/history
+return empty arrays. Responses are not cached. Offset pages are live observations,
+not a stable snapshot across requests.
+
+Freshness uses **Server snapshot receipt time**, with the existing Server
+`WorkerStaleAfterSeconds` threshold. `unknown` means no snapshot has arrived;
+`fresh` means its receipt is within that threshold; `stale` means it is older.
+Execution events update last receipt but do not refresh lifecycle/capacity data.
+Stale does not prove offline, stopped or failed, and fresh does not prove ready.
+Lifecycle, readiness, capacity and execution results remain reported values even
+when stale or revoked. Missing metadata/capacity is null, never inferred as zero.
 Reporting credentials cannot read these administration views. Revocation retains
 history for inspection and denies further ingestion. Reports survive restart and
-portable backup/restore; restored identities remain revoked. There are no UI,
-managed project, assignment, lease, execution request or GitHub state mutations.
+portable backup/restore; restored identities remain revoked. These reads expose
+only allowlisted display data, with no credentials/verifiers, paths, raw logs,
+transcripts, managed project, assignment, lease, execution request or GitHub state
+mutations. Observer tables remain separate from managed Worker/execution APIs.
 
 The credential verifier is exclusively for reporting routes and the read-only
 registration recovery route. It must never authorize assignments, configuration,

@@ -90,3 +90,22 @@ export interface ProvisioningPlanSummary {
   id: string; workerId: string; createdAtUtc: string; state: string; currentActionId?: string;
   actions: { type: string; name: string; version?: string }[];
 }
+
+// Standalone observations are separate from managed Workers and executions.
+export interface ObserverSummary {
+  observerId: string; mode: 'standalone-observer'; registrationState: string;
+  name: string | null; version: string | null; lastReceivedAtUtc: string | null;
+  snapshotReceivedAtUtc: string | null; observedAtUtc: string | null;
+  freshness: 'unknown' | 'fresh' | 'stale'; freshnessMeaning: string; staleAfterSeconds: number;
+  reportedLifecycle: string | null; reportedReadiness: string | null;
+  maximumCapacity: number | null; activeExecutions: number | null;
+}
+export interface ObserverExecutionObservation {
+  observedAtUtc: string; receivedAtUtc: string;
+  execution: {
+    localExecutionId: string; project: string; repository: string; issueNumber: number; issueTitle: string;
+    stage: string; outcome: string | null; validationResult: string | null;
+    startedAtUtc: string; completedAtUtc: string | null; durationMilliseconds: number | null;
+  };
+}
+export interface ObserverDetail { observer: ObserverSummary; currentExecutions: ObserverExecutionObservation[] }

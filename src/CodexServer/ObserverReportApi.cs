@@ -13,23 +13,43 @@ public static partial class ServerApplication
             ServerConfiguration settings, IRegistryStore store) => IngestObserverHttpAsync(observerId, context, settings, store, snapshot: true));
         app.MapPost("/api/v1/observers/{observerId}/events", (string observerId, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) => IngestObserverHttpAsync(observerId, context, settings, store, snapshot: false));
-        app.MapGet("/api/v1/observers/{observerId}", async (string observerId, HttpContext context,
+        MapObserverReads(app);
+    }
+
+    private static void MapObserverReads(WebApplication app)
+    {
+        app.MapGet("/api/v1/observers", async (int? limit, int? offset, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
-            var observer = await store.GetObserverInspectionAsync(observerId, context.RequestAborted);
-            return observer is null ? Results.NotFound() : Results.Ok(observer);
+            context.Response.Headers.CacheControl = "no-store";
+            if (!ValidObserverPage(limit, offset)) return Results.BadRequest();
+            return Results.Ok(await store.ListObserversAsync(limit ?? 50, offset ?? 0, context.RequestAborted));
         });
-        app.MapGet("/api/v1/observers/{observerId}/history", async (string observerId, int? limit, HttpContext context,
+        app.MapGet("/api/v1/observers/{observerId}", async (string observerId, HttpContext context,
+            ServerConfiguration settings, IRegistryStore store, TimeProvider clock) =>
+        {
+            if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
+            context.Response.Headers.CacheControl = "no-store";
+            if (!ObserverProtocol.ValidIdentity(observerId)) return Results.BadRequest();
+            var observer = await store.GetObserverInspectionAsync(observerId, context.RequestAborted);
+            return observer is null ? Results.NotFound() : Results.Ok(new ObserverDetail(
+                SqliteRegistryStore.ObserverSummaryFor(observer, clock.GetUtcNow(), settings.WorkerStaleAfterSeconds),
+                observer.Executions.Where(item => !SqliteRegistryStore.ObserverTerminal(item.Execution)).ToArray()));
+        });
+        app.MapGet("/api/v1/observers/{observerId}/history", async (string observerId, int? limit, int? offset, HttpContext context,
             ServerConfiguration settings, IRegistryStore store) =>
         {
             if (!AuthorizedManagement(context, settings)) return Results.Unauthorized();
-            if (!ObserverProtocol.ValidIdentity(observerId) || limit is < 1 or > SqliteRegistryStore.ObserverHistoryLimit)
-                return Results.BadRequest();
-            if (await store.GetObserverInspectionAsync(observerId, context.RequestAborted) is null) return Results.NotFound();
-            return Results.Ok(await store.GetObserverHistoryAsync(observerId, limit ?? 50, context.RequestAborted));
+            context.Response.Headers.CacheControl = "no-store";
+            if (!ObserverProtocol.ValidIdentity(observerId) || !ValidObserverPage(limit, offset)) return Results.BadRequest();
+            var observer = await store.GetObserverInspectionAsync(observerId, context.RequestAborted);
+            return observer is null ? Results.NotFound() : Results.Ok(observer.Executions.Skip(offset ?? 0).Take(limit ?? 50).ToArray());
         });
     }
+
+    private static bool ValidObserverPage(int? limit, int? offset) =>
+        (limit is null or >= 1 and <= 100) && (offset is null or >= 0 and <= 10_000);
 
     private static async Task<IResult> IngestObserverHttpAsync(string observerId, HttpContext context,
         ServerConfiguration settings, IRegistryStore store, bool snapshot)
