@@ -36,8 +36,8 @@ export function HomePage() {
   const observerCurrent = observations.filter(item => !observerTerminal(item.observation.execution));
   const observerCompleted = observations.filter(item => observerTerminal(item.observation.execution));
   const filteredObserverCompleted = observerCompleted.filter(item => filter === 'All' || item.observation.execution.stage === filter);
-  const workerSummary = standalone.data ? homeWorkerSummary(registry.data, standalone.data.observers, !!standalone.error, standalone.data) : undefined;
-  const executionDataAvailable = !!activity.data && !!standalone.data;
+  const workerSummary = standalone.data ? homeWorkerSummary(registry.data, standalone.data.observers, !!standalone.error || !!registry.error, standalone.data) : undefined;
+  const executionDataAvailable = !!activity.data && !!standalone.data && !activity.error && !standalone.error;
   const currentCount = current.length + observerCurrent.length;
   const today = new Date().toISOString().slice(0, 10);
   const completedToday = activity.data?.filter(item => item.completedAtUtc?.slice(0, 10) === today) ?? [];
@@ -45,7 +45,7 @@ export function HomePage() {
   const runningCount = running.length + observerCurrent.length;
   const completedTodayCount = completedToday.length + observerCompleted.filter(item => item.observation.execution.completedAtUtc?.slice(0, 10) === today).length;
   const metrics = [
-    { label: t('home.workers'), value: workerSummary ? `${workerSummary.active} / ${workerSummary.total}` : undefined, detail: workerSummary ? t('home.activeTotalWorkers') : undefined },
+    { label: t('home.workers'), value: workerSummary ? `${workerSummary.active ?? t('home.unknown')} / ${workerSummary.total}` : undefined, detail: workerSummary ? t('home.activeTotalWorkers') : undefined },
     { label: t('home.projects'), value: catalog.data?.length, detail: undefined },
     { label: t('home.runningExecutions'), value: executionDataAvailable ? `${runningCount} / ${workerSummary?.totalSlots ?? t('home.unknown')}` : undefined, detail: activity.data ? t('home.runningCapacityDetail') : undefined },
     { label: t('home.completedToday'), value: executionDataAvailable ? completedTodayCount : undefined, detail: activity.data ? t('observers.executionWindow') : undefined }

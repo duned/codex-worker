@@ -21,14 +21,14 @@ export function aggregateCapacity(workers: WorkerObservation[] | undefined, fiel
   return workers.reduce((sum, worker) => sum + (worker[field] ?? 0), 0);
 }
 
-export function homeWorkerSummary(workers: WorkerObservation[] | undefined, observers: ObserverSummary[] | undefined, observersUnavailable = false, totals?: Pick<import('../../shared/api/contracts').ObserverInventory, 'total' | 'active' | 'totalCapacity'>) {
+export function homeWorkerSummary(workers: WorkerObservation[] | undefined, observers: ObserverSummary[] | undefined, unavailable = false, totals?: Pick<import('../../shared/api/contracts').ObserverInventory, 'total' | 'active' | 'totalCapacity'>) {
   if (!workers || !observers) return undefined;
   const accepted = acceptedObservers(observers);
   const capacities = [...workers.map(worker => workerListSignals(worker, undefined).totalSlots), ...(totals ? [totals.totalCapacity] : accepted.map(observer => observer.maximumCapacity))];
   return {
-    active: workers.filter(worker => worker.availability === 'online').length + (observersUnavailable ? 0 : (totals?.active ?? accepted.filter(observer => observerConnection(observer) === 'connected').length)),
+    active: unavailable ? undefined : workers.filter(worker => worker.availability === 'online').length + (totals?.active ?? accepted.filter(observer => observerConnection(observer) === 'connected').length),
     total: workers.length + (totals?.total ?? accepted.length),
-    totalSlots: capacities.some(capacity => capacity == null)
+    totalSlots: unavailable || capacities.some(capacity => capacity == null)
       ? undefined
       : capacities.reduce((sum, capacity) => sum + (capacity ?? 0), 0)
   };

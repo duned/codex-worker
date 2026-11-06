@@ -6,6 +6,7 @@ export function observerConnection(observer: ObserverSummary) {
   if (observer.registrationState === 'pairing-pending') return 'pending';
   if (observer.registrationState === 'pairing-expired') return 'expired';
   if (!observer.snapshotReceivedAtUtc) return 'awaiting';
+  if (observer.freshness === 'unknown') return 'unknown';
   if (observer.freshness !== 'fresh') return 'stale';
   if (observer.reportedLifecycle === 'stopped') return 'offline';
   return 'connected';
@@ -34,7 +35,9 @@ export function observerExecutions(inventory: import('../../shared/api/contracts
     if (!accepted.has(item.observerId)) continue;
     const key = `${item.observerId}:${item.observation.execution.localExecutionId}`;
     const previous = latest.get(key);
-    if (!previous || Date.parse(item.observation.observedAtUtc) > Date.parse(previous.observation.observedAtUtc)) latest.set(key, item);
+    // Terminal projections are authoritative even if a delayed running report arrives later.
+    if (!previous || !observerTerminal(previous.observation.execution) &&
+      (observerTerminal(item.observation.execution) || Date.parse(item.observation.observedAtUtc) > Date.parse(previous.observation.observedAtUtc))) latest.set(key, item);
   }
   return [...latest.values()].sort((a, b) => Date.parse(b.observation.observedAtUtc) - Date.parse(a.observation.observedAtUtc));
 }

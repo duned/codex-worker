@@ -62,6 +62,8 @@ export const es = {
   "observers.state.expired": "Vinculación caducada / no disponible",
   "observers.state.awaiting": "Vinculado · esperando primer informe",
   "observers.state.connected": "Conectado",
+  "observers.state.unknown": "Vigencia desconocida",
+  "observers.next.unknown": "La vigencia de la instantánea es desconocida. Actualiza las observaciones antes de confiar en la actividad informada.",
   "observers.state.stale": "Desactualizado",
   "observers.state.offline": "Sin conexión · detenido según informe",
   "observers.state.revoked": "Revocado / no disponible",

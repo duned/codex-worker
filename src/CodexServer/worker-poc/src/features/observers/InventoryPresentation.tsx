@@ -1,9 +1,10 @@
 import { Link } from 'react-router-dom';
 import { t, localizeText } from '../../shared/i18n';
 import { StatusBadge } from '../../shared/Presentation';
-import { timestamp } from '../../model';
+import { duration, timestamp } from '../../model';
+import { ExternalLink } from '../../shared/Actions';
 import type { ObserverSummary, ObserverInventoryExecution } from '../../shared/api/contracts';
-import { observerConnection, observerName } from './model';
+import { observerConnection, observerIssueUrl, observerName, observerTerminal } from './model';
 
 export function ObserverSignals({ observer, unavailable = false }: { observer: ObserverSummary; unavailable?: boolean }) {
   const connection = observerConnection(observer);
@@ -25,10 +26,18 @@ export function ObserverCard({ observer, unavailable }: { observer: ObserverSumm
 }
 export function ObserverExecutionRow({ item, observer, unavailable }: { item: ObserverInventoryExecution; observer: ObserverSummary; unavailable?: boolean }) {
   const execution = item.observation.execution;
+  const href = observerIssueUrl(execution.repository, execution.issueNumber);
+  const issue = <>#{execution.issueNumber}{execution.issueTitle ? ` · ${execution.issueTitle}` : ''}</>;
+  const terminal = observerTerminal(execution);
   return <li className="grid gap-2 border-b border-secondary px-3 py-3 last:border-0 sm:grid-cols-[minmax(9rem,1.2fr)_minmax(7rem,1fr)_minmax(7rem,1fr)_auto] sm:items-center">
-    <div className="min-w-0 text-sm text-primary">#{execution.issueNumber} · {execution.issueTitle}<p className="text-xs text-tertiary">{execution.project} · {execution.repository}</p></div>
-    <Link className="text-brand-secondary hover:underline" to={`/workers?observer=${encodeURIComponent(observer.observerId)}`}>{observerName(observer)}</Link>
+    <div className="min-w-0 break-words text-sm text-primary">{href ? <ExternalLink href={href}>{issue}</ExternalLink> : issue}<p className="text-xs text-tertiary">{execution.project || t('shared.unknown')} · {execution.repository || t('shared.unknown')}</p></div>
+    <Link className="min-w-0 break-words text-brand-secondary hover:underline" to={`/workers?observer=${encodeURIComponent(observer.observerId)}`}>{observerName(observer)}</Link>
     <div className="space-y-2"><StatusBadge compact>{t('observers.standalone')}</StatusBadge> <StatusBadge compact>{t('observers.readOnly')}</StatusBadge><p className="text-xs text-tertiary">{unavailable ? t('observers.retained') : t(`observers.state.${observerConnection(observer)}`)} · {timestamp(observer.snapshotReceivedAtUtc ?? undefined)}</p></div>
-    <div className="text-sm"><StatusBadge compact>{localizeText(execution.outcome ?? execution.stage)}</StatusBadge><p className="text-xs text-tertiary">{timestamp(execution.completedAtUtc ?? execution.startedAtUtc)}</p></div>
+    <div className="min-w-0 space-y-1 text-sm"><StatusBadge compact>{localizeText(execution.stage || t('shared.unknown'))}</StatusBadge>{execution.outcome && <StatusBadge compact>{localizeText(execution.outcome)}</StatusBadge>}
+      <p className="text-xs text-tertiary">{t('executions.started')}: {timestamp(execution.startedAtUtc)}</p>
+      {execution.completedAtUtc && <p className="text-xs text-tertiary">{t('observers.completed')}: {timestamp(execution.completedAtUtc)}</p>}
+      <p className="text-xs text-tertiary">{t(terminal ? 'shared.durationLabel' : 'observers.elapsedAtReport')}: {duration(execution, terminal ? NaN : Date.parse(item.observation.observedAtUtc))}</p>
+      <p className="text-xs text-tertiary">{t('observers.lastReported', { observed: timestamp(item.observation.observedAtUtc), received: timestamp(item.observation.receivedAtUtc) })}</p>
+    </div>
   </li>;
 }

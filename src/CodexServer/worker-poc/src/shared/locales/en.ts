@@ -61,6 +61,8 @@ export const en = {
   "observers.state.expired": "Pairing expired / unavailable",
   "observers.state.awaiting": "Paired · awaiting first report",
   "observers.state.connected": "Connected",
+  "observers.state.unknown": "Unknown freshness",
+  "observers.next.unknown": "Snapshot freshness is unknown. Refresh observations before relying on reported activity.",
   "observers.state.stale": "Stale",
   "observers.state.offline": "Offline · reported stopped",
   "observers.state.revoked": "Revoked / unavailable",

@@ -50,7 +50,7 @@ function WorkerInventoryPage() {
   const shownWorkers = allWorkers.filter(worker => filter === 'all' || (filter === 'connected' ? worker.availability === 'online' : worker.availability !== 'online'));
   const allObservers = acceptedObservers(standalone.data?.observers ?? []);
   const shownObservers = allObservers.filter(observer => filter === 'all' || (filter === 'connected' ? !standalone.error && observerConnection(observer) === 'connected' : !!standalone.error || observerConnection(observer) !== 'connected'));
-  const total = allWorkers.length + allObservers.length;
+  const total = allWorkers.length + (standalone.data?.total ?? allObservers.length);
   const shown = shownWorkers.length + shownObservers.length;
   return <section className="mx-auto max-w-[1132px]">
     <PageHeading title={t('workers.workers')} actions={<Button color="secondary" onPress={() => enrollment(true)}>{t('workers.addWorker')}</Button>} />

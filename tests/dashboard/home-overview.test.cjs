@@ -32,10 +32,11 @@ test('Home shows active Workers over the full Worker count and sums reported slo
     { ...worker, capacity: 20 },
     { ...worker, workerId: 'offline', availability: 'offline', maximumCapacity: undefined, capacity: 4 },
     { ...worker, workerId: 'draining', availability: 'draining', maximumCapacity: 3 }
-  ]), { active: 1, total: 3, totalSlots: 9 });
-  assert.equal(homeWorkerSummary(undefined), undefined);
-  assert.deepEqual(homeWorkerSummary([]), { active: 0, total: 0, totalSlots: 0 });
-  assert.deepEqual(homeWorkerSummary([{ workerId: 'unknown', availability: 'online' }]), { active: 1, total: 1, totalSlots: undefined });
+  ], []), { active: 1, total: 3, totalSlots: 9 });
+  assert.equal(homeWorkerSummary(undefined, []), undefined);
+  assert.equal(homeWorkerSummary([worker], undefined), undefined);
+  assert.deepEqual(homeWorkerSummary([], []), { active: 0, total: 0, totalSlots: 0 });
+  assert.deepEqual(homeWorkerSummary([{ workerId: 'unknown', availability: 'online' }], []), { active: 1, total: 1, totalSlots: undefined });
 });
 test('stale, disconnected and unavailable inventories cannot complete readiness', () => {
   assert.equal(serverGitHubReadiness({ ...server, observationsStale: true }, connection).complete, false);
