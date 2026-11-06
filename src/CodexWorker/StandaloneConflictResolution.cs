@@ -13,10 +13,13 @@ internal static class StandaloneConflictResolution
             return "Exact completed conflict, original Issue intent and unclaimed preserved-workspace metadata are required.";
         bool IsSettledRecovery(ExecutionHistoryEntry other) => other.Project == source.Project &&
             other.RetryOfExecutionId == source.ExecutionId && other.FeatureBranch == source.FeatureBranch &&
-            other.State == "IntegrationConflict" && other.RecoveryState == "integration-conflict" &&
-            other.OriginalIssueBody == source.OriginalIssueBody && other.IssueTitle == source.IssueTitle &&
-            other.BaseBranch == source.BaseBranch && other.Engine == source.Engine && other.ReportingFailure is null &&
-            other.CompletionJson is null && other.IntegrationRecoveryClaim is null &&
+            other.IssueNumber == source.IssueNumber && other.Repository == source.Repository &&
+            other.State == "IntegrationConflict" &&
+            other.RecoveryState is ("integration-conflict" or "conflict-resolution-incomplete") &&
+            other.IssueTitle == source.IssueTitle && other.OriginalIssueBody == source.OriginalIssueBody &&
+            other.BaseBranch == source.BaseBranch && other.Engine == source.Engine &&
+            other.CompletedAtUtc is not null && other.ReportingFailure is null &&
+            other.IntegrationRecoveryClaim is null &&
             other.ServerExecutionId is null && other.AssignmentId is null && other.OwnershipGeneration is null;
         if (entries.Any(other => other.ExecutionId != source.ExecutionId && other.Repository == source.Repository &&
             (other.CompletedAtUtc is null || other.IssueNumber == source.IssueNumber &&

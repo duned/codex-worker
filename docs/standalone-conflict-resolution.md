@@ -1,8 +1,29 @@
-# Explicit standalone integration conflict resolution
+# Standalone integration conflict recovery
 
-Normal scheduling, retry/resume and integration-recovery labels never authorize an
-implementation engine to resolve merge conflicts. A local operator can separately
-authorize resolution of one exact retained standalone execution:
+The Worker can automatically resolve a rebase conflict while recovering a verified
+standalone integration conflict. It uses the original execution's registered
+workspace, branch and Issue intent, then continues through the existing validation,
+integration, reporting and cleanup lifecycle. It never reruns the original
+implementation. This path does not require Server enrollment.
+
+Automatic resolution is eligible only for completed standalone conflicts with exact
+preserved-workspace metadata, the original open Issue intent, no competing execution
+or workspace process, an available original implementation engine, `git.autoMerge`
+enabled and a positive `validation.maxFixAttempts`. The Worker verifies these
+conditions before claiming recovery and rechecks Issue intent and integration
+authority around resolution and integration. Managed recovery never uses this
+resolver; it remains fenced by Server lease ownership.
+
+Each durable recovery claim consumes the current integration-base fingerprint and
+allows at most `validation.maxFixAttempts` resolver calls. A restart cannot repeat an
+interrupted claim on the same base. The Worker may re-arm automatically only after
+the authoritative integration base changes. An operator can also re-arm an eligible
+conflict by applying the configured integration-recovery label. Unresolved or
+structured incomplete results, failed validation, cancellation, changed intent and
+uncertain Git state retain the workspace and execution lineage for inspection. The
+Worker reports the reason and does not close the Issue. Use the local command below
+only when automatic recovery is exhausted or an operator must explicitly authorize
+another attempt:
 
 ```sh
 codex-worker executions list --config /path/to/worker.yml
@@ -43,20 +64,16 @@ original intent and parent, without ready/done intent and with a configured
 integration-conflict, integration-recovery or working label. Unknown execution IDs
 are refused; the command never selects the latest attempt on the operator's behalf.
 
-The action creates a durable recovery attempt linked to the selected execution,
-adopts that same preserved workspace, and rebases through the ordinary Worker Git
-lifecycle. Only confirmed rebase conflicts invoke the configured implementation
-engine. Its input contains the original Issue intent and the precise Git conflict
-context; it edits files only and does not restart implementation. Resolution calls
-are bounded by `validation.maxFixAttempts` (which must be positive) and the existing
-engine timeout. `git.autoMerge` must be enabled so the full integration and
-validation lifecycle runs. Existing bounded validation repairs remain in effect.
-If continuation reaches another conflicting commit, it preserves the partial
-resolution and remaining rebase for inspection; it never skips that commit. The Worker
-owns staging, rebase continuation, authoritative configured validation, verified
-integration/push, completion reporting and cleanup. Fresh Issue intent checks fence
-workspace adoption, resolution, integration authority and reporting. No force push,
-reset, commit skipping or automatic conflict resolution is introduced.
+The explicit action creates a durable recovery attempt linked to the selected
+execution and adopts that same preserved workspace. Only confirmed rebase conflicts
+invoke the configured implementation engine. Its input contains the original Issue
+intent and precise Git conflict context; it edits files only and does not restart
+implementation. Calls use the same `validation.maxFixAttempts` bound and engine
+timeout as automatic recovery. If continuation reaches another conflicting commit,
+partial resolution and the remaining rebase stay available for inspection; the Worker
+never skips that commit. The Worker owns staging, rebase continuation, authoritative
+configured validation, verified integration/push, completion reporting and cleanup.
+No force push, reset or commit skipping is performed.
 
 A failed, cancelled or changed-intent resolution preserves the original commits,
 workspace and attempt diagnostics. Cancellation or uncertain state also retains the
@@ -81,4 +98,7 @@ List output includes execution IDs and outcomes; show output includes recovery,
 validation and commit state. On success the original is `integration-recovered`,
 the linked attempt is `Completed`, and ordinary completion reporting has run.
 On interruption, inspect the service-account history and preserved worktree before
-restarting the Worker; normal startup reconciliation never authorizes a resolver.
+restarting the Worker. Startup reconciliation releases a claim only after it verifies
+the interrupted attempt and workspace; the next scheduler claim must pass the full
+standalone eligibility checks and the unchanged-base fingerprint still prevents
+repeating that attempt.

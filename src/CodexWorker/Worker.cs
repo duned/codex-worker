@@ -206,7 +206,12 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             IReadOnlyList<ExecutionHistoryEntry> allHistory = history is null ? [] : await history.ReadAllAsync(ct);
             ExecutionHistoryEntry[] prior = allHistory.Where(entry =>
                 entry.Project == config.Project.Name && entry.Repository == config.Project.Repository && entry.IssueNumber == issue.Number &&
-                entry.State == "IntegrationConflict" && entry.RecoveryState is (null or "integration-conflict"))
+                entry.State == "IntegrationConflict" && entry.RecoveryState is (null or "integration-conflict") &&
+                // A failed recovery attempt can itself be recorded as an integration conflict.
+                // It aliases the original preserved workspace; only that workspace owner carries
+                // the durable attempted-base marker used to suppress duplicate automatic claims.
+                !allHistory.Any(parent => parent.ExecutionId == entry.RetryOfExecutionId &&
+                    parent.State == "IntegrationConflict" && parent.FeatureBranch == entry.FeatureBranch))
                 .OrderByDescending(entry => entry.StartedAtUtc).ToArray();
             var source = resolveExecutionId is { } exactId ? prior.SingleOrDefault(entry => entry.ExecutionId == exactId) : prior.FirstOrDefault();
             // Recovery attempts use their original worktree, not a workspace named for the new history row.
@@ -235,8 +240,28 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
-            if (resolveExecutionId is not null)
-                await VerifyConflictResolutionAsync(source, allHistory, ct);
+            var standaloneConflict = serverSettings?.Enabled != true && source.ServerExecutionId is null &&
+                source.AssignmentId is null && source.OwnershipGeneration is null;
+            var resolveIntegrationConflict = resolveExecutionId is not null ||
+                standaloneConflict && source.OriginalIssueBody is not null;
+            if (resolveExecutionId is null && resolveIntegrationConflict)
+            {
+                var engineAvailable = (engines ?? new ImplementationEngineSelector(settings: config.Codex))
+                    .IsAvailable(source.Engine);
+                var unavailableReason = !config.Git.AutoMerge
+                    ? "automatic conflict resolution requires git.autoMerge to be enabled"
+                    : config.Validation.MaxFixAttempts < 1
+                        ? "automatic conflict resolution requires a positive validation repair budget"
+                        : !engineAvailable
+                            ? "the original implementation engine is unavailable for conflict resolution"
+                            : null;
+                if (unavailableReason is not null)
+                {
+                    await IntegrationRecovery.ReportRejectedAsync(issue.Number, source.ExecutionId, unavailableReason, ct);
+                    _activeIssues.TryRemove(issueKey, out _);
+                    return null;
+                }
+            }
             var lineage = new HashSet<Guid> { source.ExecutionId };
             while (resolveExecutionId is null && source.RetryOfExecutionId is { } parentId)
             {
@@ -302,6 +327,12 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
+            // An unchanged base is already durably exhausted. Skip it before strict workspace
+            // checks because an unsuccessful resolver may have left an intentionally
+            // inspection-required recovery row in the preserved workspace.
+            // New attempts still verify the selected workspace owner before any claim or mutation.
+            if (resolveIntegrationConflict)
+                await VerifyConflictResolutionAsync(source, allHistory, ct);
             _operationalLog($"Integration recovery discovered · {config.Project.Name} · Issue #{issue.Number} · original execution {source.ExecutionId}");
             source = source with { RecoveryBaseCommit = source.RecoveryBaseCommit ?? source.CommitSha };
             issue = await PrepareCommentContextAsync(issue, ct);
@@ -321,23 +352,26 @@ public sealed partial class Worker(WorkerConfiguration config, IGitHubClient git
             if (history is null || !await history.TryClaimIntegrationRecoveryAsync(source,
                     CreateInitialEntry(execution) with
                     {
-                        RecoveryStatus = resolveExecutionId is null ? null : $"Operator authorized conflict resolution for execution {source.ExecutionId}."
+                        RecoveryStatus = resolveExecutionId is not null
+                            ? $"Operator authorized conflict resolution for execution {source.ExecutionId}."
+                            : resolveIntegrationConflict ? $"Automatic standalone conflict resolution for execution {source.ExecutionId}." : null
                     }, integrationBase ?? "explicit", explicitRecovery, ct))
             {
                 _activeIssues.TryRemove(issueKey, out _);
                 return null;
             }
             claimedExecution = execution;
-            if (resolveExecutionId is not null) await VerifyConflictIntentAsync(source, ct);
+            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct);
             await _output.StopWaitingAsync();
             await TransitionAsync(execution, ExecutionState.Claimed, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationConflictLabel, config.GitHub.IntegrationRecoveryLabel, ct);
-            if (resolveExecutionId is not null) await VerifyConflictIntentAsync(source, ct);
+            if (resolveIntegrationConflict) await VerifyConflictIntentAsync(source, ct);
             await github.ReplaceLabelAsync(issue.Number, config.GitHub.IntegrationRecoveryLabel, config.GitHub.WorkingLabel, ct);
             _operationalLog($"Integration recovery claimed · Issue #{issue.Number} · execution {execution.ExecutionId} · original execution {source.ExecutionId}");
             DisplayIssueStart(issue, execution);
             await telegram.StartingAsync(config.Project.Name, config.Project.Repository, issue, execution, ct);
-            return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true, resolveIntegrationConflict: resolveExecutionId is not null);
+            return ProcessClaimedAsync(execution, issue, source, issueKey, ct, integrationRecovery: true,
+                resolveIntegrationConflict: resolveIntegrationConflict);
         }
         catch (Exception shutdownError) when (ct.IsCancellationRequested && shutdownToken.IsCancellationRequested && WorkerShutdown.IsCancellation(shutdownError))
         {

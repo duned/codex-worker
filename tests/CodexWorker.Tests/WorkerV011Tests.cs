@@ -2221,9 +2221,9 @@ public sealed class WorkerV011Tests
     {
         using var database = new TempHistoryDatabase();
         using var history = new ExecutionHistoryStore(database.Path);
-        var source = PreservedConflict();
-        await history.CreateAsync(source);
         using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        await history.CreateAsync(source);
         h.GitHub.ReturnConflictIssue = true;
         h.GitHub.ReadyIssueCount = 0;
         h.GitHub.CancelWhenEmpty = false;
@@ -3033,6 +3033,113 @@ public sealed class WorkerV011Tests
         Assert.Contains("Operator authorized conflict resolution", completed.RecoveryStatus, StringComparison.Ordinal);
     }
 
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task StandaloneRecoveryAutomaticallyResolvesVerifiedRebaseConflictInPreservedWorkspace()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var sharedThread = Guid.NewGuid().ToString("N");
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body, CodexThreadId = sharedThread };
+        await history.CreateAsync(source);
+        await history.CreateAsync(source with
+        {
+            ExecutionId = Guid.NewGuid(), IssueNumber = source.IssueNumber + 1,
+            FeatureBranch = "feature/unrelated-thread-owner", State = "Completed",
+            CodexThreadId = sharedThread
+        });
+        h.GitHub.ReturnConflictIssue = true;
+        h.Git.RequestConflictResolution = true;
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.Succeeded, result?.Kind);
+        Assert.Equal(source.ExecutionId, h.Git.LastRetryOf?.ExecutionId);
+        Assert.Equal(1, h.Git.RecoveryStarted);
+        Assert.Equal(1, h.Codex.ConflictResolutions);
+        Assert.Empty(h.Codex.Issues);
+        Assert.Equal(1, h.Validation.Calls);
+        var rows = await history.ReadAllAsync();
+        Assert.Equal("integration-recovered", rows.Single(row => row.ExecutionId == source.ExecutionId).RecoveryState);
+        Assert.Contains("Automatic standalone conflict resolution", rows.Single(row => row.RetryOfExecutionId == source.ExecutionId && row.State == "Completed").RecoveryStatus,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task UnresolvedAutomaticStandaloneConflictIsPreservedAndNotRepeatedForSameBase()
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        await history.CreateAsync(source);
+        h.GitHub.ReturnConflictIssue = true;
+        h.Git.RequestConflictResolution = true;
+        h.Codex.ConflictAction = () => new CodexOutcome("failed", "cannot safely resolve", [], false, null);
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Equal(IssueOutcomeKind.IntegrationConflict, result?.Kind);
+        Assert.False(h.GitHub.Closed);
+        Assert.Equal(0, h.Git.Cleanups);
+        Assert.Equal(1, h.Codex.ConflictResolutions);
+        var retainedSource = await history.ReadExecutionAsync(source.ExecutionId);
+        Assert.Equal("current-main", retainedSource?.IntegrationRecoveryAttemptBase);
+        Assert.Null(retainedSource?.IntegrationRecoveryClaim);
+        Assert.Equal("integration-conflict", retainedSource?.RecoveryState);
+        // This Issue is only present in the recovery queue. The fake ready queue does not
+        // enforce label filtering, so prevent it from returning the same conflict as new work.
+        h.GitHub.ReturnIssueOnFirstQuery = false;
+        Assert.Null(await h.Worker.ProcessOneAsync(CancellationToken.None));
+        Assert.Equal(1, h.Codex.ConflictResolutions);
+        Assert.Equal(source.FeatureBranch, h.Git.LastRetryOf?.FeatureBranch);
+
+        using var restarted = new Harness(history: history);
+        restarted.GitHub.ReturnConflictIssue = true;
+        restarted.GitHub.ReturnIssueOnFirstQuery = false;
+        Assert.Null(await restarted.Worker.ProcessOneAsync(CancellationToken.None));
+        Assert.Equal(0, restarted.Codex.ConflictResolutions);
+        Assert.Equal(0, restarted.Git.RecoveryStarted);
+
+        restarted.Git.IntegrationBase = "new-main";
+        restarted.Git.RequestConflictResolution = true;
+        Assert.Equal(IssueOutcomeKind.Succeeded, (await restarted.Worker.ProcessOneAsync(CancellationToken.None))?.Kind);
+        Assert.Equal(1, restarted.Codex.ConflictResolutions);
+        Assert.Equal(1, restarted.Git.RecoveryStarted);
+        Assert.Equal("new-main", (await history.ReadExecutionAsync(source.ExecutionId))?.IntegrationRecoveryAttemptBase);
+    }
+
+    [Theory]
+    [InlineData("integration-disabled")]
+    [InlineData("engine-unavailable")]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task AutomaticStandaloneConflictWithoutResolverPrerequisitesReportsAndDoesNotClaim(string missingPrerequisite)
+    {
+        using var database = new TempHistoryDatabase();
+        using var history = new ExecutionHistoryStore(database.Path);
+        using var h = new Harness(history: history);
+        var source = PreservedConflict() with { OriginalIssueBody = h.GitHub.Issue.Body };
+        if (missingPrerequisite == "engine-unavailable") source = source with { Engine = "ccc" };
+        else h.Worker.Configuration.Git.AutoMerge = false;
+        await history.CreateAsync(source);
+        h.GitHub.ReturnConflictIssue = true;
+        h.GitHub.ReadyIssueCount = 0;
+        h.GitHub.CancelWhenEmpty = false;
+
+        var result = await h.ProcessOneAsync();
+
+        Assert.Null(result);
+        Assert.Equal(0, h.Git.RecoveryStarted);
+        Assert.Equal(0, h.Codex.ConflictResolutions);
+        Assert.Null((await history.ReadExecutionAsync(source.ExecutionId))?.IntegrationRecoveryClaim);
+        Assert.Contains(h.GitHub.Comments, comment => comment.Contains("requires inspection", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("failed")]
     [InlineData("cancelled")]
@@ -3583,10 +3690,16 @@ public sealed class WorkerV011Tests
             if (RequestConflictResolution)
             {
                 if (ensureAuthority is not null) await ensureAuthority(ct);
-                Assert.True(await resolveConflict("confirmed rebase conflict", ct));
-                var validated = await validateAfterRebase(ct);
-                if (!validated.Succeeded) throw new PostRebaseValidationException("validation failed", validated.Failure);
-                if (ensureAuthority is not null) await ensureAuthority(ct);
+                if (await resolveConflict("confirmed rebase conflict", ct))
+                {
+                    var validated = await validateAfterRebase(ct);
+                    if (!validated.Succeeded) throw new PostRebaseValidationException("validation failed", validated.Failure);
+                    if (ensureAuthority is not null) await ensureAuthority(ct);
+                }
+                else
+                {
+                    throw new GitIntegrationConflictException("Integration conflict remained unresolved; the preserved implementation was not integrated.");
+                }
             }
             if (CheckConflictPolicy)
             {

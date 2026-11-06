@@ -424,10 +424,10 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
     private async Task<bool> ResolveConflictAsync(ExecutionContext context, IImplementationEngine engine,
         string details, CancellationToken ct)
     {
-        // Labels, scheduling and ordinary retry never grant permission to invoke the engine here.
+        // A resolver runs only inside a separately verified standalone recovery claim.
         if (!context.ResolveIntegrationConflict || !context.IntegrationRecovery) return false;
         if (++_conflictResolutionAttempts > config.Validation.MaxFixAttempts)
-            throw new GitConflictResolutionIncompleteException("Operator-authorized conflict resolution budget exhausted; workspace preserved.");
+            throw new GitConflictResolutionIncompleteException("Verified conflict-resolution budget exhausted; workspace preserved.");
         await VerifyConflictIntentAsync(context, ct);
         await EnsureIntegrationAuthorityAsync(context.Execution, ct);
         var result = await engine.ResolveIntegrationConflictAsync(Request(context), details, ct);
@@ -437,7 +437,7 @@ public sealed class ExecutionRunner(WorkerConfiguration config, IGitRepository g
         {
             var diagnostic = FailureDiagnosticRedactor.Redact(result.Summary, config.Environment.Variables.Values.ToArray());
             if (diagnostic.Length > 1200) diagnostic = diagnostic[..1200];
-            throw new GitConflictResolutionIncompleteException("Operator-authorized conflict resolution did not complete. Workspace and rebase remain preserved: " + diagnostic);
+            throw new GitConflictResolutionIncompleteException("Verified conflict resolution did not complete. Workspace and rebase remain preserved: " + diagnostic);
         }
         return true;
     }
