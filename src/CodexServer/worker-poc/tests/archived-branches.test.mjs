@@ -17,7 +17,23 @@ test('project, worker, request identity and page changes reject stale results', 
   }
 });
 test('partial results preserve retained and failed reasons; invalid responses fail closed', () => {
-  const branches = [{ ...eligible, decision: 'deleted' }, { ...eligible, decision: 'review', reason: 'remote-tip-changed' }];
+  const branches = [{ ...eligible, decision: 'deleted' }, { ...eligible, branch: 'complete/feature/task-2', decision: 'review', reason: 'remote-tip-changed' }];
   assert.deepEqual(branchOperation({ request, status: 'failed', report: { branches } }, request).report.branches, branches);
   for (const value of [null, {}, { request, status: 'succeeded', report: { branches: [{}] } }]) assert.throws(() => branchOperation(value, request));
+});
+
+test('inventory rejects unrelated, unsafe, duplicate and unknown branch results', () => {
+  for (const branch of ['feature/active', 'unrelated', 'done/feature/../main', 'complete/feature/foo.lock']) {
+    assert.throws(() => branchOperation({ request, status: 'succeeded', report: { branches: [{ ...eligible, branch }] } }, request));
+  }
+  for (const branches of [[eligible, eligible], [{ ...eligible, decision: 'unknown' }]]) {
+    assert.throws(() => branchOperation({ request, status: 'succeeded', report: { branches } }, request));
+  }
+});
+test('deletion reports stay within the confirmed branch selection', () => {
+  const deletion = { ...request, apply: true, branches: [{ branch: eligible.branch, expectedTip: eligible.tip }] };
+  const operation = { request: deletion, status: 'succeeded', report: { branches: [{ ...eligible, decision: 'deleted' }] } };
+  assert.equal(branchOperation(operation, deletion), operation);
+  assert.throws(() => branchOperation({ ...operation, request: { ...deletion, branches: [] } }, deletion));
+  assert.throws(() => branchOperation({ ...operation, report: { branches: [{ ...eligible, branch: 'complete/feature/other' }] } }, deletion));
 });
