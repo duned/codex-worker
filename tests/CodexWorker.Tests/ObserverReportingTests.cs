@@ -415,6 +415,55 @@ public sealed class ObserverReportingTests
         Assert.False(Assert.Single((await Read()).Targets, t => t.WorkerId == Identity).Eligible);
     }
 
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task SelectedStandaloneBranchTargetCannotBeReroutedAndRevocationFencesQueuedWork()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var database = Path.Combine(temporary.Path, "registry.db");
+        var registry = new SqliteRegistryStore(database, timeProvider: clock);
+        await registry.InitializeAsync();
+        var commands = new ExecutionMaintenanceStore(database, clock);
+        await commands.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("sample", "owner/repo", "main", "", []));
+        var pairing = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(Request));
+        Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(Request, pairing.Authorization, Credential));
+        var snapshot = new ObserverStatusSnapshot(1, Identity, Guid.NewGuid().ToString("N"), Now, "drained", [],
+            ActiveExecutions: 0, BranchMaintenance: [new(project.Name, project.Repository)]);
+        Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync(Server, Credential, snapshot));
+        await commands.SetObserverBranchGrantAsync(Identity, new(project.Name, project.Repository));
+        var targets = await ServerApplication.ReadBranchMaintenanceTargetsAsync(project, registry, commands, clock, 90, CancellationToken.None);
+        var target = Assert.Single(targets.Targets);
+        Assert.True(target.Eligible);
+        Assert.True(target.CanApply);
+        var request = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), target.WorkerId, null, null, null, null,
+            Action: "archived-branches", Apply: true, Project: targets.Project, Repository: targets.Repository,
+            OlderThanDays: 30, ProjectId: targets.ProjectId, ProjectRevision: targets.Revision,
+            Branches: [new("done/feature/task-1", new string('a', 40))]);
+        Assert.Null(await ServerApplication.MaintenanceAuthorityReasonAsync(request, registry, CancellationToken.None, clock, commands));
+        await commands.CreateAsync(request, "operator");
+        var otherWorker = "obs_" + new string('b', 32);
+        Assert.Null(await commands.ClaimAsync(otherWorker));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => commands.CreateAsync(request with { WorkerId = otherWorker }, "operator"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => commands.CreateAsync(request with { Repository = "owner/other" }, "operator"));
+        var claimed = Assert.IsType<ExecutionMaintenanceCommand>(await commands.ClaimAsync(target.WorkerId));
+        Assert.True(ExecutionMaintenanceProtocol.SameRequest(request, claimed.Request));
+        // A separate grant can be revoked after selection/dispatch. Fresh authorization inside the repository gate must refuse it.
+        await commands.SetObserverBranchGrantAsync(Identity, null);
+        Assert.Equal("observer-maintenance-not-authorized", await ServerApplication.MaintenanceAuthorityReasonAsync(
+            claimed.Request, registry, CancellationToken.None, clock, commands));
+        var refusal = new ExecutionMaintenanceReport("refused", "server-authority-rejected", []);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => commands.ReportAsync(request.OperationId, otherWorker, refusal));
+        var terminal = Assert.IsType<ExecutionMaintenanceCommand>(await commands.ReportAsync(request.OperationId, Identity, refusal));
+        Assert.Equal("refused", terminal.Status);
+        Assert.Equal("server-authority-rejected", terminal.Report?.Reason);
+        Assert.Null(await commands.ClaimAsync(Identity));
+        Assert.False(Assert.Single((await ServerApplication.ReadBranchMaintenanceTargetsAsync(
+            project, registry, commands, clock, 90, CancellationToken.None)).Targets).Eligible);
+    }
+
     private sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = ObserverReportingTests.Now;

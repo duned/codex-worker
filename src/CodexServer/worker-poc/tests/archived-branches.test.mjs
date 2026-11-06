@@ -51,3 +51,18 @@ test('Server target projection fails closed on changed project binding and incon
   for (const changed of [{ ...value, repository: 'owner/other' }, { ...value, revision: 2 }, { ...value, targets: [{ ...target, eligible: true, reason: 'unauthorized' }] }, { ...value, targets: [target, target] }])
     assert.throws(() => readBranchTargets(changed, project));
 });
+
+test('standalone selection stays bound to its identity and authorization when targets refresh', async () => {
+  const { readBranchTargets, requireBranchTarget } = await import('../src/features/projects/archived-branches.mjs');
+  const project = { id: 'one', revision: 1, name: 'one', repository: 'owner/one' };
+  const standalone = { workerId: 'obs_' + 'a'.repeat(32), displayName: 'Standalone', mode: 'standalone-observer', eligible: true, reason: null, canApply: true, applyReason: null };
+  const managed = { ...standalone, workerId: 'b'.repeat(32), displayName: 'Managed', mode: 'managed' };
+  const inventory = { projectId: project.id, revision: 1, project: project.name, repository: project.repository, targets: [standalone, managed] };
+  const scope = { ...request, workerId: standalone.workerId, projectId: project.id, projectRevision: project.revision, apply: true };
+  assert.equal(requireBranchTarget(readBranchTargets(inventory, project), scope), standalone);
+  assert.throws(() => requireBranchTarget({ ...inventory, targets: [managed] }, scope), /branch-target-changed/);
+  for (const reason of ['observer-maintenance-not-authorized', 'worker-offline', 'worker-branch-protocol-unavailable']) {
+    const refreshed = readBranchTargets({ ...inventory, targets: [{ ...standalone, eligible: false, reason, canApply: false, applyReason: reason }, managed] }, project);
+    assert.throws(() => requireBranchTarget(refreshed, scope), new RegExp(reason));
+  }
+});
