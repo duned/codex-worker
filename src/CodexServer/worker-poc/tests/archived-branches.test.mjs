@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { branchOperation, selectable, selections } from '../src/features/projects/archived-branches.mjs';
+const eligible = { branch: 'done/feature/task-1', tip: 'a'.repeat(40), decision: 'eligible', reason: 'integrated' };
+const request = { operationId: 'op', workerId: 'worker', project: 'one', repository: 'owner/one', action: 'archived-branches', apply: false, olderThanDays: 30, offset: 0 };
+test('selection uses eligible archive refs and observed tips only', () => {
+  const rows = [eligible, { ...eligible, branch: 'feature/active' }, { ...eligible, branch: 'unrelated' }, { ...eligible, branch: 'complete/feature/kept', decision: 'review' }];
+  assert.deepEqual(selections(rows, rows.map(row => row.branch)), [{ branch: eligible.branch, expectedTip: eligible.tip }]);
+  assert.equal(selectable({ ...eligible, tip: null }), false);
+  assert.equal(selectable({ ...eligible, branch: 'complete/feature/task' }), true);
+});
+test('project, worker, request identity and page changes reject stale results', () => {
+  const operation = { request, status: 'succeeded', report: { outcome: 'succeeded', branches: [eligible] } };
+  assert.equal(branchOperation({ operation }, request), operation);
+  for (const key of ['project', 'repository', 'workerId', 'operationId', 'offset', 'olderThanDays', 'apply']) {
+    assert.throws(() => branchOperation(operation, { ...request, [key]: 'changed' }));
+  }
+});
+test('partial results preserve retained and failed reasons; invalid responses fail closed', () => {
+  const branches = [{ ...eligible, decision: 'deleted' }, { ...eligible, decision: 'review', reason: 'remote-tip-changed' }];
+  assert.deepEqual(branchOperation({ request, status: 'failed', report: { branches } }, request).report.branches, branches);
+  for (const value of [null, {}, { request, status: 'succeeded', report: { branches: [{}] } }]) assert.throws(() => branchOperation(value, request));
+});

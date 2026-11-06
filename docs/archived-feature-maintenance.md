@@ -24,3 +24,13 @@ must be drained with no active executions; Server authority is checked inside th
 repository gate. The operation never accepts executable names, shell text or Git
 arguments. Per-ref results include retained/missing/changed refs and partial
 remote/local deletion outcomes. An uncertain deletion stops further mutations.
+
+The project detail dashboard includes **Completed feature branches**. Select a capable
+online Worker, set the minimum completion age, then load an inventory page. Only
+API-eligible archived refs with observed tips can be selected. Deletion requires the
+Worker to be drained with no active assignments and confirmation naming the project
+and selected refs. The dashboard submits one bounded command and displays per-ref
+results before refreshing the inventory. If a command response is lost, check the
+retained operation before starting another action; leaving the project does not
+cancel a Server-owned command. Previous/next controls select an inventory window;
+load it explicitly. Unknown completion ages remain visibly unknown and unselectable.

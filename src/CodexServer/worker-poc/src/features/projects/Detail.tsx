@@ -1,3 +1,4 @@
+import { ArchivedBranches } from './ArchivedBranches';
 import { ChevronDown } from '@untitledui/icons';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
@@ -117,6 +118,7 @@ export function ProjectDetail({ project, onEdit, onAction, locked, listHref, mes
       </TableCard.Root>
     </div>
 
+    <ArchivedBranches project={project} />
     <ProjectRecentActivity project={project} read={activity} workers={inventory.data ?? []} recent={recent} />
   </div>;
 }
