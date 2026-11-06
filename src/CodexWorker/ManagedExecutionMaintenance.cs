@@ -11,6 +11,8 @@ internal sealed class ManagedExecutionMaintenance(ExecutionHistoryStore history,
         if (!ExecutionMaintenanceProtocol.Valid(command.Request) || command.Status != "running" || command.DeadlineUtc is null)
             throw new InvalidDataException("Invalid managed maintenance command.");
         var request = command.Request;
+        if (request.Action == "archived-branches")
+            return await runtime.CompletedBranchMaintenance.RunManagedAsync(request, authorize, ct);
         if (request.Action == "inventory")
         {
             var entries = await history.ReadInventoryAsync(new(Project: request.Project, IssueNumber: request.IssueNumber,

@@ -119,6 +119,13 @@ public static partial class ServerApplication
         if (request.Apply && (worker.SchedulingPolicy != WorkerSchedulingPolicy.Draining ||
             request.Action != "retry-report" && worker.ActiveAssignments != 0))
             return "worker-drain-required";
+        if (request.Action == "archived-branches")
+        {
+            if (!worker.Capabilities.Any(c => c.Type == "protocol" && c.Name == ExecutionMaintenanceProtocol.BranchCapability))
+                return "worker-branch-protocol-unavailable";
+            var projects = await registry.GetProjectsAsync(ct);
+            return projects.Count(p => p.Name == request.Project && p.Repository == request.Repository && p.Enabled) == 1 ? null : "project-unavailable";
+        }
         if (request.Action == "inventory") return null;
         var execution = await registry.GetExecutionAsync(request.ServerExecutionId ?? "", ct);
         if (execution is null) return "server-record-missing";

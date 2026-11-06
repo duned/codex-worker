@@ -2,7 +2,7 @@ namespace CodexWorker;
 
 public sealed record CompletedBranchCleanupRequest(string RepositoryDirectory, int OlderThanDays, bool Apply = false, int Limit = 20);
 public sealed record CompletedBranchCleanupItem(string Branch, string Decision, string Reason, bool LocalDeleted = false,
-    bool RemoteDeleted = false);
+    bool RemoteDeleted = false, string? Tip = null, DateTimeOffset? CompletedAtUtc = null);
 public sealed record CompletedBranchCleanupResult(bool Applied, IReadOnlyList<CompletedBranchCleanupItem> Branches)
 {
     public int Deleted => Branches.Count(b => b.LocalDeleted || b.RemoteDeleted);
@@ -15,7 +15,7 @@ public sealed partial class GitRepository
 {
     /// <summary>Caller holds the Worker's repository gate throughout inspection and mutation.</summary>
     public async Task<CompletedBranchCleanupResult> CleanupCompletedBranchesAsync(string project,
-        IReadOnlyList<ExecutionHistoryEntry> history, int olderThanDays, bool apply, DateTimeOffset now, CancellationToken ct, int limit = 20)
+        IReadOnlyList<ExecutionHistoryEntry> history, int olderThanDays, bool apply, DateTimeOffset now, CancellationToken ct, int limit = 20, IReadOnlyList<CodexProvisioning.ArchivedBranchSelection>? branches = null, bool archivedOnly = false, int offset = 0)
     {
         if (olderThanDays is < 1 or > 36500) throw new ArgumentOutOfRangeException(nameof(olderThanDays));
         if (limit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(limit));
@@ -31,8 +31,10 @@ public sealed partial class GitRepository
             if (!PathEquals(Path.GetFullPath(top), Path.GetFullPath(directory)))
                 throw new InvalidDataException("Configured checkout is not the repository root.");
             // Fetch only into remote-tracking refs; the canonical checkout/base is never reset.
-            await GitAsync(["fetch", "--no-tags", "origin", $"+refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}",
-                $"+refs/heads/{settings.CompletedPrefix}*:refs/remotes/origin/{settings.CompletedPrefix}*"], ct);
+            var archivePrefixes = archivedOnly ? new[] { "done/feature/", "complete/feature/" } : new[] { settings.CompletedPrefix };
+            var fetch = new List<string> { "fetch", "--no-tags", "origin", $"+refs/heads/{settings.BaseBranch}:refs/remotes/origin/{settings.BaseBranch}" };
+            fetch.AddRange(archivePrefixes.Select(p => $"+refs/heads/{p}*:refs/remotes/origin/{p}*"));
+            await GitAsync(fetch.ToArray(), ct);
             var remote = await ReadCleanupRemoteAsync(ct);
             var baseRef = "refs/heads/" + settings.BaseBranch;
             if (!remote.TryGetValue(baseRef, out var baseTip) ||
@@ -43,23 +45,30 @@ public sealed partial class GitRepository
             var prefix = "refs/heads/" + settings.CompletedPrefix;
             var deletionStopped = false;
             var selected = 0;
-            foreach (var reference in local.Keys.Concat(remote.Keys).Where(r => r.StartsWith(prefix, StringComparison.Ordinal))
-                         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+            foreach (var reference in local.Keys.Concat(remote.Keys).Where(r => archivedOnly ? CodexProvisioning.ExecutionMaintenanceProtocol.ArchivedBranch(r["refs/heads/".Length..]) : r.StartsWith(prefix, StringComparison.Ordinal))
+                         .Where(r => branches is null || branches.Any(b => "refs/heads/" + b.Branch == r))
+                         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Skip(archivedOnly ? offset : 0).Take(archivedOnly ? limit : int.MaxValue))
             {
                 ct.ThrowIfCancellationRequested();
                 var branch = reference["refs/heads/".Length..];
                 local.TryGetValue(reference, out var localTip);
                 remote.TryGetValue(reference, out var remoteTip);
                 var tip = localTip ?? remoteTip;
-                CompletedBranchCleanupItem Item(string decision, string reason) => new(branch, decision, reason);
+                var correlated = history.Where(e => e.Project == project && e.Repository == repository && e.CompletedBranch == branch).ToArray();
+                var completedAt = correlated.Length == 1 ? correlated[0].CompletedAtUtc : null;
+                CompletedBranchCleanupItem Item(string decision, string reason) => new(branch, decision, reason, Tip: tip, CompletedAtUtc: completedAt);
+                if (branches is not null && branches.Single(b => b.Branch == branch).ExpectedTip != tip)
+                { results.Add(Item("review", "Expected tip changed since preview.")); continue; }
                 if (deletionStopped)
                 {
                     results.Add(Item("review", "Cleanup stopped after an uncertain deletion; refs preserved.")); continue;
                 }
-                var entries = history.Where(e => e.Project == project && e.Repository == repository && e.CompletedBranch == branch).ToArray();
+                var entries = correlated;
                 var expectedBranch = entries.Length == 1
                     ? CompletedBranchName(settings, new GitHubIssue(entries[0].IssueNumber, entries[0].IssueTitle, "", entries[0].StartedAtUtc))
                     : "";
+                if (archivedOnly && entries.Length == 1)
+                    expectedBranch = branch[..(branch.StartsWith("done/", StringComparison.Ordinal) ? "done/feature/".Length : "complete/feature/".Length)] + expectedBranch[settings.CompletedPrefix.Length..];
                 if (entries.Length == 1 && entries[0].AttemptNumber > 1) expectedBranch += $"-retry-{entries[0].AttemptNumber}";
                 if (branch == settings.BaseBranch || entries.Length != 1 || entries[0].ExecutionId == Guid.Empty ||
                     entries[0].IssueNumber < 1 || entries[0].AttemptNumber < 1 ||
@@ -116,19 +125,22 @@ public sealed partial class GitRepository
                     {
                         if (await CleanupBranchCheckedOutAsync(reference, ct))
                         {
-                            results.Add(new(branch, "review", "Worktree changed; local ref preserved.", false, remoteDeleted)); continue;
+                            results.Add(new(branch, "review", "Worktree changed; local ref preserved.", false, remoteDeleted, tip, completedAt)); continue;
                         }
                         // Atomic old-value check protects against a local ref change after inspection.
                         await GitAsync(["update-ref", "-d", reference, localTip], ct);
                     }
-                    results.Add(new(branch, "deleted", "Removed verified integrated refs.", localTip is not null, remoteDeleted));
+                    results.Add(new(branch, "deleted", "Removed verified integrated refs.", localTip is not null, remoteDeleted, tip, completedAt));
                 }
                 catch (WorkerInfrastructureException) when (!ct.IsCancellationRequested)
                 {
                     deletionStopped = true;
-                    results.Add(new(branch, "review", "Deletion rejected or uncertain; inspect remaining refs before retrying.", false, remoteDeleted));
+                    results.Add(new(branch, "review", "Deletion rejected or uncertain; inspect remaining refs before retrying.", false, remoteDeleted, tip, completedAt));
                 }
             }
+            if (branches is not null)
+                foreach (var missing in branches.Where(b => results.All(r => r.Branch != b.Branch)))
+                    results.Add(new(missing.Branch, "review", "Ref missing or outside configured archive prefix."));
             return new(apply, results);
         }
         catch (WorkerInfrastructureException) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }

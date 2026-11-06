@@ -130,6 +130,10 @@ public sealed class ExecutionMaintenanceStore(string databasePath, TimeProvider?
             return Visible(operation);
         }
         if (operation.Status != "running") throw new InvalidOperationException("Maintenance was not dispatched.");
+        if (report.Branches is not null && (operation.Request.Action != "archived-branches" ||
+            report.Branches.Count > operation.Request.Limit || report.Branches.Select(b => b.Branch).Distinct(StringComparer.Ordinal).Count() != report.Branches.Count ||
+            operation.Request.Branches is { } selected && report.Branches.Any(b => !selected.Any(s => s.Branch == b.Branch))))
+            throw new InvalidDataException("Invalid archived branch report scope.");
         if (report.Observations.Count > operation.Request.Limit || operation.Request.Action != "inventory" && report.Observations.Count > 1)
             throw new InvalidDataException("Observation exceeds the requested maintenance bound.");
         if (operation.Request.Action != "inventory" && report.Observations.Any(o => o.ExecutionId != operation.Request.WorkerExecutionId ||

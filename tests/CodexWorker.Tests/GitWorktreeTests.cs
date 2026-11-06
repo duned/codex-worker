@@ -2591,6 +2591,39 @@ public sealed class GitWorktreeTests(GitWorktreeTests.RepositorySeed seed) : ICl
     [Trait("TestType", "Integration")]
     [Trait("Duration", "Medium")]
     [Theory]
+    [InlineData("done/feature/")]
+    [InlineData("complete/feature/")]
+    public async Task ArchivedBranchSelectionPreservesOtherProjectsAndRejectsStaleTips(string prefix)
+    {
+        using var fixture = await seed.CreateAsync();
+        using var git = fixture.CreateRepository(new GitSettings { CompletedPrefix = prefix });
+        var branch = prefix + "example-task-17";
+        var second = prefix + "example-task-18";
+        var tip = await fixture.Git("rev-parse", "HEAD");
+        foreach (var name in new[] { branch, second, "feature/active", "unrelated" })
+            await fixture.Git("branch", name);
+        var now = DateTimeOffset.UtcNow;
+        var entry = new ExecutionHistoryEntry(Guid.NewGuid(), "sample", "owner/repo", 17, "Example task",
+            "feature/example-task-17", "main", now.AddDays(-41), now.AddDays(-40), "Completed", 1, null, null, 0, [], tip, "main", branch, null);
+        var other = entry with { ExecutionId = Guid.NewGuid(), Project = "other", IssueNumber = 18, CompletedBranch = second };
+        var preview = await git.CleanupCompletedBranchesAsync("sample", [entry, other], 30, false, now, CancellationToken.None, archivedOnly: true);
+        Assert.Equal(2, preview.Branches.Count);
+        Assert.Equal("eligible", preview.Branches.Single(b => b.Branch == branch).Decision);
+        Assert.Equal(now.AddDays(-40), preview.Branches.Single(b => b.Branch == branch).CompletedAtUtc);
+        Assert.Equal("review", preview.Branches.Single(b => b.Branch == second).Decision);
+        var stale = await git.CleanupCompletedBranchesAsync("sample", [entry], 30, true, now, CancellationToken.None,
+            branches: [new(branch, new string('0', 40))], archivedOnly: true);
+        Assert.Equal("review", Assert.Single(stale.Branches).Decision);
+        var applied = await git.CleanupCompletedBranchesAsync("sample", [entry, other], 30, true, now, CancellationToken.None,
+            branches: [new(branch, tip), new(second, tip)], archivedOnly: true);
+        Assert.Equal(1, applied.Deleted);
+        Assert.Equal("review", applied.Branches.Single(b => b.Branch == second).Decision);
+        Assert.Equal(tip, await fixture.Git("rev-parse", second));
+    }
+
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Medium")]
+    [Theory]
     [InlineData("integrated", "eligible")]
     [InlineData("flat-prefix", "eligible")]
     [InlineData("new", "skipped")]

@@ -444,6 +444,7 @@ public sealed partial class WorkerRegistrationClient(HttpClient? httpClient = nu
     private static IReadOnlyList<WorkerCapabilityContract> WithMaintenanceCapability(IReadOnlyList<WorkerCapabilityContract> capabilities) =>
         capabilities.Append(new("protocol", ExecutionMaintenanceProtocol.Capability))
             .Append(new("protocol", ExecutionMaintenanceProtocol.CompletionCapability))
+            .Append(new("protocol", ExecutionMaintenanceProtocol.BranchCapability))
             .Concat(SelfUpdateSupported
                 ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.Capability)] : [])
             .Concat(RestartSupported ? [new WorkerCapabilityContract("protocol", WorkerUpdateProtocol.RestartCapability)] : [])
