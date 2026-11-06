@@ -29,6 +29,10 @@ export const en = {
   "branches.results": "Per-branch deletion results",
   "branches.deleted": "Deleted",
   "branches.confirm": "Delete archived branches?",
+  "branches.previewAge": "Preview age-based deletion",
+  "branches.invalidDays": "Enter a whole number of days from 1 to 36500.",
+  "branches.confirmAge": "Project: {project}. Age threshold: older than {days} days. Preview window starts at {offset}, with at most 100 branches. Only the eligible branches listed below will be deleted. Eligibility and observed tips will be checked again.",
+  "branches.noEligible": "No eligible branches in this preview. Nothing will be deleted.",
   "branches.confirmProject": "Project: {project}. Delete only the following selected branches. Eligibility and observed tips will be checked again.",
 
   "observers.workReported": "Work reported",

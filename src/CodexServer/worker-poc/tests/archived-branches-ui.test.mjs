@@ -31,7 +31,7 @@ function harness() {
   const hooks = { workers:[{workerId:'worker',availability:'online',schedulingPolicy:'Draining',activeAssignments:0,capabilities:[{type:'protocol',name:'archived-feature-maintenance-v1'}]}],
     state(initial) { const i=cursor++; if (!(i in slots)) slots[i]=initial; return [slots[i],value=>{slots[i]=typeof value==='function'?value(slots[i]):value;}]; },
     ref(initial) {const i=cursor++; return slots[i] ??= {current:initial};}, effect(effect){ effects.push(effect); },
-    runtime:{async mutate(resource,path,method,request,validate){calls.push(request);current=request;return validate({request,status:'pending'});}, async read(path,signal,validate){ if(hooks.failure) throw Error('403 unauthorized');return validate({operation:{request:current,status:'succeeded',report:{outcome:'succeeded',branches:current.apply?[{...row,decision:'review',reason:'remote-tip-changed'}]:[row,{...row,branch:'complete/feature/retained',decision:'review',reason:'history-unknown'}]}}});},async reconcile(){}} };
+    runtime:{async mutate(resource,path,method,request,validate){calls.push(request);current=request;return validate({request,status:'pending'});}, async read(path,signal,validate){ if(hooks.failure) throw Error('403 unauthorized');return validate({operation:{request:current,status:'succeeded',report:{outcome:'succeeded',branches:current.apply?[{...row,decision:'review',reason:'remote-tip-changed'}]:hooks.rows??[row,{...row,branch:'complete/feature/retained',decision:'review',reason:'history-unknown'}]}}});},async reconcile(){}} };
   globalThis.branchHooks=hooks;
   return {hooks,calls,render(){cursor=0;effects.length=0;return BranchInventory({project});}};
 }
@@ -72,4 +72,39 @@ test('single-row delete confirms exactly one branch',async()=>{
   assert.ok(JSON.stringify(dialog).includes(row.branch));
   assert.ok(!JSON.stringify(dialog).includes('complete/feature/retained'));
   await dialog.props.onSubmit();assert.equal(h.calls[1].branches.length,1);
+});
+test('age preview requests candidates before confirmation and submits only eligible observed refs',async()=>{
+  const h=harness();let tree=h.render();find(tree,'select').props.onChange({target:{value:'worker'}});tree=h.render();
+  find(tree,'input',n=>n.props.type==='number').props.onChange({target:{value:'60'}});tree=h.render();
+  assert.equal(h.calls.length,0);
+  button(tree,'branches.previewAge').props.onPress();await new Promise(resolve=>setImmediate(resolve));tree=h.render();
+  assert.equal(h.calls.length,1);assert.equal(h.calls[0].apply,false);assert.equal(h.calls[0].olderThanDays,60);
+  const dialog=find(tree,'dialog');assert.ok(dialog.props.description.includes(project.name));assert.ok(dialog.props.description.includes('60'));
+  assert.ok(JSON.stringify(dialog).includes('history-unknown'));
+  await dialog.props.onSubmit();tree=h.render();
+  assert.equal(h.calls[1].apply,true);assert.equal(h.calls[1].olderThanDays,60);
+  assert.deepEqual(h.calls[1].branches,[{branch:row.branch,expectedTip:row.tip}]);
+  assert.equal(h.calls.length,3);assert.ok(JSON.stringify(tree).includes('remote-tip-changed'));
+});
+test('invalid age thresholds cannot request preview; changing age clears previous candidates',async()=>{
+  const h=harness();let tree=h.render();find(tree,'select').props.onChange({target:{value:'worker'}});
+  for(const value of ['', '0', '-1', '1.5', '36501']) {
+    tree=h.render();find(tree,'input',n=>n.props.type==='number').props.onChange({target:{value}});tree=h.render();
+    assert.equal(button(tree,'branches.previewAge').props.isDisabled,true);
+    button(tree,'branches.previewAge').props.onPress();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.calls.length,0);
+    assert.equal(find(tree,'input',n=>n.props.type==='number').props['aria-invalid'],true);
+  }
+  find(tree,'input',n=>n.props.type==='number').props.onChange({target:{value:'1'}});tree=h.render();
+  button(tree,'branches.previewAge').props.onPress();await new Promise(resolve=>setImmediate(resolve));tree=h.render();assert.ok(find(tree,'dialog'));
+  find(tree,'dialog').props.onClose();tree=h.render();
+  find(tree,'input',n=>n.props.type==='number').props.onChange({target:{value:'2'}});tree=h.render();
+  assert.equal(find(tree,'dialog'),undefined);assert.equal(nodes(tree).filter(n=>n.type==='input'&&n.props.type==='checkbox').length,0);
+});
+test('preview with only retained branches cannot delete and explains why',async()=>{
+  const h=harness();h.hooks.rows=[{...row,decision:'review',reason:'Unknown completion age',completedAtUtc:null}];
+  let tree=h.render();find(tree,'select').props.onChange({target:{value:'worker'}});tree=h.render();
+  button(tree,'branches.previewAge').props.onPress();await new Promise(resolve=>setImmediate(resolve));tree=h.render();
+  const dialog=find(tree,'dialog');assert.equal(dialog.props.disabled,true);
+  assert.ok(JSON.stringify(dialog).includes('Unknown completion age'));assert.ok(JSON.stringify(dialog).includes('branches.noEligible'));
+  await dialog.props.onSubmit();assert.equal(h.calls.length,1);
 });

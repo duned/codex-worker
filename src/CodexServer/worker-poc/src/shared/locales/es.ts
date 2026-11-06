@@ -30,6 +30,10 @@ export const es = {
   "branches.results": "Resultados de eliminación por rama",
   "branches.deleted": "Eliminada",
   "branches.confirm": "¿Eliminar ramas archivadas?",
+  "branches.previewAge": "Vista previa de eliminación por antigüedad",
+  "branches.invalidDays": "Introduce un número entero de días entre 1 y 36500.",
+  "branches.confirmAge": "Proyecto: {project}. Antigüedad: más de {days} días. La vista previa empieza en {offset}, con un máximo de 100 ramas. Solo se eliminarán las ramas elegibles indicadas. Se volverán a comprobar la elegibilidad y las revisiones observadas.",
+  "branches.noEligible": "No hay ramas elegibles en esta vista previa. No se eliminará ninguna.",
   "branches.confirmProject": "Proyecto: {project}. Eliminar solo las siguientes ramas seleccionadas. Se volverán a comprobar la elegibilidad y las revisiones observadas.",
 
   "observers.workReported": "Trabajo informado",

@@ -24,6 +24,7 @@ function BranchInventory({ project }: { project: Project }) {
   const [workerId, setWorker] = useState(''), [days, setDays] = useState(30), [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<Branch[]>(), [results, setResults] = useState<Branch[]>();
   const [selected, setSelected] = useState<string[]>([]), [confirm, setConfirm] = useState<string[]>();
+  const [ageConfirm, setAgeConfirm] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [retained, setRetained] = useState<Request>();
   const controller = useRef(new AbortController());
@@ -65,7 +66,7 @@ function BranchInventory({ project }: { project: Project }) {
       action: 'archived-branches', apply, olderThanDays: days, limit: 100, offset: apply ? 0 : offset, timeoutSeconds: 300,
       ...(apply ? { branches: selections(rows ?? [], names) } : {}) };
   }
-  async function load(apply = false, names: string[] = [], resume = false) {
+  async function load(apply = false, names: string[] = [], resume = false, preview = false) {
     if (busy || !available || !validDays || apply && (!drained || !selections(rows ?? [], names).length)) return;
     setBusy(true); setError(''); setSelected([]);
     try {
@@ -74,7 +75,13 @@ function BranchInventory({ project }: { project: Project }) {
       if (current.apply) {
         setResults(branches); setRows(undefined);
         setRows(await execute(request(false)));
-      } else setRows(branches);
+      } else {
+        setRows(branches);
+        if (preview) {
+          setAgeConfirm(true);
+          setConfirm(branches.filter(selectable).map(branch => branch.branch));
+        }
+      }
     } catch (failure) {
       if (!controller.current.signal.aborted) { setRows(undefined); setError(failure instanceof Error ? failure.message : t('branches.unavailable')); }
     } finally { if (!controller.current.signal.aborted) setBusy(false); }
@@ -85,20 +92,22 @@ function BranchInventory({ project }: { project: Project }) {
     <TableCard.Root><div className="space-y-4 p-5">
       <div className="flex flex-wrap items-end gap-4">
         <label className="text-sm text-secondary">{t('branches.worker')}<select className="block rounded border border-secondary bg-primary p-2" value={workerId} disabled={busy || !!retained} onChange={event => { reset(); setWorker(event.target.value); setOffset(0); }}><option value="">{t('branches.chooseWorker')}</option>{inventory.data?.filter(item => item.capabilities?.some(cap => cap.type === 'protocol' && cap.name === 'archived-feature-maintenance-v1')).map(item => <option key={item.workerId} value={item.workerId}>{item.displayName ?? item.workerId}</option>)}</select></label>
-        <label className="text-sm text-secondary">{t('branches.days')}<input className="block w-28 rounded border border-secondary bg-primary p-2" type="number" min={1} max={36500} value={days} disabled={busy || !!retained} onChange={event => { reset(); setDays(Number(event.target.value)); setOffset(0); }} /></label>
+        <label className="text-sm text-secondary">{t('branches.days')}<input className="block w-28 rounded border border-secondary bg-primary p-2" type="number" min={1} max={36500} value={days} aria-invalid={!validDays} aria-describedby={!validDays ? "branch-age-error" : undefined} disabled={busy || !!retained} onChange={event => { reset(); setDays(Number(event.target.value)); setOffset(0); }} /></label>
         <Button color="secondary" isDisabled={busy || !available || !validDays} onPress={() => { void load(false, [], !!retained); }}>{t(retained ? 'branches.resume' : 'branches.load')}</Button>
-        <Button color="primary-destructive" iconLeading={Trash01} isDisabled={busy || !!retained || !drained || !selected.length} onPress={() => setConfirm(selected)}>{t('branches.deleteSelected', { count: selected.length })}</Button>
+        <Button color="secondary" isDisabled={busy || !!retained || !available || !validDays} onPress={() => { void load(false, [], false, true); }}>{t('branches.previewAge')}</Button>
+        <Button color="primary-destructive" iconLeading={Trash01} isDisabled={busy || !!retained || !drained || !selected.length} onPress={() => { setAgeConfirm(false); setConfirm(selected); }}>{t('branches.deleteSelected', { count: selected.length })}</Button>
       </div>
+      {!validDays && <p id="branch-age-error" role="alert">{t('branches.invalidDays')}</p>}
       {!drained && <p className="text-sm text-tertiary">{t('branches.drain')}</p>}
       {inventory.loading && <p role="status">{t('branches.pending')}</p>}
       {!inventory.loading && (inventory.error || !available) && <Notice error>{t('branches.unavailable')}</Notice>}
       {busy && <p role="status">{t('branches.pending')}</p>}
       {error && <Notice error>{t('branches.error', { reason: error })}</Notice>}
       {rows && !rows.length && <p>{t('branches.empty')}</p>}
-      {rows && rows.length > 0 && <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{(['branches.select', 'branches.name', 'branches.completed', 'branches.eligibility'] as const).map(key => <th className="p-3" key={key} scope="col">{t(key)}</th>)}<th scope="col">{t('branches.actions')}</th></tr></thead><tbody>{rows.map(row => <tr key={row.branch} className="border-t border-secondary"><td className="p-3"><input type="checkbox" aria-label={t('branches.selectBranch', { branch: row.branch })} disabled={busy || !!retained || !selectable(row)} checked={selected.includes(row.branch)} onChange={event => setSelected(old => event.target.checked ? [...old, row.branch] : old.filter(name => name !== row.branch))} /></td><td className="break-all p-3">{row.branch}</td><td className="p-3">{row.completedAtUtc && Number.isFinite(Date.parse(row.completedAtUtc)) ? <>{timestamp(row.completedAtUtc)}<p className="text-xs text-tertiary">{t('branches.age', { count: Math.max(0, Math.floor((Date.now() - Date.parse(row.completedAtUtc)) / 86400000)) })}</p></> : t('branches.unknown')}</td><td className="p-3"><StatusBadge tone={selectable(row) ? 'success' : 'warning'}>{t(selectable(row) ? 'branches.eligible' : 'branches.retained')}</StatusBadge><p>{row.reason}</p></td><td className="p-3"><Button color="secondary-destructive" iconLeading={Trash01} isDisabled={busy || !!retained || !drained || !selectable(row)} onPress={() => setConfirm([row.branch])}>{t('branches.delete')}</Button></td></tr>)}</tbody></table></div>}
+      {rows && rows.length > 0 && <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr>{(['branches.select', 'branches.name', 'branches.completed', 'branches.eligibility'] as const).map(key => <th className="p-3" key={key} scope="col">{t(key)}</th>)}<th scope="col">{t('branches.actions')}</th></tr></thead><tbody>{rows.map(row => <tr key={row.branch} className="border-t border-secondary"><td className="p-3"><input type="checkbox" aria-label={t('branches.selectBranch', { branch: row.branch })} disabled={busy || !!retained || !selectable(row)} checked={selected.includes(row.branch)} onChange={event => setSelected(old => event.target.checked ? [...old, row.branch] : old.filter(name => name !== row.branch))} /></td><td className="break-all p-3">{row.branch}</td><td className="p-3">{row.completedAtUtc && Number.isFinite(Date.parse(row.completedAtUtc)) ? <>{timestamp(row.completedAtUtc)}<p className="text-xs text-tertiary">{t('branches.age', { count: Math.max(0, Math.floor((Date.now() - Date.parse(row.completedAtUtc)) / 86400000)) })}</p></> : t('branches.unknown')}</td><td className="p-3"><StatusBadge tone={selectable(row) ? 'success' : 'warning'}>{t(selectable(row) ? 'branches.eligible' : 'branches.retained')}</StatusBadge><p>{row.reason}</p></td><td className="p-3"><Button color="secondary-destructive" iconLeading={Trash01} isDisabled={busy || !!retained || !drained || !selectable(row)} onPress={() => { setAgeConfirm(false); setConfirm([row.branch]); }}>{t('branches.delete')}</Button></td></tr>)}</tbody></table></div>}
       {rows && <div className="flex flex-wrap items-center gap-3"><span>{t('branches.window', { offset, count: rows.length })}</span><Button color="secondary" isDisabled={busy || !!retained || offset === 0} onPress={() => { reset(); setOffset(Math.max(0, offset - 100)); }}>{t('branches.previous')}</Button><Button color="secondary" isDisabled={busy || !!retained || rows.length < 100 || offset >= 10000} onPress={() => { reset(); setOffset(offset + 100); }}>{t('branches.next')}</Button></div>}
       {results && <div role="status"><h3 className="font-semibold">{t('branches.results')}</h3><ul>{results.map(row => <li className="break-all py-2" key={row.branch}>{row.branch} · {t(row.decision === 'deleted' ? 'branches.deleted' : 'branches.retained')} · {row.reason}</li>)}</ul></div>}
     </div></TableCard.Root>
-    {confirm && <ActionDialog isOpen title={t('branches.confirm')} description={t('branches.confirmProject', { project: project.name })} actionLabel={t('branches.delete')} destructive disabled={busy || !drained} onClose={() => setConfirm(undefined)} onSubmit={async () => { setConfirm(undefined); await load(true, confirm); }}><ul className="max-h-60 overflow-auto text-sm">{confirm.map(name => <li className="break-all py-1" key={name}>{name}</li>)}</ul></ActionDialog>}
+    {confirm && <ActionDialog isOpen title={t('branches.confirm')} description={t('branches.confirmAge', { project: project.name, days, offset })} actionLabel={t('branches.delete')} destructive disabled={busy || !drained || !confirm.length || !validDays} onClose={() => setConfirm(undefined)} onSubmit={async () => { setConfirm(undefined); await load(true, confirm); }}><p className="text-sm font-semibold">{t('branches.eligible')}</p>{!confirm.length && <p role="status">{t('branches.noEligible')}</p>}<ul className="max-h-60 overflow-auto text-sm">{confirm.map(name => <li className="break-all py-1" key={name}>{name}</li>)}</ul>{ageConfirm && <><h3 className="text-sm font-semibold">{t('branches.retained')}</h3><ul className="max-h-60 overflow-auto text-sm">{rows?.filter(row => !selectable(row)).map(row => <li className="break-all py-1" key={row.branch}>{row.branch} · {row.reason}</li>)}</ul></>}</ActionDialog>}
   </section>;
 }
