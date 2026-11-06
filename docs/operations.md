@@ -78,6 +78,15 @@ The optional `reporting` block in [worker.example.yml](../config/worker.example.
 
 ### Authorized standalone branch maintenance
 
+The project dashboard's completed-branch picker uses
+`GET /api/v1/projects/{projectId}/branch-maintenance-targets`. This bounded projection includes
+up to 100 managed Workers and 100 standalone entries, identifies their ownership mode, and returns
+separate inventory/deletion eligibility and refusal reasons. Standalone eligibility uses the same
+explicit grant, advertised project/repository capability and freshness checks as maintenance dispatch.
+Dashboard requests retain the chosen Worker, project ID/revision and repository through confirmation;
+changed project revisions or bindings are rejected by Server before dispatch. Refresh targets and
+preview again after a refusal. An uncertain operation must be inspected before starting another.
+
 Observers remain read-only by default. To enable only completed feature branch maintenance, set
 `reporting.allowBranchMaintenance: true` locally and restart the standalone Worker. This advertises
 up to 100 configured project/repository pairs in snapshots; it does not enable managed scheduling.

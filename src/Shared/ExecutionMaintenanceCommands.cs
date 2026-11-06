@@ -8,7 +8,9 @@ using System.Text.Json.Serialization;
 public sealed record ExecutionMaintenanceRequest(string OperationId, string WorkerId, string? ServerExecutionId,
     Guid? WorkerExecutionId, string? AssignmentId, long? Generation, string Action = "inspect", bool Apply = false,
     int TimeoutSeconds = 60, int Limit = 50, int Offset = 0, string? Project = null,
-    int? IssueNumber = null, string? Outcome = null, string? Origin = null, string? ExpectedProof = null, int? OlderThanDays = null, IReadOnlyList<ArchivedBranchSelection>? Branches = null, string? Repository = null);
+    int? IssueNumber = null, string? Outcome = null, string? Origin = null, string? ExpectedProof = null, int? OlderThanDays = null, IReadOnlyList<ArchivedBranchSelection>? Branches = null, string? Repository = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ProjectId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ProjectRevision = null);
 public sealed record ArchivedBranchSelection(string Branch, string ExpectedTip);
 public sealed record ArchivedBranchObservation(string Branch, string? Tip, DateTimeOffset? CompletedAtUtc, string Decision, string Reason, bool LocalDeleted, bool RemoteDeleted);
 
@@ -45,6 +47,8 @@ public static class ExecutionMaintenanceProtocol
     public const string CompletionCapability = "execution-completion-reconciliation-v1";
     public static bool Valid(ExecutionMaintenanceRequest request) =>
         request is not null &&
+        (request.ProjectId is null ? request.ProjectRevision is null : request.Action == "archived-branches" &&
+            request.ProjectId is { Length: > 0 and <= 80 } && request.ProjectId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-') && request.ProjectRevision > 0) &&
         (request.ExpectedProof is null || request.Action == "reconcile-completion" && request.Apply &&
             request.ExpectedProof.Length == 64 && request.ExpectedProof.All(char.IsAsciiHexDigit)) &&
         (request.Action != "reconcile-completion" || !request.Apply || request.ExpectedProof is not null) && Guid.TryParseExact(request.OperationId, "N", out _) && (Guid.TryParseExact(request.WorkerId, "N", out _) || request.Action == "archived-branches" && ObserverProtocol.ValidIdentity(request.WorkerId)) &&

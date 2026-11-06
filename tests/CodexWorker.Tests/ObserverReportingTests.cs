@@ -370,6 +370,51 @@ public sealed class ObserverReportingTests
         Assert.Equal(2, reports);
     }
 
+    [Fact]
+    [Trait("TestType", "Integration")]
+    [Trait("Duration", "Fast")]
+    public async Task BranchTargetProjectionUsesAuthoritativeScopeCapabilityAndFreshness()
+    {
+        using var temporary = new TemporaryDirectory();
+        var clock = new Clock();
+        var database = Path.Combine(temporary.Path, "registry.db");
+        var registry = new SqliteRegistryStore(database, timeProvider: clock);
+        await registry.InitializeAsync();
+        var commands = new ExecutionMaintenanceStore(database, clock);
+        await commands.InitializeAsync();
+        var project = await registry.CreateProjectAsync(new("sample", "owner/repo", "main", "", []));
+        var managed = Guid.NewGuid().ToString("N");
+        CodexServer.WorkerCapability[] capabilities = [new("protocol", ExecutionMaintenanceProtocol.Capability), new("protocol", ExecutionMaintenanceProtocol.BranchCapability)];
+        await registry.RegisterWorkerAsync(new(2, managed, "Managed", "1", "linux", 1, capabilities));
+        await registry.HeartbeatWorkerAsync(new(2, managed, "1", "running", 0, 1, capabilities, []));
+        var pairing = Assert.IsType<ObserverPairingAuthorization>(await registry.CreateObserverAuthorizationAsync(Request));
+        Assert.NotNull(await registry.RedeemObserverAuthorizationAsync(Request, pairing.Authorization, Credential));
+        var snapshot = new ObserverStatusSnapshot(1, Identity, Guid.NewGuid().ToString("N"), Now, "drained", [],
+            Name: "Standalone", ActiveExecutions: 0, BranchMaintenance: [new("sample", "owner/repo")]);
+        Assert.Equal(ObserverIngestionResult.Accepted, await registry.IngestObserverSnapshotAsync(Server, Credential, snapshot));
+        Task<BranchMaintenanceTargets> Read() => ServerApplication.ReadBranchMaintenanceTargetsAsync(project, registry, commands, clock, 90, CancellationToken.None);
+        var initial = await Read();
+        Assert.True(Assert.Single(initial.Targets, t => t.Mode == "managed").Eligible);
+        Assert.Equal("observer-maintenance-not-authorized", Assert.Single(initial.Targets, t => t.Mode == ObserverProtocol.Mode).Reason);
+        await commands.SetObserverBranchGrantAsync(Identity, new("sample", "owner/repo"));
+        var capable = Assert.Single((await Read()).Targets, t => t.Mode == ObserverProtocol.Mode);
+        Assert.True(capable.Eligible);
+        Assert.True(capable.CanApply);
+        Assert.Equal("Standalone", capable.DisplayName);
+        var scope = new ExecutionMaintenanceRequest(Guid.NewGuid().ToString("N"), Identity, null, null, null, null,
+            Action: "archived-branches", Project: project.Name, Repository: project.Repository, OlderThanDays: 30,
+            ProjectId: project.Id, ProjectRevision: project.Revision);
+        Assert.True(ExecutionMaintenanceProtocol.Valid(scope));
+        Assert.False(ExecutionMaintenanceProtocol.Valid(scope with { ProjectRevision = null }));
+        Assert.Null(await ServerApplication.MaintenanceAuthorityReasonAsync(scope, registry, CancellationToken.None, clock, commands));
+        clock.Now += TimeSpan.FromSeconds(91);
+        Assert.Equal("worker-offline", Assert.Single((await Read()).Targets, t => t.WorkerId == Identity).Reason);
+        clock.Now = Now;
+        await registry.UpdateProjectAsync(project.Id, new("sample", "owner/changed", "main", "", []), project.Revision);
+        Assert.Equal("project-binding-changed", await ServerApplication.MaintenanceAuthorityReasonAsync(scope, registry, CancellationToken.None, clock, commands));
+        Assert.False(Assert.Single((await Read()).Targets, t => t.WorkerId == Identity).Eligible);
+    }
+
     private sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = ObserverReportingTests.Now;

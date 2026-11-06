@@ -8,6 +8,7 @@ public static partial class ServerApplication
 {
     private static void MapExecutionMaintenance(WebApplication app)
     {
+        MapBranchMaintenanceTargets(app);
         app.MapPut("/api/v1/observers/{observerId}/branch-maintenance", async (string observerId,
             ObserverBranchMaintenanceBinding binding, HttpContext context, ServerConfiguration settings,
             IRegistryStore registry, ExecutionMaintenanceStore commands) =>
@@ -141,6 +142,13 @@ public static partial class ServerApplication
         IRegistryStore registry, CancellationToken ct, TimeProvider? clock = null,
         ExecutionMaintenanceStore? commands = null, int staleAfterSeconds = 90)
     {
+        if (request.ProjectId is { } projectId)
+        {
+            var project = await registry.GetProjectAsync(projectId, ct);
+            if (project is null || !project.Enabled || project.Revision != request.ProjectRevision ||
+                project.Name != request.Project || project.Repository != request.Repository)
+                return "project-binding-changed";
+        }
         if (ObserverProtocol.ValidIdentity(request.WorkerId))
         {
             if (request.Action != "archived-branches" || commands is null || !await commands.HasObserverBranchGrantAsync(request, ct))

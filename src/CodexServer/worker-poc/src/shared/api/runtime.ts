@@ -160,7 +160,8 @@ export class DashboardRuntime {
     // bounded observer reads in this same visibility/backoff owner; never fan out
     // inventory IDs or refresh inactive history. These reads contain no secrets.
     await this.queries.refetchQueries({ queryKey: queryKeys.session(generation), type: 'active',
-      predicate: query => /^\/api\/v1\/observers(?:\?|\/|$)/.test(String(query.queryKey[2]))
+      predicate: query => /^\/api\/v1\/observers(?:\?|\/|$)/.test(String(query.queryKey[2])) ||
+        /^\/api\/v1\/projects\/[^/]+\/branch-maintenance-targets$/.test(String(query.queryKey[2]))
     }, { cancelRefetch: false, throwOnError: true });
   }
   stopLive() { this.pollGeneration++; clearTimeout(this.poll); this.visibilityCleanup?.(); this.visibilityCleanup = undefined; }

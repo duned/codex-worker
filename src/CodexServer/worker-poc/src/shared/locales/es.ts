@@ -1,5 +1,12 @@
 import type { TranslationKey } from './en';
 export const es = {
+  "branches.managed": "Worker administrado",
+  "branches.standalone": "Worker independiente",
+  "branches.refreshTargets": "Actualizar Workers",
+  "branches.loadingTargets": "Cargando destinos de mantenimiento de ramas…",
+  "branches.noWorkers": "No hay Workers elegibles para este proyecto y repositorio. Actualice tras comprobar autorización, capacidad y conexión. Se muestran hasta 100 Workers de cada tipo.",
+  "branches.staleTarget": "El Worker seleccionado no está disponible o ha cambiado. Actualice y revise de nuevo; el destino no se ha sustituido.",
+  "branches.targetContext": "{worker} · {mode} · Repositorio: {repository}",
   "branches.age": "Hace {count} días",
   "branches.title": "Ramas de funciones completadas",
   "branches.context": "Ramas archivadas de {project}. El inventario es una página limitada; la seguridad se verifica de nuevo antes de eliminar.",
@@ -9,7 +16,7 @@ export const es = {
   "branches.load": "Cargar / actualizar inventario",
   "branches.resume": "Consultar operación retenida",
   "branches.deleteSelected": "Eliminar seleccionadas ({count})",
-  "branches.drain": "La eliminación requiere un Worker drenado sin asignaciones activas.",
+  "branches.drain": "La eliminación requiere un Worker drenado sin ejecuciones ni asignaciones activas.",
   "branches.unavailable": "Inventario no disponible. Seleccione un Worker compatible conectado y compruebe la autorización de administración.",
   "branches.pending": "Esperando el resultado de mantenimiento del Worker…",
   "branches.error": "Operación no disponible: {reason}. Actualice o consulte la operación retenida antes de reintentar.",

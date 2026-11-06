@@ -37,3 +37,17 @@ test('deletion reports stay within the confirmed branch selection', () => {
   assert.throws(() => branchOperation({ ...operation, request: { ...deletion, branches: [] } }, deletion));
   assert.throws(() => branchOperation({ ...operation, report: { branches: [{ ...eligible, branch: 'complete/feature/other' }] } }, deletion));
 });
+
+test('Server target projection fails closed on changed project binding and inconsistent eligibility', async () => {
+  const { readBranchTargets, requireBranchTarget } = await import('../src/features/projects/archived-branches.mjs');
+  const project = { id: 'one', revision: 1, name: 'one', repository: 'owner/one' };
+  const target = { workerId: 'obs_' + 'a'.repeat(32), displayName: 'Standalone', mode: 'standalone-observer', eligible: true, reason: null, canApply: false, applyReason: 'worker-drain-required' };
+  const value = { projectId: project.id, revision: 1, project: project.name, repository: project.repository, targets: [target] };
+  assert.equal(readBranchTargets(value, project), value);
+  const scope = { ...request, workerId: target.workerId, projectId: project.id, projectRevision: project.revision };
+  assert.equal(requireBranchTarget(value, scope), target);
+  assert.throws(() => requireBranchTarget(value, { ...scope, apply: true }), /worker-drain-required/);
+  assert.throws(() => requireBranchTarget(value, { ...scope, workerId: 'b'.repeat(32) }), /branch-target-changed/);
+  for (const changed of [{ ...value, repository: 'owner/other' }, { ...value, revision: 2 }, { ...value, targets: [{ ...target, eligible: true, reason: 'unauthorized' }] }, { ...value, targets: [target, target] }])
+    assert.throws(() => readBranchTargets(changed, project));
+});
